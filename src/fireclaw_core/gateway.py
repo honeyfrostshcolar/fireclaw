@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -29,12 +30,15 @@ class GatewayConfig:
     dry_run: bool = True
     available_sensors: tuple[str, ...] = ()
     default_session_id: str = "default"
+    max_active_execution_tasks: int = 1
 
 
 @dataclass
 class TaskControl:
     task_id: str
     session_id: str
+    command: str
+    started_at: str
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
@@ -96,8 +100,24 @@ class FireClawGateway:
     def submit_agent(self, command: str, session_id: str | None = None) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
-        control = TaskControl(task_id=task_id, session_id=resolved_session_id)
+        started_at = datetime.now(timezone.utc).isoformat()
+        control = TaskControl(
+            task_id=task_id,
+            session_id=resolved_session_id,
+            command=command,
+            started_at=started_at,
+        )
         with self._task_lock:
+            if len(self._task_controls) >= self.config.max_active_execution_tasks:
+                active = self._active_task_summaries_locked()
+                first_active = active[0] if active else {}
+                return {
+                    "status": "busy",
+                    "message": "机器人当前已有任务在执行，请等待当前任务结束或取消后再提交。",
+                    "active_task_id": first_active.get("task_id"),
+                    "active_tasks": active,
+                    "capacity": self._task_capacity_locked(),
+                }
             self._task_controls[task_id] = control
         self._append_event(
             task_id=task_id,
@@ -236,6 +256,8 @@ class FireClawGateway:
         return {
             "robot_state": asdict(self.robot.get_robot_state()),
             "environment_state": asdict(self.robot.get_environment_state()),
+            "task_capacity": self.task_capacity(),
+            "active_tasks": self.active_tasks(),
         }
 
     def health(self) -> dict[str, Any]:
@@ -245,6 +267,14 @@ class FireClawGateway:
             "adapter": self.config.adapter,
             "dry_run": self.config.dry_run,
         }
+
+    def task_capacity(self) -> dict[str, Any]:
+        with self._task_lock:
+            return self._task_capacity_locked()
+
+    def active_tasks(self) -> list[dict[str, Any]]:
+        with self._task_lock:
+            return self._active_task_summaries_locked()
 
     def _record_result_events(
         self,
@@ -376,6 +406,30 @@ class FireClawGateway:
                 return "running"
         return "unknown"
 
+    def _task_capacity_locked(self) -> dict[str, Any]:
+        return {
+            "active_execution_tasks": len(self._task_controls),
+            "max_active_execution_tasks": self.config.max_active_execution_tasks,
+            "available_execution_slots": max(
+                0,
+                self.config.max_active_execution_tasks - len(self._task_controls),
+            ),
+        }
+
+    def _active_task_summaries_locked(self) -> list[dict[str, Any]]:
+        summaries = []
+        for control in self._task_controls.values():
+            summaries.append(
+                {
+                    "task_id": control.task_id,
+                    "session_id": control.session_id,
+                    "command": control.command,
+                    "started_at": control.started_at,
+                    "cancel_requested": control.cancel_event.is_set(),
+                }
+            )
+        return summaries
+
     def _append_event(
         self,
         *,
@@ -468,27 +522,27 @@ class FireClawGateway:
                 if not isinstance(command, str) or not command.strip():
                     self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'command' is required.")
                     return
-                self._write_json(
-                    handler,
-                    HTTPStatus.ACCEPTED,
-                    self.submit_agent(command, session_id=_payload_session(payload, self.config.default_session_id)),
-                )
+                result = self.submit_agent(command, session_id=_payload_session(payload, self.config.default_session_id))
+                status = HTTPStatus.CONFLICT if result.get("status") == "busy" else HTTPStatus.ACCEPTED
+                self._write_json(handler, status, result)
                 return
             if parsed.path == "/confirm":
+                result = self.submit_agent(
+                    "确认执行",
+                    session_id=_payload_session(payload, self.config.default_session_id),
+                )
                 self._write_json(
                     handler,
-                    HTTPStatus.ACCEPTED,
-                    self.submit_agent(
-                        "确认执行",
-                        session_id=_payload_session(payload, self.config.default_session_id),
-                    ),
+                    HTTPStatus.CONFLICT if result.get("status") == "busy" else HTTPStatus.ACCEPTED,
+                    result,
                 )
                 return
             if parsed.path == "/cancel":
+                result = self.submit_agent("取消", session_id=_payload_session(payload, self.config.default_session_id))
                 self._write_json(
                     handler,
-                    HTTPStatus.ACCEPTED,
-                    self.submit_agent("取消", session_id=_payload_session(payload, self.config.default_session_id)),
+                    HTTPStatus.CONFLICT if result.get("status") == "busy" else HTTPStatus.ACCEPTED,
+                    result,
                 )
                 return
             self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {parsed.path}")
@@ -578,6 +632,7 @@ def main() -> int:
     parser.add_argument("--skills-dir", default="skills")
     parser.add_argument("--no-workspace-skills", action="store_true")
     parser.add_argument("--session-id", default="default")
+    parser.add_argument("--max-active-execution-tasks", type=int, default=1)
     parser.add_argument("--available-sensor", action="append", default=[])
     parser.add_argument("--real-run", action="store_true")
     args = parser.parse_args()
@@ -594,6 +649,7 @@ def main() -> int:
             dry_run=not args.real_run,
             available_sensors=tuple(args.available_sensor),
             default_session_id=args.session_id,
+            max_active_execution_tasks=max(1, args.max_active_execution_tasks),
         )
     )
     print(

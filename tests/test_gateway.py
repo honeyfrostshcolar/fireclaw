@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import time
 from urllib import request
+from urllib.error import HTTPError
 
 from fireclaw_core.gateway import FireClawGateway, GatewayConfig
 
@@ -19,6 +20,13 @@ def _json_request(base_url: str, method: str, path: str, payload: dict | None = 
     )
     with request.urlopen(req, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _json_error_request(base_url: str, method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    try:
+        return 200, _json_request(base_url, method, path, payload)
+    except HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
 def _write_high_risk_skill(skills_dir: Path) -> None:
@@ -322,3 +330,47 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
     assert "task.cancel_requested" in event_types
     assert "task.cancelled" in event_types
     assert skill_names == ["slow_policy"]
+
+
+def test_gateway_rejects_second_execution_task_when_robot_is_busy(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_slow_policy_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        first = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+        )
+        _wait_for_event_type(gateway, first["task_id"], "skill.started")
+        status_code, busy = _json_error_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去三楼救人", "session_id": "operator-b"},
+        )
+        state = _json_request(gateway.base_url, "GET", "/state")
+        gateway.cancel_task(first["task_id"])
+        _wait_for_task_result(gateway, first["task_id"])
+    finally:
+        gateway.stop()
+
+    assert status_code == 409
+    assert busy["status"] == "busy"
+    assert busy["active_task_id"] == first["task_id"]
+    assert busy["capacity"]["max_active_execution_tasks"] == 1
+    assert state["task_capacity"]["active_execution_tasks"] == 1
+    assert state["task_capacity"]["max_active_execution_tasks"] == 1
+    assert state["active_tasks"][0]["task_id"] == first["task_id"]

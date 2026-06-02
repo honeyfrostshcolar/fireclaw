@@ -960,3 +960,89 @@ Gateway Task Control / Abort Workflow v1 is implemented at the focused-test leve
 - No task concurrency limits or queue backpressure.
 - No operator auth or authorization for cancellation.
 - No emergency-stop adapter integration yet.
+
+## 2026-06-02 Gateway Task Registry / Backpressure v1
+
+### Task Goal
+
+Add robot-side task capacity and backpressure so one FireClaw Gateway does not silently accept multiple concurrent execution tasks for the same robot.
+
+### OpenClaw Reference
+
+Attempted CodeGraph first:
+
+- `codegraph_search(query="resolveGatewayInflightMap", projectPath="openclaw-main")` timed out after 120 seconds.
+
+Used local OpenClaw source search/read plus earlier CodeGraph findings:
+
+- OpenClaw Gateway uses active run maps such as `chatAbortControllers`.
+- Chat send can return `status: "in_flight"` with an active `runId`.
+- Gateway dedupe state protects active and terminal run snapshots.
+- Maintenance code avoids evicting active run dedupe entries.
+
+FireClaw adaptation:
+
+```text
+OpenClaw active run / in_flight -> FireClaw active task registry / busy
+```
+
+### Files Modified
+
+- `src/fireclaw_core/gateway.py`
+- `tests/test_gateway.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-02-gateway-task-registry-backpressure-v1-design.md`
+- `docs/superpowers/plans/2026-06-02-gateway-task-registry-backpressure-v1.md`
+- `memory/2026-06-02/fireclaw-dry-run-core.md`
+
+### Implementation Details
+
+- Added `GatewayConfig.max_active_execution_tasks`, defaulting to `1`.
+- Extended `TaskControl` with:
+  - `command`
+  - `started_at`
+- `submit_agent(...)` now checks active task count under `_task_lock` before registering a new task.
+- If capacity is full, `submit_agent(...)` returns:
+  - `status="busy"`
+  - `active_task_id`
+  - `active_tasks`
+  - `capacity`
+- HTTP `POST /tasks`, `/confirm`, and `/cancel` map `busy` to HTTP `409 Conflict`.
+- Added `task_capacity()`.
+- Added `active_tasks()`.
+- `/state` now includes:
+  - `task_capacity`
+  - `active_tasks`
+- Gateway CLI now accepts:
+  - `--max-active-execution-tasks`
+
+### Tests Added / Updated
+
+- Added `_json_error_request(...)` helper.
+- Added `test_gateway_rejects_second_execution_task_when_robot_is_busy`.
+  - Starts a slow policy task.
+  - Submits a second task.
+  - Expects HTTP 409 and `status="busy"`.
+  - Asserts `/state` exposes capacity and active task summary.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - RED result: 1 failed, 6 passed.
+  - Failure confirmed second task still returned 200 instead of 409.
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - GREEN result: 7 passed in 3.50s.
+- `.venv/bin/python -m pytest tests/test_gateway.py tests/test_cli.py tests/test_operator_console.py -q`
+  - 25 passed in 4.49s.
+
+### Current Conclusion
+
+Gateway Task Registry / Backpressure v1 is implemented at focused-test level. A single robot Gateway now has an explicit execution capacity and rejects concurrent execution tasks when busy.
+
+### Remaining Gaps
+
+- No durable queue.
+- No priority or emergency override scheduling.
+- No per-session or per-operator quotas.
+- No fleet-level routing to another robot.
+- `POST /confirm` and `/cancel` also follow current capacity behavior; future versions may classify confirmation/cancel control commands separately from execution tasks.

@@ -125,6 +125,7 @@ Start a local simulator gateway:
   --port 8765 \
   --adapter simulator \
   --robot-id robot-01 \
+  --max-active-execution-tasks 1 \
   --memory-path /tmp/fireclaw-gateway-memory.jsonl \
   --event-path /tmp/fireclaw-gateway-events.jsonl
 ```
@@ -134,6 +135,27 @@ Check health and state:
 ```bash
 curl http://127.0.0.1:8765/health
 curl http://127.0.0.1:8765/state
+```
+
+`/state` includes robot state, environment state, task capacity, and active task summaries. By default a Gateway allows only one active execution task for the robot:
+
+```json
+{
+  "task_capacity": {
+    "active_execution_tasks": 1,
+    "max_active_execution_tasks": 1,
+    "available_execution_slots": 0
+  },
+  "active_tasks": [
+    {
+      "task_id": "task-...",
+      "session_id": "operator-a",
+      "command": "去二楼救人",
+      "started_at": "2026-06-02T...",
+      "cancel_requested": false
+    }
+  ]
+}
 ```
 
 Submit a natural-language task:
@@ -154,6 +176,24 @@ curl -X POST http://127.0.0.1:8765/tasks \
   "message": "任务已接收，正在后台执行。"
 }
 ```
+
+If the robot already has the maximum number of active execution tasks, `POST /tasks` returns HTTP `409 Conflict`:
+
+```json
+{
+  "status": "busy",
+  "message": "机器人当前已有任务在执行，请等待当前任务结束或取消后再提交。",
+  "active_task_id": "task-...",
+  "active_tasks": [],
+  "capacity": {
+    "active_execution_tasks": 1,
+    "max_active_execution_tasks": 1,
+    "available_execution_slots": 0
+  }
+}
+```
+
+This backpressure is intentional. A single robot should not silently accept multiple concurrent execution tasks that might command navigation, search, manipulation, or future ROS2 actions at the same time.
 
 Use the `task_id` to inspect the current task trace, final result, and event stream. While the background task is still running, `result` is `null`; after completion, the final agent result is available under `result`:
 
