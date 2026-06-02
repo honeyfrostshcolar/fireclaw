@@ -10,6 +10,7 @@ from fireclaw_core.skills import SkillRegistry
 
 
 ExecutionEventSink = Callable[[str, dict[str, Any]], None]
+CancellationCheck = Callable[[], bool]
 
 
 @dataclass(frozen=True)
@@ -45,14 +46,18 @@ class PlanExecutor:
         registry: SkillRegistry,
         failure_policy: FailurePolicy | None = None,
         event_sink: ExecutionEventSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
     ) -> None:
         self._registry = registry
         self._failure_policy = failure_policy or FailurePolicy()
         self._event_sink = event_sink
+        self._cancellation_requested = cancellation_requested or (lambda: False)
 
     def execute(self, plan: Plan) -> ExecutionResult:
         step_results: list[StepExecutionResult] = []
         for step in plan.steps:
+            if self._cancellation_requested():
+                return ExecutionResult(status="cancelled", steps=step_results)
             skill = self._registry.get(step.skill_name)
             if skill is None:
                 self._emit(
@@ -123,6 +128,8 @@ class PlanExecutor:
             if result is None or output is None:
                 raise RuntimeError("Skill execution loop did not run.")
             if not result.ok:
+                if self._cancellation_requested():
+                    return ExecutionResult(status="cancelled", steps=step_results)
                 self._emit(
                     "skill.failed",
                     {
@@ -171,6 +178,8 @@ class PlanExecutor:
                     attempts=attempts,
                 )
             )
+            if self._cancellation_requested():
+                return ExecutionResult(status="cancelled", steps=step_results)
 
         return ExecutionResult(status="succeeded", steps=step_results)
 

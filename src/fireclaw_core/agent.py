@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Protocol
 
-from fireclaw_core.executor import ExecutionEventSink, ExecutionResult, PlanExecutor
+from fireclaw_core.executor import CancellationCheck, ExecutionEventSink, ExecutionResult, PlanExecutor
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.planner import (
     CHINESE_DIGITS,
@@ -55,6 +55,7 @@ class FireClawAgent:
         session_id: str = "default",
         planner: Planner | None = None,
         event_sink: ExecutionEventSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
     ) -> None:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
@@ -63,6 +64,7 @@ class FireClawAgent:
         self.session_id = session_id
         self.planner = planner or RuleBasedPlanner()
         self._event_sink = event_sink
+        self._cancellation_requested = cancellation_requested
         self.registry = create_default_skill_registry(self.robot)
         self.skill_load_errors: list[WorkspaceSkillLoadError] = []
         if workspace_skills_dir is not None:
@@ -70,7 +72,11 @@ class FireClawAgent:
             self.registry.extend(workspace_result.skills)
             self.skill_load_errors = workspace_result.errors
         self.safety = SafetyGate()
-        self.executor = PlanExecutor(self.registry, event_sink=event_sink)
+        self.executor = PlanExecutor(
+            self.registry,
+            event_sink=event_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
     def run(self, command: str) -> dict[str, Any]:
         if self._is_confirmation_command(command):
@@ -224,6 +230,8 @@ class FireClawAgent:
             return "; ".join(safety_decision.reasons)
         if execution_result is not None and execution_result.status == "succeeded":
             return "FireClaw dry-run rescue plan completed."
+        if execution_result is not None and execution_result.status == "cancelled":
+            return "任务已取消。"
         return planning_result.message
 
     def _planning_to_dict(self, planning_result: PlanningResult) -> dict[str, Any]:

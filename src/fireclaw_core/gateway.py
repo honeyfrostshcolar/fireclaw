@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -31,6 +31,13 @@ class GatewayConfig:
     default_session_id: str = "default"
 
 
+@dataclass
+class TaskControl:
+    task_id: str
+    session_id: str
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+
+
 class FireClawGateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
@@ -41,6 +48,8 @@ class FireClawGateway:
         self._thread: threading.Thread | None = None
         self._event_lock = threading.Lock()
         self._task_threads: dict[str, threading.Thread] = {}
+        self._task_controls: dict[str, TaskControl] = {}
+        self._task_lock = threading.Lock()
 
     @property
     def base_url(self) -> str:
@@ -87,6 +96,9 @@ class FireClawGateway:
     def submit_agent(self, command: str, session_id: str | None = None) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
+        control = TaskControl(task_id=task_id, session_id=resolved_session_id)
+        with self._task_lock:
+            self._task_controls[task_id] = control
         self._append_event(
             task_id=task_id,
             session_id=resolved_session_id,
@@ -101,6 +113,7 @@ class FireClawGateway:
                     session_id=resolved_session_id,
                     task_id=task_id,
                     record_received=False,
+                    cancellation_requested=control.cancel_event.is_set,
                 )
             except Exception as exc:
                 self._append_event(
@@ -119,16 +132,51 @@ class FireClawGateway:
                     },
                 )
             finally:
-                self._task_threads.pop(task_id, None)
+                with self._task_lock:
+                    self._task_threads.pop(task_id, None)
+                    self._task_controls.pop(task_id, None)
 
         thread = threading.Thread(target=worker, daemon=True, name=f"fireclaw-task-{task_id}")
-        self._task_threads[task_id] = thread
+        with self._task_lock:
+            self._task_threads[task_id] = thread
         thread.start()
         return {
             "status": "accepted",
             "task_id": task_id,
             "session_id": resolved_session_id,
             "message": "任务已接收，正在后台执行。",
+        }
+
+    def cancel_task(self, task_id: str) -> dict[str, Any]:
+        with self._task_lock:
+            control = self._task_controls.get(task_id)
+        if control is None:
+            trace = self.task_trace(task_id)
+            if trace.get("result") is not None:
+                return {
+                    "status": "completed",
+                    "task_id": task_id,
+                    "message": "任务已经结束，无法取消。",
+                }
+            return {
+                "status": "not_found",
+                "task_id": task_id,
+                "message": "没有找到正在运行的任务。",
+            }
+        already_requested = control.cancel_event.is_set()
+        control.cancel_event.set()
+        if not already_requested:
+            self._append_event(
+                task_id=task_id,
+                session_id=control.session_id,
+                type="task.cancel_requested",
+                payload={"status": "cancel_requested", "task_id": task_id},
+            )
+        return {
+            "status": "cancel_requested",
+            "task_id": task_id,
+            "session_id": control.session_id,
+            "message": "已请求取消任务，当前 skill 返回后将停止后续步骤。",
         }
 
     def _execute_agent_task(
@@ -138,6 +186,7 @@ class FireClawGateway:
         session_id: str,
         task_id: str,
         record_received: bool,
+        cancellation_requested=None,
     ) -> dict[str, Any]:
         if record_received:
             self._append_event(
@@ -146,7 +195,11 @@ class FireClawGateway:
                 type="task.received",
                 payload={"command": command},
             )
-        agent = self._create_agent(task_id=task_id, session_id=session_id)
+        agent = self._create_agent(
+            task_id=task_id,
+            session_id=session_id,
+            cancellation_requested=cancellation_requested,
+        )
         result = agent.run(command)
         result["task_id"] = task_id
         self._record_result_events(task_id, session_id, result)
@@ -171,10 +224,12 @@ class FireClawGateway:
 
     def task_trace(self, task_id: str) -> dict[str, Any]:
         events = self.events.events_for_task(task_id)
+        result = self._task_result_from_events(events)
         return {
             "task_id": task_id,
             "events": events,
-            "result": self._task_result_from_events(events),
+            "result": result,
+            "status": self._task_status(task_id, events, result),
         }
 
     def state(self) -> dict[str, Any]:
@@ -278,7 +333,13 @@ class FireClawGateway:
     def _has_event_type(self, task_id: str, event_type: str) -> bool:
         return any(event.get("type") == event_type for event in self.events.events_for_task(task_id))
 
-    def _create_agent(self, *, task_id: str | None = None, session_id: str | None = None) -> FireClawAgent:
+    def _create_agent(
+        self,
+        *,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        cancellation_requested=None,
+    ) -> FireClawAgent:
         resolved_session_id = session_id or self.config.default_session_id
         event_sink = None
         if task_id is not None:
@@ -296,7 +357,24 @@ class FireClawGateway:
             available_sensors=set(self.config.available_sensors),
             session_id=resolved_session_id,
             event_sink=event_sink,
+            cancellation_requested=cancellation_requested,
         )
+
+    def _task_status(
+        self,
+        task_id: str,
+        events: list[dict[str, Any]],
+        result: dict[str, Any] | None,
+    ) -> str:
+        if result is not None:
+            status = result.get("status")
+            return status if isinstance(status, str) else "completed"
+        if any(event.get("type") == "task.cancel_requested" for event in events):
+            return "cancel_requested"
+        with self._task_lock:
+            if task_id in self._task_controls:
+                return "running"
+        return "unknown"
 
     def _append_event(
         self,
@@ -379,6 +457,12 @@ class FireClawGateway:
         parsed = urlparse(handler.path)
         try:
             payload = self._read_json(handler)
+            task_cancel_id = _task_cancel_path(parsed.path)
+            if task_cancel_id is not None:
+                result = self.cancel_task(task_cancel_id)
+                status = HTTPStatus.OK if result["status"] != "not_found" else HTTPStatus.NOT_FOUND
+                self._write_json(handler, status, result)
+                return
             if parsed.path == "/tasks":
                 command = payload.get("command")
                 if not isinstance(command, str) or not command.strip():
@@ -472,6 +556,13 @@ def _task_events_path(path: str) -> str | None:
 def _task_path(path: str) -> str | None:
     parts = [part for part in path.split("/") if part]
     if len(parts) == 2 and parts[0] == "tasks":
+        return parts[1]
+    return None
+
+
+def _task_cancel_path(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "cancel":
         return parts[1]
     return None
 

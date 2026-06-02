@@ -843,3 +843,120 @@ This makes external ROS2 nodes, terminal clients, voice systems, and future fron
 - No SSE/WebSocket endpoint; clients still poll.
 - No auth/operator identity binding.
 - No ROS2 action feedback percentages or intermediate action states yet.
+
+## 2026-06-02 Gateway Task Control / Abort Workflow v1
+
+### Task Goal
+
+Add first-class cancellation for active FireClaw Gateway background tasks, modeled after OpenClaw's run abort pattern but adapted to firefighting robot safety constraints.
+
+### OpenClaw Reference Checked
+
+Attempted CodeGraph first as required:
+
+- `codegraph_context` for OpenClaw chat abort/run flow timed out after 120 seconds.
+- `codegraph_node(registerChatAbortController)` also timed out after 120 seconds.
+
+Used previous CodeGraph findings plus local OpenClaw source reads to avoid blocking implementation:
+
+- `openclaw-main/src/gateway/chat-abort.ts`
+  - `ChatAbortControllerEntry`
+  - `registerChatAbortController(...)`
+  - `abortChatRunById(...)`
+  - `broadcastChatAborted(...)`
+- `openclaw-main/src/gateway/server-methods/chat.ts`
+  - `chat.abort`
+  - active `runId` handling
+  - final aborted state handling
+
+OpenClaw pattern:
+
+```text
+runId -> active abort controller -> abort signal -> aborted final state -> cleanup
+```
+
+FireClaw adaptation:
+
+```text
+task_id -> active TaskControl -> cancel_event -> cooperative executor stop -> task.cancelled
+```
+
+### Files Modified
+
+- `src/fireclaw_core/executor.py`
+- `src/fireclaw_core/agent.py`
+- `src/fireclaw_core/gateway.py`
+- `src/fireclaw_core/operator_projection.py`
+- `tests/test_execution.py`
+- `tests/test_gateway.py`
+- `tests/test_operator_projection.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-02-gateway-task-control-abort-workflow-v1-design.md`
+- `docs/superpowers/plans/2026-06-02-gateway-task-control-abort-workflow-v1.md`
+- `memory/2026-06-02/fireclaw-dry-run-core.md`
+
+### Implementation Details
+
+- Added `CancellationCheck = Callable[[], bool]`.
+- `PlanExecutor` now accepts `cancellation_requested`.
+- Executor checks cancellation before each skill and after each skill completes.
+- Cancellation returns `ExecutionResult(status="cancelled")` and preserves completed step results.
+- `FireClawAgent` accepts and passes through `cancellation_requested`.
+- Cancelled execution message is `任务已取消。`.
+- Added `TaskControl` in Gateway:
+  - `task_id`
+  - `session_id`
+  - `threading.Event` cancel flag
+- `submit_agent(...)` now registers active task controls and removes them when workers finish.
+- Added `FireClawGateway.cancel_task(task_id)`.
+- Added HTTP endpoint:
+  - `POST /tasks/<task_id>/cancel`
+- Cancel endpoint returns:
+  - `cancel_requested` for active tasks;
+  - `completed` for tasks that already have a final result;
+  - `not_found` for unknown tasks.
+- Gateway appends `task.cancel_requested` immediately when cancellation is requested.
+- Gateway reuses existing final `task.cancelled` event when the agent returns `status="cancelled"`.
+- `task_trace(...)` now includes a `status` field:
+  - final result status;
+  - `cancel_requested`;
+  - `running`;
+  - `unknown`.
+- Operator projection now maps `task.cancel_requested` to `已请求取消任务，等待当前步骤结束。`.
+
+### Tests Added / Updated
+
+- Added a slow subprocess policy skill fixture in `tests/test_gateway.py`.
+- Added `test_gateway_cancels_active_task_between_skills`.
+  - Submit `去二楼救人 使用 slow_policy`.
+  - Wait for `skill.started`.
+  - Call `POST /tasks/<task_id>/cancel`.
+  - Assert final result is `cancelled`.
+  - Assert only `slow_policy` started and later rescue skills did not start.
+- Added `test_executor_cooperatively_cancels_between_steps`.
+- Added operator projector coverage for `task.cancel_requested`.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - RED result before implementation: 1 failed, 5 passed.
+  - Failure confirmed cancel endpoint was missing: HTTP 404.
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - GREEN result after implementation: 6 passed in 3.10s.
+- `.venv/bin/python -m pytest tests/test_execution.py tests/test_gateway.py -q`
+  - 23 passed in 3.04s.
+- `.venv/bin/python -m pytest tests/test_execution.py tests/test_gateway.py tests/test_operator_projection.py tests/test_operator_console.py -q`
+  - 28 passed in 3.14s.
+
+### Current Conclusion
+
+Gateway Task Control / Abort Workflow v1 is implemented at the focused-test level. FireClaw can now request cancellation of an active background task by `task_id`, record that request, and stop before launching the next skill.
+
+### Remaining Gaps
+
+- Cancellation is cooperative only; it does not kill an already running thread, subprocess, CUDA policy, or ROS2 action.
+- No subprocess termination support yet.
+- No ROS2 action cancellation mapping yet.
+- No task concurrency limits or queue backpressure.
+- No operator auth or authorization for cancellation.
+- No emergency-stop adapter integration yet.

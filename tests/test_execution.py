@@ -142,6 +142,23 @@ def test_executor_stops_when_skill_fails():
     assert "search_for_victims" in result.steps[-1].error
 
 
+def test_executor_cooperatively_cancels_between_steps():
+    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+    registry = create_default_skill_registry(robot)
+    checks = {"count": 0}
+
+    def cancellation_requested():
+        checks["count"] += 1
+        return checks["count"] >= 3
+
+    result = PlanExecutor(registry, cancellation_requested=cancellation_requested).execute(planning_result.plan)
+
+    assert result.status == "cancelled"
+    assert [step.skill_name for step in result.steps] == ["navigate_to_floor"]
+    assert robot.actions == [{"action": "navigate_to_floor", "floor": 2, "dry_run": True}]
+
+
 def test_executor_retries_retryable_skill_until_it_succeeds():
     calls = []
 

@@ -173,10 +173,11 @@ Gateway v1 records append-only JSONL events such as:
 - `skill.attempted`
 - `skill.succeeded`
 - `skill.failed`
+- `task.cancel_requested`
 - `task.completed`
 - `task.cancelled`
 
-Confirm or cancel the latest pending task in a session:
+Confirm or cancel the latest pending confirmation in a session:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/confirm \
@@ -187,6 +188,14 @@ curl -X POST http://127.0.0.1:8765/cancel \
   -H "Content-Type: application/json" \
   -d '{"session_id": "operator-a"}'
 ```
+
+Cancel an active background task by task id:
+
+```bash
+curl -X POST http://127.0.0.1:8765/tasks/task-REPLACE_WITH_ID/cancel
+```
+
+Cancellation is cooperative in this version. FireClaw records `task.cancel_requested` immediately, lets the currently running skill return, and then stops before starting the next skill. This avoids unsafe hard termination of robot-side code. Future ROS2 adapters should map this same request to ROS2 action cancellation where available.
 
 The Python API still exposes synchronous `FireClawGateway.run_agent(...)` for local test harnesses and in-process tooling. External systems should prefer the asynchronous HTTP endpoints or `FireClawGateway.submit_agent(...)`.
 

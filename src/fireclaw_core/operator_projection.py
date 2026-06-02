@@ -32,6 +32,8 @@ class OperatorEventProjector:
         if event_type == "task.completed":
             message = _text(payload.get("message"), "任务已完成")
             return f"任务完成：{message}"
+        if event_type == "task.cancel_requested":
+            return "已请求取消任务，等待当前步骤结束。"
         if event_type == "task.cancelled":
             return "任务已取消。"
         return None

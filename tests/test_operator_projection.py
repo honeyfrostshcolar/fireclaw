@@ -85,3 +85,13 @@ def test_projector_translates_failed_attempts_and_terminal_failure():
         == "技能 search_for_victims 执行失败：sensor timeout"
     )
     assert projector.project({"type": "skill.attempted", "payload": {"status": "succeeded"}}) is None
+
+
+def test_projector_translates_cancel_request_and_final_cancel():
+    projector = OperatorEventProjector()
+
+    assert (
+        projector.project({"type": "task.cancel_requested", "payload": {"task_id": "task-1"}})
+        == "已请求取消任务，等待当前步骤结束。"
+    )
+    assert projector.project({"type": "task.cancelled", "payload": {}}) == "任务已取消。"

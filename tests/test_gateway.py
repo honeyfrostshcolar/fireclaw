@@ -42,6 +42,34 @@ def _write_high_risk_skill(skills_dir: Path) -> None:
     )
 
 
+def _write_slow_policy_skill(skills_dir: Path) -> None:
+    skills_dir.mkdir()
+    (skills_dir / "slow_policy.py").write_text(
+        "import json, time\n"
+        "time.sleep(0.2)\n"
+        "print(json.dumps({'ok': True, 'data': {'policy': 'slow'}}))\n",
+        encoding="utf-8",
+    )
+    (skills_dir / "slow_policy.skill.json").write_text(
+        json.dumps(
+            {
+                "name": "slow_policy",
+                "description": "Slow policy skill used to test cooperative cancellation.",
+                "runtime": "subprocess",
+                "command": [sys.executable, "slow_policy.py"],
+                "timeout_seconds": 2,
+                "dry_run_only": True,
+                "risk_level": "low",
+                "input_schema": {
+                    "type": "object",
+                    "additionalProperties": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _wait_for_task_result(gateway: FireClawGateway, task_id: str, timeout_seconds: float = 2.0) -> dict:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -51,6 +79,16 @@ def _wait_for_task_result(gateway: FireClawGateway, task_id: str, timeout_second
             return result
         time.sleep(0.01)
     raise AssertionError(f"Task {task_id} did not finish before timeout.")
+
+
+def _wait_for_event_type(gateway: FireClawGateway, task_id: str, event_type: str, timeout_seconds: float = 2.0) -> dict:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        for event in gateway.events.events_for_task(task_id):
+            if event.get("type") == event_type:
+                return event
+        time.sleep(0.01)
+    raise AssertionError(f"Task {task_id} did not emit {event_type} before timeout.")
 
 
 def test_gateway_returns_health_and_state(tmp_path):
@@ -240,3 +278,47 @@ def test_gateway_confirms_pending_high_risk_skill(tmp_path):
     assert confirmed_result["execution"]["steps"][0]["skill_name"] == "smoke_entry"
     assert "confirmation.pending" in [event["type"] for event in pending_events["events"]]
     assert "confirmation.confirmed" in [event["type"] for event in confirmed_events["events"]]
+
+
+def test_gateway_cancels_active_task_between_skills(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_slow_policy_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+        )
+        _wait_for_event_type(gateway, accepted["task_id"], "skill.started")
+        cancel = _json_request(gateway.base_url, "POST", f"/tasks/{accepted['task_id']}/cancel")
+        result = _wait_for_task_result(gateway, accepted["task_id"])
+        events = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}/events")
+    finally:
+        gateway.stop()
+
+    event_types = [event["type"] for event in events["events"]]
+    skill_names = [
+        event["payload"].get("skill_name")
+        for event in events["events"]
+        if event["type"] == "skill.started"
+    ]
+    assert cancel["status"] == "cancel_requested"
+    assert cancel["task_id"] == accepted["task_id"]
+    assert result["status"] == "cancelled"
+    assert result["message"] == "任务已取消。"
+    assert "task.cancel_requested" in event_types
+    assert "task.cancelled" in event_types
+    assert skill_names == ["slow_policy"]
