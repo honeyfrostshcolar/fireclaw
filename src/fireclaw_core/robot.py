@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+from typing import Protocol
+
+
+@dataclass
+class RobotActionResult:
+    ok: bool
+    status: str
+    robot_id: str
+    mode: str
+    action: str
+    dry_run: bool
+    data: dict[str, Any]
+    timestamp: str
+    error: str | None = None
+
+
+@dataclass
+class RobotState:
+    robot_id: str
+    mode: str
+    dry_run: bool
+    online: bool
+    battery_percent: float
+    current_floor: int | None
+    available_sensors: list[str]
+    supports_real_execution: bool
+
+
+@dataclass
+class EnvironmentState:
+    reachable_floors: list[int]
+    hazards: list[str] = field(default_factory=list)
+    victims_by_floor: dict[int, int] = field(default_factory=dict)
+
+
+class RobotAdapter(Protocol):
+    robot_id: str
+    mode: str
+    dry_run: bool
+
+    def navigate_to_floor(self, floor: int) -> RobotActionResult:
+        ...
+
+    def search_for_victims(self, floor: int) -> RobotActionResult:
+        ...
+
+    def assess_victim(self, floor: int) -> RobotActionResult:
+        ...
+
+    def report_status(self, floor: int) -> RobotActionResult:
+        ...
+
+    def return_to_safe_zone(self) -> RobotActionResult:
+        ...
+
+    def get_robot_state(self) -> RobotState:
+        ...
+
+    def get_environment_state(self) -> EnvironmentState:
+        ...
+
+
+@dataclass
+class DryRunRobotAdapter:
+    robot_id: str
+    fail_actions: set[str] = field(default_factory=set)
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    dry_run: bool = True
+    mode: str = "dry_run"
+    current_floor: int = 1
+    available_sensors: list[str] = field(default_factory=list)
+    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+
+    def navigate_to_floor(self, floor: int) -> RobotActionResult:
+        return self._record("navigate_to_floor", {"floor": floor})
+
+    def search_for_victims(self, floor: int) -> RobotActionResult:
+        return self._record("search_for_victims", {"floor": floor, "victims_found": 1})
+
+    def assess_victim(self, floor: int) -> RobotActionResult:
+        return self._record("assess_victim", {"floor": floor, "condition": "needs_assistance"})
+
+    def report_status(self, floor: int) -> RobotActionResult:
+        return self._record("report_status", {"floor": floor, "message": "victim located"})
+
+    def return_to_safe_zone(self) -> RobotActionResult:
+        return self._record("return_to_safe_zone", {})
+
+    def get_robot_state(self) -> RobotState:
+        return RobotState(
+            robot_id=self.robot_id,
+            mode=self.mode,
+            dry_run=self.dry_run,
+            online=True,
+            battery_percent=100.0,
+            current_floor=self.current_floor,
+            available_sensors=list(self.available_sensors),
+            supports_real_execution=False,
+        )
+
+    def get_environment_state(self) -> EnvironmentState:
+        return EnvironmentState(
+            reachable_floors=list(self.reachable_floors),
+            hazards=[],
+            victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def _record(self, action: str, data: dict[str, Any]) -> RobotActionResult:
+        action_record = {"action": action, **{key: value for key, value in data.items() if key == "floor"}, "dry_run": True}
+        self.actions.append(action_record)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        if action in self.fail_actions:
+            return RobotActionResult(
+                ok=False,
+                status="failed",
+                robot_id=self.robot_id,
+                mode=self.mode,
+                action=action,
+                dry_run=True,
+                data=data,
+                timestamp=timestamp,
+                error=f"{action} failed in dry-run adapter",
+            )
+        return RobotActionResult(
+            ok=True,
+            status="succeeded",
+            robot_id=self.robot_id,
+            mode=self.mode,
+            action=action,
+            dry_run=True,
+            data={"robot_id": self.robot_id, "dry_run": True, **data},
+            timestamp=timestamp,
+        )
+
+
+@dataclass
+class MockRos2RobotAdapter:
+    robot_id: str
+    commands: list[dict[str, Any]] = field(default_factory=list)
+    dry_run: bool = True
+    mode: str = "mock_ros2"
+    current_floor: int = 1
+    available_sensors: list[str] = field(default_factory=list)
+    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+
+    def navigate_to_floor(self, floor: int) -> RobotActionResult:
+        return self._record(
+            topic=f"/fireclaw/{self.robot_id}/navigation",
+            action="navigate_to_floor",
+            payload={"floor": floor},
+        )
+
+    def search_for_victims(self, floor: int) -> RobotActionResult:
+        return self._record(
+            topic=f"/fireclaw/{self.robot_id}/perception",
+            action="search_for_victims",
+            payload={"floor": floor, "victims_found": 1},
+        )
+
+    def assess_victim(self, floor: int) -> RobotActionResult:
+        return self._record(
+            topic=f"/fireclaw/{self.robot_id}/perception",
+            action="assess_victim",
+            payload={"floor": floor, "condition": "needs_assistance"},
+        )
+
+    def report_status(self, floor: int) -> RobotActionResult:
+        return self._record(
+            topic=f"/fireclaw/{self.robot_id}/operator_report",
+            action="report_status",
+            payload={"floor": floor, "message": "victim located"},
+        )
+
+    def return_to_safe_zone(self) -> RobotActionResult:
+        return self._record(
+            topic=f"/fireclaw/{self.robot_id}/navigation",
+            action="return_to_safe_zone",
+            payload={},
+        )
+
+    def get_robot_state(self) -> RobotState:
+        return RobotState(
+            robot_id=self.robot_id,
+            mode=self.mode,
+            dry_run=self.dry_run,
+            online=True,
+            battery_percent=100.0,
+            current_floor=self.current_floor,
+            available_sensors=list(self.available_sensors),
+            supports_real_execution=False,
+        )
+
+    def get_environment_state(self) -> EnvironmentState:
+        return EnvironmentState(
+            reachable_floors=list(self.reachable_floors),
+            hazards=[],
+            victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def _record(self, *, topic: str, action: str, payload: dict[str, Any]) -> RobotActionResult:
+        command = {
+            "topic": topic,
+            "action": action,
+            "payload": payload,
+            "dry_run": True,
+        }
+        self.commands.append(command)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        return RobotActionResult(
+            ok=True,
+            status="succeeded",
+            robot_id=self.robot_id,
+            mode=self.mode,
+            action=action,
+            dry_run=True,
+            data={"robot_id": self.robot_id, "dry_run": True, "topic": topic, **payload},
+            timestamp=timestamp,
+        )
+
+
+@dataclass
+class SimulatorRobotAdapter:
+    robot_id: str
+    current_floor: int = 1
+    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    hazards: list[str] = field(default_factory=list)
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
+    online: bool = True
+    battery_percent: float = 100.0
+    dry_run: bool = True
+    mode: str = "simulator"
+    actions: list[dict[str, Any]] = field(default_factory=list)
+
+    def navigate_to_floor(self, floor: int) -> RobotActionResult:
+        from_floor = self.current_floor
+        if floor not in self.reachable_floors:
+            return self._record(
+                "navigate_to_floor",
+                {"from_floor": from_floor, "floor": floor},
+                ok=False,
+                error=f"floor {floor} is unreachable in simulator",
+            )
+        self.current_floor = floor
+        return self._record("navigate_to_floor", {"from_floor": from_floor, "floor": floor})
+
+    def search_for_victims(self, floor: int) -> RobotActionResult:
+        return self._record(
+            "search_for_victims",
+            {"floor": floor, "victims_found": self.victims_by_floor.get(floor, 0)},
+        )
+
+    def assess_victim(self, floor: int) -> RobotActionResult:
+        victims_found = self.victims_by_floor.get(floor, 0)
+        condition = "needs_assistance" if victims_found else "none_found"
+        return self._record("assess_victim", {"floor": floor, "condition": condition})
+
+    def report_status(self, floor: int) -> RobotActionResult:
+        victims_found = self.victims_by_floor.get(floor, 0)
+        message = "victim located" if victims_found else "no victim located"
+        return self._record("report_status", {"floor": floor, "message": message})
+
+    def return_to_safe_zone(self) -> RobotActionResult:
+        from_floor = self.current_floor
+        self.current_floor = 1
+        return self._record("return_to_safe_zone", {"from_floor": from_floor, "floor": 1})
+
+    def get_robot_state(self) -> RobotState:
+        return RobotState(
+            robot_id=self.robot_id,
+            mode=self.mode,
+            dry_run=self.dry_run,
+            online=self.online,
+            battery_percent=float(self.battery_percent),
+            current_floor=self.current_floor,
+            available_sensors=list(self.available_sensors),
+            supports_real_execution=False,
+        )
+
+    def get_environment_state(self) -> EnvironmentState:
+        return EnvironmentState(
+            reachable_floors=list(self.reachable_floors),
+            hazards=list(self.hazards),
+            victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def _record(
+        self,
+        action: str,
+        data: dict[str, Any],
+        *,
+        ok: bool = True,
+        error: str | None = None,
+    ) -> RobotActionResult:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        action_record = {
+            "action": action,
+            "dry_run": self.dry_run,
+            **{key: value for key, value in data.items() if key in {"floor", "from_floor"}},
+        }
+        self.actions.append(action_record)
+        return RobotActionResult(
+            ok=ok,
+            status="succeeded" if ok else "failed",
+            robot_id=self.robot_id,
+            mode=self.mode,
+            action=action,
+            dry_run=self.dry_run,
+            data={"robot_id": self.robot_id, "dry_run": self.dry_run, **data},
+            timestamp=timestamp,
+            error=error,
+        )
