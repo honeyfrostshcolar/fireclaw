@@ -679,3 +679,74 @@ FireClaw now has the missing human projection layer. Operators no longer need to
 - Operator console uses local in-process Gateway rather than a remote Gateway client.
 - Gateway HTTP `/tasks` is still synchronous; true OpenClaw-style accepted/background run remains the next architectural step.
 - No SSE/WebSocket or ROS2 action feedback projection yet.
+
+## 2026-06-02 Git Baseline
+
+### Task Goal
+
+Create the first git baseline for the current FireClaw prototype before starting the next architecture phase.
+
+### Commands Executed
+
+- `git status -sb`
+- `git remote -v`
+- `git branch --show-current`
+- `git log --oneline -5`
+- `sed -n '1,220p' .gitignore`
+- `git status --short --ignored`
+- `rg --files -g '!openclaw-main/**' -g '!.venv/**' -g '!__pycache__/**' -g '!*.pyc' -g '!*.jsonl' -g '!.pytest_cache/**' -g '!*.egg-info/**'`
+- `git add .gitignore AGENTS.md AGENTS.zh-CN.md README.md pyproject.toml skills src tests docs memory/2026-06-01/fireclaw-dry-run-core.md memory/2026-06-02/fireclaw-dry-run-core.md`
+- `.venv/bin/python -m pytest -q`
+- `git diff --cached --stat`
+- `git commit -m "chore: initialize FireClaw prototype"`
+- `git status -sb`
+- `git remote -v`
+- `git log --oneline -3`
+
+### Files Modified
+
+- `.gitignore`
+- `memory/2026-06-02/fireclaw-dry-run-core.md`
+
+### Git Decisions
+
+- Included FireClaw code, tests, docs, plans, specs, README, AGENTS guides, skills examples, and markdown memory records in the baseline.
+- Excluded local/reference/generated artifacts:
+  - `openclaw-main/`
+  - `.venv/`
+  - `.vscode/`
+  - `.codegraph/`
+  - `.codex/`
+  - `__pycache__/`
+  - `.pytest_cache/`
+  - `*.egg-info/`
+  - `*.jsonl`
+  - `logs/`
+  - `results/`
+  - `checkpoints/`
+- Did not include `.vscode/settings.json` because it contained local editor configuration (`ROS2.distro: noetic`) and should not be a repository contract.
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`: 144 passed in 3.77s.
+
+### Current Conclusion
+
+The first FireClaw git baseline commit was created:
+
+- `1334832 chore: initialize FireClaw prototype`
+
+The repository has no configured remote at the time of this update:
+
+- `git remote -v` returned no remotes.
+
+### Next Recommended Step
+
+Configure a remote, for example:
+
+```bash
+git remote add origin <repo-url>
+git push -u origin master
+```
+
+After the remote is configured, push the current branch. Then continue with Gateway async task runner v1.
