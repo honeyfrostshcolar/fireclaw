@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import threading
 import time
 from typing import Any, TextIO
 
@@ -21,21 +20,11 @@ def run_operator_command(
     projector: OperatorEventProjector | None = None,
 ) -> dict[str, Any]:
     projector = projector or OperatorEventProjector()
-    state: dict[str, Any] = {"result": None, "error": None}
-
-    def worker() -> None:
-        try:
-            state["result"] = gateway.run_agent(command, session_id=session_id)
-        except Exception as exc:
-            state["error"] = exc
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-
+    accepted = gateway.submit_agent(command, session_id=session_id)
+    task_id = accepted["task_id"]
     seen_event_ids: set[str] = set()
-    task_id: str | None = None
-    while thread.is_alive():
-        task_id = _emit_new_events(
+    while True:
+        _emit_new_events(
             gateway,
             session_id=session_id,
             task_id=task_id,
@@ -43,13 +32,13 @@ def run_operator_command(
             projector=projector,
             out=out,
         )
+        trace = gateway.task_trace(task_id)
+        result = trace.get("result")
+        if isinstance(result, dict):
+            break
         time.sleep(max(0.001, poll_interval_seconds))
 
-    thread.join()
-    result = state.get("result")
-    if isinstance(result, dict):
-        task_id = result.get("task_id") if isinstance(result.get("task_id"), str) else task_id
-    task_id = _emit_new_events(
+    _emit_new_events(
         gateway,
         session_id=session_id,
         task_id=task_id,
@@ -57,11 +46,6 @@ def run_operator_command(
         projector=projector,
         out=out,
     )
-    error = state.get("error")
-    if error is not None:
-        raise error
-    if not isinstance(result, dict):
-        raise RuntimeError("Operator command finished without a result.")
     return result
 
 

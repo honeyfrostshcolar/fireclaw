@@ -24,7 +24,7 @@ Gateway will keep exposing polling endpoints:
 - `GET /tasks/<task_id>/events`
 - `GET /events/recent?session_id=<id>&limit=<n>`
 
-Clients can poll these endpoints while a request is still running. A later version can add SSE/WebSocket over the same ledger event stream.
+Clients can poll these endpoints while a task is still running. Gateway Async Task Runner v1 later changed HTTP submission to return `task_id` immediately with HTTP `202 Accepted`, so clients no longer need to keep the submit request open while polling. A later version can add SSE/WebSocket over the same ledger event stream.
 
 ## Event Model
 
@@ -99,7 +99,7 @@ Focused tests will cover:
 
 ## Non-Goals
 
-- No asynchronous task queue.
+- No durable asynchronous task queue.
 - No SSE/WebSocket endpoint.
 - No true cancellation of in-flight skills.
 - No ROS2 action feedback subscription yet.

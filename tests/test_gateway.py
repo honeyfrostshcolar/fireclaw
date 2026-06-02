@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import time
 from urllib import request
 
 from fireclaw_core.gateway import FireClawGateway, GatewayConfig
@@ -39,6 +40,17 @@ def _write_high_risk_skill(skills_dir: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _wait_for_task_result(gateway: FireClawGateway, task_id: str, timeout_seconds: float = 2.0) -> dict:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        trace = gateway.task_trace(task_id)
+        result = trace.get("result")
+        if isinstance(result, dict):
+            return result
+        time.sleep(0.01)
+    raise AssertionError(f"Task {task_id} did not finish before timeout.")
 
 
 def test_gateway_returns_health_and_state(tmp_path):
@@ -80,19 +92,20 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     )
     gateway.start()
     try:
-        result = _json_request(
+        accepted = _json_request(
             gateway.base_url,
             "POST",
             "/tasks",
             {"command": "去二楼救人", "session_id": "operator-a"},
         )
+        result = _wait_for_task_result(gateway, accepted["task_id"])
         recent = _json_request(
             gateway.base_url,
             "GET",
             "/memory/recent?session_id=operator-a&limit=3",
         )
-        task = _json_request(gateway.base_url, "GET", f"/tasks/{result['task_id']}")
-        events = _json_request(gateway.base_url, "GET", f"/tasks/{result['task_id']}/events")
+        task = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}")
+        events = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}/events")
         recent_events = _json_request(
             gateway.base_url,
             "GET",
@@ -101,8 +114,11 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     finally:
         gateway.stop()
 
+    assert accepted["status"] == "accepted"
+    assert accepted["task_id"].startswith("task-")
+    assert accepted["session_id"] == "operator-a"
     assert result["status"] == "succeeded"
-    assert result["task_id"].startswith("task-")
+    assert result["task_id"] == accepted["task_id"]
     assert result["session"]["session_id"] == "operator-a"
     assert result["execution"]["steps"][0]["output"]["mode"] == "simulator"
     assert recent["records"][0]["command"] == "去二楼救人"
@@ -154,6 +170,26 @@ def test_gateway_lists_skills(tmp_path):
     assert "navigate_to_floor" in [skill["name"] for skill in result["skills"]]
 
 
+def test_gateway_sync_run_agent_still_returns_completed_result(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+
+    result = gateway.run_agent("去二楼救人", session_id="operator-a")
+
+    assert result["status"] == "succeeded"
+    assert result["task_id"].startswith("task-")
+    assert gateway.task_trace(result["task_id"])["result"]["status"] == "succeeded"
+
+
 def test_gateway_confirms_pending_high_risk_skill(tmp_path):
     skills_dir = tmp_path / "skills"
     _write_high_risk_skill(skills_dir)
@@ -176,12 +212,14 @@ def test_gateway_confirms_pending_high_risk_skill(tmp_path):
             "/tasks",
             {"command": "运行 smoke_entry", "session_id": "operator-a"},
         )
+        pending_result = _wait_for_task_result(gateway, pending["task_id"])
         confirmed = _json_request(
             gateway.base_url,
             "POST",
             "/confirm",
             {"session_id": "operator-a"},
         )
+        confirmed_result = _wait_for_task_result(gateway, confirmed["task_id"])
         pending_events = _json_request(gateway.base_url, "GET", f"/tasks/{pending['task_id']}/events")
         confirmed_events = _json_request(
             gateway.base_url,
@@ -191,12 +229,14 @@ def test_gateway_confirms_pending_high_risk_skill(tmp_path):
     finally:
         gateway.stop()
 
-    assert pending["status"] == "awaiting_confirmation"
+    assert pending["status"] == "accepted"
     assert pending["task_id"].startswith("task-")
-    assert pending["execution"] is None
-    assert confirmed["status"] == "succeeded"
+    assert pending_result["status"] == "awaiting_confirmation"
+    assert pending_result["execution"] is None
+    assert confirmed["status"] == "accepted"
     assert confirmed["task_id"].startswith("task-")
-    assert confirmed["confirmation"]["status"] == "confirmed"
-    assert confirmed["execution"]["steps"][0]["skill_name"] == "smoke_entry"
+    assert confirmed_result["status"] == "succeeded"
+    assert confirmed_result["confirmation"]["status"] == "confirmed"
+    assert confirmed_result["execution"]["steps"][0]["skill_name"] == "smoke_entry"
     assert "confirmation.pending" in [event["type"] for event in pending_events["events"]]
     assert "confirmation.confirmed" in [event["type"] for event in confirmed_events["events"]]

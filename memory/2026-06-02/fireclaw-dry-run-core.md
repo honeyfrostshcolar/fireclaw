@@ -750,3 +750,96 @@ git push -u origin master
 ```
 
 After the remote is configured, push the current branch. Then continue with Gateway async task runner v1.
+
+## 2026-06-02 Gateway Async Task Runner v1
+
+### Task Goal
+
+Implement the next OpenClaw-like control-plane step for FireClaw: HTTP task submission should return a stable task id immediately while the agent continues running in the background. External systems can then poll EventLedger task endpoints for live progress and final result.
+
+### OpenClaw Reference Checked With CodeGraph
+
+Used CodeGraph on `openclaw-main` before implementation.
+
+Relevant OpenClaw analogues:
+
+- `src/gateway/server-methods/chat.ts`: `chat.send` structured Gateway entrypoint.
+- `src/gateway/chat-abort.ts`: `registerChatAbortController(...)` tracks active chat runs by `runId`.
+- `src/gateway/server-methods/chat.ts`: `broadcastChatFinal(...)` broadcasts final run state and clears run sequence state.
+- `src/tui/components/chat-log.ts`: TUI tracks streaming runs and projects tool/run state into human-facing components.
+- Mobile clients call `chat.send`, receive `runId`, then wait for completion through Gateway/session events.
+
+FireClaw adaptation:
+
+- Use `task_id` instead of OpenClaw `runId`.
+- Use `EventLedger` JSONL events instead of OpenClaw broadcast/session channels.
+- Keep stdlib HTTP polling for now; no SSE/WebSocket or durable queue yet.
+- Preserve robotics safety/memory/execution logic by sharing the same internal execution path.
+
+### Files Modified
+
+- `src/fireclaw_core/gateway.py`
+- `src/fireclaw_core/operator_console.py`
+- `tests/test_gateway.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-02-gateway-async-task-runner-v1-design.md`
+- `docs/superpowers/plans/2026-06-02-gateway-async-task-runner-v1.md`
+- `docs/superpowers/specs/2026-06-02-gateway-live-progress-streaming-v1-design.md`
+- `docs/superpowers/specs/2026-06-02-operator-console-projection-v1-design.md`
+- `memory/2026-06-02/fireclaw-dry-run-core.md`
+
+### Implementation Details
+
+- Added `FireClawGateway.submit_agent(command, session_id=None)`.
+- `submit_agent(...)`:
+  - creates `task_id`;
+  - records `task.received`;
+  - starts a daemon worker thread;
+  - immediately returns `{status: "accepted", task_id, session_id, message}`.
+- Extracted `_execute_agent_task(...)` so synchronous `run_agent(...)` and asynchronous `submit_agent(...)` share the same agent execution and result-event recording path.
+- HTTP `POST /tasks`, `POST /confirm`, and `POST /cancel` now return HTTP `202 Accepted` and use `submit_agent(...)`.
+- Added minimal escaped-exception handling in workers: unexpected failures append `task.failed` with a failed result payload.
+- Added active task thread tracking so `gateway.stop()` can join background tasks during tests/local shutdown.
+- Added `_append_event(...)` with an event lock for Gateway-owned writes.
+- Updated `task_trace(...)` result extraction to recognize `task.failed`.
+- Updated `operator_console.py` to use `submit_agent(...)` directly, poll by immediate `task_id`, and return once final result appears.
+
+### Tests Added / Updated
+
+- `tests/test_gateway.py`
+  - HTTP `POST /tasks` now expects `status="accepted"` and polls `gateway.task_trace(task_id)` for the final result.
+  - Confirmation flow now expects async accepted responses for pending and confirm commands.
+  - Added coverage that synchronous `gateway.run_agent(...)` still returns a completed result.
+- `tests/test_operator_console.py`
+  - Existing human-readable progress test still passes with the new `submit_agent(...)` console path.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - RED result before implementation: 2 failed, 3 passed.
+  - Failures confirmed HTTP still returned `succeeded` / `awaiting_confirmation` instead of `accepted`.
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - GREEN result after implementation: 5 passed in 2.32s.
+- `.venv/bin/python -m pytest tests/test_gateway.py tests/test_operator_console.py -q`
+  - 6 passed in 2.29s.
+- `.venv/bin/python -m pytest -q`
+  - 145 passed in 3.83s.
+
+### Current Conclusion
+
+Gateway Async Task Runner v1 is complete. FireClaw now has an OpenClaw-like accepted/background run control-plane shape:
+
+```text
+HTTP POST -> 202 Accepted + task_id -> background FireClawAgent run -> EventLedger progress/final events
+```
+
+This makes external ROS2 nodes, terminal clients, voice systems, and future frontend clients able to submit work without holding a blocking HTTP request open.
+
+### Remaining Gaps
+
+- Background execution is still in-process daemon threads, not a durable queue.
+- No task concurrency limit or backpressure yet.
+- No in-flight cancellation of already-running skills.
+- No SSE/WebSocket endpoint; clients still poll.
+- No auth/operator identity binding.
+- No ROS2 action feedback percentages or intermediate action states yet.

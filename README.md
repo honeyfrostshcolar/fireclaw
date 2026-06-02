@@ -144,8 +144,18 @@ curl -X POST http://127.0.0.1:8765/tasks \
   -d '{"command": "去二楼救人", "session_id": "operator-a"}'
 ```
 
-Task responses include a `task_id`. Use it to inspect the final result and event trace.
-For longer robot actions, clients can poll the event endpoints while the task is still running:
+`POST /tasks`, `POST /confirm`, and `POST /cancel` are asynchronous HTTP entrypoints. They return immediately with HTTP `202 Accepted` and a `task_id`:
+
+```json
+{
+  "status": "accepted",
+  "task_id": "task-...",
+  "session_id": "operator-a",
+  "message": "任务已接收，正在后台执行。"
+}
+```
+
+Use the `task_id` to inspect the current task trace, final result, and event stream. While the background task is still running, `result` is `null`; after completion, the final agent result is available under `result`:
 
 ```bash
 curl http://127.0.0.1:8765/tasks/task-REPLACE_WITH_ID
@@ -177,6 +187,8 @@ curl -X POST http://127.0.0.1:8765/cancel \
   -H "Content-Type: application/json" \
   -d '{"session_id": "operator-a"}'
 ```
+
+The Python API still exposes synchronous `FireClawGateway.run_agent(...)` for local test harnesses and in-process tooling. External systems should prefer the asynchronous HTTP endpoints or `FireClawGateway.submit_agent(...)`.
 
 Inspect skills, recent memory, and recent events:
 

@@ -39,6 +39,8 @@ class FireClawGateway:
         self.events = EventLedger(config.event_path)
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._event_lock = threading.Lock()
+        self._task_threads: dict[str, threading.Thread] = {}
 
     @property
     def base_url(self) -> str:
@@ -67,22 +69,87 @@ class FireClawGateway:
         self._server.server_close()
         if self._thread is not None:
             self._thread.join(timeout=5)
+        for thread in list(self._task_threads.values()):
+            thread.join(timeout=5)
         self._server = None
         self._thread = None
 
     def run_agent(self, command: str, session_id: str | None = None) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
-        self.events.append(
+        return self._execute_agent_task(
+            command=command,
+            session_id=resolved_session_id,
+            task_id=task_id,
+            record_received=True,
+        )
+
+    def submit_agent(self, command: str, session_id: str | None = None) -> dict[str, Any]:
+        task_id = f"task-{uuid4().hex}"
+        resolved_session_id = session_id or self.config.default_session_id
+        self._append_event(
             task_id=task_id,
             session_id=resolved_session_id,
             type="task.received",
             payload={"command": command},
         )
-        agent = self._create_agent(task_id=task_id, session_id=resolved_session_id)
+
+        def worker() -> None:
+            try:
+                self._execute_agent_task(
+                    command=command,
+                    session_id=resolved_session_id,
+                    task_id=task_id,
+                    record_received=False,
+                )
+            except Exception as exc:
+                self._append_event(
+                    task_id=task_id,
+                    session_id=resolved_session_id,
+                    type="task.failed",
+                    payload={
+                        "status": "failed",
+                        "message": str(exc),
+                        "result": {
+                            "status": "failed",
+                            "task_id": task_id,
+                            "session_id": resolved_session_id,
+                            "message": str(exc),
+                        },
+                    },
+                )
+            finally:
+                self._task_threads.pop(task_id, None)
+
+        thread = threading.Thread(target=worker, daemon=True, name=f"fireclaw-task-{task_id}")
+        self._task_threads[task_id] = thread
+        thread.start()
+        return {
+            "status": "accepted",
+            "task_id": task_id,
+            "session_id": resolved_session_id,
+            "message": "任务已接收，正在后台执行。",
+        }
+
+    def _execute_agent_task(
+        self,
+        *,
+        command: str,
+        session_id: str,
+        task_id: str,
+        record_received: bool,
+    ) -> dict[str, Any]:
+        if record_received:
+            self._append_event(
+                task_id=task_id,
+                session_id=session_id,
+                type="task.received",
+                payload={"command": command},
+            )
+        agent = self._create_agent(task_id=task_id, session_id=session_id)
         result = agent.run(command)
         result["task_id"] = task_id
-        self._record_result_events(task_id, resolved_session_id, result)
+        self._record_result_events(task_id, session_id, result)
         return result
 
     def list_skills(self, session_id: str | None = None) -> dict[str, Any]:
@@ -132,7 +199,7 @@ class FireClawGateway:
     ) -> None:
         planning = result.get("planning")
         if planning is not None and not self._has_event_type(task_id, "task.planned"):
-            self.events.append(
+            self._append_event(
                 task_id=task_id,
                 session_id=session_id,
                 type="task.planned",
@@ -141,7 +208,7 @@ class FireClawGateway:
 
         safety = result.get("safety")
         if safety is not None and not self._has_event_type(task_id, "safety.decided"):
-            self.events.append(
+            self._append_event(
                 task_id=task_id,
                 session_id=session_id,
                 type="safety.decided",
@@ -151,14 +218,14 @@ class FireClawGateway:
         confirmation = result.get("confirmation")
         if isinstance(confirmation, dict):
             if confirmation.get("status") == "pending":
-                self.events.append(
+                self._append_event(
                     task_id=task_id,
                     session_id=session_id,
                     type="confirmation.pending",
                     payload=confirmation,
                 )
             elif confirmation.get("status") == "confirmed":
-                self.events.append(
+                self._append_event(
                     task_id=task_id,
                     session_id=session_id,
                     type="confirmation.confirmed",
@@ -171,7 +238,7 @@ class FireClawGateway:
                 if not isinstance(step, dict):
                     continue
                 event_type = "skill.succeeded" if step.get("status") == "succeeded" else "skill.failed"
-                self.events.append(
+                self._append_event(
                     task_id=task_id,
                     session_id=session_id,
                     type=event_type,
@@ -184,7 +251,7 @@ class FireClawGateway:
                 )
 
         final_type = "task.cancelled" if result.get("status") == "cancelled" else "task.completed"
-        self.events.append(
+        self._append_event(
             task_id=task_id,
             session_id=session_id,
             type=final_type,
@@ -197,7 +264,7 @@ class FireClawGateway:
 
     def _task_result_from_events(self, events: list[dict[str, Any]]) -> dict[str, Any] | None:
         for event in reversed(events):
-            if event.get("type") in {"task.completed", "task.cancelled"}:
+            if event.get("type") in {"task.completed", "task.cancelled", "task.failed"}:
                 payload = event.get("payload") or {}
                 result = payload.get("result")
                 if isinstance(result, dict):
@@ -215,7 +282,7 @@ class FireClawGateway:
         resolved_session_id = session_id or self.config.default_session_id
         event_sink = None
         if task_id is not None:
-            event_sink = lambda event_type, payload: self.events.append(
+            event_sink = lambda event_type, payload: self._append_event(
                 task_id=task_id,
                 session_id=resolved_session_id,
                 type=event_type,
@@ -230,6 +297,22 @@ class FireClawGateway:
             session_id=resolved_session_id,
             event_sink=event_sink,
         )
+
+    def _append_event(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._event_lock:
+            return self.events.append(
+                task_id=task_id,
+                session_id=session_id,
+                type=type,
+                payload=payload,
+            )
 
     def _handler_class(self):
         gateway = self
@@ -303,15 +386,15 @@ class FireClawGateway:
                     return
                 self._write_json(
                     handler,
-                    HTTPStatus.OK,
-                    self.run_agent(command, session_id=_payload_session(payload, self.config.default_session_id)),
+                    HTTPStatus.ACCEPTED,
+                    self.submit_agent(command, session_id=_payload_session(payload, self.config.default_session_id)),
                 )
                 return
             if parsed.path == "/confirm":
                 self._write_json(
                     handler,
-                    HTTPStatus.OK,
-                    self.run_agent(
+                    HTTPStatus.ACCEPTED,
+                    self.submit_agent(
                         "确认执行",
                         session_id=_payload_session(payload, self.config.default_session_id),
                     ),
@@ -320,8 +403,8 @@ class FireClawGateway:
             if parsed.path == "/cancel":
                 self._write_json(
                     handler,
-                    HTTPStatus.OK,
-                    self.run_agent("取消", session_id=_payload_session(payload, self.config.default_session_id)),
+                    HTTPStatus.ACCEPTED,
+                    self.submit_agent("取消", session_id=_payload_session(payload, self.config.default_session_id)),
                 )
                 return
             self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {parsed.path}")

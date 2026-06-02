@@ -62,9 +62,9 @@ Known rescue skill names are translated to operator language:
 
 ## Operator Console Contract
 
-`run_operator_command(...)` accepts a command and a Gateway config, starts `FireClawGateway.run_agent(...)` in a worker thread, polls events by task id when known, prints projected messages, and returns the final result.
+`run_operator_command(...)` accepts a command and a Gateway config, calls `FireClawGateway.submit_agent(...)`, polls events by the returned `task_id`, prints projected messages, and returns the final result once the task trace contains a final result.
 
-Because current Gateway only reveals `task_id` after `run_agent(...)` returns, the worker uses Gateway's ledger to discover the newest `task.received` for the session while execution is running. This is a temporary bridge until Async Gateway Task Runtime v1 makes `POST /tasks` return `task_id` immediately.
+Earlier FireClaw versions had to wrap synchronous `run_agent(...)` in a local worker thread. Gateway Async Task Runner v1 removed that bridge by making `task_id` available immediately.
 
 ## Non-Goals
 
