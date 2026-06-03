@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from fireclaw_core.action_runtime import RobotActionRuntime
 from fireclaw_core.robot import RobotActionResult, RobotAdapter
 from fireclaw_core.runtime import SubprocessSkillRunner
 
@@ -101,37 +102,101 @@ class SkillRegistry:
         ]
 
 
-def create_default_skill_registry(robot: RobotAdapter) -> SkillRegistry:
+def _robot_skill_handler(
+    *,
+    robot: RobotAdapter,
+    action_runtime: RobotActionRuntime | None,
+    skill_name: str,
+    action_type: str,
+    input_builder: Callable[[dict[str, Any]], dict[str, Any]],
+    direct_handler: Callable[[dict[str, Any]], RobotActionResult],
+    risk_level: str = "low",
+) -> SkillHandler:
+    def handler(inputs: dict[str, Any]) -> RobotActionResult:
+        if action_runtime is None:
+            return direct_handler(inputs)
+        action_inputs = input_builder(inputs)
+        return action_runtime.run(
+            skill_name=skill_name,
+            action_type=action_type,
+            inputs=action_inputs,
+            dry_run=robot.dry_run,
+            risk_level=risk_level,
+            timeout_seconds=None,
+        )
+
+    return handler
+
+
+def create_default_skill_registry(
+    robot: RobotAdapter,
+    action_runtime: RobotActionRuntime | None = None,
+) -> SkillRegistry:
     return SkillRegistry(
         skills={
             "navigate_to_floor": Skill(
                 name="navigate_to_floor",
                 description="Dry-run navigation to a target floor.",
-                handler=lambda inputs: robot.navigate_to_floor(int(inputs["floor"])),
+                handler=_robot_skill_handler(
+                    robot=robot,
+                    action_runtime=action_runtime,
+                    skill_name="navigate_to_floor",
+                    action_type="navigate_to_floor",
+                    input_builder=lambda inputs: {"floor": int(inputs["floor"])},
+                    direct_handler=lambda inputs: robot.navigate_to_floor(int(inputs["floor"])),
+                ),
                 input_schema=dict(FLOOR_INPUT_SCHEMA),
             ),
             "search_for_victims": Skill(
                 name="search_for_victims",
                 description="Dry-run victim search on a floor.",
-                handler=lambda inputs: robot.search_for_victims(int(inputs["floor"])),
+                handler=_robot_skill_handler(
+                    robot=robot,
+                    action_runtime=action_runtime,
+                    skill_name="search_for_victims",
+                    action_type="search_for_victims",
+                    input_builder=lambda inputs: {"floor": int(inputs["floor"])},
+                    direct_handler=lambda inputs: robot.search_for_victims(int(inputs["floor"])),
+                ),
                 input_schema=dict(FLOOR_INPUT_SCHEMA),
             ),
             "assess_victim": Skill(
                 name="assess_victim",
                 description="Dry-run victim condition assessment.",
-                handler=lambda inputs: robot.assess_victim(int(inputs["floor"])),
+                handler=_robot_skill_handler(
+                    robot=robot,
+                    action_runtime=action_runtime,
+                    skill_name="assess_victim",
+                    action_type="assess_victim",
+                    input_builder=lambda inputs: {"floor": int(inputs["floor"])},
+                    direct_handler=lambda inputs: robot.assess_victim(int(inputs["floor"])),
+                ),
                 input_schema=dict(FLOOR_INPUT_SCHEMA),
             ),
             "report_status": Skill(
                 name="report_status",
                 description="Dry-run status report to operator.",
-                handler=lambda inputs: robot.report_status(int(inputs["floor"])),
+                handler=_robot_skill_handler(
+                    robot=robot,
+                    action_runtime=action_runtime,
+                    skill_name="report_status",
+                    action_type="report_status",
+                    input_builder=lambda inputs: {"floor": int(inputs["floor"])},
+                    direct_handler=lambda inputs: robot.report_status(int(inputs["floor"])),
+                ),
                 input_schema=dict(FLOOR_INPUT_SCHEMA),
             ),
             "return_to_safe_zone": Skill(
                 name="return_to_safe_zone",
                 description="Dry-run return to safe zone.",
-                handler=lambda inputs: robot.return_to_safe_zone(),
+                handler=_robot_skill_handler(
+                    robot=robot,
+                    action_runtime=action_runtime,
+                    skill_name="return_to_safe_zone",
+                    action_type="return_to_safe_zone",
+                    input_builder=lambda inputs: {},
+                    direct_handler=lambda inputs: robot.return_to_safe_zone(),
+                ),
                 input_schema=dict(EMPTY_INPUT_SCHEMA),
             ),
         }

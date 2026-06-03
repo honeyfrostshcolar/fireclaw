@@ -180,6 +180,28 @@ def test_agent_serializes_execution_attempt_history(tmp_path):
     assert first_step["attempts"][0]["output"]["action"] == "navigate_to_floor"
 
 
+def test_agent_emits_robot_action_events_for_default_skills(tmp_path):
+    events = []
+    agent = FireClawAgent(
+        robot=DryRunRobotAdapter(robot_id="robot-1"),
+        memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+        task_id="task-1",
+    )
+
+    result = agent.run("去二楼救人")
+
+    assert result["status"] == "succeeded"
+    event_types = [event_type for event_type, _payload in events]
+    assert "action.requested" in event_types
+    assert "action.started" in event_types
+    assert "action.succeeded" in event_types
+    requested = [payload for event_type, payload in events if event_type == "action.requested"]
+    assert requested[0]["task_id"] == "task-1"
+    assert requested[0]["skill_name"] == "navigate_to_floor"
+    assert requested[0]["action_type"] == "navigate_to_floor"
+
+
 def test_agent_unknown_command_returns_clarification_without_execution(tmp_path):
     agent = FireClawAgent(
         robot=DryRunRobotAdapter(robot_id="robot-1"),
@@ -706,13 +728,17 @@ def test_agent_forwards_executor_live_events(tmp_path):
     result = agent.run("去二楼救人")
 
     assert result["status"] == "succeeded"
-    assert [event_type for event_type, _payload in events[:5]] == [
+    assert [event_type for event_type, _payload in events[:8]] == [
         "task.planned",
         "safety.decided",
         "skill.started",
+        "action.requested",
+        "action.started",
+        "action.succeeded",
         "skill.attempted",
         "skill.succeeded",
     ]
     assert events[0][1]["intent"] == "rescue_victim"
     assert events[2][1]["skill_name"] == "navigate_to_floor"
+    assert events[3][1]["action_type"] == "navigate_to_floor"
     assert [event_type for event_type, _payload in events].count("skill.started") == 5

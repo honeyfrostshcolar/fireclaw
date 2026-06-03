@@ -75,3 +75,106 @@ The user clarified that FireClaw should target ROS1, not ROS2. Subprocess cancel
 - No CUDA/runtime-specific cleanup protocol yet.
 - No operator authorization for cancellation.
 - No emergency-stop adapter integration yet.
+
+## 2026-06-03 10:40 CST
+
+### Next Architecture Direction
+
+The user asked to continue by building the large framework direction first and leaving fine ROS details for later. They selected "方案 B": define a generic Robot Action Boundary before implementing a concrete ROS1 adapter.
+
+### OpenClaw Reference Checked
+
+Used the newly separate OpenClaw CodeGraph index at `/home/nankai/fireclaw/openclaw-main`.
+
+Relevant OpenClaw symbols:
+
+- `src/infra/agent-events.ts:139` `registerAgentRunContext(...)`
+- `src/infra/agent-events.ts:209` `emitAgentEvent(...)`
+- `src/gateway/chat-abort.ts:74` `registerChatAbortController(...)`
+- `src/gateway/chat-abort.ts:170` `abortChatRunById(...)`
+
+The OpenClaw pattern is:
+
+```text
+runId -> registered run context -> sequenced events -> abort registry -> terminal lifecycle event
+```
+
+The FireClaw adaptation should be:
+
+```text
+task_id -> skill/action lifecycle -> cancellation signal -> robot backend terminal result
+```
+
+### Design Document Added
+
+- `docs/superpowers/specs/2026-06-03-robot-integration-boundary-v1-design.md`
+
+### Current Recommendation
+
+Proceed with Robot Integration Boundary v1 before ROS1 details. The next implementation phase should introduce a FireClaw-level robot action runtime with action ids, action lifecycle events, cancellation propagation, and dry-run/simulator/mock ROS1 backends. Real ROS1 actionlib/topic/service bindings should come after this generic boundary is stable.
+
+## 2026-06-03 11:05 CST
+
+### Continued Work
+
+Implemented Robot Integration Boundary v1 at the framework level.
+
+### Files Modified
+
+- `src/fireclaw_core/action_runtime.py`
+- `src/fireclaw_core/agent.py`
+- `src/fireclaw_core/gateway.py`
+- `src/fireclaw_core/skills.py`
+- `tests/test_action_runtime.py`
+- `tests/test_agent.py`
+- `tests/test_gateway.py`
+- `README.md`
+- `docs/superpowers/plans/2026-06-03-robot-integration-boundary-v1.md`
+- `docs/superpowers/specs/2026-06-03-robot-integration-boundary-v1-design.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Implementation Details
+
+- Added `RobotActionRuntime`.
+- Added `RobotAdapterActionBackend` to wrap existing `RobotAdapter` methods.
+- Default in-process robot skills now route through `RobotActionRuntime`.
+- Gateway-created agents now receive `task_id`, so action events can be tied to a Gateway task trace.
+- Action lifecycle events now appear in EventLedger traces:
+  - `action.requested`
+  - `action.started`
+  - `action.succeeded`
+  - `action.failed`
+  - `action.cancel_requested`
+  - `action.cancelled`
+- Existing skill-level events remain intact.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_action_runtime.py::test_robot_action_runtime_emits_lifecycle_events_for_adapter_action -q`
+  - RED: failed because `fireclaw_core.action_runtime` did not exist.
+- `.venv/bin/python -m pytest tests/test_action_runtime.py -q`
+  - GREEN: 1 passed.
+- `.venv/bin/python -m pytest tests/test_agent.py::test_agent_emits_robot_action_events_for_default_skills -q`
+  - RED: failed because `FireClawAgent.__init__()` did not accept `task_id`.
+- `.venv/bin/python -m pytest tests/test_agent.py -q`
+  - GREEN: 31 passed after updating the expected event order.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_runs_task_and_returns_recent_memory -q`
+  - RED: action events existed, but their payload had `task_id=null`.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_runs_task_and_returns_recent_memory -q`
+  - GREEN: 1 passed after Gateway passed `task_id` into `FireClawAgent`.
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - GREEN: 7 passed.
+- `.venv/bin/python -m pytest -q`
+  - FULL: 152 passed in 4.68s.
+
+### Current Conclusion
+
+FireClaw now has the first explicit robot action lifecycle boundary. The system can distinguish skill-level execution events from robot action-level audit events while still using the existing dry-run, simulator, and mock ROS-shaped adapters.
+
+### Remaining Gaps
+
+- `action.feedback` is documented but not emitted by current dry-run/simulator backends yet.
+- No dedicated mock ROS1 backend name yet; existing mock adapter still carries the previous `mock_ros2` name.
+- No real ROS1 actionlib/topic/service binding yet.
+- No backend-level cancellation during long-running robot actions yet.
+- No emergency-stop state integration yet.

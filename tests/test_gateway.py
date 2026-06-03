@@ -169,30 +169,49 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert result["execution"]["steps"][0]["output"]["mode"] == "simulator"
     assert recent["records"][0]["command"] == "去二楼救人"
     assert task["result"]["task_id"] == result["task_id"]
-    assert [event["type"] for event in events["events"]] == [
+    event_types = [event["type"] for event in events["events"]]
+    assert event_types == [
         "task.received",
         "task.planned",
         "safety.decided",
         "skill.started",
+        "action.requested",
+        "action.started",
+        "action.succeeded",
         "skill.attempted",
         "skill.succeeded",
         "skill.started",
+        "action.requested",
+        "action.started",
+        "action.succeeded",
         "skill.attempted",
         "skill.succeeded",
         "skill.started",
+        "action.requested",
+        "action.started",
+        "action.succeeded",
         "skill.attempted",
         "skill.succeeded",
         "skill.started",
+        "action.requested",
+        "action.started",
+        "action.succeeded",
         "skill.attempted",
         "skill.succeeded",
         "skill.started",
+        "action.requested",
+        "action.started",
+        "action.succeeded",
         "skill.attempted",
         "skill.succeeded",
         "task.completed",
     ]
+    first_action = next(event for event in events["events"] if event["type"] == "action.requested")
+    assert first_action["payload"]["task_id"] == accepted["task_id"]
+    assert first_action["payload"]["skill_name"] == "navigate_to_floor"
     assert recent_events["events"][0]["type"] == "task.completed"
     assert events["events"][3]["payload"]["skill_name"] == "navigate_to_floor"
-    assert events["events"][4]["payload"]["attempt_number"] == 1
+    assert events["events"][7]["payload"]["attempt_number"] == 1
 
 
 def test_gateway_lists_skills(tmp_path):

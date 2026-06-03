@@ -210,6 +210,13 @@ Gateway v1 records append-only JSONL events such as:
 - `confirmation.pending`
 - `confirmation.confirmed`
 - `skill.started`
+- `action.requested`
+- `action.started`
+- `action.feedback`
+- `action.cancel_requested`
+- `action.succeeded`
+- `action.failed`
+- `action.cancelled`
 - `skill.attempted`
 - `skill.succeeded`
 - `skill.failed`

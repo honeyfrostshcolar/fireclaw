@@ -388,6 +388,7 @@ class FireClawGateway:
             session_id=resolved_session_id,
             event_sink=event_sink,
             cancellation_requested=cancellation_requested,
+            task_id=task_id,
         )
 
     def _task_status(

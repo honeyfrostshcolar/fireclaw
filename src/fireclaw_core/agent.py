@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Protocol
 
+from fireclaw_core.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
 from fireclaw_core.executor import CancellationCheck, ExecutionEventSink, ExecutionResult, PlanExecutor
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.planner import (
@@ -56,6 +57,7 @@ class FireClawAgent:
         planner: Planner | None = None,
         event_sink: ExecutionEventSink | None = None,
         cancellation_requested: CancellationCheck | None = None,
+        task_id: str | None = None,
     ) -> None:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
@@ -65,7 +67,13 @@ class FireClawAgent:
         self.planner = planner or RuleBasedPlanner()
         self._event_sink = event_sink
         self._cancellation_requested = cancellation_requested
-        self.registry = create_default_skill_registry(self.robot)
+        self.task_id = task_id
+        action_runtime = RobotActionRuntime(
+            backend=RobotAdapterActionBackend(self.robot),
+            event_sink=event_sink,
+            task_id=task_id,
+        )
+        self.registry = create_default_skill_registry(self.robot, action_runtime=action_runtime)
         self.skill_load_errors: list[WorkspaceSkillLoadError] = []
         if workspace_skills_dir is not None:
             workspace_result = load_workspace_skills(workspace_skills_dir)
