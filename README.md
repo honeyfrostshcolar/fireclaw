@@ -166,6 +166,14 @@ curl -X POST http://127.0.0.1:8765/tasks \
   -d '{"command": "去二楼救人", "session_id": "operator-a"}'
 ```
 
+Task submissions can also include an operator context. FireClaw records this in the task trace before execution starts:
+
+```bash
+curl -X POST http://127.0.0.1:8765/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"command": "去二楼救人", "session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}}'
+```
+
 `POST /tasks`, `POST /confirm`, and `POST /cancel` are asynchronous HTTP entrypoints. They return immediately with HTTP `202 Accepted` and a `task_id`:
 
 ```json
@@ -205,6 +213,8 @@ curl http://127.0.0.1:8765/tasks/task-REPLACE_WITH_ID/events
 Gateway v1 records append-only JSONL events such as:
 
 - `task.received`
+- `operator.identified`
+- `control.decision`
 - `task.planned`
 - `safety.decided`
 - `confirmation.pending`

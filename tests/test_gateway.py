@@ -179,6 +179,8 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     event_types = [event["type"] for event in events["events"]]
     assert event_types == [
         "task.received",
+        "operator.identified",
+        "control.decision",
         "task.planned",
         "safety.decided",
         "skill.started",
@@ -217,8 +219,8 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert first_action["payload"]["task_id"] == accepted["task_id"]
     assert first_action["payload"]["skill_name"] == "navigate_to_floor"
     assert recent_events["events"][0]["type"] == "task.completed"
-    assert events["events"][3]["payload"]["skill_name"] == "navigate_to_floor"
-    assert events["events"][7]["payload"]["attempt_number"] == 1
+    assert events["events"][5]["payload"]["skill_name"] == "navigate_to_floor"
+    assert events["events"][9]["payload"]["attempt_number"] == 1
 
 
 def test_gateway_lists_skills(tmp_path):
@@ -240,6 +242,50 @@ def test_gateway_lists_skills(tmp_path):
 
     assert result["status"] == "skills"
     assert "navigate_to_floor" in [skill["name"] for skill in result["skills"]]
+
+
+def test_gateway_records_operator_and_control_decision_for_task_submission(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {
+                "command": "去二楼救人",
+                "session_id": "operator-a",
+                "operator": {
+                    "operator_id": "op-1",
+                    "display_name": "Operator One",
+                    "role": "operator",
+                },
+            },
+        )
+        result = _wait_for_task_result(gateway, accepted["task_id"])
+        events = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}/events")
+    finally:
+        gateway.stop()
+
+    assert result["status"] == "succeeded"
+    event_types = [event["type"] for event in events["events"]]
+    assert event_types[:3] == ["task.received", "operator.identified", "control.decision"]
+    operator_event = events["events"][1]
+    decision_event = events["events"][2]
+    assert operator_event["payload"]["operator_id"] == "op-1"
+    assert operator_event["payload"]["role"] == "operator"
+    assert decision_event["payload"]["status"] == "allow"
+    assert decision_event["payload"]["action"] == "task.submit"
 
 
 def test_gateway_sync_run_agent_still_returns_completed_result(tmp_path):

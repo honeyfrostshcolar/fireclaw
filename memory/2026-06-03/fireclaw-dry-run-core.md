@@ -259,3 +259,107 @@ FireClaw now has a control-plane state projection over raw EventLedger traces. T
 - State projection is computed from JSONL scans and is not indexed.
 - No ROS1 adapter-specific state mapping yet.
 - Operator console still projects raw events rather than using the state summary.
+
+## 2026-06-03 14:18 CST
+
+### Git Update
+
+Committed Task/Action State Model v1:
+
+- `5067297 feat: add task action state projection`
+
+### Next Architecture Phase
+
+The user pointed back to the agreed framework order:
+
+```text
+Robot Integration Boundary v1
+-> Task/Action State Model v1
+-> Operator/Safety Control Plane v2
+-> ROS1 Adapter v1
+```
+
+Started Operator/Safety Control Plane v2 design.
+
+### OpenClaw Reference Checked
+
+Used OpenClaw CodeGraph for control-plane analogues:
+
+- `src/gateway/operator-scopes.ts:8` `OperatorScope`
+- `src/gateway/chat-abort.ts:170` `abortChatRunById(...)`
+- `apps/android/app/src/main/java/ai/openclaw/app/chat/ChatController.kt:277` `abort()`
+- `apps/macos/Sources/OpenClaw/ControlChannel.swift:42` `ControlChannel`
+
+### Design Document Added
+
+- `docs/superpowers/specs/2026-06-03-operator-safety-control-plane-v2-design.md`
+
+### Current Recommendation
+
+Implement Operator/Safety Control Plane v2 before ROS1 Adapter v1. Keep this framework-level: operator context, control policy, pending approvals with expiry, emergency stop state, and control-plane audit events. Do not implement real authentication or ROS1 e-stop wiring yet.
+
+## 2026-06-03 14:30 CST
+
+### Continued Work
+
+Implemented the first Operator/Safety Control Plane v2 slice:
+
+- operator context data model;
+- role-to-scope defaults;
+- control policy decisions;
+- Gateway task submission audit events.
+
+### Files Modified
+
+- `src/fireclaw_core/control.py`
+- `src/fireclaw_core/gateway.py`
+- `tests/test_control.py`
+- `tests/test_gateway.py`
+- `README.md`
+- `docs/superpowers/plans/2026-06-03-operator-safety-control-plane-v2.md`
+- `docs/superpowers/specs/2026-06-03-operator-safety-control-plane-v2-design.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Implementation Details
+
+- Added `OperatorContext`.
+- Added `ControlDecision`.
+- Added `ControlPolicy`.
+- Added role defaults for:
+  - `observer`
+  - `operator`
+  - `supervisor`
+  - `admin`
+- Added `operator_from_payload(...)` for Gateway request bodies.
+- Gateway `POST /tasks`, `/confirm`, and `/cancel` now pass operator context into `submit_agent(...)`.
+- Gateway records:
+  - `operator.identified`
+  - `control.decision`
+- `task.submit` is checked before background execution is accepted.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_control.py -q`
+  - RED: failed because `fireclaw_core.control` did not exist.
+- `.venv/bin/python -m pytest tests/test_control.py -q`
+  - GREEN: 5 passed.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_records_operator_and_control_decision_for_task_submission -q`
+  - RED: failed because Gateway did not record operator/control events.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_records_operator_and_control_decision_for_task_submission -q`
+  - GREEN: 1 passed.
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - GREEN: 8 passed after updating expected event order.
+- `.venv/bin/python -m pytest -q`
+  - FULL: 164 passed in 5.25s.
+
+### Current Conclusion
+
+FireClaw now records basic operator identity and control decisions in task traces. This is the first step toward an auditable operator/safety control plane.
+
+### Remaining Gaps
+
+- No pending approval expiry yet.
+- No emergency stop state or endpoints yet.
+- `POST /tasks/<task_id>/cancel` does not yet enforce operator cancellation scope.
+- No real authentication or signed authorization.
+- No ROS1 emergency-stop wiring.

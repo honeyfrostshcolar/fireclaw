@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from fireclaw_core.agent import FireClawAgent
+from fireclaw_core.control import ControlPolicy, OperatorContext, operator_from_payload
 from fireclaw_core.event_ledger import EventLedger
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
@@ -98,9 +99,16 @@ class FireClawGateway:
             record_received=True,
         )
 
-    def submit_agent(self, command: str, session_id: str | None = None) -> dict[str, Any]:
+    def submit_agent(
+        self,
+        command: str,
+        session_id: str | None = None,
+        operator: OperatorContext | None = None,
+    ) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
+        resolved_operator = operator or operator_from_payload(None)
+        control_decision = ControlPolicy().evaluate(resolved_operator, "task.submit")
         started_at = datetime.now(timezone.utc).isoformat()
         control = TaskControl(
             task_id=task_id,
@@ -126,6 +134,28 @@ class FireClawGateway:
             type="task.received",
             payload={"command": command},
         )
+        self._append_event(
+            task_id=task_id,
+            session_id=resolved_session_id,
+            type="operator.identified",
+            payload=resolved_operator.to_dict(),
+        )
+        self._append_event(
+            task_id=task_id,
+            session_id=resolved_session_id,
+            type="control.decision",
+            payload=control_decision.to_dict(),
+        )
+        if control_decision.status != "allow":
+            with self._task_lock:
+                self._task_controls.pop(task_id, None)
+            return {
+                "status": "denied",
+                "task_id": task_id,
+                "session_id": resolved_session_id,
+                "message": "操作员没有权限提交任务。",
+                "control": control_decision.to_dict(),
+            }
 
         def worker() -> None:
             try:
@@ -525,26 +555,35 @@ class FireClawGateway:
                 if not isinstance(command, str) or not command.strip():
                     self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'command' is required.")
                     return
-                result = self.submit_agent(command, session_id=_payload_session(payload, self.config.default_session_id))
-                status = HTTPStatus.CONFLICT if result.get("status") == "busy" else HTTPStatus.ACCEPTED
+                result = self.submit_agent(
+                    command,
+                    session_id=_payload_session(payload, self.config.default_session_id),
+                    operator=operator_from_payload(payload.get("operator")),
+                )
+                status = _submission_status(result)
                 self._write_json(handler, status, result)
                 return
             if parsed.path == "/confirm":
                 result = self.submit_agent(
                     "确认执行",
                     session_id=_payload_session(payload, self.config.default_session_id),
+                    operator=operator_from_payload(payload.get("operator")),
                 )
                 self._write_json(
                     handler,
-                    HTTPStatus.CONFLICT if result.get("status") == "busy" else HTTPStatus.ACCEPTED,
+                    _submission_status(result),
                     result,
                 )
                 return
             if parsed.path == "/cancel":
-                result = self.submit_agent("取消", session_id=_payload_session(payload, self.config.default_session_id))
+                result = self.submit_agent(
+                    "取消",
+                    session_id=_payload_session(payload, self.config.default_session_id),
+                    operator=operator_from_payload(payload.get("operator")),
+                )
                 self._write_json(
                     handler,
-                    HTTPStatus.CONFLICT if result.get("status") == "busy" else HTTPStatus.ACCEPTED,
+                    _submission_status(result),
                     result,
                 )
                 return
@@ -601,6 +640,14 @@ def _payload_session(payload: dict[str, Any], default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value
     return default
+
+
+def _submission_status(result: dict[str, Any]) -> HTTPStatus:
+    if result.get("status") == "busy":
+        return HTTPStatus.CONFLICT
+    if result.get("status") == "denied":
+        return HTTPStatus.FORBIDDEN
+    return HTTPStatus.ACCEPTED
 
 
 def _task_events_path(path: str) -> str | None:
