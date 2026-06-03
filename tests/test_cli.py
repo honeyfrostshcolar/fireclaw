@@ -77,6 +77,34 @@ def test_module_cli_accepts_simulator_adapter(tmp_path):
     assert result["execution"]["steps"][0]["output"]["from_floor"] == 1
 
 
+def test_module_cli_accepts_mock_ros1_adapter(tmp_path):
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core",
+            "去二楼救人",
+            "--adapter",
+            "mock-ros1",
+            "--memory-path",
+            str(tmp_path / "memory.jsonl"),
+            "--robot-id",
+            "ros1-cli",
+        ],
+        check=True,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["status"] == "succeeded"
+    assert result["robot_state"]["mode"] == "mock_ros1"
+    assert result["execution"]["steps"][0]["output"]["mode"] == "mock_ros1"
+    assert result["execution"]["steps"][0]["output"]["ros1_interface"] == "topic"
+    assert result["execution"]["steps"][0]["output"]["ros1_name"] == "/fireclaw/ros1-cli/navigation"
+
+
 def test_module_cli_accepts_session_id(tmp_path):
     completed = subprocess.run(
         [

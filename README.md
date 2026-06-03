@@ -68,7 +68,8 @@ Runtime context can be configured from the CLI:
 
 - `dry-run`: default dependency-free dry-run adapter.
 - `simulator`: deterministic in-process simulator with floor, victim, sensor, and environment state.
-- `mock-ros2`: ROS2-shaped test double that records topic-like commands without importing ROS2.
+- `mock-ros1`: ROS1-shaped test double that records command specs without importing `rospy`.
+- `mock-ros2`: legacy alias that currently routes to the mock ROS1 adapter.
 
 For safety-gate experiments, `--real-run` sets `dry_run=false`:
 
@@ -513,9 +514,10 @@ Built-in robot skills depend on the `RobotAdapter` protocol, not on a concrete r
 
 - `DryRunRobotAdapter`: default adapter used by the CLI and tests.
 - `SimulatorRobotAdapter`: deterministic simulator that tracks current floor, reachable floors, victims by floor, sensors, online state, and battery level.
-- `MockRos2RobotAdapter`: ROS2-shaped test double that records topics and payloads without importing ROS2.
+- `MockRos1RobotAdapter`: ROS1-shaped test double that records `Ros1CommandSpec` values without importing `rospy`.
+- `MockRos2RobotAdapter`: legacy ROS2-shaped test double kept for direct compatibility tests.
 
-Future ROS2 or real robot adapters should implement the same action methods:
+Future real ROS1 or robot SDK adapters should implement the same action methods:
 
 - `navigate_to_floor`
 - `search_for_victims`

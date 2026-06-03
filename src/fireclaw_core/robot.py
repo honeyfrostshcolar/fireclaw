@@ -140,6 +140,120 @@ class DryRunRobotAdapter:
 
 
 @dataclass
+class Ros1CommandSpec:
+    interface: str
+    name: str
+    action: str
+    payload: dict[str, Any]
+    cancel_supported: bool = True
+    feedback_supported: bool = False
+
+
+@dataclass
+class MockRos1RobotAdapter:
+    robot_id: str
+    commands: list[Ros1CommandSpec] = field(default_factory=list)
+    dry_run: bool = True
+    mode: str = "mock_ros1"
+    current_floor: int = 1
+    available_sensors: list[str] = field(default_factory=list)
+    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+
+    def navigate_to_floor(self, floor: int) -> RobotActionResult:
+        return self._record(
+            name=f"/fireclaw/{self.robot_id}/navigation",
+            action="navigate_to_floor",
+            payload={"floor": floor},
+        )
+
+    def search_for_victims(self, floor: int) -> RobotActionResult:
+        return self._record(
+            name=f"/fireclaw/{self.robot_id}/perception",
+            action="search_for_victims",
+            payload={"floor": floor, "victims_found": 1},
+        )
+
+    def assess_victim(self, floor: int) -> RobotActionResult:
+        return self._record(
+            name=f"/fireclaw/{self.robot_id}/perception",
+            action="assess_victim",
+            payload={"floor": floor, "condition": "needs_assistance"},
+        )
+
+    def report_status(self, floor: int) -> RobotActionResult:
+        return self._record(
+            name=f"/fireclaw/{self.robot_id}/operator_report",
+            action="report_status",
+            payload={"floor": floor, "message": "victim located"},
+            cancel_supported=False,
+        )
+
+    def return_to_safe_zone(self) -> RobotActionResult:
+        return self._record(
+            name=f"/fireclaw/{self.robot_id}/navigation",
+            action="return_to_safe_zone",
+            payload={},
+        )
+
+    def get_robot_state(self) -> RobotState:
+        return RobotState(
+            robot_id=self.robot_id,
+            mode=self.mode,
+            dry_run=self.dry_run,
+            online=True,
+            battery_percent=100.0,
+            current_floor=self.current_floor,
+            available_sensors=list(self.available_sensors),
+            supports_real_execution=False,
+        )
+
+    def get_environment_state(self) -> EnvironmentState:
+        return EnvironmentState(
+            reachable_floors=list(self.reachable_floors),
+            hazards=[],
+            victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def _record(
+        self,
+        *,
+        name: str,
+        action: str,
+        payload: dict[str, Any],
+        interface: str = "topic",
+        cancel_supported: bool = True,
+        feedback_supported: bool = False,
+    ) -> RobotActionResult:
+        command = Ros1CommandSpec(
+            interface=interface,
+            name=name,
+            action=action,
+            payload=payload,
+            cancel_supported=cancel_supported,
+            feedback_supported=feedback_supported,
+        )
+        self.commands.append(command)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        return RobotActionResult(
+            ok=True,
+            status="succeeded",
+            robot_id=self.robot_id,
+            mode=self.mode,
+            action=action,
+            dry_run=True,
+            data={
+                "robot_id": self.robot_id,
+                "dry_run": True,
+                "ros1_interface": interface,
+                "ros1_name": name,
+                **payload,
+            },
+            timestamp=timestamp,
+        )
+
+
+@dataclass
 class MockRos2RobotAdapter:
     robot_id: str
     commands: list[dict[str, Any]] = field(default_factory=list)

@@ -35,7 +35,7 @@ def main() -> int:
         "--adapter",
         choices=ADAPTER_CHOICES,
         default="dry-run",
-        help="Robot adapter to use. Real ROS2 is not imported by this CLI.",
+        help="Robot adapter to use. Real ROS1 is not imported by this CLI.",
     )
     parser.add_argument(
         "--session-id",

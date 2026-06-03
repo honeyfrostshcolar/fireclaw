@@ -1,4 +1,5 @@
-from fireclaw_core.robot import DryRunRobotAdapter, MockRos2RobotAdapter, SimulatorRobotAdapter
+from fireclaw_core.robot import DryRunRobotAdapter, MockRos1RobotAdapter, MockRos2RobotAdapter, SimulatorRobotAdapter
+from fireclaw_core.runtime_config import create_robot_adapter
 
 
 def test_dry_run_robot_adapter_returns_structured_success_result():
@@ -58,6 +59,29 @@ def test_mock_ros2_robot_adapter_records_ros_like_commands_without_ros_dependenc
     ]
 
 
+def test_mock_ros1_robot_adapter_records_ros1_command_specs_without_ros_dependency():
+    robot = MockRos1RobotAdapter(robot_id="robot-ros1")
+
+    result = robot.navigate_to_floor(3)
+
+    assert robot.mode == "mock_ros1"
+    assert result.ok is True
+    assert result.status == "succeeded"
+    assert result.robot_id == "robot-ros1"
+    assert result.mode == "mock_ros1"
+    assert result.action == "navigate_to_floor"
+    assert result.dry_run is True
+    assert result.data["floor"] == 3
+    assert result.data["ros1_interface"] == "topic"
+    assert result.data["ros1_name"] == "/fireclaw/robot-ros1/navigation"
+    assert robot.commands[0].interface == "topic"
+    assert robot.commands[0].name == "/fireclaw/robot-ros1/navigation"
+    assert robot.commands[0].action == "navigate_to_floor"
+    assert robot.commands[0].payload == {"floor": 3}
+    assert robot.commands[0].cancel_supported is True
+    assert robot.commands[0].feedback_supported is False
+
+
 def test_mock_ros2_robot_adapter_implements_rescue_action_methods():
     robot = MockRos2RobotAdapter(robot_id="robot-ros2")
 
@@ -93,6 +117,26 @@ def test_mock_ros2_adapter_exposes_state_without_ros_dependency():
     assert robot_state.mode == "mock_ros2"
     assert robot_state.dry_run is True
     assert robot_state.supports_real_execution is False
+
+
+def test_mock_ros1_adapter_exposes_state_without_ros_dependency():
+    robot = MockRos1RobotAdapter(robot_id="robot-ros1")
+
+    robot_state = robot.get_robot_state()
+
+    assert robot_state.robot_id == "robot-ros1"
+    assert robot_state.mode == "mock_ros1"
+    assert robot_state.dry_run is True
+    assert robot_state.supports_real_execution is False
+
+
+def test_runtime_config_creates_mock_ros1_adapter_and_keeps_mock_ros2_alias():
+    ros1 = create_robot_adapter("mock-ros1", "robot-ros1")
+    legacy = create_robot_adapter("mock-ros2", "robot-legacy")
+
+    assert isinstance(ros1, MockRos1RobotAdapter)
+    assert ros1.mode == "mock_ros1"
+    assert legacy.mode == "mock_ros1"
 
 
 def test_simulator_adapter_updates_floor_and_reports_victims():

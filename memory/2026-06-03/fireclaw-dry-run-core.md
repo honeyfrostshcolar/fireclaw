@@ -363,3 +363,126 @@ FireClaw now records basic operator identity and control decisions in task trace
 - `POST /tasks/<task_id>/cancel` does not yet enforce operator cancellation scope.
 - No real authentication or signed authorization.
 - No ROS1 emergency-stop wiring.
+
+## 2026-06-03 14:45 CST
+
+### Continued Work
+
+Implemented ROS1 Adapter v1 at the framework/mock level.
+
+### Files Modified
+
+- `src/fireclaw_core/robot.py`
+- `src/fireclaw_core/runtime_config.py`
+- `src/fireclaw_core/__main__.py`
+- `tests/test_robot.py`
+- `tests/test_cli.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-03-ros1-adapter-v1-design.md`
+- `docs/superpowers/plans/2026-06-03-ros1-adapter-v1.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Implementation Details
+
+- Added `Ros1CommandSpec`.
+- Added `MockRos1RobotAdapter`.
+- Added `--adapter mock-ros1`.
+- Kept `mock-ros2` as a legacy alias in `runtime_config.py`.
+- The mock ROS1 adapter records ROS1-shaped command specs without importing `rospy`.
+- No real ROS1 topic/service/actionlib transport was added.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_robot.py::test_mock_ros1_robot_adapter_records_ros1_command_specs_without_ros_dependency -q`
+  - RED: failed because `MockRos1RobotAdapter` did not exist.
+- `.venv/bin/python -m pytest tests/test_robot.py -q`
+  - GREEN: 10 passed.
+- `.venv/bin/python -m pytest tests/test_cli.py::test_module_cli_accepts_mock_ros1_adapter tests/test_robot.py::test_runtime_config_creates_mock_ros1_adapter_and_keeps_mock_ros2_alias -q`
+  - RED: failed because `mock-ros1` was not an adapter choice.
+- `.venv/bin/python -m pytest tests/test_robot.py tests/test_cli.py tests/test_agent.py -q`
+  - GREEN: 60 passed.
+- `.venv/bin/python -m pytest -q`
+  - FULL: 168 passed in 4.80s.
+
+### Current Conclusion
+
+FireClaw now has an explicit ROS1 adapter slot that can be selected from CLI/Gateway via `mock-ros1`. This fixes the previous ROS2-oriented placeholder without binding FireClaw core to `rospy`.
+
+### Remaining Gaps
+
+- No real `rospy` or `actionlib` backend yet.
+- No deployment-specific ROS topic/service/action names yet.
+- No ROS feedback subscription mapping yet.
+- No ROS cancellation transport yet.
+- `MockRos2RobotAdapter` remains as a direct compatibility class and should be deprecated gradually.
+
+## 2026-06-03 15:17 CST
+
+### Rest Stop Handoff
+
+User is pausing work for rest. Current implementation state:
+
+- Robot Integration Boundary v1 is implemented, committed, and pushed as `e5ae764 feat: add robot action runtime boundary`.
+- Task/Action State Model v1 is implemented, committed, and pushed as `5067297 feat: add task action state projection`.
+- Operator/Safety Control Plane v2 first framework slice is implemented, committed, and pushed as `cc1ca88 feat: add operator control policy`.
+- ROS1 Adapter v1 is implemented and full tests passed, but it is not committed yet.
+
+### Current Git State Before Rest
+
+Tracked files with uncommitted ROS1 Adapter v1 changes:
+
+- `README.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+- `src/fireclaw_core/__main__.py`
+- `src/fireclaw_core/robot.py`
+- `src/fireclaw_core/runtime_config.py`
+- `tests/test_cli.py`
+- `tests/test_robot.py`
+
+Untracked ROS1 Adapter v1 plan/spec files:
+
+- `docs/superpowers/plans/2026-06-03-ros1-adapter-v1.md`
+- `docs/superpowers/specs/2026-06-03-ros1-adapter-v1-design.md`
+
+### Last Verification
+
+- `.venv/bin/python -m pytest -q`
+  - `168 passed in 4.80s`
+
+This verification was run after the ROS1 Adapter v1 implementation.
+
+### Important Design Decision
+
+The project target is ROS1, not ROS2. The current `mock-ros1` adapter is intentionally only a ROS1-shaped test double. It records command specifications without importing `rospy`, `actionlib`, or real robot transport code. `mock-ros2` is retained only as a legacy alias and should not guide future architecture.
+
+### Next Recommended Step
+
+First commit and push the ROS1 Adapter v1 work:
+
+- suggested commit subject: `feat: add mock ros1 robot adapter`
+- rerun `.venv/bin/python -m pytest -q` immediately before committing if the session is resumed later.
+
+After that, do not start another broad framework module immediately. The next phase should be **End-to-End FireClaw Demo v1**:
+
+- one runnable rescue-mission path from operator natural-language task to Gateway task submission;
+- operator/control decision recorded;
+- action runtime dispatches through `mock-ros1`;
+- task trace exposes action events plus projected task/action state;
+- README documents one command that demonstrates the whole loop.
+
+Research-level reason: after the four framework boundaries, the priority shifts from adding components to proving the architecture forms a coherent, auditable embodied-agent control loop. The demo should become the base for later evaluation metrics and ablations.
+
+### Next Phase After Demo
+
+Build **Evaluation & Research Protocol v1**:
+
+- define rescue scenarios and operator commands;
+- define success, clarification, safety-block, cancellation, latency, and trace-completeness metrics;
+- define ablations for memory, safety gate, operator confirmation, and adapter feedback;
+- decide which evidence supports engineering correctness, research validity, and publication-level claims.
+
+### Known Gaps To Avoid Forgetting
+
+- Real ROS1 binding still requires concrete topic/service/action names and message types from the target robot stack.
+- Operator/Safety details are still framework-level only: no pending approval expiry, emergency stop endpoint, cancellation permission enforcement, real authentication, or ROS1 e-stop wiring yet.
+- Current work should not be described as a finished robot system; it is a tested framework skeleton with a mock ROS1 adapter boundary.
