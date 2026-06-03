@@ -79,7 +79,22 @@ def test_mock_ros1_robot_adapter_records_ros1_command_specs_without_ros_dependen
     assert robot.commands[0].action == "navigate_to_floor"
     assert robot.commands[0].payload == {"floor": 3}
     assert robot.commands[0].cancel_supported is True
-    assert robot.commands[0].feedback_supported is False
+    assert robot.commands[0].feedback_supported is True
+    assert robot.action_feedback("navigate_to_floor", {"floor": 3}) == [
+        {
+            "progress": 0.25,
+            "message": "leaving safe zone",
+            "current_floor": 1,
+            "target_floor": 3,
+        },
+        {
+            "progress": 0.75,
+            "message": "near target floor",
+            "current_floor": 1,
+            "target_floor": 3,
+        },
+    ]
+    assert robot.action_feedback("report_status", {"floor": 3}) == []
 
 
 def test_mock_ros2_robot_adapter_implements_rescue_action_methods():

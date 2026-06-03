@@ -9,11 +9,17 @@ from fireclaw_core.robot import RobotActionResult, RobotAdapter
 
 
 ActionEventSink = Callable[[str, dict[str, Any]], None]
+ActionFeedbackSink = Callable[[dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
 
 
 class RobotActionBackend(Protocol):
-    def execute(self, action_type: str, inputs: dict[str, Any]) -> RobotActionResult:
+    def execute(
+        self,
+        action_type: str,
+        inputs: dict[str, Any],
+        feedback_sink: ActionFeedbackSink | None = None,
+    ) -> RobotActionResult:
         ...
 
 
@@ -21,7 +27,13 @@ class RobotActionBackend(Protocol):
 class RobotAdapterActionBackend:
     robot: RobotAdapter
 
-    def execute(self, action_type: str, inputs: dict[str, Any]) -> RobotActionResult:
+    def execute(
+        self,
+        action_type: str,
+        inputs: dict[str, Any],
+        feedback_sink: ActionFeedbackSink | None = None,
+    ) -> RobotActionResult:
+        self._emit_robot_feedback(action_type, inputs, feedback_sink)
         if action_type == "navigate_to_floor":
             return self.robot.navigate_to_floor(int(inputs["floor"]))
         if action_type == "search_for_victims":
@@ -44,6 +56,21 @@ class RobotAdapterActionBackend:
             timestamp=timestamp,
             error=f"Unsupported robot action type: {action_type}",
         )
+
+    def _emit_robot_feedback(
+        self,
+        action_type: str,
+        inputs: dict[str, Any],
+        feedback_sink: ActionFeedbackSink | None,
+    ) -> None:
+        if feedback_sink is None:
+            return
+        feedback_provider = getattr(self.robot, "action_feedback", None)
+        if not callable(feedback_provider):
+            return
+        for feedback in feedback_provider(action_type, inputs):
+            if isinstance(feedback, dict):
+                feedback_sink(feedback)
 
 
 @dataclass
@@ -78,7 +105,11 @@ class RobotActionRuntime:
         if cancellation_requested is not None and cancellation_requested():
             return self._cancelled_result(action_id, action_type, payload)
         self._emit("action.started", {**payload, "status": "started"})
-        result = self.backend.execute(action_type, inputs)
+        result = self.backend.execute(
+            action_type,
+            inputs,
+            feedback_sink=lambda feedback: self._emit_feedback(payload, feedback),
+        )
         result.data.setdefault("action_id", action_id)
         result.data.setdefault("task_id", self.task_id)
         terminal_type = "action.succeeded" if result.ok else "action.failed"
@@ -127,3 +158,13 @@ class RobotActionRuntime:
             self.event_sink(event_type, payload)
         except Exception:
             return
+
+    def _emit_feedback(self, action_payload: dict[str, Any], feedback: dict[str, Any]) -> None:
+        self._emit(
+            "action.feedback",
+            {
+                **action_payload,
+                "status": "feedback",
+                **dict(feedback),
+            },
+        )

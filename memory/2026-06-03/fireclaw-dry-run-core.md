@@ -570,3 +570,85 @@ End-to-End FireClaw Demo v1 now proves the four recent framework boundaries are 
 - The demo is still mock-only and does not validate ROS1 transport.
 - No demo scenario variants yet.
 - No evaluation metrics or ablation protocol yet; that should be the next phase after this demo is committed.
+
+## 2026-06-03 16:35 CST
+
+### Continued Work
+
+Started Action Feedback Boundary v1 after the user agreed to continue filling the useful OpenClaw-inspired gaps for FireClaw.
+
+### Task Goal
+
+Create a FireClaw-level feedback path before real ROS1 binding:
+
+```text
+robot backend progress
+-> RobotActionRuntime feedback sink
+-> action.feedback events
+-> task/action state projection
+-> Gateway/demo trace
+```
+
+### Design Decision
+
+Do not implement `rospy`, `actionlib`, SSE, WebSocket, or a UI yet. The purpose is the internal contract that a future ROS1 `actionlib` feedback callback can call.
+
+OpenClaw analogue: streaming/intermediate run events. FireClaw adaptation: action lifecycle progress events tied to `task_id`, `action_id`, `skill_name`, `action_type`, and task state projection.
+
+### Files Modified
+
+- `src/fireclaw_core/action_runtime.py`
+- `src/fireclaw_core/robot.py`
+- `src/fireclaw_core/demo.py`
+- `tests/test_action_runtime.py`
+- `tests/test_demo.py`
+- `tests/test_robot.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-03-action-feedback-boundary-v1-design.md`
+- `docs/superpowers/plans/2026-06-03-action-feedback-boundary-v1.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_action_runtime.py::test_robot_action_runtime_emits_backend_feedback_events -q`
+  - RED: failed because `RobotActionRuntime` did not pass a feedback sink into backend execution.
+- `.venv/bin/python -m pytest tests/test_action_runtime.py -q`
+  - GREEN: 2 passed after adding `ActionFeedbackSink`.
+- `.venv/bin/python -m pytest tests/test_demo.py::test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_feedback -q`
+  - RED: failed because mock ROS1 demo did not emit `action.feedback`.
+- `.venv/bin/python -m pytest tests/test_demo.py::test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_feedback -q`
+  - GREEN: 1 passed after adding deterministic mock ROS1 navigation feedback.
+- `.venv/bin/python -m pytest tests/test_action_runtime.py tests/test_demo.py tests/test_task_state.py tests/test_robot.py -q`
+  - GREEN: 21 passed.
+- `.venv/bin/python -m pytest -q`
+  - FULL: 172 passed in 5.73s.
+- `.venv/bin/python -m fireclaw_core --demo rescue --robot-id demo-ros1 --session-id feedback-demo --memory-path /tmp/fireclaw-feedback-demo-memory.jsonl --event-path /tmp/fireclaw-feedback-demo-events.jsonl`
+  - Manual demo check returned `status="succeeded"`, 2 compact `action.feedback` events, last feedback message `near target floor`, projected navigation `feedback_count=2`, and last progress `0.75`.
+
+### Implementation Details
+
+- Added `ActionFeedbackSink`.
+- Extended `RobotActionBackend.execute(...)` with optional `feedback_sink`.
+- `RobotActionRuntime.run(...)` now passes a sink to the backend.
+- Runtime enriches backend feedback with action/task metadata and emits `action.feedback`.
+- `RobotAdapterActionBackend` calls optional robot method `action_feedback(action_type, inputs)` when present.
+- `MockRos1RobotAdapter.navigate_to_floor(...)` now records `feedback_supported=True`.
+- `MockRos1RobotAdapter.action_feedback(...)` emits deterministic navigation feedback:
+  - progress `0.25`, message `leaving safe zone`;
+  - progress `0.75`, message `near target floor`.
+- Demo compact action events now expose `progress` and `message`.
+
+### Current Conclusion
+
+FireClaw now has an internal action feedback boundary. This makes real ROS1 `actionlib` feedback mapping straightforward later:
+
+```text
+actionlib feedback callback -> feedback_sink(...) -> action.feedback -> task_trace.state
+```
+
+### Remaining Gaps
+
+- Feedback is currently deterministic mock data, not real robot telemetry.
+- No Gateway SSE/WebSocket streaming endpoint yet; clients still poll task trace/events.
+- No operator console projection for `action.feedback` yet.
+- No real ROS1 actionlib feedback callback integration yet.

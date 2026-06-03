@@ -165,6 +165,7 @@ class MockRos1RobotAdapter:
             name=f"/fireclaw/{self.robot_id}/navigation",
             action="navigate_to_floor",
             payload={"floor": floor},
+            feedback_supported=True,
         )
 
     def search_for_victims(self, floor: int) -> RobotActionResult:
@@ -214,6 +215,25 @@ class MockRos1RobotAdapter:
             hazards=[],
             victims_by_floor=dict(self.victims_by_floor),
         )
+
+    def action_feedback(self, action_type: str, inputs: dict[str, Any]) -> list[dict[str, Any]]:
+        if action_type != "navigate_to_floor":
+            return []
+        floor = int(inputs["floor"])
+        return [
+            {
+                "progress": 0.25,
+                "message": "leaving safe zone",
+                "current_floor": self.current_floor,
+                "target_floor": floor,
+            },
+            {
+                "progress": 0.75,
+                "message": "near target floor",
+                "current_floor": self.current_floor,
+                "target_floor": floor,
+            },
+        ]
 
     def _record(
         self,

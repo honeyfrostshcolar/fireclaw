@@ -551,6 +551,8 @@ Environment state includes `reachable_floors`, `hazards`, and `victims_by_floor`
 
 Adapter action results are structured with fields such as `robot_id`, `mode`, `action`, `status`, `dry_run`, `data`, `timestamp`, and `error`. Planner, safety, executor, and memory should not need to change when a real adapter replaces the simulator or dry-run adapter.
 
+Robot action backends can also report progress through the FireClaw action feedback boundary. Current mock ROS1 navigation emits deterministic `action.feedback` events, and `task_trace(...).state.actions[*]` records `feedback_count` plus `last_feedback`. A future ROS1 `actionlib` backend should map action feedback callbacks into the same FireClaw event shape.
+
 Task results and memory records include `robot_state` and `environment_state` snapshots before execution. This is intentionally audit-oriented: later incident review and experiment analysis should be able to reconstruct the state the agent used for its safety decision.
 
 Simulator demo:

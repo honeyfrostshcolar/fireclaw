@@ -147,6 +147,8 @@ def _compact_action_event(event: dict[str, Any]) -> dict[str, Any]:
             "action_type": payload.get("action_type"),
             "skill_name": payload.get("skill_name"),
             "status": payload.get("status"),
+            "progress": payload.get("progress"),
+            "message": payload.get("message"),
             "ros1_interface": output.get("ros1_interface"),
             "ros1_name": output.get("ros1_name"),
             "error": payload.get("error"),
