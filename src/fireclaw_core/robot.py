@@ -58,6 +58,9 @@ class RobotAdapter(Protocol):
     def return_to_safe_zone(self) -> RobotActionResult:
         ...
 
+    def emergency_stop(self, reason: str | None = None) -> RobotActionResult:
+        ...
+
     def get_robot_state(self) -> RobotState:
         ...
 
@@ -76,6 +79,8 @@ class DryRunRobotAdapter:
     available_sensors: list[str] = field(default_factory=list)
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    emergency_stopped: bool = False
+    emergency_stop_reason: str | None = None
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         return self._record("navigate_to_floor", {"floor": floor})
@@ -97,12 +102,17 @@ class DryRunRobotAdapter:
             robot_id=self.robot_id,
             mode=self.mode,
             dry_run=self.dry_run,
-            online=True,
+            online=not self.emergency_stopped,
             battery_percent=100.0,
             current_floor=self.current_floor,
             available_sensors=list(self.available_sensors),
             supports_real_execution=False,
         )
+
+    def emergency_stop(self, reason: str | None = None) -> RobotActionResult:
+        self.emergency_stopped = True
+        self.emergency_stop_reason = reason
+        return _emergency_stop_result(self.robot_id, self.mode, self.dry_run, reason)
 
     def get_environment_state(self) -> EnvironmentState:
         return EnvironmentState(
@@ -159,6 +169,8 @@ class MockRos1RobotAdapter:
     available_sensors: list[str] = field(default_factory=list)
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    emergency_stopped: bool = False
+    emergency_stop_reason: str | None = None
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         return self._record(
@@ -202,12 +214,17 @@ class MockRos1RobotAdapter:
             robot_id=self.robot_id,
             mode=self.mode,
             dry_run=self.dry_run,
-            online=True,
+            online=not self.emergency_stopped,
             battery_percent=100.0,
             current_floor=self.current_floor,
             available_sensors=list(self.available_sensors),
             supports_real_execution=False,
         )
+
+    def emergency_stop(self, reason: str | None = None) -> RobotActionResult:
+        self.emergency_stopped = True
+        self.emergency_stop_reason = reason
+        return _emergency_stop_result(self.robot_id, self.mode, self.dry_run, reason)
 
     def get_environment_state(self) -> EnvironmentState:
         return EnvironmentState(
@@ -283,6 +300,8 @@ class MockRos2RobotAdapter:
     available_sensors: list[str] = field(default_factory=list)
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    emergency_stopped: bool = False
+    emergency_stop_reason: str | None = None
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         return self._record(
@@ -324,12 +343,17 @@ class MockRos2RobotAdapter:
             robot_id=self.robot_id,
             mode=self.mode,
             dry_run=self.dry_run,
-            online=True,
+            online=not self.emergency_stopped,
             battery_percent=100.0,
             current_floor=self.current_floor,
             available_sensors=list(self.available_sensors),
             supports_real_execution=False,
         )
+
+    def emergency_stop(self, reason: str | None = None) -> RobotActionResult:
+        self.emergency_stopped = True
+        self.emergency_stop_reason = reason
+        return _emergency_stop_result(self.robot_id, self.mode, self.dry_run, reason)
 
     def get_environment_state(self) -> EnvironmentState:
         return EnvironmentState(
@@ -372,6 +396,8 @@ class SimulatorRobotAdapter:
     dry_run: bool = True
     mode: str = "simulator"
     actions: list[dict[str, Any]] = field(default_factory=list)
+    emergency_stopped: bool = False
+    emergency_stop_reason: str | None = None
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         from_floor = self.current_floor
@@ -411,12 +437,18 @@ class SimulatorRobotAdapter:
             robot_id=self.robot_id,
             mode=self.mode,
             dry_run=self.dry_run,
-            online=self.online,
+            online=self.online and not self.emergency_stopped,
             battery_percent=float(self.battery_percent),
             current_floor=self.current_floor,
             available_sensors=list(self.available_sensors),
             supports_real_execution=False,
         )
+
+    def emergency_stop(self, reason: str | None = None) -> RobotActionResult:
+        self.emergency_stopped = True
+        self.emergency_stop_reason = reason
+        self.online = False
+        return _emergency_stop_result(self.robot_id, self.mode, self.dry_run, reason)
 
     def get_environment_state(self) -> EnvironmentState:
         return EnvironmentState(
@@ -451,3 +483,27 @@ class SimulatorRobotAdapter:
             timestamp=timestamp,
             error=error,
         )
+
+
+def _emergency_stop_result(
+    robot_id: str,
+    mode: str,
+    dry_run: bool,
+    reason: str | None,
+) -> RobotActionResult:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    return RobotActionResult(
+        ok=True,
+        status="emergency_stopped",
+        robot_id=robot_id,
+        mode=mode,
+        action="emergency_stop",
+        dry_run=dry_run,
+        data={
+            "robot_id": robot_id,
+            "dry_run": dry_run,
+            "emergency_stopped": True,
+            "reason": reason,
+        },
+        timestamp=timestamp,
+    )

@@ -44,6 +44,15 @@ class TaskControl:
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
+@dataclass
+class EmergencyStopState:
+    active: bool = False
+    reason: str | None = None
+    operator_id: str | None = None
+    activated_at: str | None = None
+    task_id: str | None = None
+
+
 class FireClawGateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
@@ -56,6 +65,7 @@ class FireClawGateway:
         self._task_threads: dict[str, threading.Thread] = {}
         self._task_controls: dict[str, TaskControl] = {}
         self._task_lock = threading.Lock()
+        self._emergency_stop = EmergencyStopState()
 
     @property
     def base_url(self) -> str:
@@ -230,6 +240,111 @@ class FireClawGateway:
             "message": "已请求取消任务，当前 skill 返回后将停止后续步骤。",
         }
 
+    def emergency_stop(
+        self,
+        *,
+        session_id: str | None = None,
+        operator: OperatorContext | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        task_id = f"emergency-{uuid4().hex}"
+        resolved_session_id = session_id or self.config.default_session_id
+        resolved_operator = operator or operator_from_payload(None)
+        control_decision = ControlPolicy().evaluate(resolved_operator, "emergency.stop")
+        requested_payload = {
+            "status": "requested",
+            "reason": reason,
+            "operator": resolved_operator.to_dict(),
+            "control": control_decision.to_dict(),
+        }
+        self._append_event(
+            task_id=task_id,
+            session_id=resolved_session_id,
+            type="emergency_stop.requested",
+            payload=requested_payload,
+        )
+        if control_decision.status != "allow":
+            self._append_event(
+                task_id=task_id,
+                session_id=resolved_session_id,
+                type="emergency_stop.denied",
+                payload={
+                    "status": "denied",
+                    "reason": reason,
+                    "operator": resolved_operator.to_dict(),
+                    "control": control_decision.to_dict(),
+                },
+            )
+            return {
+                "status": "denied",
+                "task_id": task_id,
+                "session_id": resolved_session_id,
+                "reason": reason,
+                "message": "操作员没有权限触发急停。",
+                "control": control_decision.to_dict(),
+            }
+
+        activated_at = datetime.now(timezone.utc).isoformat()
+        cancelled_task_ids = self._cancel_all_active_tasks(reason=reason)
+        robot_result = self.robot.emergency_stop(reason=reason)
+        self._emergency_stop = EmergencyStopState(
+            active=True,
+            reason=reason,
+            operator_id=resolved_operator.operator_id,
+            activated_at=activated_at,
+            task_id=task_id,
+        )
+        result = {
+            "status": "emergency_stopped",
+            "task_id": task_id,
+            "session_id": resolved_session_id,
+            "reason": reason,
+            "operator": resolved_operator.to_dict(),
+            "control": control_decision.to_dict(),
+            "cancelled_task_ids": cancelled_task_ids,
+            "robot_result": {
+                "ok": robot_result.ok,
+                "status": robot_result.status,
+                "robot_id": robot_result.robot_id,
+                "mode": robot_result.mode,
+                "action": robot_result.action,
+                "dry_run": robot_result.dry_run,
+                "data": dict(robot_result.data),
+                "timestamp": robot_result.timestamp,
+                "error": robot_result.error,
+            },
+            "activated_at": activated_at,
+        }
+        self._append_event(
+            task_id=task_id,
+            session_id=resolved_session_id,
+            type="emergency_stop.activated",
+            payload=result,
+        )
+        return result
+
+    def _cancel_all_active_tasks(self, *, reason: str | None) -> list[str]:
+        with self._task_lock:
+            controls = list(self._task_controls.values())
+        cancelled_task_ids = []
+        for control in controls:
+            already_requested = control.cancel_event.is_set()
+            control.cancel_event.set()
+            cancelled_task_ids.append(control.task_id)
+            if not already_requested:
+                self._append_event(
+                    task_id=control.task_id,
+                    session_id=control.session_id,
+                    type="task.cancel_requested",
+                    payload={
+                        "status": "cancel_requested",
+                        "task_id": control.task_id,
+                        "reason": reason,
+                        "source": "emergency_stop",
+                    },
+                )
+        return cancelled_task_ids
+
     def _execute_agent_task(
         self,
         *,
@@ -290,6 +405,7 @@ class FireClawGateway:
             "environment_state": asdict(self.robot.get_environment_state()),
             "task_capacity": self.task_capacity(),
             "active_tasks": self.active_tasks(),
+            "emergency_stop": asdict(self._emergency_stop),
         }
 
     def health(self) -> dict[str, Any]:
@@ -563,6 +679,15 @@ class FireClawGateway:
                 status = _submission_status(result)
                 self._write_json(handler, status, result)
                 return
+            if parsed.path == "/emergency-stop":
+                result = self.emergency_stop(
+                    session_id=_payload_session(payload, self.config.default_session_id),
+                    operator=operator_from_payload(payload.get("operator")),
+                    reason=_optional_payload_string(payload, "reason"),
+                )
+                status = HTTPStatus.FORBIDDEN if result["status"] == "denied" else HTTPStatus.OK
+                self._write_json(handler, status, result)
+                return
             if parsed.path == "/confirm":
                 result = self.submit_agent(
                     "确认执行",
@@ -640,6 +765,13 @@ def _payload_session(payload: dict[str, Any], default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value
     return default
+
+
+def _optional_payload_string(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _submission_status(result: dict[str, Any]) -> HTTPStatus:

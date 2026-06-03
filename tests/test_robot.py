@@ -145,6 +145,23 @@ def test_mock_ros1_adapter_exposes_state_without_ros_dependency():
     assert robot_state.supports_real_execution is False
 
 
+def test_mock_ros1_robot_adapter_records_emergency_stop_without_ros_dependency():
+    robot = MockRos1RobotAdapter(robot_id="robot-ros1")
+
+    result = robot.emergency_stop(reason="operator hit e-stop")
+    state = robot.get_robot_state()
+
+    assert result.ok is True
+    assert result.status == "emergency_stopped"
+    assert result.action == "emergency_stop"
+    assert result.mode == "mock_ros1"
+    assert result.data["reason"] == "operator hit e-stop"
+    assert result.data["emergency_stopped"] is True
+    assert robot.emergency_stopped is True
+    assert robot.emergency_stop_reason == "operator hit e-stop"
+    assert state.online is False
+
+
 def test_runtime_config_creates_mock_ros1_adapter_and_keeps_mock_ros2_alias():
     ros1 = create_robot_adapter("mock-ros1", "robot-ros1")
     legacy = create_robot_adapter("mock-ros2", "robot-legacy")

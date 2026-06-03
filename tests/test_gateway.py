@@ -449,3 +449,109 @@ def test_gateway_rejects_second_execution_task_when_robot_is_busy(tmp_path):
     assert state["task_capacity"]["active_execution_tasks"] == 1
     assert state["task_capacity"]["max_active_execution_tasks"] == 1
     assert state["active_tasks"][0]["task_id"] == first["task_id"]
+
+
+def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_events(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_slow_policy_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="mock-ros1",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        active = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+        )
+        _wait_for_event_type(gateway, active["task_id"], "skill.started")
+        stopped = _json_request(
+            gateway.base_url,
+            "POST",
+            "/emergency-stop",
+            {
+                "session_id": "operator-a",
+                "reason": "smoke flashover risk",
+                "operator": {"operator_id": "admin-1", "role": "admin"},
+            },
+        )
+        result = _wait_for_task_result(gateway, active["task_id"])
+        state = _json_request(gateway.base_url, "GET", "/state")
+        recent_events = _json_request(gateway.base_url, "GET", "/events/recent?session_id=operator-a&limit=20")
+        task_events = _json_request(gateway.base_url, "GET", f"/tasks/{active['task_id']}/events")
+    finally:
+        gateway.stop()
+
+    assert stopped["status"] == "emergency_stopped"
+    assert stopped["reason"] == "smoke flashover risk"
+    assert stopped["cancelled_task_ids"] == [active["task_id"]]
+    assert stopped["robot_result"]["status"] == "emergency_stopped"
+    assert result["status"] == "cancelled"
+    assert state["emergency_stop"]["active"] is True
+    assert state["emergency_stop"]["reason"] == "smoke flashover risk"
+    assert state["robot_state"]["online"] is False
+    recent_types = [event["type"] for event in recent_events["events"]]
+    task_types = [event["type"] for event in task_events["events"]]
+    assert "emergency_stop.requested" in recent_types
+    assert "emergency_stop.activated" in recent_types
+    assert "task.cancel_requested" in task_types
+    assert "task.cancelled" in task_types
+
+
+def test_gateway_operator_emergency_stop_is_denied_without_cancelling_task(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_slow_policy_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="mock-ros1",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        active = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+        )
+        _wait_for_event_type(gateway, active["task_id"], "skill.started")
+        status_code, denied = _json_error_request(
+            gateway.base_url,
+            "POST",
+            "/emergency-stop",
+            {
+                "session_id": "operator-a",
+                "reason": "operator attempted stop",
+                "operator": {"operator_id": "op-1", "role": "operator"},
+            },
+        )
+        running_trace = _json_request(gateway.base_url, "GET", f"/tasks/{active['task_id']}")
+        state = _json_request(gateway.base_url, "GET", "/state")
+        recent_events = _json_request(gateway.base_url, "GET", "/events/recent?session_id=operator-a&limit=20")
+        gateway.cancel_task(active["task_id"])
+        _wait_for_task_result(gateway, active["task_id"])
+    finally:
+        gateway.stop()
+
+    assert status_code == 403
+    assert denied["status"] == "denied"
+    assert denied["control"]["status"] == "deny"
+    assert running_trace["status"] == "running"
+    assert state["emergency_stop"]["active"] is False
+    assert state["robot_state"]["online"] is True
+    assert "emergency_stop.denied" in [event["type"] for event in recent_events["events"]]

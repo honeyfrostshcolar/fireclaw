@@ -249,6 +249,9 @@ Gateway v1 records append-only JSONL events such as:
 - `task.cancel_requested`
 - `task.completed`
 - `task.cancelled`
+- `emergency_stop.requested`
+- `emergency_stop.activated`
+- `emergency_stop.denied`
 
 Confirm or cancel the latest pending confirmation in a session:
 
@@ -267,6 +270,16 @@ Cancel an active background task by task id:
 ```bash
 curl -X POST http://127.0.0.1:8765/tasks/task-REPLACE_WITH_ID/cancel
 ```
+
+Trigger a Gateway-level emergency stop with an operator that has the `emergency.stop` scope:
+
+```bash
+curl -X POST http://127.0.0.1:8765/emergency-stop \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "operator-a", "reason": "unsafe heat condition", "operator": {"operator_id": "admin-1", "role": "admin"}}'
+```
+
+Emergency stop is stronger than normal task cancellation. It records dedicated emergency-stop audit events, requests cancellation for active tasks, and calls the robot adapter's `emergency_stop(...)` hook. In current mock adapters this only updates local state; a future real ROS1 adapter should map the hook to the robot's actual emergency-stop topic, service, action, or SDK call.
 
 Cancellation is cooperative at the task/executor boundary. FireClaw records `task.cancel_requested` immediately and stops before starting the next skill. For subprocess-backed skills, the cancellation signal is also passed into `SubprocessSkillRunner`, which terminates the active child process and kills it if it does not exit promptly. In-process skills still return cooperatively, and future ROS1 adapters should map this same request to robot action cancellation where available.
 
@@ -544,6 +557,8 @@ They should also expose state snapshots:
 
 - `get_robot_state()`
 - `get_environment_state()`
+
+Future real adapters should also implement `emergency_stop(reason=None)`. This method is part of the safety-critical control boundary and should fail safe: stop motion or escalate to the lowest-risk state available for that robot stack.
 
 Robot state includes fields such as `robot_id`, `mode`, `dry_run`, `online`, `battery_percent`, `current_floor`, `available_sensors`, and `supports_real_execution`.
 

@@ -652,3 +652,99 @@ actionlib feedback callback -> feedback_sink(...) -> action.feedback -> task_tra
 - No Gateway SSE/WebSocket streaming endpoint yet; clients still poll task trace/events.
 - No operator console projection for `action.feedback` yet.
 - No real ROS1 actionlib feedback callback integration yet.
+
+## 2026-06-03 17:05 CST
+
+### Continued Work
+
+Started Emergency Stop Control Plane v1 after completing Action Feedback Boundary v1.
+
+### Task Goal
+
+Add a framework-level emergency stop path:
+
+```text
+operator request
+-> emergency.stop scope check
+-> Gateway audit events
+-> active task cancellation
+-> robot emergency_stop hook
+```
+
+### Design Decision
+
+This version intentionally does not implement real ROS1 hardware stop, physical e-stop wiring, authentication, or signed authorization. It establishes the FireClaw control-plane contract that future ROS1 adapters should map to a real robot stop topic/service/action/SDK call.
+
+Emergency stop is stronger than normal task cancellation:
+
+- normal cancel is task-scoped and cooperative;
+- emergency stop is Gateway/robot-scoped, highest-priority, and writes dedicated audit events.
+
+### Files Modified
+
+- `src/fireclaw_core/robot.py`
+- `src/fireclaw_core/gateway.py`
+- `tests/test_robot.py`
+- `tests/test_gateway.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-03-emergency-stop-control-plane-v1-design.md`
+- `docs/superpowers/plans/2026-06-03-emergency-stop-control-plane-v1.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_robot.py::test_mock_ros1_robot_adapter_records_emergency_stop_without_ros_dependency -q`
+  - RED: failed because `MockRos1RobotAdapter` did not have `emergency_stop(...)`.
+- `.venv/bin/python -m pytest tests/test_robot.py -q`
+  - GREEN: 12 passed after adding adapter emergency-stop hooks.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_events -q`
+  - RED: failed because `/emergency-stop` returned HTTP 404.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_events tests/test_gateway.py::test_gateway_operator_emergency_stop_is_denied_without_cancelling_task -q`
+  - GREEN: 2 passed after adding Gateway endpoint and control policy handling.
+- `.venv/bin/python -m pytest tests/test_gateway.py tests/test_robot.py -q`
+  - GREEN: 22 passed.
+- `.venv/bin/python -m pytest -q`
+  - FULL: 175 passed in 7.01s.
+- Manual HTTP emergency stop check with `FireClawGateway(adapter="mock-ros1")`
+  - Returned `status="emergency_stopped"`;
+  - returned `robot_result.status="emergency_stopped"`;
+  - `/state.emergency_stop.active=True`;
+  - `/state.robot_state.online=False`.
+
+### Implementation Details
+
+- Added `RobotAdapter.emergency_stop(reason=None)`.
+- Added emergency-stop state fields to mock/dry-run/simulator adapters.
+- Mock ROS1 emergency stop sets:
+  - `emergency_stopped=True`;
+  - `emergency_stop_reason=...`;
+  - `get_robot_state().online=False`.
+- Added `EmergencyStopState` in Gateway.
+- Added `FireClawGateway.emergency_stop(...)`.
+- Added HTTP endpoint:
+  - `POST /emergency-stop`
+- Authorized admin/scope requests:
+  - record `emergency_stop.requested`;
+  - cancel all active tasks by setting their cancel events;
+  - record `task.cancel_requested` on each active task;
+  - call `robot.emergency_stop(...)`;
+  - record `emergency_stop.activated`;
+  - expose emergency stop state under `/state`.
+- Unauthorized requests:
+  - record `emergency_stop.requested`;
+  - record `emergency_stop.denied`;
+  - return HTTP 403;
+  - do not cancel active tasks;
+  - do not call robot stop.
+
+### Current Conclusion
+
+FireClaw now has the first safety-critical emergency stop control-plane boundary. It is still mock/framework-level, but future ROS1 adapter work can attach a real robot stop transport to the same `emergency_stop(...)` hook without changing Gateway semantics.
+
+### Remaining Gaps
+
+- No physical emergency-stop wiring yet.
+- No ROS1 topic/service/action mapping for stop yet.
+- No cryptographic authentication or signed operator authorization.
+- No reset/clear emergency-stop endpoint yet.
+- No operator console projection for emergency-stop events yet.
