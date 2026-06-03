@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 
 from fireclaw_core.runtime import SubprocessSkillRunner
 from fireclaw_core.skills import create_subprocess_skill
@@ -61,6 +62,32 @@ def test_subprocess_skill_runner_reports_timeout():
 
     assert result.ok is False
     assert "timed out" in result.error
+
+
+def test_subprocess_skill_runner_terminates_process_when_cancelled():
+    requested = {"cancel": False}
+    runner = SubprocessSkillRunner(
+        command=[
+            sys.executable,
+            "-c",
+            "import time; time.sleep(1); print('should-not-finish')",
+        ],
+        timeout_seconds=5,
+    )
+    started = time.monotonic()
+
+    def cancellation_requested():
+        if time.monotonic() - started > 0.05:
+            requested["cancel"] = True
+        return requested["cancel"]
+
+    result = runner.run({}, cancellation_requested=cancellation_requested)
+
+    assert result.ok is False
+    assert result.status == "cancelled"
+    assert result.mode == "subprocess"
+    assert "cancelled" in result.error
+    assert time.monotonic() - started < 0.8
 
 
 def test_create_subprocess_skill_sets_runtime_metadata():

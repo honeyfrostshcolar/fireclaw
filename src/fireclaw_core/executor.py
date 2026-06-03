@@ -94,9 +94,12 @@ class PlanExecutor:
                 },
             )
             for attempt_number in range(1, max_attempts + 1):
-                result = skill.run(step.inputs)
+                result = skill.run(
+                    step.inputs,
+                    cancellation_requested=self._cancellation_requested,
+                )
                 output = self._result_to_output(result)
-                attempt_status = "succeeded" if result.ok else "failed"
+                attempt_status = result.status if result.status == "cancelled" else "succeeded" if result.ok else "failed"
                 self._emit(
                     "skill.attempted",
                     {
@@ -119,6 +122,8 @@ class PlanExecutor:
                 )
                 if result.ok:
                     break
+                if result.status == "cancelled" or self._cancellation_requested():
+                    return ExecutionResult(status="cancelled", steps=step_results)
                 decision = self._failure_policy.decide(skill=skill, attempt_number=attempt_number)
                 if decision.action == "retry":
                     continue

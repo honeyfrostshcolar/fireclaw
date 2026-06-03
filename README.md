@@ -235,7 +235,7 @@ Cancel an active background task by task id:
 curl -X POST http://127.0.0.1:8765/tasks/task-REPLACE_WITH_ID/cancel
 ```
 
-Cancellation is cooperative in this version. FireClaw records `task.cancel_requested` immediately, lets the currently running skill return, and then stops before starting the next skill. This avoids unsafe hard termination of robot-side code. Future ROS2 adapters should map this same request to ROS2 action cancellation where available.
+Cancellation is cooperative at the task/executor boundary. FireClaw records `task.cancel_requested` immediately and stops before starting the next skill. For subprocess-backed skills, the cancellation signal is also passed into `SubprocessSkillRunner`, which terminates the active child process and kills it if it does not exit promptly. In-process skills still return cooperatively, and future ROS1 adapters should map this same request to robot action cancellation where available.
 
 The Python API still exposes synchronous `FireClawGateway.run_agent(...)` for local test harnesses and in-process tooling. External systems should prefer the asynchronous HTTP endpoints or `FireClawGateway.submit_agent(...)`.
 

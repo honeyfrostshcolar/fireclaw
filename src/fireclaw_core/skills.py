@@ -8,7 +8,7 @@ from fireclaw_core.robot import RobotActionResult, RobotAdapter
 from fireclaw_core.runtime import SubprocessSkillRunner
 
 
-SkillHandler = Callable[[dict[str, Any]], RobotActionResult]
+SkillHandler = Callable[..., RobotActionResult]
 
 GENERIC_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -49,7 +49,13 @@ class Skill:
     input_schema: dict[str, Any] = field(default_factory=lambda: dict(GENERIC_INPUT_SCHEMA))
     risk_level: str = "low"
 
-    def run(self, inputs: dict[str, Any]) -> RobotActionResult:
+    def run(
+        self,
+        inputs: dict[str, Any],
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> RobotActionResult:
+        if self.runtime == "subprocess":
+            return self.handler(inputs, cancellation_requested=cancellation_requested)
         return self.handler(inputs)
 
 
