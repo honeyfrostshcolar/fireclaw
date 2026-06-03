@@ -169,6 +169,13 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert result["execution"]["steps"][0]["output"]["mode"] == "simulator"
     assert recent["records"][0]["command"] == "去二楼救人"
     assert task["result"]["task_id"] == result["task_id"]
+    assert task["state"]["task"]["status"] == "succeeded"
+    assert task["state"]["task"]["skill_count"] == 5
+    assert task["state"]["task"]["action_count"] == 5
+    assert task["state"]["skills"][0]["skill_name"] == "navigate_to_floor"
+    assert task["state"]["skills"][0]["action_ids"][0].startswith("action-")
+    assert task["state"]["actions"][0]["action_type"] == "navigate_to_floor"
+    assert task["state"]["actions"][0]["status"] == "succeeded"
     event_types = [event["type"] for event in events["events"]]
     assert event_types == [
         "task.received",

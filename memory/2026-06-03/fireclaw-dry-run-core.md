@@ -165,6 +165,8 @@ Implemented Robot Integration Boundary v1 at the framework level.
 - `.venv/bin/python -m pytest tests/test_gateway.py -q`
   - GREEN: 7 passed.
 - `.venv/bin/python -m pytest -q`
+  - FULL: 158 passed in 4.71s.
+- `.venv/bin/python -m pytest -q`
   - FULL: 152 passed in 4.68s.
 
 ### Current Conclusion
@@ -178,3 +180,82 @@ FireClaw now has the first explicit robot action lifecycle boundary. The system 
 - No real ROS1 actionlib/topic/service binding yet.
 - No backend-level cancellation during long-running robot actions yet.
 - No emergency-stop state integration yet.
+
+## 2026-06-03 13:58 CST
+
+### Git Update
+
+Committed Robot Integration Boundary v1:
+
+- `e5ae764 feat: add robot action runtime boundary`
+
+The user then asked to do Task/Action State Model next.
+
+### Design Direction
+
+Task/Action State Model v1 should be a projection layer over existing EventLedger events, not a new persistence system. It should turn raw task, skill, and action events into a structured state snapshot:
+
+```text
+events_for_task(task_id) -> task state + skill states + action states
+```
+
+### Design Document Added
+
+- `docs/superpowers/specs/2026-06-03-task-action-state-model-v1-design.md`
+
+### Current Recommendation
+
+Implement a pure state projection module first, then wire it into `FireClawGateway.task_trace(task_id)` under a new `state` key. Keep existing `events`, `result`, and `status` fields for compatibility.
+
+## 2026-06-03 14:10 CST
+
+### Continued Work
+
+Implemented Task/Action State Model v1.
+
+### Files Modified
+
+- `src/fireclaw_core/task_state.py`
+- `src/fireclaw_core/gateway.py`
+- `tests/test_task_state.py`
+- `tests/test_gateway.py`
+- `README.md`
+- `docs/superpowers/plans/2026-06-03-task-action-state-model-v1.md`
+- `docs/superpowers/specs/2026-06-03-task-action-state-model-v1-design.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Implementation Details
+
+- Added pure projection function `project_task_state(events)`.
+- Projection returns:
+  - `task`
+  - `skills`
+  - `actions`
+- Task state includes status, command, start/end timestamps, active skill/action, counts, and terminal result.
+- Skill state uses derived `skill_run_id` values such as `skill-1`.
+- Action state tracks action id, action type, associated skill run, feedback count, terminal output, and error.
+- `FireClawGateway.task_trace(task_id)` now includes a `state` key while preserving existing `events`, `result`, and `status`.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_task_state.py -q`
+  - RED: failed because `fireclaw_core.task_state` did not exist.
+- `.venv/bin/python -m pytest tests/test_task_state.py -q`
+  - GREEN: 6 passed.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_runs_task_and_returns_recent_memory -q`
+  - RED: failed because Gateway trace did not include `state`.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_runs_task_and_returns_recent_memory -q`
+  - GREEN: 1 passed.
+- `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - GREEN: 7 passed.
+
+### Current Conclusion
+
+FireClaw now has a control-plane state projection over raw EventLedger traces. This makes task traces easier to inspect and gives future Action Feedback, operator console summaries, ROS1 adapters, and experiment metrics a stable state model to build on.
+
+### Remaining Gaps
+
+- `action.feedback` projection is supported, but current backends do not emit feedback yet.
+- State projection is computed from JSONL scans and is not indexed.
+- No ROS1 adapter-specific state mapping yet.
+- Operator console still projects raw events rather than using the state summary.

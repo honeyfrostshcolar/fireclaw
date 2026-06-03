@@ -16,6 +16,7 @@ from fireclaw_core.agent import FireClawAgent
 from fireclaw_core.event_ledger import EventLedger
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
+from fireclaw_core.task_state import project_task_state
 
 
 @dataclass(frozen=True)
@@ -250,6 +251,7 @@ class FireClawGateway:
             "events": events,
             "result": result,
             "status": self._task_status(task_id, events, result),
+            "state": project_task_state(events),
         }
 
     def state(self) -> dict[str, Any]:

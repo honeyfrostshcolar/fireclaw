@@ -193,9 +193,9 @@ If the robot already has the maximum number of active execution tasks, `POST /ta
 }
 ```
 
-This backpressure is intentional. A single robot should not silently accept multiple concurrent execution tasks that might command navigation, search, manipulation, or future ROS2 actions at the same time.
+This backpressure is intentional. A single robot should not silently accept multiple concurrent execution tasks that might command navigation, search, manipulation, or future ROS1-backed robot actions at the same time.
 
-Use the `task_id` to inspect the current task trace, final result, and event stream. While the background task is still running, `result` is `null`; after completion, the final agent result is available under `result`:
+Use the `task_id` to inspect the current task trace, projected state, final result, and event stream. While the background task is still running, `result` is `null`; after completion, the final agent result is available under `result`. The trace also includes `state`, a deterministic projection with `task`, `skills`, and `actions` summaries derived from the append-only events:
 
 ```bash
 curl http://127.0.0.1:8765/tasks/task-REPLACE_WITH_ID
