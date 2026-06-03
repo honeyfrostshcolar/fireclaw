@@ -47,6 +47,21 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 The command prints a structured JSON result and appends the same run record to the JSONL memory file.
 
+## Run the End-to-End Framework Demo
+
+Use `--demo rescue` to run one local rescue task through the Gateway control plane and the mock ROS1 adapter:
+
+```bash
+.venv/bin/python -m fireclaw_core \
+  --demo rescue \
+  --robot-id demo-ros1 \
+  --session-id demo-shift-a \
+  --memory-path /tmp/fireclaw-e2e-demo-memory.jsonl \
+  --event-path /tmp/fireclaw-e2e-demo-events.jsonl
+```
+
+The output is a compact JSON trace summary. It includes the operator identity, control decision, task/action projected state, action lifecycle events, and `mock_ros1` robot state. This is a framework-level demo only: it does not import `rospy`, connect to a ROS master, or control real hardware.
+
 Runtime context can be configured from the CLI:
 
 ```bash

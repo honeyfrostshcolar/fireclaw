@@ -486,3 +486,87 @@ Build **Evaluation & Research Protocol v1**:
 - Real ROS1 binding still requires concrete topic/service/action names and message types from the target robot stack.
 - Operator/Safety details are still framework-level only: no pending approval expiry, emergency stop endpoint, cancellation permission enforcement, real authentication, or ROS1 e-stop wiring yet.
 - Current work should not be described as a finished robot system; it is a tested framework skeleton with a mock ROS1 adapter boundary.
+
+## 2026-06-03 15:55 CST
+
+### Continued Work
+
+Started and implemented End-to-End FireClaw Demo v1.
+
+### Task Goal
+
+Add one runnable local demo path that proves the current FireClaw framework forms a coherent control loop:
+
+```text
+operator natural-language task
+-> Gateway task submission
+-> operator/control audit events
+-> action runtime dispatch through mock-ros1
+-> task trace with action events and projected task/action state
+```
+
+### Design Decision
+
+The demo is intentionally an in-process Gateway orchestration, not a new server mode and not direct `FireClawAgent.run(...)`. This preserves the control-plane boundary that later ROS1 clients, operator consoles, or evaluation harnesses need to inspect.
+
+The demo remains dependency-free and does not import `rospy`, `actionlib`, or connect to a live ROS master.
+
+### Files Modified
+
+- `src/fireclaw_core/demo.py`
+- `src/fireclaw_core/__main__.py`
+- `tests/test_demo.py`
+- `tests/test_cli.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-03-e2e-fireclaw-demo-v1-design.md`
+- `docs/superpowers/plans/2026-06-03-e2e-fireclaw-demo-v1.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_demo.py::test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_state -q`
+  - RED: failed because `fireclaw_core.demo` did not exist.
+- `.venv/bin/python -m pytest tests/test_demo.py::test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_state -q`
+  - GREEN: 1 passed after adding `run_rescue_demo(...)`.
+- `.venv/bin/python -m pytest tests/test_cli.py::test_module_cli_runs_rescue_demo_through_gateway_mock_ros1 -q`
+  - RED: failed because CLI did not support `--demo` or `--event-path`.
+- `.venv/bin/python -m pytest tests/test_cli.py::test_module_cli_runs_rescue_demo_through_gateway_mock_ros1 -q`
+  - GREEN: 1 passed after adding `--demo rescue`.
+- `.venv/bin/python -m pytest tests/test_demo.py tests/test_cli.py -q`
+  - GREEN: 20 passed.
+- `.venv/bin/python -m fireclaw_core --demo rescue --robot-id demo-ros1 --session-id demo-shift-a --memory-path /tmp/fireclaw-e2e-demo-memory.jsonl --event-path /tmp/fireclaw-e2e-demo-events.jsonl`
+  - Manual demo returned `status="succeeded"`, `robot_state.mode="mock_ros1"`, `control.status="allow"`, `state.task.action_count=5`, and `result.execution.step_count=5`.
+
+### Implementation Details
+
+- Added `run_rescue_demo(...)`.
+- Demo creates `FireClawGateway(GatewayConfig(adapter="mock-ros1", ...))`.
+- Demo submits `去二楼救人` through `submit_agent(...)` with an operator context.
+- Demo polls `task_trace(task_id)` until the task has a terminal result.
+- Demo output includes:
+  - `status`
+  - `task_id`
+  - `session_id`
+  - `operator`
+  - `control`
+  - `state`
+  - `result`
+  - `event_types`
+  - `action_events`
+  - `robot_state`
+- Demo output is compacted so it does not repeat the full raw task result inside projected state.
+- CLI now supports:
+  - `--demo rescue`
+  - `--event-path`
+- Existing direct-agent CLI behavior remains available.
+
+### Current Conclusion
+
+End-to-End FireClaw Demo v1 now proves the four recent framework boundaries are connected in one auditable local run.
+
+### Remaining Gaps
+
+- Need full-suite verification before commit.
+- The demo is still mock-only and does not validate ROS1 transport.
+- No demo scenario variants yet.
+- No evaluation metrics or ablation protocol yet; that should be the next phase after this demo is committed.

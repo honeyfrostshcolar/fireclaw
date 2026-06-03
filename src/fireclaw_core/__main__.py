@@ -4,17 +4,28 @@ import argparse
 import json
 
 from fireclaw_core.agent import FireClawAgent
+from fireclaw_core.demo import run_rescue_demo
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw dry-run agent.")
-    parser.add_argument("command", help="Operator command, for example: 去二楼救人")
+    parser.add_argument("command", nargs="?", help="Operator command, for example: 去二楼救人")
+    parser.add_argument(
+        "--demo",
+        choices=("rescue",),
+        help="Run a local end-to-end demo through the Gateway and mock ROS1 adapter.",
+    )
     parser.add_argument(
         "--memory-path",
         default="memory/fireclaw-runs.jsonl",
         help="Path to the JSONL memory file.",
+    )
+    parser.add_argument(
+        "--event-path",
+        default="memory/fireclaw-demo-events.jsonl",
+        help="Path to the JSONL event ledger used by --demo rescue.",
     )
     parser.add_argument(
         "--skills-dir",
@@ -54,6 +65,20 @@ def main() -> int:
         help="Evaluate safety as non-dry-run. This does not create a real robot adapter.",
     )
     args = parser.parse_args()
+    if args.demo == "rescue":
+        result = run_rescue_demo(
+            command=args.command or "去二楼救人",
+            memory_path=args.memory_path,
+            event_path=args.event_path,
+            robot_id=args.robot_id,
+            session_id=args.session_id,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["status"] == "succeeded" else 1
+
+    if args.command is None:
+        parser.error("command is required unless --demo rescue is used.")
+
     robot = create_robot_adapter(args.adapter, args.robot_id)
 
     agent = FireClawAgent(

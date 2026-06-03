@@ -105,6 +105,43 @@ def test_module_cli_accepts_mock_ros1_adapter(tmp_path):
     assert result["execution"]["steps"][0]["output"]["ros1_name"] == "/fireclaw/ros1-cli/navigation"
 
 
+def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core",
+            "--demo",
+            "rescue",
+            "--memory-path",
+            str(tmp_path / "demo-memory.jsonl"),
+            "--event-path",
+            str(tmp_path / "demo-events.jsonl"),
+            "--robot-id",
+            "demo-cli",
+            "--session-id",
+            "demo-cli-session",
+        ],
+        check=True,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["status"] == "succeeded"
+    assert result["session_id"] == "demo-cli-session"
+    assert result["operator"]["operator_id"] == "local-operator"
+    assert result["control"]["status"] == "allow"
+    assert result["robot_state"]["mode"] == "mock_ros1"
+    assert result["result"]["execution"]["steps"][0]["output"]["ros1_name"] == "/fireclaw/demo-cli/navigation"
+    assert "operator.identified" in result["event_types"]
+    assert "control.decision" in result["event_types"]
+    assert "action.succeeded" in result["event_types"]
+    assert result["state"]["task"]["status"] == "succeeded"
+    assert result["state"]["task"]["action_count"] == 5
+
+
 def test_module_cli_accepts_session_id(tmp_path):
     completed = subprocess.run(
         [
