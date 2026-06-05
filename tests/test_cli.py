@@ -105,6 +105,55 @@ def test_module_cli_accepts_mock_ros1_adapter(tmp_path):
     assert result["execution"]["steps"][0]["output"]["ros1_name"] == "/fireclaw/ros1-cli/navigation"
 
 
+def test_module_cli_accepts_ros1_config_for_adapter_skeleton(tmp_path):
+    config_path = tmp_path / "ros1.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "robot_id": "real-ros1-cli",
+                "endpoints": {
+                    "navigate_to_floor": {
+                        "interface": "action",
+                        "name": "/fireclaw/real-ros1-cli/navigation",
+                        "type": "fireclaw_msgs/NavigateFloorAction",
+                        "cancel_supported": True,
+                        "feedback_supported": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core",
+            "去二楼救人",
+            "--adapter",
+            "ros1",
+            "--ros1-config",
+            str(config_path),
+            "--memory-path",
+            str(tmp_path / "memory.jsonl"),
+            "--robot-id",
+            "ignored-cli",
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert completed.returncode == 1
+    assert result["status"] == "block"
+    assert result["robot_state"]["mode"] == "ros1"
+    assert result["robot_state"]["robot_id"] == "real-ros1-cli"
+    assert result["execution"] is None
+
+
 def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
     completed = subprocess.run(
         [

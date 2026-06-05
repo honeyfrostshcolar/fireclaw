@@ -748,3 +748,71 @@ FireClaw now has the first safety-critical emergency stop control-plane boundary
 - No cryptographic authentication or signed operator authorization.
 - No reset/clear emergency-stop endpoint yet.
 - No operator console projection for emergency-stop events yet.
+
+## 2026-06-03 17:35 CST
+
+### Continued Work
+
+Started Config / Doctor v1 after deciding Operator Authorization v2 is useful but less urgent than preparing for real ROS1 integration.
+
+### Task Goal
+
+Add a dependency-free local diagnostic report:
+
+```text
+fireclaw_core.doctor
+-> adapter readiness
+-> memory/event path writability
+-> workspace skill manifest health
+-> emergency_stop hook availability
+-> action feedback boundary availability
+```
+
+### Design Decision
+
+Doctor v1 does not connect to a live ROS master, inspect `rospy`, install dependencies, or fix config automatically. It is a pre-ROS1 readiness report to catch obvious issues and prevent confusing mock adapters with real robot integration.
+
+### Files Modified
+
+- `src/fireclaw_core/doctor.py`
+- `tests/test_doctor.py`
+- `README.md`
+- `docs/superpowers/specs/2026-06-03-config-doctor-v1-design.md`
+- `docs/superpowers/plans/2026-06-03-config-doctor-v1.md`
+- `memory/2026-06-03/fireclaw-dry-run-core.md`
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_doctor.py -q`
+  - RED: failed because `fireclaw_core.doctor` did not exist.
+- `.venv/bin/python -m pytest tests/test_doctor.py -q`
+  - GREEN: 3 passed after adding doctor core and CLI.
+- `.venv/bin/python -m fireclaw_core.doctor --adapter mock-ros1 --robot-id doctor-demo --memory-path /tmp/fireclaw-doctor-memory.jsonl --event-path /tmp/fireclaw-doctor-events.jsonl --skills-dir /tmp/missing-fireclaw-skills`
+  - Manual CLI returned top-level `status="warn"`, 6 checks, adapter `warn`, emergency stop hook `pass`.
+- `.venv/bin/python -m pytest -q`
+  - FULL: 178 passed in 7.02s.
+
+### Implementation Details
+
+- Added `DoctorCheck`.
+- Added `run_doctor(...)`.
+- Added `python -m fireclaw_core.doctor`.
+- Checks implemented:
+  - adapter creation and mock/dry-run/simulator warning;
+  - memory path parent writability;
+  - event path parent writability;
+  - workspace skill manifest load errors;
+  - adapter `emergency_stop(...)` availability;
+  - action feedback boundary availability via `RobotAdapterActionBackend`.
+- Top-level status is the worst check status in `pass < warn < fail`.
+
+### Current Conclusion
+
+FireClaw now has a small local readiness diagnostic. It is not a ROS validator yet, but it gives the next real ROS1 adapter phase a stable place to surface missing adapter, safety, feedback, and manifest configuration.
+
+### Remaining Gaps
+
+- No live ROS1 master/topic/service/action checks yet.
+- No config file format for real ROS1 endpoints yet.
+- No automatic remediation.
+- No `doctor` integration into Gateway startup.

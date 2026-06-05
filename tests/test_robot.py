@@ -1,4 +1,12 @@
-from fireclaw_core.robot import DryRunRobotAdapter, MockRos1RobotAdapter, MockRos2RobotAdapter, SimulatorRobotAdapter
+import json
+
+from fireclaw_core.robot import (
+    DryRunRobotAdapter,
+    MockRos1RobotAdapter,
+    MockRos2RobotAdapter,
+    Ros1RobotAdapter,
+    SimulatorRobotAdapter,
+)
 from fireclaw_core.runtime_config import create_robot_adapter
 
 
@@ -169,6 +177,106 @@ def test_runtime_config_creates_mock_ros1_adapter_and_keeps_mock_ros2_alias():
     assert isinstance(ros1, MockRos1RobotAdapter)
     assert ros1.mode == "mock_ros1"
     assert legacy.mode == "mock_ros1"
+
+
+def test_runtime_config_creates_ros1_adapter_from_config_without_ros_dependency(tmp_path):
+    config_path = tmp_path / "ros1.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "robot_id": "robot-config",
+                "namespace": "/fireclaw/robot-config",
+                "endpoints": {
+                    "navigate_to_floor": {
+                        "interface": "action",
+                        "name": "/fireclaw/robot-config/navigation",
+                        "type": "fireclaw_msgs/NavigateFloorAction",
+                        "cancel_supported": True,
+                        "feedback_supported": True,
+                    }
+                },
+                "emergency_stop": {
+                    "interface": "service",
+                    "name": "/fireclaw/robot-config/emergency_stop",
+                    "type": "std_srvs/Trigger",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    robot = create_robot_adapter("ros1", "robot-cli", config_path=str(config_path))
+
+    assert isinstance(robot, Ros1RobotAdapter)
+    assert robot.robot_id == "robot-config"
+    assert robot.mode == "ros1"
+    assert robot.dry_run is False
+
+
+def test_ros1_robot_adapter_records_configured_endpoint_but_refuses_live_execution(tmp_path):
+    config_path = tmp_path / "ros1.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "robot_id": "robot-ros1-real",
+                "endpoints": {
+                    "navigate_to_floor": {
+                        "interface": "action",
+                        "name": "/fireclaw/robot-ros1-real/navigation",
+                        "type": "fireclaw_msgs/NavigateFloorAction",
+                        "cancel_supported": True,
+                        "feedback_supported": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    robot = create_robot_adapter("ros1", "ignored", config_path=str(config_path))
+
+    result = robot.navigate_to_floor(2)
+
+    assert result.ok is False
+    assert result.status == "not_configured"
+    assert result.mode == "ros1"
+    assert result.dry_run is False
+    assert result.data["ros1_interface"] == "action"
+    assert result.data["ros1_name"] == "/fireclaw/robot-ros1-real/navigation"
+    assert result.data["ros1_type"] == "fireclaw_msgs/NavigateFloorAction"
+    assert "Live ROS1 transport is not implemented" in str(result.error)
+    assert robot.commands[0].name == "/fireclaw/robot-ros1-real/navigation"
+    assert robot.commands[0].feedback_supported is True
+
+
+def test_ros1_robot_adapter_result_includes_remap_template_metadata(tmp_path):
+    config_path = tmp_path / "ros1.yaml"
+    config_path.write_text(
+        """
+robot_id: robot-ros1-real
+remap:
+  navigate_to_floor:
+    profile: move_base
+    name: /move_base
+    goal_template:
+      target_pose:
+        header:
+          frame_id: map
+targets:
+  floor_2:
+    frame_id: map
+    x: 12.4
+    y: -3.8
+    yaw: 1.57
+""".lstrip(),
+        encoding="utf-8",
+    )
+    robot = create_robot_adapter("ros1", "ignored", config_path=str(config_path))
+
+    result = robot.navigate_to_floor(2)
+
+    assert result.data["ros1_profile"] == "move_base"
+    assert result.data["goal_template"]["target_pose"]["header"]["frame_id"] == "map"
+    assert result.data["targets"]["floor_2"]["x"] == 12.4
 
 
 def test_simulator_adapter_updates_floor_and_reports_victims():

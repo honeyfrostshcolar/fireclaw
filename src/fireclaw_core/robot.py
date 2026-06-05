@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from typing import Any
 from typing import Protocol
 
+from fireclaw_core.ros1_config import Ros1AdapterConfig
+from fireclaw_core.ros1_config import Ros1EndpointConfig
+
 
 @dataclass
 class RobotActionResult:
@@ -287,6 +290,117 @@ class MockRos1RobotAdapter:
                 **payload,
             },
             timestamp=timestamp,
+        )
+
+
+@dataclass
+class Ros1RobotAdapter:
+    config: Ros1AdapterConfig
+    commands: list[Ros1CommandSpec] = field(default_factory=list)
+    dry_run: bool = False
+    mode: str = "ros1"
+    current_floor: int | None = None
+    available_sensors: list[str] = field(default_factory=list)
+    emergency_stopped: bool = False
+    emergency_stop_reason: str | None = None
+
+    @property
+    def robot_id(self) -> str:
+        return self.config.robot_id
+
+    def navigate_to_floor(self, floor: int) -> RobotActionResult:
+        return self._record_configured_action("navigate_to_floor", {"floor": floor})
+
+    def search_for_victims(self, floor: int) -> RobotActionResult:
+        return self._record_configured_action("search_for_victims", {"floor": floor})
+
+    def assess_victim(self, floor: int) -> RobotActionResult:
+        return self._record_configured_action("assess_victim", {"floor": floor})
+
+    def report_status(self, floor: int) -> RobotActionResult:
+        return self._record_configured_action("report_status", {"floor": floor})
+
+    def return_to_safe_zone(self) -> RobotActionResult:
+        return self._record_configured_action("return_to_safe_zone", {})
+
+    def get_robot_state(self) -> RobotState:
+        return RobotState(
+            robot_id=self.robot_id,
+            mode=self.mode,
+            dry_run=self.dry_run,
+            online=not self.emergency_stopped,
+            battery_percent=0.0,
+            current_floor=self.current_floor,
+            available_sensors=list(self.available_sensors),
+            supports_real_execution=False,
+        )
+
+    def emergency_stop(self, reason: str | None = None) -> RobotActionResult:
+        self.emergency_stopped = True
+        self.emergency_stop_reason = reason
+        endpoint = None
+        if self.config.emergency_stop is not None:
+            endpoint = Ros1EndpointConfig(
+                interface=self.config.emergency_stop.interface,
+                name=self.config.emergency_stop.name,
+                type=self.config.emergency_stop.type,
+            )
+        return self._record_configured_action("emergency_stop", {"reason": reason}, endpoint=endpoint)
+
+    def get_environment_state(self) -> EnvironmentState:
+        return EnvironmentState(reachable_floors=[], hazards=[], victims_by_floor={})
+
+    def _record_configured_action(
+        self,
+        action: str,
+        payload: dict[str, Any],
+        *,
+        endpoint: Ros1EndpointConfig | None = None,
+    ) -> RobotActionResult:
+        endpoint = endpoint or self.config.endpoints.get(action)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        if endpoint is None:
+            return RobotActionResult(
+                ok=False,
+                status="not_configured",
+                robot_id=self.robot_id,
+                mode=self.mode,
+                action=action,
+                dry_run=self.dry_run,
+                data={"robot_id": self.robot_id, "dry_run": self.dry_run, **payload},
+                timestamp=timestamp,
+                error=f"ROS1 endpoint for {action} is not configured.",
+            )
+        command = Ros1CommandSpec(
+            interface=endpoint.interface,
+            name=endpoint.name,
+            action=action,
+            payload=payload,
+            cancel_supported=endpoint.cancel_supported,
+            feedback_supported=endpoint.feedback_supported,
+        )
+        self.commands.append(command)
+        return RobotActionResult(
+            ok=False,
+            status="not_configured",
+            robot_id=self.robot_id,
+            mode=self.mode,
+            action=action,
+            dry_run=self.dry_run,
+            data={
+                "robot_id": self.robot_id,
+                "dry_run": self.dry_run,
+                "ros1_interface": endpoint.interface,
+                "ros1_name": endpoint.name,
+                "ros1_type": endpoint.type,
+                "ros1_profile": endpoint.profile,
+                "goal_template": dict(endpoint.goal_template),
+                "request_template": dict(endpoint.request_template),
+                "targets": dict(self.config.targets),
+                **payload,
+            },
+            timestamp=timestamp,
+            error="Live ROS1 transport is not implemented yet.",
         )
 
 

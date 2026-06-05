@@ -39,6 +39,105 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 .venv/bin/python -m pytest -v
 ```
 
+## Run Doctor
+
+Use the local doctor before moving from mock adapters toward real ROS1 integration:
+
+```bash
+.venv/bin/python -m fireclaw_core.doctor \
+  --adapter mock-ros1 \
+  --robot-id doctor-demo \
+  --memory-path /tmp/fireclaw-doctor-memory.jsonl \
+  --event-path /tmp/fireclaw-doctor-events.jsonl
+```
+
+Doctor prints a JSON report with `pass`, `warn`, or `fail` checks for adapter mode, writable memory/event paths, workspace skill manifests, emergency-stop hook availability, and the action feedback boundary. `mock-ros1`, `dry-run`, and `simulator` intentionally report `warn` because they do not control live hardware.
+
+For the real ROS1 adapter skeleton, provide a JSON config:
+
+```json
+{
+  "robot_id": "fireclaw-01",
+  "namespace": "/fireclaw/fireclaw-01",
+  "endpoints": {
+    "navigate_to_floor": {
+      "interface": "action",
+      "name": "/fireclaw/fireclaw-01/navigation",
+      "type": "fireclaw_msgs/NavigateFloorAction",
+      "cancel_supported": true,
+      "feedback_supported": true
+    }
+  },
+  "emergency_stop": {
+    "interface": "service",
+    "name": "/fireclaw/fireclaw-01/emergency_stop",
+    "type": "std_srvs/Trigger"
+  }
+}
+```
+
+Then run doctor against it:
+
+```bash
+.venv/bin/python -m fireclaw_core.doctor \
+  --adapter ros1 \
+  --ros1-config /path/to/ros1-adapter.json \
+  --memory-path /tmp/fireclaw-doctor-memory.jsonl \
+  --event-path /tmp/fireclaw-doctor-events.jsonl
+```
+
+The `ros1` adapter is currently a dependency-free configuration skeleton. It does not import `rospy` or `actionlib`, and live actions return `not_configured` until a real ROS1 transport layer is implemented.
+
+The same config can be written as YAML using `remap`. This is the preferred shape for robot teams because it exposes the action-to-ROS1 binding directly:
+
+```yaml
+robot_id: fireclaw-01
+namespace: /fireclaw/fireclaw-01
+
+remap:
+  navigate_to_floor:
+    profile: move_base
+    name: /move_base
+    goal_template:
+      target_pose:
+        header:
+          frame_id: map
+        pose:
+          position:
+            x: "{{ targets.floor_${floor}.x }}"
+            y: "{{ targets.floor_${floor}.y }}"
+            z: 0.0
+          orientation:
+            yaw: "{{ targets.floor_${floor}.yaw }}"
+
+  emergency_stop:
+    profile: trigger_service
+    name: /fireclaw/emergency_stop
+
+  spray_water:
+    interface: service
+    name: /fireclaw/fireclaw-01/spray_water
+    type: fireclaw_msgs/SprayWater
+    request_template:
+      target_id: "{{ target_id }}"
+      duration_seconds: "{{ duration_seconds }}"
+
+targets:
+  floor_2:
+    frame_id: map
+    x: 12.4
+    y: -3.8
+    yaw: 1.57
+```
+
+Supported profiles are:
+
+- `move_base`: expands to `move_base_msgs/MoveBaseAction`.
+- `trigger_service`: expands to `std_srvs/Trigger`.
+- `string_topic`: expands to `std_msgs/String`.
+
+Any remap key may be a built-in robot action or a future workspace skill name. Doctor reports workspace skills that have no ROS1 remap and custom remap entries that do not match any loaded skill manifest.
+
 ## Run the Dry-Run Agent
 
 ```bash
@@ -85,6 +184,7 @@ Runtime context can be configured from the CLI:
 - `simulator`: deterministic in-process simulator with floor, victim, sensor, and environment state.
 - `mock-ros1`: ROS1-shaped test double that records command specs without importing `rospy`.
 - `mock-ros2`: legacy alias that currently routes to the mock ROS1 adapter.
+- `ros1`: dependency-free real ROS1 adapter skeleton loaded from `--ros1-config`; live transport is not implemented yet.
 
 For safety-gate experiments, `--real-run` sets `dry_run=false`:
 

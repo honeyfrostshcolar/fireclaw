@@ -49,6 +49,11 @@ def main() -> int:
         help="Robot adapter to use. Real ROS1 is not imported by this CLI.",
     )
     parser.add_argument(
+        "--ros1-config",
+        default=None,
+        help="Path to a ROS1 adapter JSON config. Required when --adapter ros1 is used.",
+    )
+    parser.add_argument(
         "--session-id",
         default="default",
         help="Conversation/session identifier for memory and context.",
@@ -79,7 +84,7 @@ def main() -> int:
     if args.command is None:
         parser.error("command is required unless --demo rescue is used.")
 
-    robot = create_robot_adapter(args.adapter, args.robot_id)
+    robot = create_robot_adapter(args.adapter, args.robot_id, config_path=args.ros1_config)
 
     agent = FireClawAgent(
         robot=robot,
