@@ -335,7 +335,7 @@ def test_gateway_confirms_pending_high_risk_skill(tmp_path):
             gateway.base_url,
             "POST",
             "/confirm",
-            {"session_id": "operator-a"},
+            {"session_id": "operator-a", "operator": {"operator_id": "supervisor-1", "role": "supervisor"}},
         )
         confirmed_result = _wait_for_task_result(gateway, confirmed["task_id"])
         pending_events = _json_request(gateway.base_url, "GET", f"/tasks/{pending['task_id']}/events")
@@ -358,6 +358,87 @@ def test_gateway_confirms_pending_high_risk_skill(tmp_path):
     assert confirmed_result["execution"]["steps"][0]["skill_name"] == "smoke_entry"
     assert "confirmation.pending" in [event["type"] for event in pending_events["events"]]
     assert "confirmation.confirmed" in [event["type"] for event in confirmed_events["events"]]
+    assert "authorization.requested" in [event["type"] for event in pending_events["events"]]
+    assert "authorization.approved" in [event["type"] for event in confirmed_events["events"]]
+
+
+def test_gateway_denies_high_risk_confirmation_from_operator_without_override(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_high_risk_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        pending = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "运行 smoke_entry", "session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}},
+        )
+        pending_result = _wait_for_task_result(gateway, pending["task_id"])
+        status_code, denied = _json_error_request(
+            gateway.base_url,
+            "POST",
+            "/confirm",
+            {"session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}},
+        )
+        pending_events = _json_request(gateway.base_url, "GET", f"/tasks/{pending['task_id']}/events")
+    finally:
+        gateway.stop()
+
+    assert pending_result["status"] == "awaiting_confirmation"
+    assert status_code == 403
+    assert denied["status"] == "denied"
+    assert denied["control"]["status"] == "approval_required"
+    assert "authorization.denied" in [event["type"] for event in pending_events["events"]]
+
+
+def test_gateway_expires_pending_high_risk_authorization_before_confirm(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_high_risk_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+            authorization_expiry_seconds=0,
+        )
+    )
+    gateway.start()
+    try:
+        pending = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "运行 smoke_entry", "session_id": "operator-a"},
+        )
+        _wait_for_task_result(gateway, pending["task_id"])
+        status_code, expired = _json_error_request(
+            gateway.base_url,
+            "POST",
+            "/confirm",
+            {"session_id": "operator-a", "operator": {"operator_id": "supervisor-1", "role": "supervisor"}},
+        )
+        pending_events = _json_request(gateway.base_url, "GET", f"/tasks/{pending['task_id']}/events")
+    finally:
+        gateway.stop()
+
+    assert status_code == 403
+    assert expired["status"] == "expired"
+    assert "authorization.expired" in [event["type"] for event in pending_events["events"]]
 
 
 def test_gateway_cancels_active_task_between_skills(tmp_path):
@@ -405,6 +486,49 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
     assert "task.cancel_requested" in event_types
     assert "task.cancelled" in event_types
     assert skill_names == ["slow_policy"]
+
+
+def test_gateway_observer_cannot_cancel_active_task(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_slow_policy_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+        )
+        _wait_for_event_type(gateway, accepted["task_id"], "skill.started")
+        status_code, denied = _json_error_request(
+            gateway.base_url,
+            "POST",
+            f"/tasks/{accepted['task_id']}/cancel",
+            {"operator": {"operator_id": "observer-1", "role": "observer"}},
+        )
+        running_trace = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}")
+        events = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}/events")
+        gateway.cancel_task(accepted["task_id"])
+        _wait_for_task_result(gateway, accepted["task_id"])
+    finally:
+        gateway.stop()
+
+    assert status_code == 403
+    assert denied["status"] == "denied"
+    assert denied["control"]["status"] == "deny"
+    assert running_trace["status"] == "running"
+    assert "task.cancel_denied" in [event["type"] for event in events["events"]]
 
 
 def test_gateway_rejects_second_execution_task_when_robot_is_busy(tmp_path):

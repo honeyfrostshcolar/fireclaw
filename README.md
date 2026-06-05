@@ -785,3 +785,36 @@ Confirm or cancel in the same session:
 ```
 
 Confirmation restores the latest unresolved pending plan from JSONL memory and re-runs the safety gate with `operator_confirmed=true`. Cancellation records `status="cancelled"` and does not execute skills.
+
+## Operator Authorization
+
+Gateway task confirmation adds an authorization layer on top of the local confirmation flow. High and critical risk tasks create a pending authorization request:
+
+```text
+authorization.requested -> authorization.approved | authorization.denied | authorization.expired
+```
+
+Default role behavior:
+
+- `observer`: can read state only.
+- `operator`: can submit and cancel tasks, but cannot approve high/critical risk work.
+- `supervisor`: can approve high/critical risk work through `safety.override`.
+- `admin`: supervisor scopes plus `emergency.stop`.
+
+Example supervisor approval:
+
+```bash
+curl -X POST http://127.0.0.1:8765/confirm \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "session_id": "rescue-shift-a",
+    "operator": {
+      "operator_id": "supervisor-1",
+      "role": "supervisor"
+    }
+  }'
+```
+
+If an `operator` without `safety.override` tries to approve a high-risk task, Gateway returns HTTP 403 and records `authorization.denied`. If the pending authorization expires, Gateway returns HTTP 403 with `status="expired"` and records `authorization.expired`.
+
+Task cancellation also checks authorization. A caller without `task.cancel` receives HTTP 403 and the task records `task.cancel_denied`; the active task is not cancelled.

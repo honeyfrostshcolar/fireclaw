@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -59,6 +60,37 @@ class ControlDecision:
         }
 
 
+@dataclass(frozen=True)
+class AuthorizationRequest:
+    request_id: str
+    task_id: str
+    session_id: str
+    command: str
+    requested_by: OperatorContext
+    required_scope: str
+    risk_level: str
+    requested_at: str
+    expires_at: str
+    status: str = "pending"
+
+    def is_expired(self, now: str) -> bool:
+        return datetime.fromisoformat(now) >= datetime.fromisoformat(self.expires_at)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "task_id": self.task_id,
+            "session_id": self.session_id,
+            "command": self.command,
+            "requested_by": self.requested_by.to_dict(),
+            "required_scope": self.required_scope,
+            "risk_level": self.risk_level,
+            "requested_at": self.requested_at,
+            "expires_at": self.expires_at,
+            "status": self.status,
+        }
+
+
 def scopes_for_role(role: str) -> set[str]:
     return set(ROLE_SCOPES.get(role, ROLE_SCOPES["observer"]))
 
@@ -102,6 +134,19 @@ class ControlPolicy:
             reasons=[f"Operator {operator.operator_id} lacks required scope: {action}"],
             operator=operator,
         )
+
+    def evaluate_risk(self, operator: OperatorContext, *, action: str, risk_level: str) -> ControlDecision:
+        base_decision = self.evaluate(operator, action)
+        if base_decision.status != "allow":
+            return base_decision
+        if risk_level in {"high", "critical"} and "safety.override" not in operator.control_scopes:
+            return ControlDecision(
+                status="approval_required",
+                action=action,
+                reasons=[f"Action {action} with risk_level={risk_level} requires scope: safety.override"],
+                operator=operator,
+            )
+        return base_decision
 
 
 def _optional_string(value: Any) -> str | None:

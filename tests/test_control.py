@@ -1,4 +1,5 @@
 from fireclaw_core.control import (
+    AuthorizationRequest,
     DEFAULT_LOCAL_OPERATOR,
     ControlPolicy,
     operator_from_payload,
@@ -51,3 +52,38 @@ def test_operator_payload_defaults_to_local_operator_when_missing():
     operator = operator_from_payload(None)
 
     assert operator == DEFAULT_LOCAL_OPERATOR
+
+
+def test_operator_requires_approval_for_high_risk_action_without_override_scope():
+    operator = operator_from_payload({"operator_id": "operator-1", "role": "operator"})
+
+    decision = ControlPolicy().evaluate_risk(operator, action="task.confirm", risk_level="high")
+
+    assert decision.status == "approval_required"
+    assert decision.action == "task.confirm"
+    assert "safety.override" in decision.reasons[0]
+
+
+def test_supervisor_can_approve_high_risk_action():
+    supervisor = operator_from_payload({"operator_id": "supervisor-1", "role": "supervisor"})
+
+    decision = ControlPolicy().evaluate_risk(supervisor, action="task.confirm", risk_level="high")
+
+    assert decision.status == "allow"
+
+
+def test_authorization_request_expires_after_deadline():
+    request = AuthorizationRequest(
+        request_id="auth-1",
+        task_id="task-1",
+        session_id="session-1",
+        command="运行 smoke_entry",
+        requested_by=operator_from_payload({"operator_id": "operator-1", "role": "operator"}),
+        required_scope="safety.override",
+        risk_level="high",
+        requested_at="2026-06-05T00:00:00+00:00",
+        expires_at="2026-06-05T00:05:00+00:00",
+    )
+
+    assert request.is_expired("2026-06-05T00:06:00+00:00") is True
+    assert request.to_dict()["required_scope"] == "safety.override"

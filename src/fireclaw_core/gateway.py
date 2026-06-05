@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from fireclaw_core.agent import FireClawAgent
-from fireclaw_core.control import ControlPolicy, OperatorContext, operator_from_payload
+from fireclaw_core.control import AuthorizationRequest, ControlPolicy, OperatorContext, operator_from_payload
 from fireclaw_core.event_ledger import EventLedger
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
@@ -33,6 +33,7 @@ class GatewayConfig:
     available_sensors: tuple[str, ...] = ()
     default_session_id: str = "default"
     max_active_execution_tasks: int = 1
+    authorization_expiry_seconds: int = 300
 
 
 @dataclass
@@ -66,6 +67,8 @@ class FireClawGateway:
         self._task_controls: dict[str, TaskControl] = {}
         self._task_lock = threading.Lock()
         self._emergency_stop = EmergencyStopState()
+        self._authorization_lock = threading.Lock()
+        self._pending_authorizations_by_session: dict[str, AuthorizationRequest] = {}
 
     @property
     def base_url(self) -> str:
@@ -175,6 +178,7 @@ class FireClawGateway:
                     task_id=task_id,
                     record_received=False,
                     cancellation_requested=control.cancel_event.is_set,
+                    operator=resolved_operator,
                 )
             except Exception as exc:
                 self._append_event(
@@ -208,7 +212,9 @@ class FireClawGateway:
             "message": "任务已接收，正在后台执行。",
         }
 
-    def cancel_task(self, task_id: str) -> dict[str, Any]:
+    def cancel_task(self, task_id: str, operator: OperatorContext | None = None) -> dict[str, Any]:
+        resolved_operator = operator or operator_from_payload(None)
+        control_decision = ControlPolicy().evaluate(resolved_operator, "task.cancel")
         with self._task_lock:
             control = self._task_controls.get(task_id)
         if control is None:
@@ -223,6 +229,25 @@ class FireClawGateway:
                 "status": "not_found",
                 "task_id": task_id,
                 "message": "没有找到正在运行的任务。",
+            }
+        if control_decision.status != "allow":
+            self._append_event(
+                task_id=task_id,
+                session_id=control.session_id,
+                type="task.cancel_denied",
+                payload={
+                    "status": "denied",
+                    "task_id": task_id,
+                    "operator": resolved_operator.to_dict(),
+                    "control": control_decision.to_dict(),
+                },
+            )
+            return {
+                "status": "denied",
+                "task_id": task_id,
+                "session_id": control.session_id,
+                "message": "操作员没有权限取消任务。",
+                "control": control_decision.to_dict(),
             }
         already_requested = control.cancel_event.is_set()
         control.cancel_event.set()
@@ -353,6 +378,7 @@ class FireClawGateway:
         task_id: str,
         record_received: bool,
         cancellation_requested=None,
+        operator: OperatorContext | None = None,
     ) -> dict[str, Any]:
         if record_received:
             self._append_event(
@@ -369,7 +395,126 @@ class FireClawGateway:
         result = agent.run(command)
         result["task_id"] = task_id
         self._record_result_events(task_id, session_id, result)
+        self._record_authorization_request_if_needed(
+            task_id=task_id,
+            session_id=session_id,
+            command=command,
+            result=result,
+            operator=operator or operator_from_payload(None),
+        )
         return result
+
+    def _record_authorization_request_if_needed(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        command: str,
+        result: dict[str, Any],
+        operator: OperatorContext,
+    ) -> None:
+        if result.get("status") != "awaiting_confirmation":
+            return
+        risk_level = _risk_level_from_confirmation(result.get("confirmation"))
+        decision = ControlPolicy().evaluate_risk(operator, action="task.confirm", risk_level=risk_level)
+        if decision.status != "approval_required":
+            return
+        requested_at_dt = datetime.now(timezone.utc)
+        expires_at_dt = requested_at_dt + timedelta(seconds=max(0, self.config.authorization_expiry_seconds))
+        request = AuthorizationRequest(
+            request_id=f"auth-{uuid4().hex}",
+            task_id=task_id,
+            session_id=session_id,
+            command=command,
+            requested_by=operator,
+            required_scope="safety.override",
+            risk_level=risk_level,
+            requested_at=requested_at_dt.isoformat(),
+            expires_at=expires_at_dt.isoformat(),
+        )
+        with self._authorization_lock:
+            self._pending_authorizations_by_session[session_id] = request
+        self._append_event(
+            task_id=task_id,
+            session_id=session_id,
+            type="authorization.requested",
+            payload={
+                "authorization": request.to_dict(),
+                "control": decision.to_dict(),
+            },
+        )
+
+    def _authorize_confirmation(
+        self,
+        *,
+        session_id: str,
+        operator: OperatorContext,
+    ) -> tuple[bool, dict[str, Any]]:
+        with self._authorization_lock:
+            request = self._pending_authorizations_by_session.get(session_id)
+        if request is None:
+            decision = ControlPolicy().evaluate(operator, "task.confirm")
+            if decision.status == "allow":
+                return True, {"control": decision.to_dict(), "authorization": None}
+            return False, {
+                "status": "denied",
+                "session_id": session_id,
+                "message": "操作员没有权限确认任务。",
+                "control": decision.to_dict(),
+            }
+        now = datetime.now(timezone.utc).isoformat()
+        if request.is_expired(now):
+            with self._authorization_lock:
+                self._pending_authorizations_by_session.pop(session_id, None)
+            payload = {
+                "status": "expired",
+                "session_id": session_id,
+                "authorization": request.to_dict(),
+                "expired_at": now,
+            }
+            self._append_event(
+                task_id=request.task_id,
+                session_id=session_id,
+                type="authorization.expired",
+                payload=payload,
+            )
+            return False, {
+                "status": "expired",
+                "session_id": session_id,
+                "message": "授权请求已过期，请重新提交任务。",
+                "authorization": request.to_dict(),
+            }
+        decision = ControlPolicy().evaluate_risk(operator, action="task.confirm", risk_level=request.risk_level)
+        if decision.status != "allow":
+            payload = {
+                "status": "denied",
+                "session_id": session_id,
+                "authorization": request.to_dict(),
+                "control": decision.to_dict(),
+            }
+            self._append_event(
+                task_id=request.task_id,
+                session_id=session_id,
+                type="authorization.denied",
+                payload=payload,
+            )
+            return False, {
+                "status": "denied",
+                "session_id": session_id,
+                "message": "操作员没有权限批准该任务。",
+                "authorization": request.to_dict(),
+                "control": decision.to_dict(),
+            }
+        with self._authorization_lock:
+            self._pending_authorizations_by_session.pop(session_id, None)
+        return True, {
+            "status": "approved",
+            "session_id": session_id,
+            "authorization": request.to_dict(),
+            "control": decision.to_dict(),
+            "approved_by": operator.to_dict(),
+            "approved_at": now,
+        }
 
     def list_skills(self, session_id: str | None = None) -> dict[str, Any]:
         return self.run_agent("你有哪些技能", session_id=session_id)
@@ -662,8 +807,13 @@ class FireClawGateway:
             payload = self._read_json(handler)
             task_cancel_id = _task_cancel_path(parsed.path)
             if task_cancel_id is not None:
-                result = self.cancel_task(task_cancel_id)
-                status = HTTPStatus.OK if result["status"] != "not_found" else HTTPStatus.NOT_FOUND
+                result = self.cancel_task(task_cancel_id, operator=operator_from_payload(payload.get("operator")))
+                if result["status"] == "not_found":
+                    status = HTTPStatus.NOT_FOUND
+                elif result["status"] == "denied":
+                    status = HTTPStatus.FORBIDDEN
+                else:
+                    status = HTTPStatus.OK
                 self._write_json(handler, status, result)
                 return
             if parsed.path == "/tasks":
@@ -689,11 +839,27 @@ class FireClawGateway:
                 self._write_json(handler, status, result)
                 return
             if parsed.path == "/confirm":
+                session_id = _payload_session(payload, self.config.default_session_id)
+                operator = operator_from_payload(payload.get("operator"))
+                authorized, authorization_payload = self._authorize_confirmation(
+                    session_id=session_id,
+                    operator=operator,
+                )
+                if not authorized:
+                    self._write_json(handler, HTTPStatus.FORBIDDEN, authorization_payload)
+                    return
                 result = self.submit_agent(
                     "确认执行",
-                    session_id=_payload_session(payload, self.config.default_session_id),
-                    operator=operator_from_payload(payload.get("operator")),
+                    session_id=session_id,
+                    operator=operator,
                 )
+                if authorization_payload.get("status") == "approved" and result.get("task_id"):
+                    self._append_event(
+                        task_id=result["task_id"],
+                        session_id=session_id,
+                        type="authorization.approved",
+                        payload=authorization_payload,
+                    )
                 self._write_json(
                     handler,
                     _submission_status(result),
@@ -780,6 +946,20 @@ def _submission_status(result: dict[str, Any]) -> HTTPStatus:
     if result.get("status") == "denied":
         return HTTPStatus.FORBIDDEN
     return HTTPStatus.ACCEPTED
+
+
+def _risk_level_from_confirmation(confirmation: Any) -> str:
+    if not isinstance(confirmation, dict):
+        return "low"
+    reasons = confirmation.get("reasons")
+    if not isinstance(reasons, list):
+        return "low"
+    text = " ".join(str(reason).lower() for reason in reasons)
+    if "critical" in text:
+        return "critical"
+    if "high" in text or "real robot" in text:
+        return "high"
+    return "low"
 
 
 def _task_events_path(path: str) -> str | None:
