@@ -61,6 +61,13 @@ class Ros1TimeoutConfig:
 
 
 @dataclass(frozen=True)
+class Ros1TransportConfig:
+    enabled: bool = False
+    wait_for_server_seconds: float = 5.0
+    wait_for_result_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
 class Ros1AdapterConfig:
     robot_id: str
     namespace: str | None = None
@@ -68,6 +75,7 @@ class Ros1AdapterConfig:
     emergency_stop: Ros1EmergencyStopConfig | None = None
     timeouts: Ros1TimeoutConfig = field(default_factory=Ros1TimeoutConfig)
     targets: dict[str, Any] = field(default_factory=dict)
+    transport: Ros1TransportConfig = field(default_factory=Ros1TransportConfig)
 
 
 def load_ros1_adapter_config(path: str | Path) -> Ros1AdapterConfig:
@@ -115,6 +123,7 @@ def parse_ros1_adapter_config(raw: dict[str, Any]) -> Ros1AdapterConfig:
     targets = raw.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError("targets must be an object.")
+    transport = _parse_transport_config(raw.get("transport", {}))
 
     return Ros1AdapterConfig(
         robot_id=robot_id,
@@ -123,6 +132,7 @@ def parse_ros1_adapter_config(raw: dict[str, Any]) -> Ros1AdapterConfig:
         emergency_stop=emergency_stop,
         timeouts=timeouts,
         targets=targets,
+        transport=transport,
     )
 
 
@@ -156,6 +166,22 @@ def _parse_emergency_stop_config(raw: Any) -> Ros1EmergencyStopConfig:
         interface=interface,
         name=_required_string(expanded, "name", prefix="emergency_stop"),
         type=_required_string(expanded, "type", prefix="emergency_stop"),
+    )
+
+
+def _parse_transport_config(raw: Any) -> Ros1TransportConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("transport must be an object.")
+    wait_for_server_seconds = float(raw.get("wait_for_server_seconds", 5.0))
+    wait_for_result_seconds = float(raw.get("wait_for_result_seconds", 30.0))
+    if wait_for_server_seconds < 0:
+        raise ValueError("transport.wait_for_server_seconds must be non-negative.")
+    if wait_for_result_seconds < 0:
+        raise ValueError("transport.wait_for_result_seconds must be non-negative.")
+    return Ros1TransportConfig(
+        enabled=bool(raw.get("enabled", False)),
+        wait_for_server_seconds=wait_for_server_seconds,
+        wait_for_result_seconds=wait_for_result_seconds,
     )
 
 

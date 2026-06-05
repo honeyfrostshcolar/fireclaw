@@ -7,6 +7,8 @@ from typing import Protocol
 
 from fireclaw_core.ros1_config import Ros1AdapterConfig
 from fireclaw_core.ros1_config import Ros1EndpointConfig
+from fireclaw_core.ros1_template import render_ros1_template
+from fireclaw_core.ros1_transport import Ros1Transport
 
 
 @dataclass
@@ -296,6 +298,7 @@ class MockRos1RobotAdapter:
 @dataclass
 class Ros1RobotAdapter:
     config: Ros1AdapterConfig
+    transport: Ros1Transport | None = None
     commands: list[Ros1CommandSpec] = field(default_factory=list)
     dry_run: bool = False
     mode: str = "ros1"
@@ -380,6 +383,50 @@ class Ros1RobotAdapter:
             feedback_supported=endpoint.feedback_supported,
         )
         self.commands.append(command)
+        template = endpoint.goal_template if endpoint.interface == "action" else endpoint.request_template
+        ros1_payload = render_ros1_template(template or payload, inputs=payload, targets=self.config.targets)
+        base_data = {
+            "robot_id": self.robot_id,
+            "dry_run": self.dry_run,
+            "ros1_interface": endpoint.interface,
+            "ros1_name": endpoint.name,
+            "ros1_type": endpoint.type,
+            "ros1_profile": endpoint.profile,
+            "goal_template": dict(endpoint.goal_template),
+            "request_template": dict(endpoint.request_template),
+            "targets": dict(self.config.targets),
+            "ros1_payload": ros1_payload,
+            **payload,
+        }
+        if self.config.transport.enabled:
+            try:
+                transport = self.transport or Ros1Transport()
+                transport_result = transport.execute(endpoint, ros1_payload, self.config.transport)
+            except Exception as exc:
+                return RobotActionResult(
+                    ok=False,
+                    status="failed",
+                    robot_id=self.robot_id,
+                    mode=self.mode,
+                    action=action,
+                    dry_run=self.dry_run,
+                    data=base_data,
+                    timestamp=timestamp,
+                    error=str(exc),
+                )
+            status = transport_result.get("status", "failed")
+            ok = status == "succeeded"
+            return RobotActionResult(
+                ok=ok,
+                status=status,
+                robot_id=self.robot_id,
+                mode=self.mode,
+                action=action,
+                dry_run=self.dry_run,
+                data={**base_data, "ros1_response": transport_result.get("response")},
+                timestamp=timestamp,
+                error=transport_result.get("error"),
+            )
         return RobotActionResult(
             ok=False,
             status="not_configured",
@@ -387,18 +434,7 @@ class Ros1RobotAdapter:
             mode=self.mode,
             action=action,
             dry_run=self.dry_run,
-            data={
-                "robot_id": self.robot_id,
-                "dry_run": self.dry_run,
-                "ros1_interface": endpoint.interface,
-                "ros1_name": endpoint.name,
-                "ros1_type": endpoint.type,
-                "ros1_profile": endpoint.profile,
-                "goal_template": dict(endpoint.goal_template),
-                "request_template": dict(endpoint.request_template),
-                "targets": dict(self.config.targets),
-                **payload,
-            },
+            data=base_data,
             timestamp=timestamp,
             error="Live ROS1 transport is not implemented yet.",
         )

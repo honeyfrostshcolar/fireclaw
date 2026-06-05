@@ -124,6 +124,36 @@ def test_gateway_returns_health_and_state(tmp_path):
     assert state["environment_state"]["reachable_floors"] == [1, 2, 3]
 
 
+def test_gateway_accepts_ros1_config_path_for_real_adapter_skeleton(tmp_path):
+    config_path = tmp_path / "ros1.yaml"
+    config_path.write_text(
+        """
+robot_id: gateway-ros1
+remap:
+  navigate_to_floor:
+    profile: move_base
+    name: /move_base
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="ros1",
+            robot_id="ignored",
+            ros1_config_path=str(config_path),
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+
+    assert gateway.state()["robot_state"]["mode"] == "ros1"
+    assert gateway.state()["robot_state"]["robot_id"] == "gateway-ros1"
+
+
 def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     gateway = FireClawGateway(
         GatewayConfig(

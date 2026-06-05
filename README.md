@@ -86,13 +86,18 @@ Then run doctor against it:
   --event-path /tmp/fireclaw-doctor-events.jsonl
 ```
 
-The `ros1` adapter is currently a dependency-free configuration skeleton. It does not import `rospy` or `actionlib`, and live actions return `not_configured` until a real ROS1 transport layer is implemented.
+The `ros1` adapter loads robot-specific endpoint config without importing ROS at startup. By default, transport is disabled and actions return `not_configured`. Set `transport.enabled: true` only in a reviewed robot-specific config to make the adapter import `rospy`/`actionlib` and call ROS1 topic, service, or action endpoints.
 
 The same config can be written as YAML using `remap`. This is the preferred shape for robot teams because it exposes the action-to-ROS1 binding directly:
 
 ```yaml
 robot_id: fireclaw-01
 namespace: /fireclaw/fireclaw-01
+
+transport:
+  enabled: true
+  wait_for_server_seconds: 5.0
+  wait_for_result_seconds: 30.0
 
 remap:
   navigate_to_floor:
@@ -137,6 +142,8 @@ Supported profiles are:
 - `string_topic`: expands to `std_msgs/String`.
 
 Any remap key may be a built-in robot action or a future workspace skill name. Doctor reports workspace skills that have no ROS1 remap and custom remap entries that do not match any loaded skill manifest.
+
+When transport is enabled, FireClaw renders `goal_template` and `request_template` using skill inputs and `targets`. For example, `{{ targets.floor_${floor}.x }}` with input `{"floor": 2}` resolves to `targets.floor_2.x`. The current test suite validates this rendering and ROS1 topic/service/action transport with fake ROS modules; a real robot still requires validation in a ROS1 runtime.
 
 ## Run the Dry-Run Agent
 
@@ -184,7 +191,7 @@ Runtime context can be configured from the CLI:
 - `simulator`: deterministic in-process simulator with floor, victim, sensor, and environment state.
 - `mock-ros1`: ROS1-shaped test double that records command specs without importing `rospy`.
 - `mock-ros2`: legacy alias that currently routes to the mock ROS1 adapter.
-- `ros1`: dependency-free real ROS1 adapter skeleton loaded from `--ros1-config`; live transport is not implemented yet.
+- `ros1`: real ROS1 adapter loaded from `--ros1-config`; transport is disabled unless the config sets `transport.enabled: true`.
 
 For safety-gate experiments, `--real-run` sets `dry_run=false`:
 

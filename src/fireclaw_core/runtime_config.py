@@ -10,7 +10,13 @@ from fireclaw_core.ros1_config import load_ros1_adapter_config
 ADAPTER_CHOICES = ("dry-run", "simulator", "mock-ros1", "mock-ros2", "ros1")
 
 
-def create_robot_adapter(adapter: str, robot_id: str, *, config_path: str | None = None):
+def create_robot_adapter(
+    adapter: str,
+    robot_id: str,
+    *,
+    config_path: str | None = None,
+    ros1_transport=None,
+):
     if adapter == "dry-run":
         return DryRunRobotAdapter(robot_id=robot_id)
     if adapter == "simulator":
@@ -20,5 +26,5 @@ def create_robot_adapter(adapter: str, robot_id: str, *, config_path: str | None
     if adapter == "ros1":
         if config_path is None:
             raise ValueError("ros1 adapter requires config_path.")
-        return Ros1RobotAdapter(config=load_ros1_adapter_config(config_path))
+        return Ros1RobotAdapter(config=load_ros1_adapter_config(config_path), transport=ros1_transport)
     raise ValueError(f"Unknown adapter: {adapter}")

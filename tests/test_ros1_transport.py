@@ -1,0 +1,123 @@
+from types import SimpleNamespace
+
+from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+from fireclaw_core.ros1_transport import Ros1Transport
+
+
+class FakePublisher:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, payload):
+        self.published.append(payload)
+
+
+class FakeServiceProxy:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, payload):
+        self.calls.append(payload)
+        return {"accepted": True}
+
+
+class FakeActionClient:
+    def __init__(self):
+        self.goals = []
+        self.cancelled = False
+
+    def wait_for_server(self, timeout=None):
+        self.server_timeout = timeout
+        return True
+
+    def send_goal(self, goal, feedback_cb=None):
+        self.goals.append(goal)
+        if feedback_cb is not None:
+            feedback_cb({"progress": 0.5})
+
+    def wait_for_result(self, timeout=None):
+        self.result_timeout = timeout
+        return True
+
+    def get_result(self):
+        return {"done": True}
+
+    def cancel_goal(self):
+        self.cancelled = True
+
+
+class FakeRos1Module:
+    def __init__(self):
+        self.publisher = FakePublisher()
+        self.service = FakeServiceProxy()
+        self.action_client = FakeActionClient()
+
+    def create_publisher(self, name, type_name):
+        self.publisher_args = (name, type_name)
+        return self.publisher
+
+    def create_service_proxy(self, name, type_name):
+        self.service_args = (name, type_name)
+        return self.service
+
+    def create_action_client(self, name, type_name):
+        self.action_args = (name, type_name)
+        return self.action_client
+
+    def duration(self, seconds):
+        return seconds
+
+
+def test_ros1_transport_publishes_topic_payload():
+    fake = FakeRos1Module()
+    transport = Ros1Transport(module=fake)
+    endpoint = Ros1EndpointConfig(interface="topic", name="/status", type="std_msgs/String")
+
+    result = transport.execute(endpoint, {"data": "ready"}, Ros1TransportConfig(enabled=True))
+
+    assert result["status"] == "succeeded"
+    assert fake.publisher_args == ("/status", "std_msgs/String")
+    assert fake.publisher.published == [{"data": "ready"}]
+
+
+def test_ros1_transport_calls_service_payload():
+    fake = FakeRos1Module()
+    transport = Ros1Transport(module=fake)
+    endpoint = Ros1EndpointConfig(interface="service", name="/stop", type="std_srvs/Trigger")
+
+    result = transport.execute(endpoint, {"reason": "test"}, Ros1TransportConfig(enabled=True))
+
+    assert result["status"] == "succeeded"
+    assert result["response"] == {"accepted": True}
+    assert fake.service_args == ("/stop", "std_srvs/Trigger")
+    assert fake.service.calls == [{"reason": "test"}]
+
+
+def test_ros1_transport_sends_action_goal_and_feedback():
+    fake = FakeRos1Module()
+    feedback = []
+    transport = Ros1Transport(module=fake, feedback_sink=feedback.append)
+    endpoint = Ros1EndpointConfig(interface="action", name="/move_base", type="move_base_msgs/MoveBaseAction")
+
+    result = transport.execute(
+        endpoint,
+        {"target_pose": {"pose": {"position": {"x": 1.0}}}},
+        Ros1TransportConfig(enabled=True, wait_for_server_seconds=2.0, wait_for_result_seconds=3.0),
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["response"] == {"done": True}
+    assert fake.action_args == ("/move_base", "move_base_msgs/MoveBaseAction")
+    assert fake.action_client.server_timeout == 2.0
+    assert fake.action_client.result_timeout == 3.0
+    assert fake.action_client.goals == [{"target_pose": {"pose": {"position": {"x": 1.0}}}}]
+    assert feedback == [{"progress": 0.5}]
+
+
+def test_ros1_transport_reports_disabled_transport():
+    transport = Ros1Transport(module=SimpleNamespace())
+    endpoint = Ros1EndpointConfig(interface="topic", name="/status", type="std_msgs/String")
+
+    result = transport.execute(endpoint, {"data": "ready"}, Ros1TransportConfig(enabled=False))
+
+    assert result["status"] == "not_configured"

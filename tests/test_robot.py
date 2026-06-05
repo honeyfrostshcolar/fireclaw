@@ -8,6 +8,7 @@ from fireclaw_core.robot import (
     SimulatorRobotAdapter,
 )
 from fireclaw_core.runtime_config import create_robot_adapter
+from fireclaw_core.ros1_transport import Ros1Transport
 
 
 def test_dry_run_robot_adapter_returns_structured_success_result():
@@ -277,6 +278,83 @@ targets:
     assert result.data["ros1_profile"] == "move_base"
     assert result.data["goal_template"]["target_pose"]["header"]["frame_id"] == "map"
     assert result.data["targets"]["floor_2"]["x"] == 12.4
+
+
+class _FakeRos1Module:
+    def __init__(self):
+        self.action_goals = []
+
+    def create_action_client(self, name, type_name):
+        self.action_args = (name, type_name)
+        return self
+
+    def wait_for_server(self, timeout=None):
+        self.server_timeout = timeout
+        return True
+
+    def send_goal(self, goal, feedback_cb=None):
+        self.action_goals.append(goal)
+        if feedback_cb is not None:
+            feedback_cb({"progress": 0.5, "message": "halfway"})
+
+    def wait_for_result(self, timeout=None):
+        self.result_timeout = timeout
+        return True
+
+    def get_result(self):
+        return {"arrived": True}
+
+    def duration(self, seconds):
+        return seconds
+
+
+def test_ros1_robot_adapter_executes_transport_enabled_action_with_rendered_goal(tmp_path):
+    config_path = tmp_path / "ros1.yaml"
+    config_path.write_text(
+        """
+robot_id: robot-ros1-real
+transport:
+  enabled: true
+  wait_for_server_seconds: 2.0
+  wait_for_result_seconds: 3.0
+remap:
+  navigate_to_floor:
+    profile: move_base
+    name: /move_base
+    goal_template:
+      target_pose:
+        header:
+          frame_id: "{{ targets.floor_${floor}.frame_id }}"
+        pose:
+          position:
+            x: "{{ targets.floor_${floor}.x }}"
+            y: "{{ targets.floor_${floor}.y }}"
+targets:
+  floor_2:
+    frame_id: map
+    x: 12.4
+    y: -3.8
+""".lstrip(),
+        encoding="utf-8",
+    )
+    fake = _FakeRos1Module()
+    feedback = []
+    robot = create_robot_adapter(
+        "ros1",
+        "ignored",
+        config_path=str(config_path),
+        ros1_transport=Ros1Transport(module=fake, feedback_sink=feedback.append),
+    )
+
+    result = robot.navigate_to_floor(2)
+
+    assert result.ok is True
+    assert result.status == "succeeded"
+    assert result.data["ros1_payload"]["target_pose"]["header"]["frame_id"] == "map"
+    assert result.data["ros1_payload"]["target_pose"]["pose"]["position"]["x"] == 12.4
+    assert result.data["ros1_response"] == {"arrived": True}
+    assert fake.action_goals == [result.data["ros1_payload"]]
+    assert feedback == [{"progress": 0.5, "message": "halfway"}]
 
 
 def test_simulator_adapter_updates_floor_and_reports_victims():

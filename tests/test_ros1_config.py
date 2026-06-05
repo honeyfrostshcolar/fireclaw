@@ -144,3 +144,27 @@ remap:
     assert spray.name == "/fireclaw/fireclaw-01/spray_water"
     assert spray.type == "fireclaw_msgs/SprayWater"
     assert spray.request_template["target_id"] == "{{ target_id }}"
+
+
+def test_load_ros1_adapter_config_parses_transport_settings(tmp_path):
+    config_path = tmp_path / "ros1.yaml"
+    config_path.write_text(
+        """
+robot_id: fireclaw-01
+transport:
+  enabled: true
+  wait_for_server_seconds: 2.5
+  wait_for_result_seconds: 7.0
+remap:
+  navigate_to_floor:
+    profile: move_base
+    name: /move_base
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_ros1_adapter_config(config_path)
+
+    assert config.transport.enabled is True
+    assert config.transport.wait_for_server_seconds == 2.5
+    assert config.transport.wait_for_result_seconds == 7.0

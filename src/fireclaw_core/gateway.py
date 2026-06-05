@@ -26,6 +26,7 @@ class GatewayConfig:
     port: int = 8765
     adapter: str = "dry-run"
     robot_id: str = "fireclaw-gateway"
+    ros1_config_path: str | None = None
     memory_path: str = "memory/fireclaw-gateway.jsonl"
     event_path: str = "memory/fireclaw-gateway-events.jsonl"
     workspace_skills_dir: str | None = "skills"
@@ -57,7 +58,7 @@ class EmergencyStopState:
 class FireClawGateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
-        self.robot = create_robot_adapter(config.adapter, config.robot_id)
+        self.robot = create_robot_adapter(config.adapter, config.robot_id, config_path=config.ros1_config_path)
         self.memory = JsonlMemoryStore(config.memory_path)
         self.events = EventLedger(config.event_path)
         self._server: ThreadingHTTPServer | None = None
@@ -989,6 +990,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8765, help="HTTP bind port.")
     parser.add_argument("--adapter", choices=ADAPTER_CHOICES, default="dry-run")
     parser.add_argument("--robot-id", default="fireclaw-gateway")
+    parser.add_argument("--ros1-config", default=None)
     parser.add_argument("--memory-path", default="memory/fireclaw-gateway.jsonl")
     parser.add_argument("--event-path", default="memory/fireclaw-gateway-events.jsonl")
     parser.add_argument("--skills-dir", default="skills")
@@ -1005,6 +1007,7 @@ def main() -> int:
             port=args.port,
             adapter=args.adapter,
             robot_id=args.robot_id,
+            ros1_config_path=args.ros1_config,
             memory_path=args.memory_path,
             event_path=args.event_path,
             workspace_skills_dir=None if args.no_workspace_skills else args.skills_dir,
