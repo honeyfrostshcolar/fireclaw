@@ -625,6 +625,32 @@ result = mission_observer.submit_subtask("robot-1", "去二楼搜索", session_i
   --scopes mission.submit mission.read
 ```
 
+### Fleet Presence v1
+
+MissionAgent can check which robot subagents are online before planning. `check_fleet_presence()` pings each enabled robot's `/state` endpoint and updates the registry with `last_seen_at` timestamps.
+
+```python
+from fireclaw_core.mission_agent import MissionAgent
+from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+
+registry = RobotRegistry([
+    RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+])
+mission = MissionAgent(registry=registry, subagent_client=client)
+
+# Check which robots are online
+presence = mission.check_fleet_presence()
+# presence["r1"]["online"] == True
+# presence["r2"]["online"] == False (if unreachable)
+
+# plan_and_submit automatically filters offline robots
+result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-003")
+# Only online robots receive subtasks
+```
+
+Robot presence is tracked in-memory on `RobotRegistry`. `is_online(robot_id)` and `online_entries()` query the last known state. `plan_and_submit` calls `check_fleet_presence()` automatically and skips offline robots when assigning subtasks.
+
 ## Session State
 
 Every task result includes session metadata:

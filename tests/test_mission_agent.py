@@ -9,6 +9,7 @@ class FakeSubagentClient:
         self.calls = []
         self.cancel_calls = []
         self.traces = {}
+        self.presence_results = {}
 
     def submit_task(self, entry, **kwargs):
         self.calls.append((entry, kwargs))
@@ -28,6 +29,16 @@ class FakeSubagentClient:
             "status": "cancel_requested",
             "task_id": task_id,
             "robot_id": entry.robot_id,
+        }
+
+    def check_presence(self, entry):
+        if entry.robot_id in self.presence_results:
+            return self.presence_results[entry.robot_id]
+        return {
+            "robot_id": entry.robot_id,
+            "online": True,
+            "last_seen_at": "2026-06-08T00:00:00+00:00",
+            "state": {},
         }
 
 
@@ -467,3 +478,59 @@ def test_mission_agent_no_authorization_when_policy_not_configured():
 
     assert result["status"] == "accepted"
     assert len(client.calls) == 1
+
+
+def test_mission_agent_check_fleet_presence_updates_registry():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765"),
+    ])
+    client = FakeSubagentClient()
+    client.presence_results["r2"] = {
+        "robot_id": "r2",
+        "online": False,
+        "error": "Connection refused",
+    }
+    mission = MissionAgent(registry=registry, subagent_client=client)
+
+    results = mission.check_fleet_presence()
+
+    assert results["r1"]["online"] is True
+    assert results["r2"]["online"] is False
+    assert registry.is_online("r1") is True
+    assert registry.is_online("r2") is False
+
+
+def test_mission_agent_plan_and_submit_skips_offline_robots():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    client.presence_results["r2"] = {
+        "robot_id": "r2",
+        "online": False,
+        "error": "Connection refused",
+    }
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼和三楼搜索受困人员",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned",
+        message="ok",
+        intent="search",
+        plan=plan,
+    ))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+
+    # Should still submit since r1 is online, but r2 should be skipped
+    assert result["status"] == "planned"
+    assert len(result["subtask_results"]) == 1
+    assert result["subtask_results"][0]["robot_id"] == "r1"

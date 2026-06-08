@@ -593,3 +593,85 @@ Known limitations:
 Next recommended implementation:
 
 - Mission-level authorization scopes before broader natural-language/TUI work, because the main agent can now submit and cancel robot subtasks.
+
+## Update 2026-06-08 16:30 CST
+
+### Mission Planner v1 Started
+
+Created plan:
+
+- `docs/superpowers/plans/2026-06-08-mission-planner-v1.md`
+
+Created implementation files:
+
+- `src/fireclaw_core/mission_planner.py`
+
+Created tests:
+
+- `tests/test_mission_planner.py`
+
+Modified:
+
+- `src/fireclaw_core/mission_agent.py`
+- `src/fireclaw_core/mission_cli.py`
+- `tests/test_mission_agent.py`
+- `tests/test_mission_cli.py`
+- `memory/2026-06-08/fireclaw-work-resume.md`
+
+### Implementation Details
+
+- Added `MissionPlanner` deterministic rule-based planner.
+- Added data types: `MissionSubtask`, `MissionPlan`, `MissionPlanningResult`, `MissionPlannerContext`.
+- Added `MissionPlannerProtocol` for swappable planner implementations.
+- Intent/capability mapping supports: search, patrol, firefight, recon, transport.
+- Floor extraction handles Chinese digits and Arabic numerals with multi-floor support.
+- Robot assignment logic:
+  - matches by `capabilities` from `RobotRegistry`;
+  - excludes disabled robots;
+  - when enough robots: parallel assignment (same `execution_group`);
+  - when fewer robots: sequential reuse (incrementing `execution_group`).
+- `MissionAgent` extended with `planner` parameter and `plan_and_submit(command)` method.
+- CLI extended with `plan-mission` subcommand.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_mission_planner.py -q`
+  - RED first: `ModuleNotFoundError: No module named 'fireclaw_core.mission_planner'`
+  - GREEN after implementation: `4 passed`
+- `.venv/bin/python -m pytest tests/test_mission_planner.py -q` (after Task 2 tests)
+  - GREEN: `9 passed`
+- `.venv/bin/python -m pytest tests/test_mission_agent.py -q`
+  - RED first: `MissionAgent.__init__() got an unexpected keyword argument 'planner'`
+  - GREEN after implementation: `9 passed`
+- `.venv/bin/python -m pytest tests/test_mission_cli.py -q`
+  - RED first: CLI returned exit status 2 (unknown command)
+  - GREEN after implementation: `4 passed`
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `247 passed in 13.87s`
+
+### Current Conclusion
+
+Mission Planner v1 is implemented and verified.
+
+Implemented behavior:
+
+- deterministic rule-based mission planner for multi-floor/multi-robot commands;
+- intent detection: search, patrol, firefight, recon, transport;
+- multi-floor extraction from Chinese commands;
+- robot capability matching from `RobotRegistry`;
+- parallel vs sequential execution group assignment;
+- `MissionAgent.plan_and_submit()` integration;
+- CLI `plan-mission` command.
+
+Known limitations:
+
+- no LLM-based planning (deterministic rules only);
+- no zone-based robot preference (capabilities only);
+- no mission-level authorization scopes yet;
+- no streaming plan progress;
+- no plan validation against robot state before submission;
+- no autonomous mission decomposition beyond floor-level splitting.
+
+Next recommended implementation:
+
+- Mission-level authorization scopes or fleet presence/heartbeat, depending on whether safety policy or operational reliability is more urgent.

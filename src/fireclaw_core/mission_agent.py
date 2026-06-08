@@ -28,6 +28,9 @@ class SubagentClient(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def check_presence(self, entry: RobotRegistryEntry) -> dict[str, Any]:
+        ...
+
 
 class MissionAgent:
     def __init__(
@@ -59,6 +62,16 @@ class MissionAgent:
                 "decision": decision.to_dict(),
             }
         return None
+
+    def check_fleet_presence(self) -> dict[str, dict[str, Any]]:
+        """Check presence of all enabled robots. Updates registry with last_seen_at."""
+        results = {}
+        for entry in self.registry.enabled_entries():
+            result = self.subagent_client.check_presence(entry)
+            results[entry.robot_id] = result
+            if result["online"]:
+                self.registry.update_presence(entry.robot_id, result["last_seen_at"])
+        return results
 
     def submit_subtask(
         self,
@@ -186,8 +199,11 @@ class MissionAgent:
                 "message": "No mission planner configured.",
                 "subtask_results": [],
             }
+        # Check fleet presence before planning
+        presence = self.check_fleet_presence()
+        online_robot_ids = {rid for rid, info in presence.items() if info.get("online")}
         context = MissionPlannerContext(
-            available_robots=list(self.registry.enabled_entries()),
+            available_robots=[e for e in self.registry.enabled_entries() if e.robot_id in online_robot_ids],
         )
         planning_result = self.planner.plan(command, context=context)
         if planning_result.status != "planned" or planning_result.plan is None:
@@ -207,6 +223,9 @@ class MissionAgent:
             )
         subtask_results: list[dict[str, Any]] = []
         for subtask in planning_result.plan.subtasks:
+            # Skip offline robots
+            if subtask.robot_id not in online_robot_ids:
+                continue
             result = self.submit_subtask(
                 subtask.robot_id,
                 subtask.command,
