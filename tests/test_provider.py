@@ -6,6 +6,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from fireclaw_core.provider import (
@@ -189,3 +190,78 @@ def test_openai_compat_provider_raises_api_error(mock_post: MagicMock):
             model="gpt-4",
         )
     assert exc_info.value.status_code == 500
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_raises_timeout_error(mock_post: MagicMock):
+    mock_post.side_effect = httpx.TimeoutException("Connection timed out")
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    with pytest.raises(ProviderTimeoutError, match="Connection timed out"):
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_raises_on_malformed_response(mock_post: MagicMock):
+    """Response with missing 'choices' key should raise ProviderAPIError."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"model": "gpt-4"}  # no "choices"
+    resp.text = '{"model": "gpt-4"}'
+    mock_post.return_value = resp
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    with pytest.raises(ProviderAPIError, match="Malformed response body"):
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_raises_on_invalid_json_response(mock_post: MagicMock):
+    """Response with non-JSON body should raise ProviderAPIError."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+    resp.text = "<html>Gateway Error</html>"
+    mock_post.return_value = resp
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    with pytest.raises(ProviderAPIError, match="Invalid JSON"):
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_raises_on_connection_error(mock_post: MagicMock):
+    mock_post.side_effect = httpx.ConnectError("Connection refused")
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    with pytest.raises(ProviderError, match="Connection refused"):
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_raises_on_invalid_json_error_body(mock_post: MagicMock):
+    """Error response with non-JSON body should fall back to response.text."""
+    resp = MagicMock()
+    resp.status_code = 502
+    resp.json.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+    resp.text = "<html>Bad Gateway</html>"
+    mock_post.return_value = resp
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    with pytest.raises(ProviderAPIError, match="Bad Gateway"):
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )

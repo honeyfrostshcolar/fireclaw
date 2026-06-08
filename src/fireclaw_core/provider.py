@@ -155,6 +155,8 @@ class OpenAICompatProvider:
             )
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(str(exc)) from exc
+        except httpx.TransportError as exc:
+            raise ProviderError(str(exc)) from exc
 
     @staticmethod
     def _parse_response(response: httpx.Response, requested_model: str) -> ChatCompletion:
@@ -164,35 +166,50 @@ class OpenAICompatProvider:
         if status == 401:
             raise ProviderAuthError()
         if status >= 400:
-            data = response.json()
+            try:
+                data = response.json()
+            except (json.JSONDecodeError, ValueError):
+                data = {}
             msg = data.get("error", {}).get("message", response.text)
             raise ProviderAPIError(status_code=status, message=str(msg))
 
-        data = response.json()
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ProviderAPIError(
+                status_code=status,
+                message=f"Invalid JSON in response body: {response.text!r}",
+            ) from exc
 
-        choice = data["choices"][0]
-        message = choice["message"]
-        finish_reason = choice.get("finish_reason", "stop")
+        try:
+            choice = data["choices"][0]
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason", "stop")
 
-        # Parse tool calls (function arguments arrive as a JSON string).
-        raw_tool_calls = message.get("tool_calls")
-        tool_calls: list[ToolCall] | None = None
-        if raw_tool_calls:
-            tool_calls = []
-            for tc in raw_tool_calls:
-                func = tc["function"]
-                args_raw = func.get("arguments", "{}")
-                arguments = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-                tool_calls.append(
-                    ToolCall(id=tc["id"], name=func["name"], arguments=arguments)
-                )
+            # Parse tool calls (function arguments arrive as a JSON string).
+            raw_tool_calls = message.get("tool_calls")
+            tool_calls: list[ToolCall] | None = None
+            if raw_tool_calls:
+                tool_calls = []
+                for tc in raw_tool_calls:
+                    func = tc["function"]
+                    args_raw = func.get("arguments", "{}")
+                    arguments = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    tool_calls.append(
+                        ToolCall(id=tc["id"], name=func["name"], arguments=arguments)
+                    )
 
-        usage_raw = data.get("usage", {})
-        usage = TokenUsage(
-            prompt_tokens=usage_raw.get("prompt_tokens", 0),
-            completion_tokens=usage_raw.get("completion_tokens", 0),
-            total_tokens=usage_raw.get("total_tokens", 0),
-        )
+            usage_raw = data.get("usage", {})
+            usage = TokenUsage(
+                prompt_tokens=usage_raw.get("prompt_tokens", 0),
+                completion_tokens=usage_raw.get("completion_tokens", 0),
+                total_tokens=usage_raw.get("total_tokens", 0),
+            )
+        except (KeyError, IndexError, json.JSONDecodeError) as exc:
+            raise ProviderAPIError(
+                status_code=status,
+                message=f"Malformed response body: {response.text!r}",
+            ) from exc
 
         return ChatCompletion(
             content=message.get("content"),
