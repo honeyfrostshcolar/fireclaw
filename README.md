@@ -506,7 +506,124 @@ The same v1 contract is available from the mission CLI:
   --mission-registry memory/fireclaw-missions.jsonl
 ```
 
+### Mission Planner v1
+
+The mission planner decomposes multi-floor natural-language commands into robot subtask assignments. It is deterministic and rule-based (no LLM).
+
+```python
+from fireclaw_core.mission_agent import MissionAgent
+from fireclaw_core.mission_planner import MissionPlanner
+
+mission = MissionAgent(
+    registry=robot_registry,
+    mission_registry=JsonlMissionRegistry("memory/fireclaw-missions.jsonl"),
+    planner=MissionPlanner(),
+)
+
+result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-002")
+```
+
+The planner detects intent (search, patrol, firefight, recon, transport), extracts target floors, matches robots by `capabilities` from the robot registry, and assigns subtasks with parallel/sequential execution groups. When there are enough capable robots, subtasks run in parallel; when there are fewer robots than floors, robots are reused sequentially.
+
+CLI usage:
+
+```bash
+.venv/bin/python -m fireclaw_core.mission_cli plan-mission \
+  --command "去二楼和三楼搜索受困人员" \
+  --robot-registry robots.json \
+  --mission-registry memory/fireclaw-missions.jsonl
+```
+
 Each robot subagent remains authoritative over embodied execution. It may block, reject, cancel, ask for confirmation, or emergency-stop based on local state, safety rules, permissions, ROS availability, and hardware constraints.
+
+### Mission Authorization v1
+
+MissionAgent supports mission-level authorization scopes, aligned with OpenClaw's operator scope pattern. When a `ControlPolicy` and `OperatorContext` are configured, MissionAgent checks authorization before executing mission operations.
+
+**Mission scopes:**
+
+| Scope | Operations |
+|-------|------------|
+| `mission.submit` | `submit_subtask` |
+| `mission.cancel` | `cancel_mission` |
+| `mission.plan` | `plan_and_submit` |
+| `mission.read` | `mission_trace` |
+
+**Role-scope mapping:**
+
+| Role | Mission Scopes |
+|------|----------------|
+| `observer` | `mission.read` |
+| `operator` | `mission.submit`, `mission.cancel`, `mission.plan`, `mission.read` |
+| `supervisor` | `mission.submit`, `mission.cancel`, `mission.plan`, `mission.read` |
+| `admin` | `mission.submit`, `mission.cancel`, `mission.plan`, `mission.read` |
+
+The `admin` role bypasses all scope checks. When no `ControlPolicy` is configured, authorization is skipped (backward compatible).
+
+**Python API:**
+
+```python
+from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+from fireclaw_core.mission_agent import MissionAgent
+
+policy = ControlPolicy()
+operator = OperatorContext(
+    operator_id="mission-operator",
+    role="operator",
+    control_scopes=scopes_for_role("operator"),
+)
+mission = MissionAgent(
+    registry=robot_registry,
+    control_policy=policy,
+    operator=operator,
+)
+
+# Allowed: operator has mission.submit
+result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+# Denied: observer lacks mission.submit
+observer = OperatorContext(
+    operator_id="observer-1",
+    role="observer",
+    control_scopes={"state.read", "mission.read"},
+)
+mission_observer = MissionAgent(
+    registry=robot_registry,
+    control_policy=policy,
+    operator=observer,
+)
+result = mission_observer.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+# result["status"] == "denied"
+```
+
+**CLI:**
+
+```bash
+# Default operator (has all mission scopes)
+.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
+  --robot robot-1 \
+  --command "去二楼搜索" \
+  --robot-registry robots.json \
+  --mission-registry memory/fireclaw-missions.jsonl
+
+# Observer (lacks mission.submit, will be denied)
+.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
+  --robot robot-1 \
+  --command "去二楼搜索" \
+  --robot-registry robots.json \
+  --mission-registry memory/fireclaw-missions.jsonl \
+  --operator-id observer-1 \
+  --role observer
+
+# Explicit scopes
+.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
+  --robot robot-1 \
+  --command "去二楼搜索" \
+  --robot-registry robots.json \
+  --mission-registry memory/fireclaw-missions.jsonl \
+  --operator-id custom-operator \
+  --scopes mission.submit mission.read
+```
 
 ## Session State
 
