@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 
 
 def _write_slow_policy_skill(skills_dir: Path) -> None:
@@ -378,3 +379,155 @@ def test_mission_cli_rejects_submit_without_mission_scope(tmp_path):
 
     assert result["status"] == "denied"
     assert "mission.submit" in result["message"]
+
+
+def _run_memory_cli(tmp_path, *extra_args):
+    memory_path = tmp_path / "mission_memory.jsonl"
+    argv = [
+        ".venv/bin/python",
+        "-m",
+        "fireclaw_core.mission_cli",
+        "memory",
+        "--memory-path",
+        str(memory_path),
+        *extra_args,
+    ]
+    return subprocess.run(argv, check=False, cwd=".", text=True, capture_output=True)
+
+
+def test_mission_cli_memory_list(tmp_path):
+    memory_path = tmp_path / "mission_memory.jsonl"
+    store = MissionMemoryStore(memory_path)
+    store.append(MissionMemoryRecord(
+        record_id="mem-1", mission_id="m-1", record_type="outcome",
+        content={"status": "succeeded"}, created_at="2026-06-08T12:00:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-2", mission_id="m-1", record_type="observation",
+        content={"note": "smoke detected"}, created_at="2026-06-08T12:01:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-3", mission_id="m-2", record_type="outcome",
+        content={"status": "failed"}, created_at="2026-06-08T12:02:00Z",
+    ))
+
+    # List all records for m-1
+    completed = _run_memory_cli(
+        tmp_path, "list", "--mission-id", "m-1",
+    )
+    assert completed.returncode == 0
+    records = json.loads(completed.stdout)
+    assert len(records) == 2
+    assert records[0]["record_id"] == "mem-1"
+    assert records[1]["record_id"] == "mem-2"
+
+    # List filtered by type
+    completed = _run_memory_cli(
+        tmp_path, "list", "--mission-id", "m-1", "--type", "outcome",
+    )
+    assert completed.returncode == 0
+    records = json.loads(completed.stdout)
+    assert len(records) == 1
+    assert records[0]["record_type"] == "outcome"
+
+    # List with limit
+    completed = _run_memory_cli(
+        tmp_path, "list", "--mission-id", "m-1", "--limit", "1",
+    )
+    assert completed.returncode == 0
+    records = json.loads(completed.stdout)
+    assert len(records) == 1
+
+
+def test_mission_cli_memory_add(tmp_path):
+    completed = _run_memory_cli(
+        tmp_path,
+        "add",
+        "--mission-id", "m-1",
+        "--type", "outcome",
+        "--content", '{"status": "succeeded", "duration_seconds": 120}',
+    )
+    assert completed.returncode == 0
+    record = json.loads(completed.stdout)
+    assert record["mission_id"] == "m-1"
+    assert record["record_type"] == "outcome"
+    assert record["content"]["status"] == "succeeded"
+    assert record["content"]["duration_seconds"] == 120
+    assert record["record_id"].startswith("mem-")
+
+    # Verify it was actually written to the store
+    store = MissionMemoryStore(tmp_path / "mission_memory.jsonl")
+    records = store.list_records()
+    assert len(records) == 1
+    assert records[0].mission_id == "m-1"
+
+
+def test_mission_cli_memory_add_with_robot_and_subtask(tmp_path):
+    completed = _run_memory_cli(
+        tmp_path,
+        "add",
+        "--mission-id", "m-1",
+        "--type", "observation",
+        "--content", '{"note": "victim found"}',
+        "--robot-id", "robot-1",
+        "--subtask-id", "subtask-1",
+    )
+    assert completed.returncode == 0
+    record = json.loads(completed.stdout)
+    assert record["robot_id"] == "robot-1"
+    assert record["subtask_id"] == "subtask-1"
+
+    store = MissionMemoryStore(tmp_path / "mission_memory.jsonl")
+    records = store.list_records()
+    assert len(records) == 1
+    assert records[0].robot_id == "robot-1"
+    assert records[0].subtask_id == "subtask-1"
+
+
+def test_mission_cli_memory_add_rejects_invalid_type(tmp_path):
+    completed = _run_memory_cli(
+        tmp_path,
+        "add",
+        "--mission-id", "m-1",
+        "--type", "invalid_type",
+        "--content", '{"key": "value"}',
+    )
+    assert completed.returncode != 0
+    assert "Invalid record type" in completed.stderr
+
+
+def test_mission_cli_memory_summary(tmp_path):
+    memory_path = tmp_path / "mission_memory.jsonl"
+    store = MissionMemoryStore(memory_path)
+    store.append(MissionMemoryRecord(
+        record_id="mem-1", mission_id="m-1", record_type="outcome",
+        content={"status": "succeeded"}, created_at="2026-06-08T12:00:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-2", mission_id="m-1", record_type="observation",
+        content={"note": "smoke"}, created_at="2026-06-08T12:01:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-3", mission_id="m-1", record_type="lesson",
+        content={"lesson": "always check exits"}, created_at="2026-06-08T12:02:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-4", mission_id="m-2", record_type="outcome",
+        content={"status": "failed"}, created_at="2026-06-08T12:03:00Z",
+    ))
+
+    # Summary for specific mission
+    completed = _run_memory_cli(tmp_path, "summary", "--mission-id", "m-1")
+    assert completed.returncode == 0
+    summary = json.loads(completed.stdout)
+    assert summary["total"] == 3
+    assert summary["by_type"]["outcome"] == 1
+    assert summary["by_type"]["observation"] == 1
+    assert summary["by_type"]["lesson"] == 1
+
+    # Summary for all missions
+    completed = _run_memory_cli(tmp_path, "summary")
+    assert completed.returncode == 0
+    summary = json.loads(completed.stdout)
+    assert summary["total"] == 4
+    assert summary["by_type"]["outcome"] == 2

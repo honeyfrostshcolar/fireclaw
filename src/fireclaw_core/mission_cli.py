@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any
 
 from fireclaw_core.mission_agent import MissionAgent
+from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlanner
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.robot_registry import load_robot_registry
@@ -38,6 +40,25 @@ def main() -> int:
     plan.add_argument("--session-id", default=None, help="Mission/session id.")
     _add_shared_paths(plan)
 
+    memory = subparsers.add_parser("memory", help="Manage mission memory records.")
+    memory.add_argument("--memory-path", default="mission_memory.jsonl", help="Path to mission memory JSONL file.")
+    memory_sub = memory.add_subparsers(dest="memory_command", required=True)
+
+    mem_list = memory_sub.add_parser("list", help="List mission memory records.")
+    mem_list.add_argument("--mission-id", required=True, help="Filter by mission id.")
+    mem_list.add_argument("--type", dest="record_type", default=None, help="Filter by record type (outcome, observation, correction, lesson).")
+    mem_list.add_argument("--limit", type=int, default=None, help="Max records to return.")
+
+    mem_add = memory_sub.add_parser("add", help="Add a mission memory record.")
+    mem_add.add_argument("--mission-id", required=True, help="Mission id.")
+    mem_add.add_argument("--type", dest="record_type", required=True, help="Record type (outcome, observation, correction, lesson).")
+    mem_add.add_argument("--content", required=True, help="JSON content string.")
+    mem_add.add_argument("--robot-id", default=None, help="Robot id.")
+    mem_add.add_argument("--subtask-id", default=None, help="Subtask id.")
+
+    mem_summary = memory_sub.add_parser("summary", help="Show mission memory summary.")
+    mem_summary.add_argument("--mission-id", default=None, help="Filter by mission id.")
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -62,7 +83,50 @@ def main() -> int:
         result = agent.plan_and_submit(args.command, session_id=args.session_id, operator=_mission_operator())
         _print_json(result)
         return 0 if result.get("status") == "planned" else 1
+    if args.command_name == "memory":
+        return _handle_memory(args)
     parser.error(f"Unknown command: {args.command_name}")
+    return 1
+
+
+def _handle_memory(args: argparse.Namespace) -> int:
+    import uuid
+    from datetime import datetime, timezone
+
+    store = MissionMemoryStore(args.memory_path)
+
+    if args.memory_command == "list":
+        records = store.list_records(mission_id=args.mission_id, record_type=args.record_type)
+        if args.limit is not None:
+            records = records[: args.limit]
+        print(json.dumps([r.to_dict() for r in records], ensure_ascii=False, indent=2))
+        return 0
+
+    if args.memory_command == "add":
+        try:
+            content = json.loads(args.content)
+        except json.JSONDecodeError as exc:
+            print(f"Error: --content is not valid JSON: {exc}", file=sys.stderr)
+            return 1
+        record = MissionMemoryRecord(
+            record_id=f"mem-{uuid.uuid4().hex[:8]}",
+            mission_id=args.mission_id,
+            record_type=args.record_type,
+            content=content,
+            robot_id=args.robot_id,
+            subtask_id=args.subtask_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        store.append(record)
+        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.memory_command == "summary":
+        result = store.summary(mission_id=args.mission_id)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"Error: unknown memory subcommand: {args.memory_command}", file=sys.stderr)
     return 1
 
 
