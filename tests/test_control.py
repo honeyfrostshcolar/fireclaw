@@ -87,3 +87,46 @@ def test_authorization_request_expires_after_deadline():
 
     assert request.is_expired("2026-06-05T00:06:00+00:00") is True
     assert request.to_dict()["required_scope"] == "safety.override"
+
+
+def test_mission_scopes_included_in_operator_role():
+    operator_scopes = scopes_for_role("operator")
+    assert "mission.submit" in operator_scopes
+    assert "mission.cancel" in operator_scopes
+    assert "mission.plan" in operator_scopes
+    assert "mission.read" in operator_scopes
+
+
+def test_observer_role_has_only_mission_read():
+    observer_scopes = scopes_for_role("observer")
+    assert "mission.read" in observer_scopes
+    assert "mission.submit" not in observer_scopes
+    assert "mission.cancel" not in observer_scopes
+    assert "mission.plan" not in observer_scopes
+
+
+def test_admin_role_has_all_mission_scopes():
+    admin_scopes = scopes_for_role("admin")
+    assert "mission.submit" in admin_scopes
+    assert "mission.cancel" in admin_scopes
+    assert "mission.plan" in admin_scopes
+    assert "mission.read" in admin_scopes
+
+
+def test_observer_cannot_submit_mission():
+    operator = operator_from_payload({"operator_id": "observer-1", "role": "observer"})
+    policy = ControlPolicy()
+
+    decision = policy.evaluate(operator, "mission.submit")
+
+    assert decision.status == "deny"
+    assert "mission.submit" in decision.reasons[0]
+
+
+def test_operator_can_submit_mission():
+    operator = operator_from_payload({"operator_id": "operator-1", "role": "operator"})
+    policy = ControlPolicy()
+
+    decision = policy.evaluate(operator, "mission.submit")
+
+    assert decision.status == "allow"

@@ -6,14 +6,21 @@ from typing import Any
 
 
 ROLE_SCOPES: dict[str, set[str]] = {
-    "observer": {"state.read"},
-    "operator": {"task.submit", "task.confirm", "task.cancel", "state.read"},
+    "observer": {"state.read", "mission.read"},
+    "operator": {
+        "task.submit", "task.confirm", "task.cancel", "state.read",
+        "mission.submit", "mission.cancel", "mission.plan", "mission.read",
+    },
     "supervisor": {
         "task.submit",
         "task.confirm",
         "task.cancel",
         "safety.override",
         "state.read",
+        "mission.submit",
+        "mission.cancel",
+        "mission.plan",
+        "mission.read",
     },
     "admin": {
         "task.submit",
@@ -22,6 +29,10 @@ ROLE_SCOPES: dict[str, set[str]] = {
         "safety.override",
         "emergency.stop",
         "state.read",
+        "mission.submit",
+        "mission.cancel",
+        "mission.plan",
+        "mission.read",
     },
 }
 
