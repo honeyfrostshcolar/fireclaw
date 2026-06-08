@@ -181,3 +181,245 @@ Known limitations:
 - No priority queue.
 - No multi-robot routing.
 - Queue compaction is in-memory on read; this is fine for v1 but may need periodic compaction for long deployments.
+
+## Update 2026-06-08 13:20 CST
+
+### Architecture Correction
+
+The user clarified that FireClaw should not be only a central integrated robot controller, and also should not be only isolated single-robot agents. The preferred framing is now:
+
+```text
+Main FireClaw Mission Agent
+-> Robot FireClaw Subagent A
+-> Robot FireClaw Subagent B
+-> Robot FireClaw Subagent C
+```
+
+The main agent performs mission-level reasoning and calls robot subagents. Each robot subagent is an embodied FireClaw node with local ROS adapter, safety gate, task queue, event ledger, memory, authorization, and emergency stop. The main agent must not bypass robot subagents to directly control ROS topics or hardware.
+
+### OpenClaw Analogue
+
+Checked OpenClaw structure through CodeGraph:
+
+- top-level capability folders include `agents`, `sessions`, `tasks`, `gateway`, `pairing`, `security`, `plugins`, `tools`, `memory`, `provider-runtime`, and `model-catalog`;
+- OpenClaw task/subagent runtime concepts include requester scope, task runtime, progress recording, finalization, and subagent monitoring.
+
+FireClaw adaptation:
+
+- OpenClaw main/requester session -> FireClaw mission session;
+- OpenClaw subagent task runtime -> robot FireClaw subagent task execution;
+- OpenClaw task registry -> mission registry plus robot-local durable task queues;
+- OpenClaw control channel -> main-agent to robot-subagent Gateway calls;
+- OpenClaw permissions/sandbox -> robot action authorization and local safety gates.
+
+### New Architecture Document
+
+Created:
+
+- `docs/superpowers/specs/2026-06-08-fireclaw-main-subagent-architecture-v1-design.md`
+
+Main decisions:
+
+- keep existing `FireClawGateway`, `FireClawAgent`, `Ros1RobotAdapter`, `JsonlTaskQueue`, `EventLedger`, `ControlPolicy`, and emergency stop as robot-subagent local capabilities;
+- add new main-agent layer rather than turning local Gateway into a direct central robot controller;
+- first implementation step should be `Main/Subagent Contract v1`:
+  - `RobotRegistry`;
+  - `RobotSubagentClient`;
+  - `MissionAgent`;
+  - mission/subtask trace aggregation;
+  - tests using multiple local `FireClawGateway` instances as robot subagents.
+
+### Current Conclusion
+
+The next code implementation should not be `MultiRobotRouter` inside the existing Gateway. It should introduce a main/subagent contract aligned with OpenClaw's subagent/task runtime architecture, while preserving robot-local embodied authority.
+
+## Update 2026-06-08 13:45 CST
+
+### Main/Subagent Contract v1 Started
+
+Created plan:
+
+- `docs/superpowers/plans/2026-06-08-main-subagent-contract-v1.md`
+
+Created implementation files:
+
+- `src/fireclaw_core/robot_registry.py`
+- `src/fireclaw_core/subagent_client.py`
+- `src/fireclaw_core/mission_agent.py`
+
+Created tests:
+
+- `tests/test_robot_registry.py`
+- `tests/test_subagent_client.py`
+- `tests/test_mission_agent.py`
+
+Modified:
+
+- `README.md`
+- `memory/2026-06-08/fireclaw-work-resume.md`
+
+### Implementation Details
+
+- `RobotRegistryEntry` stores `robot_id`, `base_url`, `capabilities`, `zone`, and `enabled`.
+- `load_robot_registry(...)` loads JSON registry files and validates `robot_id`/`base_url`.
+- `RobotSubagentClient` calls robot-local Gateway endpoints:
+  - `GET /state`
+  - `POST /tasks`
+  - `GET /tasks/<task_id>`
+  - `POST /tasks/<task_id>/cancel`
+- `MissionAgent.submit_subtask(...)` supports explicit robot subtask submission and unknown/disabled robot rejection.
+- V1 does not implement autonomous mission decomposition, peer-to-peer robot communication, mission registry persistence, or direct ROS access from the main agent.
+
+### OpenClaw Analogue
+
+FireClaw main/subagent v1 maps OpenClaw subagent task runtime patterns into robotics:
+
+```text
+OpenClaw requester/task runtime -> FireClaw MissionAgent
+OpenClaw subagent task record -> robot Gateway task
+OpenClaw progress/finalize -> robot task trace/result
+OpenClaw control runtime -> RobotSubagentClient Gateway calls
+```
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_robot_registry.py -q`
+  - RED first: `ModuleNotFoundError: No module named 'fireclaw_core.robot_registry'`
+  - GREEN after implementation: `3 passed`
+- `.venv/bin/python -m pytest tests/test_subagent_client.py -q`
+  - RED first: `ModuleNotFoundError: No module named 'fireclaw_core.subagent_client'`
+  - GREEN after implementation: `2 passed`
+- `.venv/bin/python -m pytest tests/test_mission_agent.py -q`
+  - RED first: `ModuleNotFoundError: No module named 'fireclaw_core.mission_agent'`
+  - GREEN after implementation: `2 passed`
+
+### Next Recommended Step
+
+Run focused combined tests and then full suite. If green, update plan and memory with final verification. Next feature after this v1 should be a persistent mission registry and mission trace aggregation, not autonomous decomposition yet.
+
+## Update 2026-06-08 14:00 CST
+
+### Verification Completed
+
+- `.venv/bin/python -m pytest tests/test_robot_registry.py tests/test_subagent_client.py tests/test_mission_agent.py -q`
+  - GREEN: `7 passed in 1.09s`
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `224 passed in 12.41s`
+
+### Current Conclusion
+
+Main/Subagent Contract v1 is implemented and verified.
+
+Implemented behavior:
+
+- static JSON robot subagent registry;
+- HTTP client for robot-local Gateway state/task/trace/cancel endpoints;
+- minimal mission agent that explicitly submits a subtask to a registered robot subagent;
+- unknown and disabled robot rejection before HTTP submission;
+- README documentation of the main/subagent contract.
+
+Known limitations:
+
+- no persistent mission registry yet;
+- no mission trace aggregation yet;
+- no autonomous mission decomposition;
+- no robot discovery/heartbeat/pairing;
+- no mission-level authorization scopes yet;
+- no WebSocket/gRPC/event streaming from subagents.
+
+Next recommended implementation:
+
+- Mission Registry and Trace v1: persist mission/subtask records and aggregate robot-local traces into a mission-level trace while keeping robot-local traces as source of truth.
+
+## Update 2026-06-08 14:20 CST
+
+### Mission Registry and Trace v1 Started
+
+Created plan:
+
+- `docs/superpowers/plans/2026-06-08-mission-registry-trace-v1.md`
+
+Created implementation files:
+
+- `src/fireclaw_core/mission_registry.py`
+
+Created tests:
+
+- `tests/test_mission_registry.py`
+
+Modified:
+
+- `src/fireclaw_core/mission_agent.py`
+- `tests/test_mission_agent.py`
+- `README.md`
+- `memory/2026-06-08/fireclaw-work-resume.md`
+
+### Implementation Details
+
+- Added `MissionRecord` and `MissionSubtaskRecord`.
+- Added append-only `JsonlMissionRegistry`.
+- Registry supports:
+  - `create_mission(...)`;
+  - `record_subtask(...)`;
+  - `update_subtask(...)`;
+  - `get_mission(...)`;
+  - `mission_trace(...)`.
+- `MissionAgent` accepts optional `mission_registry`.
+- `MissionAgent.submit_subtask(...)` now creates a mission record and records assigned robot subtask records when a registry is configured.
+- `MissionAgent.mission_trace(mission_id)` fetches robot-local task traces through `subagent_client.get_task_trace(...)`, updates mission subtask status from robot results, and embeds robot-local traces under each mission subtask.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_mission_registry.py -q`
+  - RED first: `ModuleNotFoundError: No module named 'fireclaw_core.mission_registry'`
+  - GREEN after implementation: `3 passed`
+- `.venv/bin/python -m pytest tests/test_mission_agent.py -q`
+  - RED first for persistence: `MissionAgent.__init__() got an unexpected keyword argument 'mission_registry'`
+  - GREEN after persistence implementation: `3 passed`
+- `.venv/bin/python -m pytest tests/test_mission_agent.py -q`
+  - RED first for aggregation: `'MissionAgent' object has no attribute 'mission_trace'`
+  - GREEN after aggregation implementation: `4 passed`
+
+### Current Hypothesis
+
+Mission Registry and Trace v1 is functionally implemented but still needs focused combined tests and full-suite verification. The next important limitation is that mission records do not yet have a control-plane API or CLI; the feature is currently Python API level.
+
+### Next Recommended Step
+
+Run focused combined tests and full suite. If green, the next implementation should be mission control API/CLI or mission-level authorization, before autonomous mission decomposition.
+
+## Update 2026-06-08 14:35 CST
+
+### Verification Completed
+
+- `.venv/bin/python -m pytest tests/test_mission_registry.py tests/test_mission_agent.py -q`
+  - GREEN: `7 passed in 0.03s`
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `229 passed in 11.61s`
+
+### Current Conclusion
+
+Mission Registry and Trace v1 is implemented and verified.
+
+Implemented behavior:
+
+- mission/subtask append-only JSONL registry;
+- mission trace projection from persisted subtasks;
+- MissionAgent persistence of mission and robot subtask records;
+- MissionAgent aggregation of robot-local task traces;
+- mission subtask status update from robot-local trace result;
+- robot-local trace embedded under mission subtask entries;
+- README documentation for mission registry and trace aggregation.
+
+Known limitations:
+
+- no HTTP or CLI mission-control API yet;
+- no mission-level cancel propagation across all subtasks yet;
+- no mission-level authorization scopes yet;
+- no robot heartbeat/discovery;
+- no autonomous mission decomposition;
+- no streaming trace aggregation.
+
+Next recommended implementation:
+
+- Mission Control API/CLI v1: expose mission submit/trace/cancel operations around `MissionAgent` and `JsonlMissionRegistry`, still using explicit robot subtask assignment first.

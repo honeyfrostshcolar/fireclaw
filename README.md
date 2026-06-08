@@ -430,6 +430,64 @@ curl 'http://127.0.0.1:8765/events/recent?session_id=operator-a&limit=20'
 
 Gateway v1 binds to localhost by default and has no authentication yet. Do not expose it on a public network.
 
+## Main/Subagent Contract
+
+FireClaw's multi-robot architecture is a main/subagent system rather than a pure central robot controller. The central mission layer calls each robot's local FireClaw Gateway as an embodied subagent:
+
+```text
+Main FireClaw Mission Agent
+  -> Robot FireClaw Subagent A: http://robot-a:8765
+  -> Robot FireClaw Subagent B: http://robot-b:8765
+```
+
+The main agent can submit subtasks, read state, read task traces, and request cancellation through the robot-local Gateway API. It does not bypass the robot subagent to publish low-level ROS topics or motor commands.
+
+A robot registry JSON file describes available robot subagents:
+
+```json
+{
+  "robots": [
+    {
+      "robot_id": "robot-1",
+      "base_url": "http://robot-1.local:8765",
+      "capabilities": ["navigate", "search_for_victims"],
+      "zone": "building-a",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Python callers can use the v1 contract directly:
+
+```python
+from fireclaw_core.mission_agent import MissionAgent
+from fireclaw_core.mission_registry import JsonlMissionRegistry
+from fireclaw_core.robot_registry import load_robot_registry
+
+registry = load_robot_registry("robots.json")
+mission = MissionAgent(
+    registry=registry,
+    mission_registry=JsonlMissionRegistry("memory/fireclaw-missions.jsonl"),
+)
+result = mission.submit_subtask(
+    "robot-1",
+    "去二楼搜索受困人员",
+    session_id="mission-001",
+    dedupe_key="mission-001-robot-1-floor-2",
+)
+```
+
+The mission registry is append-only JSONL. It records the mission, assigned robot subtasks, subtask task ids, and projected mission status. The main agent can aggregate robot-local task traces into a mission trace:
+
+```python
+trace = mission.mission_trace("mission-001")
+```
+
+The aggregated trace keeps robot-local traces under each subtask. Robot-local Gateway traces remain the source of truth for embodied execution and incident review.
+
+Each robot subagent remains authoritative over embodied execution. It may block, reject, cancel, ask for confirmation, or emergency-stop based on local state, safety rules, permissions, ROS availability, and hardware constraints.
+
 ## Session State
 
 Every task result includes session metadata:
