@@ -96,7 +96,10 @@ class MissionMemoryStore:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                data = json.loads(stripped)
+                try:
+                    data = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
                 if isinstance(data, dict):
                     records.append(_record_from_dict(data))
         return records

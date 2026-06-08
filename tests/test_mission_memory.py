@@ -167,6 +167,24 @@ def test_mission_memory_record_types_constant():
     assert MEMORY_RECORD_TYPES == {"outcome", "observation", "correction", "lesson"}
 
 
+def test_mission_memory_store_skips_corrupt_jsonl_lines(tmp_path):
+    path = tmp_path / "mission_memory.jsonl"
+    # Write one valid line, one corrupt line, one valid line
+    path.write_text(
+        '{"record_id":"m1","mission_id":"m-1","record_type":"outcome","content":{"status":"ok"},"robot_id":null,"subtask_id":null,"created_at":"2026-06-08T12:00:00Z"}\n'
+        'NOT VALID JSON\n'
+        '{"record_id":"m2","mission_id":"m-1","record_type":"lesson","content":{"note":"learned"},"robot_id":null,"subtask_id":null,"created_at":"2026-06-08T12:01:00Z"}\n',
+        encoding="utf-8",
+    )
+    store = MissionMemoryStore(path)
+
+    records = store.list_records()
+
+    assert len(records) == 2
+    assert records[0].record_id == "m1"
+    assert records[1].record_id == "m2"
+
+
 def test_mission_memory_record_to_dict():
     record = _make_record(
         record_id="mem-1",
