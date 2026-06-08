@@ -57,7 +57,10 @@ class Skill:
     ) -> RobotActionResult:
         if self.runtime == "subprocess":
             return self.handler(inputs, cancellation_requested=cancellation_requested)
-        return self.handler(inputs)
+        try:
+            return self.handler(inputs, cancellation_requested=cancellation_requested)
+        except TypeError:
+            return self.handler(inputs)
 
 
 @dataclass
@@ -112,7 +115,10 @@ def _robot_skill_handler(
     direct_handler: Callable[[dict[str, Any]], RobotActionResult],
     risk_level: str = "low",
 ) -> SkillHandler:
-    def handler(inputs: dict[str, Any]) -> RobotActionResult:
+    def handler(
+        inputs: dict[str, Any],
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> RobotActionResult:
         if action_runtime is None:
             return direct_handler(inputs)
         action_inputs = input_builder(inputs)
@@ -123,6 +129,7 @@ def _robot_skill_handler(
             dry_run=robot.dry_run,
             risk_level=risk_level,
             timeout_seconds=None,
+            cancellation_requested=cancellation_requested,
         )
 
     return handler

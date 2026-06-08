@@ -250,7 +250,8 @@ Start a local simulator gateway:
   --robot-id robot-01 \
   --max-active-execution-tasks 1 \
   --memory-path /tmp/fireclaw-gateway-memory.jsonl \
-  --event-path /tmp/fireclaw-gateway-events.jsonl
+  --event-path /tmp/fireclaw-gateway-events.jsonl \
+  --task-queue-path /tmp/fireclaw-gateway-tasks.jsonl
 ```
 
 Check health and state:
@@ -260,7 +261,7 @@ curl http://127.0.0.1:8765/health
 curl http://127.0.0.1:8765/state
 ```
 
-`/state` includes robot state, environment state, task capacity, and active task summaries. By default a Gateway allows only one active execution task for the robot:
+`/state` includes robot state, environment state, task capacity, active task summaries, and a durable task queue summary. By default a Gateway allows only one active execution task for the robot:
 
 ```json
 {
@@ -277,7 +278,13 @@ curl http://127.0.0.1:8765/state
       "started_at": "2026-06-02T...",
       "cancel_requested": false
     }
-  ]
+  ],
+  "task_queue": {
+    "task_count": 3,
+    "active_task_count": 1,
+    "terminal_task_count": 2,
+    "active_tasks": []
+  }
 }
 ```
 
@@ -287,6 +294,24 @@ Submit a natural-language task:
 curl -X POST http://127.0.0.1:8765/tasks \
   -H "Content-Type: application/json" \
   -d '{"command": "去二楼救人", "session_id": "operator-a"}'
+```
+
+Task submissions may include a `dedupe_key` for network retry safety. If a non-terminal task with the same key already exists, Gateway returns the existing `task_id` instead of starting another robot action:
+
+```bash
+curl -X POST http://127.0.0.1:8765/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"command": "去二楼救人", "session_id": "operator-a", "dedupe_key": "operator-a-20260608-001"}'
+```
+
+```json
+{
+  "status": "duplicate",
+  "task_id": "task-...",
+  "session_id": "operator-a",
+  "dedupe_key": "operator-a-20260608-001",
+  "message": "任务已存在，返回现有未完成任务。"
+}
 ```
 
 Task submissions can also include an operator context. FireClaw records this in the task trace before execution starts:
@@ -326,7 +351,7 @@ If the robot already has the maximum number of active execution tasks, `POST /ta
 
 This backpressure is intentional. A single robot should not silently accept multiple concurrent execution tasks that might command navigation, search, manipulation, or future ROS1-backed robot actions at the same time.
 
-Use the `task_id` to inspect the current task trace, projected state, final result, and event stream. While the background task is still running, `result` is `null`; after completion, the final agent result is available under `result`. The trace also includes `state`, a deterministic projection with `task`, `skills`, and `actions` summaries derived from the append-only events:
+Use the `task_id` to inspect the current task trace, projected state, durable queue record, final result, and event stream. While the background task is still running, `result` is `null`; after completion, the final agent result is available under `result`. The trace also includes `state`, a deterministic projection with `task`, `skills`, and `actions` summaries derived from the append-only events:
 
 ```bash
 curl http://127.0.0.1:8765/tasks/task-REPLACE_WITH_ID
@@ -354,6 +379,7 @@ Gateway v1 records append-only JSONL events such as:
 - `skill.succeeded`
 - `skill.failed`
 - `task.cancel_requested`
+- `task.lost`
 - `task.completed`
 - `task.cancelled`
 - `emergency_stop.requested`
@@ -389,6 +415,8 @@ curl -X POST http://127.0.0.1:8765/emergency-stop \
 Emergency stop is stronger than normal task cancellation. It records dedicated emergency-stop audit events, requests cancellation for active tasks, and calls the robot adapter's `emergency_stop(...)` hook. In current mock adapters this only updates local state; a future real ROS1 adapter should map the hook to the robot's actual emergency-stop topic, service, action, or SDK call.
 
 Cancellation is cooperative at the task/executor boundary. FireClaw records `task.cancel_requested` immediately and stops before starting the next skill. For subprocess-backed skills, the cancellation signal is also passed into `SubprocessSkillRunner`, which terminates the active child process and kills it if it does not exit promptly. In-process skills still return cooperatively, and future ROS1 adapters should map this same request to robot action cancellation where available.
+
+The durable task queue is append-only JSONL. Gateway records accepted, running, cancel-requested, and terminal task states under `--task-queue-path`. On startup, any previous non-terminal queue record is marked `lost` and a `task.lost` event is written. FireClaw intentionally does not replay physical robot actions after a process restart; an operator should inspect the task trace and robot state before issuing a new command.
 
 The Python API still exposes synchronous `FireClawGateway.run_agent(...)` for local test harnesses and in-process tooling. External systems should prefer the asynchronous HTTP endpoints or `FireClawGateway.submit_agent(...)`.
 
@@ -673,7 +701,9 @@ Environment state includes `reachable_floors`, `hazards`, and `victims_by_floor`
 
 Adapter action results are structured with fields such as `robot_id`, `mode`, `action`, `status`, `dry_run`, `data`, `timestamp`, and `error`. Planner, safety, executor, and memory should not need to change when a real adapter replaces the simulator or dry-run adapter.
 
-Robot action backends can also report progress through the FireClaw action feedback boundary. Current mock ROS1 navigation emits deterministic `action.feedback` events, and `task_trace(...).state.actions[*]` records `feedback_count` plus `last_feedback`. A future ROS1 `actionlib` backend should map action feedback callbacks into the same FireClaw event shape.
+Robot action backends can also report progress through the FireClaw action feedback boundary. Mock ROS1 navigation emits deterministic `action.feedback` events. When the real `ros1` adapter uses an action endpoint with `transport.enabled: true`, its `actionlib` feedback callback is forwarded into the same `action.feedback` event shape, and `task_trace(...).state.actions[*]` records `feedback_count` plus `last_feedback`.
+
+Gateway task cancellation propagates through the executor into robot action backends. For ROS1 action endpoints, FireClaw polls the active action client while waiting for a result; if cancellation is requested, it calls `cancel_goal()` when the endpoint declares `cancel_supported: true` and records `action.cancel_requested` / `action.cancelled`.
 
 Task results and memory records include `robot_state` and `environment_state` snapshots before execution. This is intentionally audit-oriented: later incident review and experiment analysis should be able to reconstruct the state the agent used for its safety decision.
 

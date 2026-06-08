@@ -1,7 +1,18 @@
+from fireclaw_core.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
 from fireclaw_core.executor import PlanExecutor
 from fireclaw_core.planner import Plan, PlanStep, RuleBasedPlanner
 from fireclaw_core.robot import DryRunRobotAdapter, RobotActionResult
 from fireclaw_core.skills import Skill, SkillRegistry, create_default_skill_registry
+
+
+class CancellationCapturingRobot(DryRunRobotAdapter):
+    def __init__(self):
+        super().__init__(robot_id="robot-cancel")
+        self.cancellation_requested = None
+
+    def navigate_to_floor(self, floor, feedback_sink=None, cancellation_requested=None):
+        self.cancellation_requested = cancellation_requested
+        return super().navigate_to_floor(floor)
 
 
 def test_executor_emits_live_events_for_successful_steps():
@@ -29,6 +40,21 @@ def test_executor_emits_live_events_for_successful_steps():
     assert [event_type for event_type, _payload in events].count("skill.started") == 5
     assert [event_type for event_type, _payload in events].count("skill.attempted") == 5
     assert [event_type for event_type, _payload in events].count("skill.succeeded") == 5
+
+
+def test_executor_passes_cancellation_callback_to_default_robot_skill_runtime():
+    robot = CancellationCapturingRobot()
+    registry = create_default_skill_registry(
+        robot,
+        action_runtime=RobotActionRuntime(backend=RobotAdapterActionBackend(robot)),
+    )
+    callback = lambda: False
+    plan = Plan(intent="direct_skill_invocation", steps=[PlanStep("navigate_to_floor", {"floor": 2})])
+
+    result = PlanExecutor(registry, cancellation_requested=callback).execute(plan)
+
+    assert result.status == "succeeded"
+    assert robot.cancellation_requested is callback
 
 
 def test_executor_emits_retry_and_terminal_failure_events():

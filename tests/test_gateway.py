@@ -8,6 +8,7 @@ from urllib import request
 from urllib.error import HTTPError
 
 from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.task_queue import JsonlTaskQueue
 
 
 def _json_request(base_url: str, method: str, path: str, payload: dict | None = None) -> dict:
@@ -251,6 +252,144 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert recent_events["events"][0]["type"] == "task.completed"
     assert events["events"][5]["payload"]["skill_name"] == "navigate_to_floor"
     assert events["events"][9]["payload"]["attempt_number"] == 1
+
+
+def test_gateway_persists_task_queue_lifecycle(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(gateway.base_url, "POST", "/tasks", {"command": "去二楼救人"})
+        result = _wait_for_task_result(gateway, accepted["task_id"])
+        trace = gateway.task_trace(accepted["task_id"])
+        records = gateway.task_queue.list_records()
+    finally:
+        gateway.stop()
+
+    assert result["status"] == "succeeded"
+    assert [record.task_id for record in records] == [accepted["task_id"]]
+    assert records[0].status == "completed"
+    assert records[0].started_at is not None
+    assert records[0].ended_at is not None
+    assert records[0].result["status"] == "succeeded"
+    assert trace["queue_record"]["task_id"] == accepted["task_id"]
+    assert trace["queue_record"]["status"] == "completed"
+
+
+def test_gateway_returns_existing_task_for_duplicate_dedupe_key(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_slow_policy_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        first = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "slow_policy", "dedupe_key": "operator-retry-1"},
+        )
+        second = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "slow_policy", "dedupe_key": "operator-retry-1"},
+        )
+    finally:
+        gateway.stop()
+
+    assert first["status"] == "accepted"
+    assert second["status"] == "duplicate"
+    assert second["task_id"] == first["task_id"]
+    assert second["dedupe_key"] == "operator-retry-1"
+    assert [record.task_id for record in gateway.task_queue.list_records()] == [first["task_id"]]
+
+
+def test_gateway_cancel_updates_task_queue_state(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_slow_policy_skill(skills_dir)
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=str(skills_dir),
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(gateway.base_url, "POST", "/tasks", {"command": "slow_policy"})
+        cancel = _json_request(
+            gateway.base_url,
+            "POST",
+            f"/tasks/{accepted['task_id']}/cancel",
+            {"operator": {"operator_id": "operator-a", "role": "operator", "scopes": ["task.cancel"]}},
+        )
+        record = gateway.task_queue.get(accepted["task_id"])
+    finally:
+        gateway.stop()
+
+    assert cancel["status"] == "cancel_requested"
+    assert record.status == "cancel_requested"
+
+
+def test_gateway_marks_stale_non_terminal_queue_records_lost_on_startup(tmp_path):
+    queue_path = tmp_path / "tasks.jsonl"
+    event_path = tmp_path / "events.jsonl"
+    queue = JsonlTaskQueue(queue_path)
+    queue.create(
+        task_id="task-stale",
+        session_id="session-1",
+        command="去二楼救人",
+        created_at="2026-06-08T01:00:00+00:00",
+    )
+    queue.update("task-stale", status="running", started_at="2026-06-08T01:00:01+00:00")
+
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(event_path),
+            task_queue_path=str(queue_path),
+            workspace_skills_dir=None,
+        )
+    )
+
+    trace = gateway.task_trace("task-stale")
+    state = gateway.state()
+
+    assert gateway.task_queue.get("task-stale").status == "lost"
+    assert trace["status"] == "lost"
+    assert trace["queue_record"]["status"] == "lost"
+    assert trace["events"][0]["type"] == "task.lost"
+    assert state["task_queue"]["terminal_task_count"] == 1
 
 
 def test_gateway_lists_skills(tmp_path):

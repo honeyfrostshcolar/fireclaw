@@ -155,6 +155,7 @@ def test_module_cli_accepts_ros1_config_for_adapter_skeleton(tmp_path):
 
 
 def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
+    task_queue_path = tmp_path / "demo-tasks.jsonl"
     completed = subprocess.run(
         [
             ".venv/bin/python",
@@ -166,6 +167,8 @@ def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
             str(tmp_path / "demo-memory.jsonl"),
             "--event-path",
             str(tmp_path / "demo-events.jsonl"),
+            "--task-queue-path",
+            str(task_queue_path),
             "--robot-id",
             "demo-cli",
             "--session-id",
@@ -189,6 +192,7 @@ def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
     assert "action.succeeded" in result["event_types"]
     assert result["state"]["task"]["status"] == "succeeded"
     assert result["state"]["task"]["action_count"] == 5
+    assert task_queue_path.exists()
 
 
 def test_module_cli_accepts_session_id(tmp_path):

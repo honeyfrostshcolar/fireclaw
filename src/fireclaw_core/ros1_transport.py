@@ -2,24 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import import_module
+import time
 from typing import Any, Callable
 
 from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
 
 
 FeedbackSink = Callable[[dict[str, Any]], None]
+CancellationCheck = Callable[[], bool]
 
 
 @dataclass
 class Ros1Transport:
     module: Any | None = None
     feedback_sink: FeedbackSink | None = None
+    active_action_client: Any | None = None
 
     def execute(
         self,
         endpoint: Ros1EndpointConfig,
         payload: dict[str, Any],
         config: Ros1TransportConfig,
+        cancellation_requested: CancellationCheck | None = None,
     ) -> dict[str, Any]:
         if not config.enabled:
             return {
@@ -37,15 +41,57 @@ class Ros1Transport:
             return {"status": "succeeded", "response": _response_to_data(response)}
         if endpoint.interface == "action":
             client = module.create_action_client(endpoint.name, endpoint.type)
+            self.active_action_client = client
             if not client.wait_for_server(timeout=module.duration(config.wait_for_server_seconds)):
+                self.active_action_client = None
                 return {"status": "failed", "error": f"ROS1 action server unavailable: {endpoint.name}"}
             client.send_goal(payload, feedback_cb=self._handle_feedback)
-            if not client.wait_for_result(timeout=module.duration(config.wait_for_result_seconds)):
-                if endpoint.cancel_supported and hasattr(client, "cancel_goal"):
-                    client.cancel_goal()
-                return {"status": "failed", "error": f"ROS1 action result timeout: {endpoint.name}"}
-            return {"status": "succeeded", "response": _response_to_data(client.get_result())}
+            result_status = self._wait_for_action_result(
+                client=client,
+                endpoint=endpoint,
+                module=module,
+                wait_for_result_seconds=config.wait_for_result_seconds,
+                cancellation_requested=cancellation_requested,
+            )
+            self.active_action_client = None
+            if result_status == "succeeded":
+                return {"status": "succeeded", "response": _response_to_data(client.get_result())}
+            if result_status == "cancelled":
+                return {"status": "cancelled", "error": f"ROS1 action cancelled: {endpoint.name}"}
+            return {"status": "failed", "error": f"ROS1 action result timeout: {endpoint.name}"}
         return {"status": "failed", "error": f"Unsupported ROS1 interface: {endpoint.interface}"}
+
+    def cancel_active_action(self) -> bool:
+        client = self.active_action_client
+        if client is None or not hasattr(client, "cancel_goal"):
+            return False
+        client.cancel_goal()
+        return True
+
+    def _wait_for_action_result(
+        self,
+        *,
+        client: Any,
+        endpoint: Ros1EndpointConfig,
+        module: Any,
+        wait_for_result_seconds: float,
+        cancellation_requested: CancellationCheck | None,
+    ) -> str:
+        started = time.monotonic()
+        poll_seconds = 0.05
+        while True:
+            if cancellation_requested is not None and cancellation_requested():
+                if endpoint.cancel_supported:
+                    self.cancel_active_action()
+                return "cancelled"
+            elapsed = time.monotonic() - started
+            if elapsed >= wait_for_result_seconds:
+                if endpoint.cancel_supported:
+                    self.cancel_active_action()
+                return "timeout"
+            wait_slice = min(poll_seconds, max(0.0, wait_for_result_seconds - elapsed))
+            if client.wait_for_result(timeout=module.duration(wait_slice)):
+                return "succeeded"
 
     def _handle_feedback(self, feedback: Any) -> None:
         if self.feedback_sink is None:

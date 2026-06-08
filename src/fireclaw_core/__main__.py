@@ -28,6 +28,11 @@ def main() -> int:
         help="Path to the JSONL event ledger used by --demo rescue.",
     )
     parser.add_argument(
+        "--task-queue-path",
+        default="memory/fireclaw-demo-tasks.jsonl",
+        help="Path to the JSONL task queue used by --demo rescue.",
+    )
+    parser.add_argument(
         "--skills-dir",
         default="skills",
         help="Directory containing workspace *.skill.json manifests.",
@@ -75,6 +80,7 @@ def main() -> int:
             command=args.command or "去二楼救人",
             memory_path=args.memory_path,
             event_path=args.event_path,
+            task_queue_path=args.task_queue_path,
             robot_id=args.robot_id,
             session_id=args.session_id,
         )

@@ -46,6 +46,16 @@ class FakeActionClient:
         self.cancelled = True
 
 
+class CancellableActionClient(FakeActionClient):
+    def __init__(self):
+        super().__init__()
+        self.wait_count = 0
+
+    def wait_for_result(self, timeout=None):
+        self.wait_count += 1
+        return False
+
+
 class FakeRos1Module:
     def __init__(self):
         self.publisher = FakePublisher()
@@ -109,7 +119,7 @@ def test_ros1_transport_sends_action_goal_and_feedback():
     assert result["response"] == {"done": True}
     assert fake.action_args == ("/move_base", "move_base_msgs/MoveBaseAction")
     assert fake.action_client.server_timeout == 2.0
-    assert fake.action_client.result_timeout == 3.0
+    assert fake.action_client.result_timeout == 0.05
     assert fake.action_client.goals == [{"target_pose": {"pose": {"position": {"x": 1.0}}}}]
     assert feedback == [{"progress": 0.5}]
 
@@ -121,3 +131,27 @@ def test_ros1_transport_reports_disabled_transport():
     result = transport.execute(endpoint, {"data": "ready"}, Ros1TransportConfig(enabled=False))
 
     assert result["status"] == "not_configured"
+
+
+def test_ros1_transport_cancels_active_action_when_requested():
+    fake = FakeRos1Module()
+    fake.action_client = CancellableActionClient()
+    checks = iter([False, True])
+    transport = Ros1Transport(module=fake)
+    endpoint = Ros1EndpointConfig(
+        interface="action",
+        name="/move_base",
+        type="move_base_msgs/MoveBaseAction",
+        cancel_supported=True,
+    )
+
+    result = transport.execute(
+        endpoint,
+        {"target_pose": {}},
+        Ros1TransportConfig(enabled=True, wait_for_server_seconds=0.1, wait_for_result_seconds=5.0),
+        cancellation_requested=lambda: next(checks, True),
+    )
+
+    assert result["status"] == "cancelled"
+    assert fake.action_client.cancelled is True
+    assert fake.action_client.wait_count == 1

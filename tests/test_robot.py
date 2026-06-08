@@ -308,6 +308,19 @@ class _FakeRos1Module:
         return seconds
 
 
+class _CancellableFakeRos1Module(_FakeRos1Module):
+    def __init__(self):
+        super().__init__()
+        self.cancelled = False
+
+    def wait_for_result(self, timeout=None):
+        self.result_timeout = timeout
+        return False
+
+    def cancel_goal(self):
+        self.cancelled = True
+
+
 def test_ros1_robot_adapter_executes_transport_enabled_action_with_rendered_goal(tmp_path):
     config_path = tmp_path / "ros1.yaml"
     config_path.write_text(
@@ -355,6 +368,39 @@ targets:
     assert result.data["ros1_response"] == {"arrived": True}
     assert fake.action_goals == [result.data["ros1_payload"]]
     assert feedback == [{"progress": 0.5, "message": "halfway"}]
+
+
+def test_ros1_robot_adapter_cancels_transport_enabled_action(tmp_path):
+    config_path = tmp_path / "ros1.yaml"
+    config_path.write_text(
+        """
+robot_id: robot-ros1-real
+transport:
+  enabled: true
+  wait_for_result_seconds: 5.0
+remap:
+  navigate_to_floor:
+    profile: move_base
+    name: /move_base
+    goal_template:
+      floor: "{{ floor }}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    fake = _CancellableFakeRos1Module()
+    robot = create_robot_adapter(
+        "ros1",
+        "ignored",
+        config_path=str(config_path),
+        ros1_transport=Ros1Transport(module=fake),
+    )
+    checks = iter([False, True])
+
+    result = robot.navigate_to_floor(2, cancellation_requested=lambda: next(checks, True))
+
+    assert result.ok is False
+    assert result.status == "cancelled"
+    assert fake.cancelled is True
 
 
 def test_simulator_adapter_updates_floor_and_reports_victims():

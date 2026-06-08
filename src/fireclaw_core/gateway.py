@@ -17,6 +17,7 @@ from fireclaw_core.control import AuthorizationRequest, ControlPolicy, OperatorC
 from fireclaw_core.event_ledger import EventLedger
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
+from fireclaw_core.task_queue import JsonlTaskQueue
 from fireclaw_core.task_state import project_task_state
 
 
@@ -29,6 +30,7 @@ class GatewayConfig:
     ros1_config_path: str | None = None
     memory_path: str = "memory/fireclaw-gateway.jsonl"
     event_path: str = "memory/fireclaw-gateway-events.jsonl"
+    task_queue_path: str = "memory/fireclaw-gateway-tasks.jsonl"
     workspace_skills_dir: str | None = "skills"
     dry_run: bool = True
     available_sensors: tuple[str, ...] = ()
@@ -61,6 +63,7 @@ class FireClawGateway:
         self.robot = create_robot_adapter(config.adapter, config.robot_id, config_path=config.ros1_config_path)
         self.memory = JsonlMemoryStore(config.memory_path)
         self.events = EventLedger(config.event_path)
+        self.task_queue = JsonlTaskQueue(config.task_queue_path)
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._event_lock = threading.Lock()
@@ -70,6 +73,7 @@ class FireClawGateway:
         self._emergency_stop = EmergencyStopState()
         self._authorization_lock = threading.Lock()
         self._pending_authorizations_by_session: dict[str, AuthorizationRequest] = {}
+        self._reconcile_stale_task_queue_records()
 
     @property
     def base_url(self) -> str:
@@ -106,6 +110,14 @@ class FireClawGateway:
     def run_agent(self, command: str, session_id: str | None = None) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
+        created_at = datetime.now(timezone.utc).isoformat()
+        self.task_queue.create(
+            task_id=task_id,
+            session_id=resolved_session_id,
+            command=command,
+            created_at=created_at,
+        )
+        self.task_queue.update(task_id, status="running", started_at=created_at)
         return self._execute_agent_task(
             command=command,
             session_id=resolved_session_id,
@@ -118,12 +130,29 @@ class FireClawGateway:
         command: str,
         session_id: str | None = None,
         operator: OperatorContext | None = None,
+        dedupe_key: str | None = None,
     ) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
         resolved_operator = operator or operator_from_payload(None)
         control_decision = ControlPolicy().evaluate(resolved_operator, "task.submit")
+        duplicate = self.task_queue.find_non_terminal_by_dedupe_key(dedupe_key)
+        if duplicate is not None:
+            return {
+                "status": "duplicate",
+                "task_id": duplicate.task_id,
+                "session_id": duplicate.session_id,
+                "dedupe_key": dedupe_key,
+                "message": "任务已存在，返回现有未完成任务。",
+            }
         started_at = datetime.now(timezone.utc).isoformat()
+        self.task_queue.create(
+            task_id=task_id,
+            session_id=resolved_session_id,
+            command=command,
+            created_at=started_at,
+            dedupe_key=dedupe_key,
+        )
         control = TaskControl(
             task_id=task_id,
             session_id=resolved_session_id,
@@ -134,6 +163,12 @@ class FireClawGateway:
             if len(self._task_controls) >= self.config.max_active_execution_tasks:
                 active = self._active_task_summaries_locked()
                 first_active = active[0] if active else {}
+                self.task_queue.update(
+                    task_id,
+                    status="failed",
+                    ended_at=datetime.now(timezone.utc).isoformat(),
+                    error="Gateway execution capacity is full.",
+                )
                 return {
                     "status": "busy",
                     "message": "机器人当前已有任务在执行，请等待当前任务结束或取消后再提交。",
@@ -163,6 +198,12 @@ class FireClawGateway:
         if control_decision.status != "allow":
             with self._task_lock:
                 self._task_controls.pop(task_id, None)
+            self.task_queue.update(
+                task_id,
+                status="denied",
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                error="Operator is not authorized to submit tasks.",
+            )
             return {
                 "status": "denied",
                 "task_id": task_id,
@@ -173,6 +214,11 @@ class FireClawGateway:
 
         def worker() -> None:
             try:
+                self.task_queue.update(
+                    task_id,
+                    status="running",
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                )
                 self._execute_agent_task(
                     command=command,
                     session_id=resolved_session_id,
@@ -182,6 +228,19 @@ class FireClawGateway:
                     operator=resolved_operator,
                 )
             except Exception as exc:
+                failed_result = {
+                    "status": "failed",
+                    "task_id": task_id,
+                    "session_id": resolved_session_id,
+                    "message": str(exc),
+                }
+                self.task_queue.update(
+                    task_id,
+                    status="failed",
+                    ended_at=datetime.now(timezone.utc).isoformat(),
+                    error=str(exc),
+                    result=failed_result,
+                )
                 self._append_event(
                     task_id=task_id,
                     session_id=resolved_session_id,
@@ -189,12 +248,7 @@ class FireClawGateway:
                     payload={
                         "status": "failed",
                         "message": str(exc),
-                        "result": {
-                            "status": "failed",
-                            "task_id": task_id,
-                            "session_id": resolved_session_id,
-                            "message": str(exc),
-                        },
+                        "result": failed_result,
                     },
                 )
             finally:
@@ -253,6 +307,10 @@ class FireClawGateway:
         already_requested = control.cancel_event.is_set()
         control.cancel_event.set()
         if not already_requested:
+            self.task_queue.update(
+                task_id,
+                status="cancel_requested",
+            )
             self._append_event(
                 task_id=task_id,
                 session_id=control.session_id,
@@ -537,12 +595,14 @@ class FireClawGateway:
     def task_trace(self, task_id: str) -> dict[str, Any]:
         events = self.events.events_for_task(task_id)
         result = self._task_result_from_events(events)
+        queue_record = self.task_queue.get(task_id)
         return {
             "task_id": task_id,
             "events": events,
             "result": result,
             "status": self._task_status(task_id, events, result),
             "state": project_task_state(events),
+            "queue_record": queue_record.to_dict() if queue_record is not None else None,
         }
 
     def state(self) -> dict[str, Any]:
@@ -551,6 +611,7 @@ class FireClawGateway:
             "environment_state": asdict(self.robot.get_environment_state()),
             "task_capacity": self.task_capacity(),
             "active_tasks": self.active_tasks(),
+            "task_queue": self.task_queue.summary(),
             "emergency_stop": asdict(self._emergency_stop),
         }
 
@@ -640,6 +701,12 @@ class FireClawGateway:
                 "result": result,
             },
         )
+        self.task_queue.update(
+            task_id,
+            status="cancelled" if result.get("status") == "cancelled" else "completed",
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            result=result,
+        )
 
     def _task_result_from_events(self, events: list[dict[str, Any]]) -> dict[str, Any] | None:
         for event in reversed(events):
@@ -699,6 +766,9 @@ class FireClawGateway:
         with self._task_lock:
             if task_id in self._task_controls:
                 return "running"
+        queue_record = self.task_queue.get(task_id)
+        if queue_record is not None:
+            return queue_record.status
         return "unknown"
 
     def _task_capacity_locked(self) -> dict[str, Any]:
@@ -739,6 +809,25 @@ class FireClawGateway:
                 session_id=session_id,
                 type=type,
                 payload=payload,
+            )
+
+    def _reconcile_stale_task_queue_records(self) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        lost_records = self.task_queue.mark_non_terminal_lost(
+            ended_at=now,
+            error="Gateway restarted before terminal result.",
+        )
+        for record in lost_records:
+            self._append_event(
+                task_id=record.task_id,
+                session_id=record.session_id,
+                type="task.lost",
+                payload={
+                    "status": "lost",
+                    "task_id": record.task_id,
+                    "message": "Gateway restarted before terminal result; task was not replayed.",
+                    "queue_record": record.to_dict(),
+                },
             )
 
     def _handler_class(self):
@@ -826,6 +915,7 @@ class FireClawGateway:
                     command,
                     session_id=_payload_session(payload, self.config.default_session_id),
                     operator=operator_from_payload(payload.get("operator")),
+                    dedupe_key=_optional_payload_string(payload, "dedupe_key"),
                 )
                 status = _submission_status(result)
                 self._write_json(handler, status, result)
@@ -993,6 +1083,7 @@ def main() -> int:
     parser.add_argument("--ros1-config", default=None)
     parser.add_argument("--memory-path", default="memory/fireclaw-gateway.jsonl")
     parser.add_argument("--event-path", default="memory/fireclaw-gateway-events.jsonl")
+    parser.add_argument("--task-queue-path", default="memory/fireclaw-gateway-tasks.jsonl")
     parser.add_argument("--skills-dir", default="skills")
     parser.add_argument("--no-workspace-skills", action="store_true")
     parser.add_argument("--session-id", default="default")
@@ -1010,6 +1101,7 @@ def main() -> int:
             ros1_config_path=args.ros1_config,
             memory_path=args.memory_path,
             event_path=args.event_path,
+            task_queue_path=args.task_queue_path,
             workspace_skills_dir=None if args.no_workspace_skills else args.skills_dir,
             dry_run=not args.real_run,
             available_sensors=tuple(args.available_sensor),

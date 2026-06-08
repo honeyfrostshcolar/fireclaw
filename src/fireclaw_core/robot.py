@@ -8,7 +8,7 @@ from typing import Protocol
 from fireclaw_core.ros1_config import Ros1AdapterConfig
 from fireclaw_core.ros1_config import Ros1EndpointConfig
 from fireclaw_core.ros1_template import render_ros1_template
-from fireclaw_core.ros1_transport import Ros1Transport
+from fireclaw_core.ros1_transport import FeedbackSink, CancellationCheck, Ros1Transport
 
 
 @dataclass
@@ -311,20 +311,69 @@ class Ros1RobotAdapter:
     def robot_id(self) -> str:
         return self.config.robot_id
 
-    def navigate_to_floor(self, floor: int) -> RobotActionResult:
-        return self._record_configured_action("navigate_to_floor", {"floor": floor})
+    def navigate_to_floor(
+        self,
+        floor: int,
+        feedback_sink: FeedbackSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
+    ) -> RobotActionResult:
+        return self._record_configured_action(
+            "navigate_to_floor",
+            {"floor": floor},
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
-    def search_for_victims(self, floor: int) -> RobotActionResult:
-        return self._record_configured_action("search_for_victims", {"floor": floor})
+    def search_for_victims(
+        self,
+        floor: int,
+        feedback_sink: FeedbackSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
+    ) -> RobotActionResult:
+        return self._record_configured_action(
+            "search_for_victims",
+            {"floor": floor},
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
-    def assess_victim(self, floor: int) -> RobotActionResult:
-        return self._record_configured_action("assess_victim", {"floor": floor})
+    def assess_victim(
+        self,
+        floor: int,
+        feedback_sink: FeedbackSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
+    ) -> RobotActionResult:
+        return self._record_configured_action(
+            "assess_victim",
+            {"floor": floor},
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
-    def report_status(self, floor: int) -> RobotActionResult:
-        return self._record_configured_action("report_status", {"floor": floor})
+    def report_status(
+        self,
+        floor: int,
+        feedback_sink: FeedbackSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
+    ) -> RobotActionResult:
+        return self._record_configured_action(
+            "report_status",
+            {"floor": floor},
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
-    def return_to_safe_zone(self) -> RobotActionResult:
-        return self._record_configured_action("return_to_safe_zone", {})
+    def return_to_safe_zone(
+        self,
+        feedback_sink: FeedbackSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
+    ) -> RobotActionResult:
+        return self._record_configured_action(
+            "return_to_safe_zone",
+            {},
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
     def get_robot_state(self) -> RobotState:
         return RobotState(
@@ -359,6 +408,8 @@ class Ros1RobotAdapter:
         payload: dict[str, Any],
         *,
         endpoint: Ros1EndpointConfig | None = None,
+        feedback_sink: FeedbackSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
     ) -> RobotActionResult:
         endpoint = endpoint or self.config.endpoints.get(action)
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -400,8 +451,15 @@ class Ros1RobotAdapter:
         }
         if self.config.transport.enabled:
             try:
-                transport = self.transport or Ros1Transport()
-                transport_result = transport.execute(endpoint, ros1_payload, self.config.transport)
+                transport = self.transport or Ros1Transport(feedback_sink=feedback_sink)
+                if transport.feedback_sink is None:
+                    transport.feedback_sink = feedback_sink
+                transport_result = transport.execute(
+                    endpoint,
+                    ros1_payload,
+                    self.config.transport,
+                    cancellation_requested=cancellation_requested,
+                )
             except Exception as exc:
                 return RobotActionResult(
                     ok=False,

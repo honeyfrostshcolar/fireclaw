@@ -13,6 +13,7 @@ def run_rescue_demo(
     command: str = "去二楼救人",
     memory_path: str = "memory/fireclaw-demo.jsonl",
     event_path: str = "memory/fireclaw-demo-events.jsonl",
+    task_queue_path: str = "memory/fireclaw-demo-tasks.jsonl",
     robot_id: str = "fireclaw-demo-ros1",
     session_id: str = "fireclaw-demo",
     operator_id: str = "local-operator",
@@ -25,6 +26,7 @@ def run_rescue_demo(
             robot_id=robot_id,
             memory_path=memory_path,
             event_path=event_path,
+            task_queue_path=task_queue_path,
             workspace_skills_dir=None,
             default_session_id=session_id,
         )
