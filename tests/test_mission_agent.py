@@ -604,7 +604,7 @@ def test_mission_agent_records_outcome_on_cancel(tmp_path):
     records = memory_store.list_records(mission_id="mission-1", record_type="outcome")
     # One record from submit_subtask, one from cancel_mission
     cancel_records = [r for r in records if "cancel" in r.content.get("status", "")]
-    assert len(cancel_records) >= 1
+    assert len(cancel_records) == 1
     cancel_record = cancel_records[-1]
     assert cancel_record.content["cancelled_subtask_count"] == 1
     assert cancel_record.content["skipped_subtask_count"] == 0

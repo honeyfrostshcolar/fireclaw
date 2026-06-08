@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
 from uuid import uuid4
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from fireclaw_core.control import ControlPolicy, OperatorContext
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
@@ -87,7 +90,10 @@ class MissionAgent:
             subtask_id=subtask_id,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        self.mission_memory.append(record)
+        try:
+            self.mission_memory.append(record)
+        except Exception:
+            logger.warning("Failed to write mission memory record", exc_info=True)
 
     def check_fleet_presence(self) -> dict[str, dict[str, Any]]:
         """Check presence of all enabled robots. Updates registry with last_seen_at."""
@@ -269,8 +275,9 @@ class MissionAgent:
             )
             subtask_results.append(result)
         robot_assignments = [
-            {"robot_id": subtask.robot_id, "floor": subtask.floor}
-            for subtask in planning_result.plan.subtasks
+            {"robot_id": r.get("robot_id", "unknown"), "task_id": r.get("task_id", "")}
+            for r in subtask_results
+            if r.get("status") not in ("skipped", "error")
         ]
         self._record_mission_memory(
             mission_id,
