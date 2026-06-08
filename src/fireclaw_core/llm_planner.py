@@ -219,8 +219,6 @@ class LLMMissionPlanner:
             command=arguments.get("command", ""),
             subtasks=subtasks,
         )
-        # Use the original user command if the LLM didn't include one.
-        object.__setattr__(plan, "command", arguments.get("command", "") or "")
 
         return MissionPlanningResult(
             status="planned",
