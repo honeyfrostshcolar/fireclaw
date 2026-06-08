@@ -58,6 +58,18 @@ class RobotSubagentClient:
         result.setdefault("robot_id", entry.robot_id)
         return result
 
+    def get_events(
+        self,
+        entry: RobotRegistryEntry,
+        task_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        path = f"/events?limit={limit}"
+        if task_id:
+            path += f"&task_id={task_id}"
+        result = self._request_json("GET", entry.base_url, path)
+        return result.get("events", [])
+
     def check_presence(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         try:
             state = self.get_state(entry)

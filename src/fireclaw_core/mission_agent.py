@@ -32,6 +32,14 @@ class SubagentClient(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def get_events(
+        self,
+        entry: RobotRegistryEntry,
+        task_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        ...
+
     def check_presence(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         ...
 

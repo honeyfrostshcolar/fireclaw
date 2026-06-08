@@ -877,6 +877,15 @@ class FireClawGateway:
                 ),
             )
             return
+        if parsed.path == "/events":
+            task_id = _first(query, "task_id")
+            limit = _int_query(query, "limit", 20)
+            if task_id:
+                events = self.events.events_for_task(task_id)
+            else:
+                events = self.events.latest_events(limit=limit)
+            self._write_json(handler, HTTPStatus.OK, {"events": events})
+            return
         task_events_id = _task_events_path(parsed.path)
         if task_events_id is not None:
             self._write_json(

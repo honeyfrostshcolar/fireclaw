@@ -151,3 +151,44 @@ def test_robot_subagent_client_check_presence_offline():
     assert result["robot_id"] == "robot-1"
     assert result["online"] is False
     assert "error" in result
+
+
+def test_robot_subagent_client_get_events(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        entry = RobotRegistryEntry(robot_id="robot-1", base_url=gateway.base_url)
+        client = RobotSubagentClient()
+
+        submitted = client.submit_task(
+            entry,
+            command="去二楼救人",
+            session_id="mission-1",
+        )
+        _wait_for_result(client, entry, submitted["task_id"])
+
+        events = client.get_events(entry)
+        assert isinstance(events, list)
+        assert len(events) > 0
+        assert events[0]["type"] == "task.completed"
+
+        filtered = client.get_events(entry, task_id=submitted["task_id"])
+        assert len(filtered) > 0
+        for event in filtered:
+            assert event["task_id"] == submitted["task_id"]
+
+        limited = client.get_events(entry, limit=3)
+        assert len(limited) <= 3
+    finally:
+        gateway.stop()

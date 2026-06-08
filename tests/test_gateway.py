@@ -848,3 +848,110 @@ def test_gateway_operator_emergency_stop_is_denied_without_cancelling_task(tmp_p
     assert state["emergency_stop"]["active"] is False
     assert state["robot_state"]["online"] is True
     assert "emergency_stop.denied" in [event["type"] for event in recent_events["events"]]
+
+
+def test_gateway_events_endpoint_returns_recent_events(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人", "session_id": "operator-a"},
+        )
+        result = _wait_for_task_result(gateway, accepted["task_id"])
+        events_response = _json_request(gateway.base_url, "GET", "/events")
+    finally:
+        gateway.stop()
+
+    assert result["status"] == "succeeded"
+    assert "events" in events_response
+    assert isinstance(events_response["events"], list)
+    assert len(events_response["events"]) > 0
+    # latest events are returned in reverse order
+    assert events_response["events"][0]["type"] == "task.completed"
+    assert events_response["events"][0]["task_id"] == accepted["task_id"]
+
+
+def test_gateway_events_endpoint_filters_by_task_id(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=None,
+            max_active_execution_tasks=2,
+        )
+    )
+    gateway.start()
+    try:
+        first = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人", "session_id": "operator-a"},
+        )
+        second = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去三楼搜索", "session_id": "operator-b"},
+        )
+        _wait_for_task_result(gateway, first["task_id"])
+        _wait_for_task_result(gateway, second["task_id"])
+        filtered = _json_request(
+            gateway.base_url,
+            "GET",
+            f"/events?task_id={first['task_id']}",
+        )
+    finally:
+        gateway.stop()
+
+    assert "events" in filtered
+    assert len(filtered["events"]) > 0
+    # all events should belong to the first task only
+    for event in filtered["events"]:
+        assert event["task_id"] == first["task_id"]
+
+
+def test_gateway_events_endpoint_respects_limit(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去二楼救人", "session_id": "operator-a"},
+        )
+        _wait_for_task_result(gateway, accepted["task_id"])
+        limited = _json_request(gateway.base_url, "GET", "/events?limit=3")
+    finally:
+        gateway.stop()
+
+    assert "events" in limited
+    assert len(limited["events"]) <= 3
