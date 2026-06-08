@@ -894,3 +894,118 @@ def test_mission_cli_replay_not_found(tmp_path):
     assert result["mission_id"] == "nonexistent-mission"
     assert result["status"] == "not_found"
     assert result["timeline"] == []
+
+
+def test_mission_cli_plan_mission_with_llm_flag():
+    """Verify --planner llm creates an LLMMissionPlanner via _build_planner."""
+    import argparse
+    from fireclaw_core.llm_planner import LLMMissionPlanner
+    from fireclaw_core.mission_planner import MissionPlanner
+    from fireclaw_core.mission_cli import _build_planner
+
+    # Test LLM planner creation
+    args = argparse.Namespace(
+        planner="llm",
+        provider_base_url="http://localhost:8080/v1",
+        provider_api_key="test-key-123",
+        model="gpt-4o",
+        llm_trace_path=None,
+        catalog=None,
+    )
+    planner = _build_planner(args)
+    assert isinstance(planner, LLMMissionPlanner)
+
+    # Test deterministic planner (default)
+    args_det = argparse.Namespace(
+        planner="deterministic",
+        provider_base_url=None,
+        provider_api_key=None,
+        model=None,
+        llm_trace_path=None,
+        catalog=None,
+    )
+    planner_det = _build_planner(args_det)
+    assert isinstance(planner_det, MissionPlanner)
+    assert not isinstance(planner_det, LLMMissionPlanner)
+
+    # Test LLM planner with trace store
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+        trace_path = f.name
+    args_trace = argparse.Namespace(
+        planner="llm",
+        provider_base_url="http://localhost:8080/v1",
+        provider_api_key="test-key-123",
+        model="gpt-4o",
+        llm_trace_path=trace_path,
+        catalog=None,
+    )
+    planner_trace = _build_planner(args_trace)
+    assert isinstance(planner_trace, LLMMissionPlanner)
+    assert planner_trace._trace_store is not None
+
+
+def test_mission_cli_plan_mission_llm_missing_required_flags(tmp_path):
+    """Verify --planner llm without required provider flags exits with error."""
+    robot_registry_path = tmp_path / "robots.json"
+    mission_registry_path = tmp_path / "missions.jsonl"
+    robot_registry_path.write_text(
+        json.dumps({"robots": [{"robot_id": "robot-1", "base_url": "http://fake:9999"}]}),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core.mission_cli",
+            "plan-mission",
+            "--command",
+            "去二楼搜索",
+            "--planner",
+            "llm",
+            "--robot-registry",
+            str(robot_registry_path),
+            "--mission-registry",
+            str(mission_registry_path),
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode != 0
+    assert "required when --planner=llm" in completed.stderr
+
+
+def test_mission_cli_plan_mission_deterministic_default(tmp_path):
+    """Verify --planner defaults to deterministic (existing behavior)."""
+    robot_registry_path = tmp_path / "robots.json"
+    mission_registry_path = tmp_path / "missions.jsonl"
+    robot_registry_path.write_text(
+        json.dumps({"robots": [{"robot_id": "robot-1", "base_url": "http://fake:9999"}]}),
+        encoding="utf-8",
+    )
+
+    # No --planner flag, should default to deterministic
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core.mission_cli",
+            "plan-mission",
+            "--command",
+            "去二楼搜索",
+            "--robot-registry",
+            str(robot_registry_path),
+            "--mission-registry",
+            str(mission_registry_path),
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    # Will fail at runtime since robot-1 isn't reachable, but should not fail at CLI parsing
+    # The key is it doesn't error about --planner flags
+    assert "required when --planner=llm" not in completed.stderr

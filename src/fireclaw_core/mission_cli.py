@@ -6,10 +6,13 @@ import sys
 from typing import Any
 
 from fireclaw_core.approval_store import JsonlApprovalStore
+from fireclaw_core.llm_planner import LLMMissionPlanner
+from fireclaw_core.llm_trace import LLMTraceStore
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlanner
 from fireclaw_core.mission_registry import JsonlMissionRegistry
+from fireclaw_core.provider import OpenAICompatProvider
 from fireclaw_core.robot_registry import load_robot_registry
 
 
@@ -39,6 +42,13 @@ def main() -> int:
     plan = subparsers.add_parser("plan-mission", help="Plan and submit mission subtasks from a natural-language command.")
     plan.add_argument("--command", required=True, help="Natural-language mission command.")
     plan.add_argument("--session-id", default=None, help="Mission/session id.")
+    plan.add_argument("--planner", choices=["deterministic", "llm"], default="deterministic",
+                       help="Planner backend: 'deterministic' (regex rules) or 'llm' (LLM with tool calling).")
+    plan.add_argument("--provider-base-url", default=None, help="LLM provider base URL (required when --planner=llm).")
+    plan.add_argument("--provider-api-key", default=None, help="LLM provider API key (required when --planner=llm).")
+    plan.add_argument("--model", default=None, help="LLM model id (required when --planner=llm).")
+    plan.add_argument("--catalog", default=None, help="Path to model catalog JSON file.")
+    plan.add_argument("--llm-trace-path", default=None, help="Path to LLM trace JSONL file.")
     _add_shared_paths(plan)
 
     events = subparsers.add_parser("events", help="Aggregate and list mission events from robot subagents.")
@@ -254,6 +264,17 @@ def _build_mission_agent(args: argparse.Namespace) -> MissionAgent:
     )
 
 
+def _build_planner(args: argparse.Namespace) -> Any:
+    """Build the appropriate planner based on CLI flags."""
+    if args.planner == "llm":
+        if not args.provider_base_url or not args.provider_api_key or not args.model:
+            raise SystemExit("--provider-base-url, --provider-api-key, and --model are required when --planner=llm")
+        provider = OpenAICompatProvider(base_url=args.provider_base_url, api_key=args.provider_api_key)
+        trace_store = LLMTraceStore(args.llm_trace_path) if args.llm_trace_path else None
+        return LLMMissionPlanner(provider=provider, model_id=args.model, trace_store=trace_store)
+    return MissionPlanner()
+
+
 def _build_mission_agent_with_planner(args: argparse.Namespace) -> MissionAgent:
     from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
     scopes = set(args.scopes) if args.scopes else scopes_for_role(args.role)
@@ -266,7 +287,7 @@ def _build_mission_agent_with_planner(args: argparse.Namespace) -> MissionAgent:
     return MissionAgent(
         registry=load_robot_registry(args.robot_registry),
         mission_registry=JsonlMissionRegistry(args.mission_registry),
-        planner=MissionPlanner(),
+        planner=_build_planner(args),
         control_policy=ControlPolicy(),
         operator=operator,
     )
