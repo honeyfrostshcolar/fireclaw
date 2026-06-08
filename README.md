@@ -749,6 +749,63 @@ summary = doctor.summary(findings)
 | `reachability` | info | Robot is online |
 | `capabilities` | warning | Enabled robot has no declared capabilities |
 
+### Mission Memory v1
+
+FireClaw records mission-level memory: outcomes, observations, corrections, and lessons.
+
+**Record types:**
+
+| Type | Use |
+|------|-----|
+| `outcome` | Mission/subtask success/failure with metadata |
+| `observation` | Environment facts (floor layout, obstacles, victim locations) |
+| `correction` | Operator corrections (e.g., "don't send robot A to floor 3") |
+| `lesson` | Reusable knowledge for future missions |
+
+**CLI usage:**
+
+```bash
+# List memory records for a mission
+.venv/bin/python -m fireclaw_core.mission_cli memory list --mission-id <id> [--type outcome] [--limit 10]
+
+# Add a memory record
+.venv/bin/python -m fireclaw_core.mission_cli memory add --mission-id <id> --type observation \
+  --content '{"floor": 2, "note": "smoke detected in east wing"}' [--robot-id r1]
+
+# Summary of all memory records
+.venv/bin/python -m fireclaw_core.mission_cli memory summary [--mission-id <id>]
+```
+
+**Python API:**
+
+```python
+from fireclaw_core.mission_memory import MissionMemoryStore, MissionMemoryRecord
+
+store = MissionMemoryStore("mission_memory.jsonl")
+store.append(MissionMemoryRecord(
+    record_id="mem-1", mission_id="m-1", record_type="lesson",
+    content={"note": "floor 3 stairs blocked, use elevator"},
+    created_at="2026-06-08T12:00:00Z",
+))
+records = store.search(mission_id="m-1", record_type="lesson")
+```
+
+**Auto-recording:**
+
+`MissionAgent` automatically records outcome records when:
+- A subtask is submitted
+- A mission plan is executed
+- A mission is cancelled
+
+Configure with `MissionMemoryStore`:
+
+```python
+agent = MissionAgent(
+    registry=registry,
+    mission_memory=MissionMemoryStore("mission_memory.jsonl"),
+)
+```
+
 ### Skill Typed Contracts v1
 
 Skills now carry typed `output_schema`, `domain`, `preconditions`, and `degraded_mode_policy` metadata alongside the existing `input_schema`.
