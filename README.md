@@ -486,6 +486,22 @@ trace = mission.mission_trace("mission-001")
 
 The aggregated trace keeps robot-local traces under each subtask. Robot-local Gateway traces remain the source of truth for embodied execution and incident review.
 
+The same v1 contract is available from the mission CLI:
+
+```bash
+.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
+  --robot robot-1 \
+  --command "去二楼搜索受困人员" \
+  --session-id mission-001 \
+  --dedupe-key mission-001-robot-1-floor-2 \
+  --robot-registry robots.json \
+  --mission-registry memory/fireclaw-missions.jsonl
+
+.venv/bin/python -m fireclaw_core.mission_cli trace mission-001 \
+  --robot-registry robots.json \
+  --mission-registry memory/fireclaw-missions.jsonl
+```
+
 Each robot subagent remains authoritative over embodied execution. It may block, reject, cancel, ask for confirmation, or emergency-stop based on local state, safety rules, permissions, ROS availability, and hardware constraints.
 
 ## Session State

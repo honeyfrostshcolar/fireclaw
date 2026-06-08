@@ -423,3 +423,92 @@ Known limitations:
 Next recommended implementation:
 
 - Mission Control API/CLI v1: expose mission submit/trace/cancel operations around `MissionAgent` and `JsonlMissionRegistry`, still using explicit robot subtask assignment first.
+
+## Update 2026-06-08 14:55 CST
+
+### Mission Control CLI v1 Started
+
+Created plan:
+
+- `docs/superpowers/plans/2026-06-08-mission-control-cli-v1.md`
+
+Created implementation files:
+
+- `src/fireclaw_core/mission_cli.py`
+
+Created tests:
+
+- `tests/test_mission_cli.py`
+
+Modified:
+
+- `README.md`
+- `memory/2026-06-08/fireclaw-work-resume.md`
+
+### Implementation Details
+
+- Added CLI module runnable as `python -m fireclaw_core.mission_cli`.
+- Added `submit-subtask` command:
+  - loads robot registry JSON;
+  - creates/uses mission registry JSONL;
+  - calls `MissionAgent.submit_subtask(...)`;
+  - prints JSON result.
+- Added `trace` command:
+  - loads robot registry and mission registry;
+  - calls `MissionAgent.mission_trace(...)`;
+  - prints mission trace JSON.
+- The CLI passes a mission-agent operator payload to robot-local Gateway using existing authorization fields:
+  - `role="operator"`;
+  - `control_scopes=["task.submit", "task.cancel", "state.read"]`.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_mission_cli.py::test_mission_cli_submit_subtask_records_mission -q`
+  - RED first: `No module named fireclaw_core.mission_cli`
+  - RED second: robot Gateway returned `status="denied"` because the payload used `scopes` instead of existing `control_scopes`.
+  - GREEN after implementing CLI and correcting operator payload: `1 passed`.
+- `.venv/bin/python -m pytest tests/test_mission_cli.py -q`
+  - RED first for trace: no JSON output because `trace` subcommand did not exist.
+  - GREEN after adding `trace`: `2 passed`.
+
+### Current Hypothesis
+
+Mission Control CLI v1 is implemented at the explicit subtask level. It still needs focused combined tests and full-suite verification.
+
+### Next Recommended Step
+
+Run focused mission CLI/agent/registry tests and full suite. If green, the next architectural step is either mission-level cancellation across subtasks or mission-level authorization scopes before autonomous decomposition.
+
+## Update 2026-06-08 15:10 CST
+
+### Verification Completed
+
+- `.venv/bin/python -m pytest tests/test_mission_cli.py tests/test_mission_agent.py tests/test_mission_registry.py -q`
+  - GREEN: `9 passed in 1.25s`
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `231 passed in 13.07s`
+
+### Current Conclusion
+
+Mission Control CLI v1 is implemented and verified.
+
+Implemented behavior:
+
+- `python -m fireclaw_core.mission_cli submit-subtask`;
+- `python -m fireclaw_core.mission_cli trace`;
+- registry-driven robot subagent lookup;
+- mission registry JSONL persistence from CLI;
+- mission trace aggregation from CLI;
+- mission-agent operator payload uses existing robot-local `control_scopes` authorization model.
+
+Known limitations:
+
+- no `cancel` mission CLI command yet;
+- no mission HTTP API;
+- no mission-level authorization layer separate from robot-local authorization;
+- no robot discovery/heartbeat;
+- no autonomous mission decomposition.
+
+Next recommended implementation:
+
+- Mission cancel v1: add mission-level cancellation that iterates recorded subtasks, calls each robot subagent's cancel endpoint, and updates mission subtask status.
