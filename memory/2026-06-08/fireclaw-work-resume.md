@@ -998,3 +998,43 @@ Phase 3: "Add Mission Memory and Operator Workflow"
 - operator correction recording
 - approval workflow for high-risk mission operations
 - incident replay from mission and robot-local traces
+
+## Update 2026-06-08 23:30 CST
+
+### Phase 4: Model Provider Runtime v1 Completed
+
+**Superpowers flow:** brainstorming → spec → plan → subagent-driven-development with two-stage review per task.
+
+**Commits:**
+- `a747d91 feat: add ModelProvider protocol and OpenAICompatProvider v1`
+- `cc35dd9 feat: add ModelCatalog v1 for model metadata management`
+- (LLM trace store commit)
+- `76277b1 feat: add LLMMissionPlanner v1 with tool calling and trace recording`
+- (CLI integration commit)
+- `b8a6263 docs: add provider runtime v1 documentation to README`
+- `61337a5 docs: update alignment doc with Phase 4 completion status`
+
+**Implemented:**
+- `OpenAICompatProvider` with httpx (no openai SDK)
+- `ModelCatalog` for model metadata (context_window, max_tokens, cost)
+- `LLMMissionPlanner` with tool calling for structured MissionPlan output
+- `LLMTraceStore` for replayable LLM traces (JSONL)
+- CLI: `--planner llm --provider-base-url URL --provider-api-key KEY --model MODEL`
+- Backward compatible: `--planner deterministic` (default)
+
+**Test results:** 388 → 422 tests (+34), zero failures.
+
+**Known Phase 4 limitations:**
+- Single provider type (OpenAI-compatible only)
+- No offline/degraded fallback policy
+- No multi-provider routing
+- No model catalog hot-reload
+
+**Next recommended step:**
+Phase 5: Deployment Hardening
+- authentication and signed operator approvals
+- robot pairing/enrollment
+- heartbeat freshness and degraded network policy
+- queue retention and log redaction
+- deployment config examples
+- security review for robot control endpoints
