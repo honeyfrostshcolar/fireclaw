@@ -723,6 +723,32 @@ for event in stream.stream("mission-004", timeout_seconds=300.0):
 
 The stream stops automatically when the mission reaches a terminal status or the timeout expires. Each event includes `mission_id`, `robot_id`, `task_id`, `status`, `previous_status`, `timestamp`, and `details`.
 
+### Fleet Doctor v1
+
+The fleet doctor validates robot registry entries, checks robot reachability, and reports capability gaps.
+
+```python
+from fireclaw_core.fleet_doctor import FleetDoctor
+
+doctor = FleetDoctor(registry=registry, subagent_client=client)
+findings = doctor.diagnose()
+summary = doctor.summary(findings)
+# summary["status"] == "healthy" or "unhealthy"
+# summary["error_count"], summary["warning_count"]
+# summary["findings"] — list of severity/category/robot_id/message
+```
+
+**Checks:**
+
+| Category | Severity | Condition |
+|---|---|---|
+| `registry` | error | Empty or duplicate `robot_id`, empty `base_url` |
+| `registry` | warning | Registry is empty |
+| `registry` | info | Robot is disabled |
+| `reachability` | error | Robot `/state` endpoint unreachable |
+| `reachability` | info | Robot is online |
+| `capabilities` | warning | Enabled robot has no declared capabilities |
+
 ## Session State
 
 Every task result includes session metadata:
