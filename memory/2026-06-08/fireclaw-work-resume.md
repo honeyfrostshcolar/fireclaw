@@ -850,6 +850,107 @@ Phase 2: "Complete Robot-Local Embodied Runtime"
 - simulator/real-robot separation checks;
 - stronger local failure taxonomy.
 
+## Update 2026-06-08 20:30 CST
+
+### Phase 3 Task 1: Mission Memory Records v1 Completed
+
+**Superpowers flow:** brainstorming → plan → subagent-driven-development with two-stage review per task.
+
+**Commits:**
+- `18ebfa6 feat: add MissionMemoryStore v1 with four record types`
+- `b0a3606 test: add corrupt JSONL resilience test for MissionMemoryStore`
+- `86c1795 feat: integrate MissionMemoryStore into MissionAgent for auto outcome recording`
+- `cf7c894 fix: mission memory exception safety and robot_assignments accuracy`
+- `7062c04 feat: add mission memory CLI subcommands (list/add/summary)`
+- `a775734 docs: add mission memory documentation to README`
+
+**Implemented:**
+- `MissionMemoryStore` with 4 record types: outcome, observation, correction, lesson
+- JSONL append-only storage with corrupt line resilience
+- MissionAgent auto-records outcomes on submit/plan/cancel
+- Exception-safe memory writes (never blocks mission operations)
+- CLI: `memory list`, `memory add`, `memory summary`
+- 20 new tests (314 → 334)
+
+**Next Phase 3 tasks:**
+- cross-robot event aggregation
+- operator correction recording
+- approval workflow for high-risk mission operations
+- incident replay from mission and robot-local traces
+
+## Update 2026-06-08 21:30 CST
+
+### Phase 3 Task 2: Cross-Robot Event Aggregation v1 Completed
+
+**Commits:**
+- Gateway /events endpoint + SubagentClient get_events()
+- MissionEventAggregator with timestamp-sorted merge
+- MissionAgent.mission_events() + CLI events subcommand
+- README documentation
+
+**Implemented:**
+- Gateway `GET /events` endpoint with task_id/limit filtering
+- `SubagentClient.get_events()` HTTP client method
+- `MissionEventAggregator` collecting events from all robot subagents, merging by timestamp
+- Filtering by robot_id, event_type, limit
+- `MissionAgent.mission_events()` with authorization check
+- CLI: `mission events <mission_id> [--robot-id X] [--type Y] [--limit N]`
+- 13 new tests (334 → 347)
+
+**Next Phase 3 tasks:**
+- operator correction recording
+- approval workflow for high-risk mission operations
+- incident replay from mission and robot-local traces
+
+## Update 2026-06-08 22:00 CST
+
+### Phase 3 Task 3: Operator Correction Recording Completed
+
+**Implemented:**
+- `MissionAgent.record_correction()` with mission.correct authorization
+- CLI `corrections <mission_id>` subcommand
+- `mission.correct` scope added to operator/supervisor/admin roles
+- 7 new tests (347 → 354)
+
+**Next Phase 3 tasks:**
+- approval workflow for high-risk mission operations
+- incident replay from mission and robot-local traces
+
+## Update 2026-06-08 22:30 CST
+
+### Phase 3 Task 4: Approval Workflow v1 Completed
+
+**Implemented:**
+- `JsonlApprovalStore` with create/approve/deny/get/list/pending
+- `MissionAgent.request_approval()` and `decide_approval()`
+- `mission.approve` scope for supervisor/admin
+- CLI: `approval list/request/decide`
+- 20 new tests (354 → 375)
+
+**Next Phase 3 task:**
+- incident replay from mission and robot-local traces
+
+## Update 2026-06-08 23:00 CST
+
+### Phase 3 Task 5: Incident Replay v1 Completed
+
+**Implemented:**
+- `IncidentReplay` reconstructs mission timeline from mission_registry + mission_memory
+- `MissionAgent.replay_incident()` with not_found/not_configured handling
+- CLI: `replay <mission_id>` subcommand
+- 13 new tests (375 → 388)
+
+### Phase 3 Complete
+
+All 5 Phase 3 tasks from alignment document completed:
+1. ✅ Mission Memory Records v1 (20 tests)
+2. ✅ Cross-Robot Event Aggregation v1 (13 tests)
+3. ✅ Operator Correction Recording v1 (7 tests)
+4. ✅ Approval Workflow v1 (20 tests)
+5. ✅ Incident Replay v1 (13 tests)
+
+Session total: 314 → 388 tests (+74), ~24 files modified.
+
 ## Update 2026-06-08 18:20 CST
 
 ### Phase 2 Completed
