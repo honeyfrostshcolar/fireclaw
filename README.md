@@ -651,6 +651,36 @@ result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session
 
 Robot presence is tracked in-memory on `RobotRegistry`. `is_online(robot_id)` and `online_entries()` query the last known state. `plan_and_submit` calls `check_fleet_presence()` automatically and skips offline robots when assigning subtasks.
 
+### Mission Scheduler v1
+
+The mission scheduler executes `MissionPlan.execution_group` in ordered batches. Subtasks in the same group are submitted in parallel; later groups wait until earlier groups reach terminal state.
+
+```python
+from fireclaw_core.mission_scheduler import MissionScheduler, MissionSchedulerConfig
+
+scheduler = MissionScheduler(
+    mission_agent=mission,
+    config=MissionSchedulerConfig(
+        failure_policy="stop",  # "stop" or "continue"
+        poll_interval_seconds=0.1,
+        group_timeout_seconds=300.0,
+    ),
+)
+
+result = scheduler.schedule(plan, mission_id="mission-004", session_id="mission-004")
+# result["status"] == "succeeded" or "stopped"
+# result["group_results"] contains per-group subtask results and terminal states
+```
+
+Failure policies:
+
+| Policy | Behavior |
+|---|---|
+| `stop` | If any subtask in a group fails (`failed`, `block`, `denied`, `lost`), later groups are not submitted. |
+| `continue` | Later groups are submitted regardless of earlier failures. |
+
+The scheduler polls `mission_trace()` between groups to determine when all subtasks in a group have reached terminal state. This is the natural place to add retry, reassign, and escalation logic in future versions.
+
 ## Session State
 
 Every task result includes session metadata:
