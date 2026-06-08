@@ -130,3 +130,30 @@ def test_operator_can_submit_mission():
     decision = policy.evaluate(operator, "mission.submit")
 
     assert decision.status == "allow"
+
+
+def test_operator_role_can_correct_mission():
+    operator = operator_from_payload({"operator_id": "operator-1", "role": "operator"})
+    policy = ControlPolicy()
+
+    decision = policy.evaluate(operator, "mission.correct")
+
+    assert decision.status == "allow"
+
+
+def test_observer_role_cannot_correct_mission():
+    operator = operator_from_payload({"operator_id": "observer-1", "role": "observer"})
+    policy = ControlPolicy()
+
+    decision = policy.evaluate(operator, "mission.correct")
+
+    assert decision.status == "deny"
+
+
+def test_admin_role_can_correct_mission():
+    operator = operator_from_payload({"operator_id": "admin-1", "role": "admin"})
+    policy = ControlPolicy()
+
+    decision = policy.evaluate(operator, "mission.correct")
+
+    assert decision.status == "allow"

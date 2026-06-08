@@ -47,6 +47,11 @@ def main() -> int:
     events.add_argument("--limit", type=int, default=200, help="Maximum number of events to return.")
     _add_shared_paths(events)
 
+    corrections = subparsers.add_parser("corrections", help="List operator correction records for a mission.")
+    corrections.add_argument("mission_id", help="Mission id to list corrections for.")
+    corrections.add_argument("--memory-path", default="mission_memory.jsonl", help="Path to mission memory JSONL file.")
+    corrections.add_argument("--limit", type=int, default=10, help="Maximum number of corrections to return.")
+
     memory = subparsers.add_parser("memory", help="Manage mission memory records.")
     memory.add_argument("--memory-path", default="mission_memory.jsonl", help="Path to mission memory JSONL file.")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -99,10 +104,19 @@ def main() -> int:
         )
         _print_json(result)
         return 0
+    if args.command_name == "corrections":
+        return _handle_corrections(args)
     if args.command_name == "memory":
         return _handle_memory(args)
     parser.error(f"Unknown command: {args.command_name}")
     return 1
+
+
+def _handle_corrections(args: argparse.Namespace) -> int:
+    store = MissionMemoryStore(args.memory_path)
+    records = store.search(mission_id=args.mission_id, record_type="correction", limit=args.limit)
+    _print_json({"mission_id": args.mission_id, "corrections": [r.to_dict() for r in records]})
+    return 0
 
 
 def _handle_memory(args: argparse.Namespace) -> int:

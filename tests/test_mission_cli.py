@@ -533,6 +533,53 @@ def test_mission_cli_memory_summary(tmp_path):
     assert summary["by_type"]["outcome"] == 2
 
 
+def test_mission_cli_corrections(tmp_path):
+    memory_path = tmp_path / "mission_memory.jsonl"
+    store = MissionMemoryStore(memory_path)
+    store.append(MissionMemoryRecord(
+        record_id="mem-1", mission_id="m-1", record_type="correction",
+        content={"correction": "应先搜索三楼", "operator_id": "op-1"},
+        created_at="2026-06-08T12:00:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-2", mission_id="m-1", record_type="correction",
+        content={"correction": "注意烟雾方向", "context": "风向变化", "operator_id": "op-1"},
+        created_at="2026-06-08T12:01:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-3", mission_id="m-1", record_type="outcome",
+        content={"status": "succeeded"}, created_at="2026-06-08T12:02:00Z",
+    ))
+    store.append(MissionMemoryRecord(
+        record_id="mem-4", mission_id="m-2", record_type="correction",
+        content={"correction": "其他任务的纠正"}, created_at="2026-06-08T12:03:00Z",
+    ))
+
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core.mission_cli",
+            "corrections",
+            "m-1",
+            "--memory-path",
+            str(memory_path),
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0
+    result = json.loads(completed.stdout)
+    assert result["mission_id"] == "m-1"
+    assert len(result["corrections"]) == 2
+    # search() returns most recent first
+    assert result["corrections"][0]["content"]["correction"] == "注意烟雾方向"
+    assert result["corrections"][0]["content"]["context"] == "风向变化"
+    assert result["corrections"][1]["content"]["correction"] == "应先搜索三楼"
+
+
 def test_mission_cli_events(tmp_path):
     gateway = FireClawGateway(
         GatewayConfig(

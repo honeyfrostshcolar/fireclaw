@@ -10,6 +10,7 @@ ROLE_SCOPES: dict[str, set[str]] = {
     "operator": {
         "task.submit", "task.confirm", "task.cancel", "state.read",
         "mission.submit", "mission.cancel", "mission.plan", "mission.read",
+        "mission.correct",
     },
     "supervisor": {
         "task.submit",
@@ -21,6 +22,7 @@ ROLE_SCOPES: dict[str, set[str]] = {
         "mission.cancel",
         "mission.plan",
         "mission.read",
+        "mission.correct",
     },
     "admin": {
         "task.submit",
@@ -33,6 +35,7 @@ ROLE_SCOPES: dict[str, set[str]] = {
         "mission.cancel",
         "mission.plan",
         "mission.read",
+        "mission.correct",
     },
 }
 

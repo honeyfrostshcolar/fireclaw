@@ -738,3 +738,110 @@ def test_mission_agent_mission_events_returns_not_configured_without_registry():
     assert result["status"] == "not_configured"
     assert result["event_count"] == 0
     assert result["events"] == []
+
+
+# --- Operator correction tests ---
+
+def test_mission_agent_records_correction(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-operator",
+        role="operator",
+        control_scopes=scopes_for_role("operator"),
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        control_policy=policy,
+        operator=operator,
+        mission_memory=memory_store,
+    )
+
+    result = mission.record_correction(
+        "mission-1",
+        correction="应先搜索三楼再搜索二楼",
+    )
+
+    assert result["status"] == "recorded"
+    assert result["mission_id"] == "mission-1"
+    assert result["correction"] == "应先搜索三楼再搜索二楼"
+
+    records = memory_store.list_records(mission_id="mission-1", record_type="correction")
+    assert len(records) == 1
+    assert records[0].content["correction"] == "应先搜索三楼再搜索二楼"
+    assert records[0].content["operator_id"] == "test-operator"
+
+
+def test_mission_agent_records_correction_with_context(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-operator",
+        role="operator",
+        control_scopes=scopes_for_role("operator"),
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        control_policy=policy,
+        operator=operator,
+        mission_memory=memory_store,
+    )
+
+    result = mission.record_correction(
+        "mission-1",
+        correction="应先搜索三楼再搜索二楼",
+        context="三楼有浓烟，优先级更高",
+        robot_id="robot-1",
+        subtask_id="task-1",
+    )
+
+    assert result["status"] == "recorded"
+
+    records = memory_store.list_records(mission_id="mission-1", record_type="correction")
+    assert len(records) == 1
+    assert records[0].content["context"] == "三楼有浓烟，优先级更高"
+    assert records[0].content["operator_id"] == "test-operator"
+    assert records[0].robot_id == "robot-1"
+    assert records[0].subtask_id == "task-1"
+
+
+def test_mission_agent_correction_denied_without_scope():
+    from fireclaw_core.control import ControlPolicy, OperatorContext
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore("/tmp/test_memory.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-observer",
+        role="observer",
+        control_scopes={"state.read", "mission.read"},
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        control_policy=policy,
+        operator=operator,
+        mission_memory=memory_store,
+    )
+
+    result = mission.record_correction(
+        "mission-1",
+        correction="应先搜索三楼再搜索二楼",
+    )
+
+    assert result["status"] == "denied"
+    assert "mission.correct" in result["message"]

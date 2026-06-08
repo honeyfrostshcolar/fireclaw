@@ -327,6 +327,37 @@ class MissionAgent:
             "subtask_results": subtask_results,
         }
 
+    def record_correction(
+        self,
+        mission_id: str,
+        *,
+        correction: str,
+        context: str | None = None,
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an operator correction for a mission."""
+        deny = self._authorize("mission.correct")
+        if deny is not None:
+            return {**deny, "status": "denied"}
+
+        content: dict[str, Any] = {"correction": correction}
+        if context is not None:
+            content["context"] = context
+
+        operator_id = self.operator.operator_id if self.operator else None
+        if operator_id:
+            content["operator_id"] = operator_id
+
+        self._record_mission_memory(
+            mission_id,
+            "correction",
+            content,
+            robot_id=robot_id,
+            subtask_id=subtask_id,
+        )
+        return {"status": "recorded", "mission_id": mission_id, "correction": correction}
+
     def cancel_mission(
         self,
         mission_id: str,
