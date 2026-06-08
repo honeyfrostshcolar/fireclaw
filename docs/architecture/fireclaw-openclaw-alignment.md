@@ -233,14 +233,15 @@ Responsibilities:
 Current implementation:
 
 - deterministic planners and Python logic dominate current behavior.
-- no dedicated provider runtime exists yet.
+- `OpenAICompatProvider` with `httpx` for OpenAI-compatible API calls.
+- `ModelCatalog` for model metadata (context window, max tokens, cost).
+- `LLMMissionPlanner` with tool calling for structured mission plan output.
+- `LLMTraceStore` for replayable LLM traces (JSONL).
 
 Missing:
 
-- model provider abstraction;
-- prompt and tool-calling runtime for mission planner;
 - offline/degraded fallback policy;
-- replayable LLM traces for tests.
+- multi-provider support beyond OpenAI-compatible API.
 
 ## Core Data Flow
 
@@ -292,9 +293,9 @@ operator cancel mission
 
 Latest verified state recorded on 2026-06-08:
 
-- branch: `master`, ahead of `origin/master` by 14 commits;
-- latest commit: `eac5648 feat: Phase 2 — skill typed contracts, adapter capabilities, local failure taxonomy`;
-- verification: `.venv/bin/python -m pytest -q` -> `314 passed in 17.57s`.
+- branch: `master`, ahead of `origin/master` by ~20 commits;
+- latest commit: Phase 4 provider runtime v1 complete;
+- verification: `.venv/bin/python -m pytest -q` -> `422 passed`.
 
 Untracked planning/config artifacts existed at that point:
 
@@ -349,13 +350,21 @@ Tasks:
 
 Goal: introduce LLM planning without making the framework depend on model quality.
 
-Tasks:
+Status: **Complete** (2026-06-08)
 
-- provider abstraction;
-- tool-calling mission planner;
-- prompt/runtime configuration;
-- replayable LLM traces;
-- deterministic fallback to rule-based planning.
+Implemented:
+
+- `OpenAICompatProvider` with `httpx` (no openai SDK dependency);
+- `ModelCatalog` for model metadata management;
+- `LLMMissionPlanner` with tool calling for structured mission plan output;
+- `LLMTraceStore` for replayable LLM traces (JSONL);
+- CLI integration with `--planner llm` flag and provider configuration;
+- deterministic fallback preserved via `--planner deterministic` (default).
+
+Remaining:
+
+- offline/degraded fallback policy;
+- multi-provider support beyond OpenAI-compatible API.
 
 ### Phase 5: Deployment Hardening
 
