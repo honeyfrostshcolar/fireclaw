@@ -749,6 +749,64 @@ summary = doctor.summary(findings)
 | `reachability` | info | Robot is online |
 | `capabilities` | warning | Enabled robot has no declared capabilities |
 
+### Skill Typed Contracts v1
+
+Skills now carry typed `output_schema`, `domain`, `preconditions`, and `degraded_mode_policy` metadata alongside the existing `input_schema`.
+
+```python
+from fireclaw_core.skills import create_default_skill_registry, NAVIGATE_OUTPUT_SCHEMA
+
+registry = create_default_skill_registry(robot)
+nav = registry.get("navigate_to_floor")
+
+nav.output_schema  # {"type": "object", "properties": {"floor": {...}, ...}}
+nav.domain          # "navigation"
+nav.preconditions   # ["robot_online", "floor_reachable"]
+nav.degraded_mode_policy  # "retry"
+```
+
+**Domains:** `navigation`, `perception`, `communication`, `safety`, `manipulation`
+
+**Degraded mode policies:** `skip`, `fallback`, `retry`, `abort`, `escalate`
+
+### Adapter Capabilities v1
+
+Every adapter now declares what it can do via `capabilities()`:
+
+```python
+from fireclaw_core.robot import DryRunRobotAdapter, validate_simulator_real_separation
+
+adapter = DryRunRobotAdapter(robot_id="r1")
+caps = adapter.capabilities()
+# caps.supported_actions, caps.is_simulator, caps.supports_real_execution, ...
+
+# Simulator/real-robot separation check
+error = validate_simulator_real_separation("simulator", dry_run=False, action="navigate_to_floor")
+# error: "Simulator adapter must not execute real actions"
+```
+
+All adapters (`DryRunRobotAdapter`, `MockRos1RobotAdapter`, `MockRos2RobotAdapter`, `SimulatorRobotAdapter`, `Ros1RobotAdapter`) implement `capabilities()`.
+
+### Local Failure Taxonomy v1
+
+Structured failure reasons replace ad-hoc status strings:
+
+```python
+from fireclaw_core.local_failure import LocalFailureReason, FailureCategory
+
+reason = LocalFailureReason.from_robot_result(
+    status="failed", error="Connection timed out", action="navigate_to_floor", robot_id="r1",
+)
+reason.category   # FailureCategory.TIMEOUT
+reason.retryable   # True
+reason.to_dict()   # {"category": "timeout", "message": "...", "retryable": True, ...}
+```
+
+**Categories:** `transport`, `timeout`, `not_configured`, `robot_offline`, `low_battery`, `emergency_stop`, `sensor_unavailable`, `target_unreachable`, `action_failed`, `cancelled`, `precondition_failed`, `safety_blocked`, `authorization_denied`, `unknown`
+
+**Retryable:** `transport`, `timeout`, `sensor_unavailable`
+**Non-retryable:** `robot_offline`, `low_battery`, `emergency_stop`, `safety_blocked`, `authorization_denied`, `not_configured`, `target_unreachable`
+
 ## Session State
 
 Every task result includes session metadata:

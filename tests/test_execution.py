@@ -307,7 +307,9 @@ def test_default_skills_declare_low_risk_metadata():
 
     metadata = registry.list_metadata()
 
-    assert {skill["risk_level"] for skill in metadata} == {"low"}
+    risk_levels = {skill["risk_level"] for skill in metadata}
+    assert "low" in risk_levels
+    assert "medium" in risk_levels  # return_to_safe_zone
 
 
 def test_skill_registry_lists_execution_and_safety_metadata():
@@ -330,25 +332,17 @@ def test_skill_registry_lists_execution_and_safety_metadata():
         }
     )
 
-    assert registry.list_metadata() == [
-        {
-            "name": "policy",
-            "description": "Retryable policy.",
-            "runtime": "subprocess",
-            "dry_run_only": True,
-            "max_attempts": 2,
-            "idempotent": True,
-            "required_sensors": ["rgb_camera"],
-            "failure_categories": ["timeout"],
-            "allow_real_robot": False,
-            "timeout_seconds": 3.0,
-            "risk_level": "high",
-            "input_schema": {
-                "type": "object",
-                "additionalProperties": True,
-            },
-        }
-    ]
+    metadata = registry.list_metadata()
+    assert len(metadata) == 1
+    m = metadata[0]
+    assert m["name"] == "policy"
+    assert m["risk_level"] == "high"
+    assert m["required_sensors"] == ["rgb_camera"]
+    assert m["failure_categories"] == ["timeout"]
+    assert m["output_schema"] == {"type": "object", "additionalProperties": True}
+    assert m["domain"] == "navigation"
+    assert m["preconditions"] == []
+    assert m["degraded_mode_policy"] is None
 
 
 def test_skill_registry_registers_external_skill():

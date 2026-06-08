@@ -62,7 +62,13 @@ class FireClawAgent:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
         self.dry_run = dry_run
-        self.available_sensors = available_sensors or set()
+        # If no sensors specified, infer from robot adapter when possible
+        if available_sensors is not None:
+            self.available_sensors = available_sensors
+        elif hasattr(self.robot, "available_sensors"):
+            self.available_sensors = set(self.robot.available_sensors)
+        else:
+            self.available_sensors = set()
         self.session_id = session_id
         self.planner = planner or RuleBasedPlanner()
         self._event_sink = event_sink

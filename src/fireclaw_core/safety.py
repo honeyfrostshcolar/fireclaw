@@ -46,7 +46,13 @@ class SafetyGate:
         if missing:
             return SafetyDecision(status="block", reasons=missing)
 
-        sensors = available_sensors or set()
+        # Infer sensors from robot_state when not explicitly provided
+        if available_sensors is not None:
+            sensors = available_sensors
+        elif robot_state is not None:
+            sensors = set(robot_state.available_sensors)
+        else:
+            sensors = set()
         missing_sensors: list[str] = []
         for step in planning_result.plan.steps:
             skill = registry.get(step.skill_name)

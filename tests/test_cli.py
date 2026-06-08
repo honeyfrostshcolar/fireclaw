@@ -436,15 +436,15 @@ def test_module_cli_loads_workspace_skills_by_default(tmp_path):
 def test_module_cli_blocks_workspace_skill_when_available_sensor_is_missing(tmp_path):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    (skills_dir / "thermal.skill.json").write_text(
+    (skills_dir / "lidar.skill.json").write_text(
         json.dumps(
             {
-                "name": "thermal_policy",
-                "description": "Requires thermal camera.",
+                "name": "lidar_policy",
+                "description": "Requires lidar.",
                 "runtime": "subprocess",
                 "command": [sys.executable, "-c", "print('{\"ok\": true, \"data\": {}}')"],
                 "dry_run_only": True,
-                "required_sensors": ["thermal_camera"],
+                "required_sensors": ["lidar"],
             }
         ),
         encoding="utf-8",
@@ -455,7 +455,7 @@ def test_module_cli_blocks_workspace_skill_when_available_sensor_is_missing(tmp_
             ".venv/bin/python",
             "-m",
             "fireclaw_core",
-            "运行 thermal_policy",
+            "运行 lidar_policy",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
             "--skills-dir",
@@ -470,7 +470,7 @@ def test_module_cli_blocks_workspace_skill_when_available_sensor_is_missing(tmp_
     assert completed.returncode != 0
     result = json.loads(completed.stdout)
     assert result["status"] == "block"
-    assert "thermal_camera" in result["message"]
+    assert "lidar" in result["message"]
 
 
 def test_module_cli_accepts_available_sensor_for_workspace_skill(tmp_path):

@@ -43,6 +43,48 @@ class EnvironmentState:
     victims_by_floor: dict[int, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AdapterCapabilities:
+    """Declares what an adapter can do and under what constraints."""
+    supported_actions: set[str]
+    supported_modes: set[str]
+    supports_dry_run: bool
+    supports_real_execution: bool
+    supports_feedback: bool
+    supports_cancellation: bool
+    max_concurrent_actions: int
+    required_sensors: list[str]
+    is_simulator: bool
+
+
+ALL_ROBOT_ACTIONS = {
+    "navigate_to_floor",
+    "search_for_victims",
+    "assess_victim",
+    "report_status",
+    "return_to_safe_zone",
+    "emergency_stop",
+}
+
+
+def validate_simulator_real_separation(
+    adapter_mode: str,
+    dry_run: bool,
+    action: str,
+    *,
+    allow_real: bool = False,
+) -> str | None:
+    """Return an error message if simulator/real-robot separation is violated.
+
+    Returns None if the combination is valid.
+    """
+    if adapter_mode == "simulator" and not dry_run:
+        return "Simulator adapter must not execute real actions (dry_run=False on simulator)."
+    if adapter_mode in {"ros1", "ros2"} and not allow_real and not dry_run:
+        return f"Real adapter ({adapter_mode}) requires allow_real_robot=True for non-dry-run execution."
+    return None
+
+
 class RobotAdapter(Protocol):
     robot_id: str
     mode: str
@@ -72,6 +114,9 @@ class RobotAdapter(Protocol):
     def get_environment_state(self) -> EnvironmentState:
         ...
 
+    def capabilities(self) -> AdapterCapabilities:
+        ...
+
 
 @dataclass
 class DryRunRobotAdapter:
@@ -81,7 +126,7 @@ class DryRunRobotAdapter:
     dry_run: bool = True
     mode: str = "dry_run"
     current_floor: int = 1
-    available_sensors: list[str] = field(default_factory=list)
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
     emergency_stopped: bool = False
@@ -124,6 +169,19 @@ class DryRunRobotAdapter:
             reachable_floors=list(self.reachable_floors),
             hazards=[],
             victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_actions=set(ALL_ROBOT_ACTIONS),
+            supported_modes={"dry_run"},
+            supports_dry_run=True,
+            supports_real_execution=False,
+            supports_feedback=False,
+            supports_cancellation=False,
+            max_concurrent_actions=1,
+            required_sensors=list(self.available_sensors),
+            is_simulator=False,
         )
 
     def _record(self, action: str, data: dict[str, Any]) -> RobotActionResult:
@@ -171,7 +229,7 @@ class MockRos1RobotAdapter:
     dry_run: bool = True
     mode: str = "mock_ros1"
     current_floor: int = 1
-    available_sensors: list[str] = field(default_factory=list)
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
     emergency_stopped: bool = False
@@ -236,6 +294,19 @@ class MockRos1RobotAdapter:
             reachable_floors=list(self.reachable_floors),
             hazards=[],
             victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_actions=set(ALL_ROBOT_ACTIONS),
+            supported_modes={"mock_ros1"},
+            supports_dry_run=True,
+            supports_real_execution=False,
+            supports_feedback=True,
+            supports_cancellation=True,
+            max_concurrent_actions=1,
+            required_sensors=list(self.available_sensors),
+            is_simulator=False,
         )
 
     def action_feedback(self, action_type: str, inputs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -402,6 +473,19 @@ class Ros1RobotAdapter:
     def get_environment_state(self) -> EnvironmentState:
         return EnvironmentState(reachable_floors=[], hazards=[], victims_by_floor={})
 
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_actions=set(ALL_ROBOT_ACTIONS),
+            supported_modes={"ros1"},
+            supports_dry_run=True,
+            supports_real_execution=True,
+            supports_feedback=True,
+            supports_cancellation=True,
+            max_concurrent_actions=1,
+            required_sensors=list(self.available_sensors),
+            is_simulator=False,
+        )
+
     def _record_configured_action(
         self,
         action: str,
@@ -505,7 +589,7 @@ class MockRos2RobotAdapter:
     dry_run: bool = True
     mode: str = "mock_ros2"
     current_floor: int = 1
-    available_sensors: list[str] = field(default_factory=list)
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
     emergency_stopped: bool = False
@@ -568,6 +652,19 @@ class MockRos2RobotAdapter:
             reachable_floors=list(self.reachable_floors),
             hazards=[],
             victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_actions=set(ALL_ROBOT_ACTIONS),
+            supported_modes={"mock_ros2"},
+            supports_dry_run=True,
+            supports_real_execution=False,
+            supports_feedback=False,
+            supports_cancellation=False,
+            max_concurrent_actions=1,
+            required_sensors=list(self.available_sensors),
+            is_simulator=False,
         )
 
     def _record(self, *, topic: str, action: str, payload: dict[str, Any]) -> RobotActionResult:
@@ -663,6 +760,19 @@ class SimulatorRobotAdapter:
             reachable_floors=list(self.reachable_floors),
             hazards=list(self.hazards),
             victims_by_floor=dict(self.victims_by_floor),
+        )
+
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_actions=set(ALL_ROBOT_ACTIONS),
+            supported_modes={"simulator"},
+            supports_dry_run=True,
+            supports_real_execution=False,
+            supports_feedback=False,
+            supports_cancellation=False,
+            max_concurrent_actions=1,
+            required_sensors=list(self.available_sensors),
+            is_simulator=True,
         )
 
     def _record(

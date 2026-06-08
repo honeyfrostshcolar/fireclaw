@@ -745,7 +745,7 @@ class FireClawGateway:
             memory=self.memory,
             workspace_skills_dir=self.config.workspace_skills_dir,
             dry_run=self.config.dry_run,
-            available_sensors=set(self.config.available_sensors),
+            available_sensors=set(self.config.available_sensors) if self.config.available_sensors else None,
             session_id=resolved_session_id,
             event_sink=event_sink,
             cancellation_requested=cancellation_requested,

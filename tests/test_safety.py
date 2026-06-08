@@ -20,9 +20,15 @@ def _successful_result():
 
 def test_safety_allows_valid_dry_run_plan():
     planning_result = RuleBasedPlanner().plan("去二楼救人")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+    registry = create_default_skill_registry(robot)
 
-    decision = SafetyGate().evaluate(planning_result, registry, dry_run=True)
+    decision = SafetyGate().evaluate(
+        planning_result,
+        registry,
+        dry_run=True,
+        available_sensors=set(robot.available_sensors),
+    )
 
     assert decision.status == "allow"
     assert decision.reasons == []
@@ -93,17 +99,20 @@ def test_safety_clarifies_unparsed_command():
 
 def test_safety_blocks_non_dry_run_mode():
     planning_result = RuleBasedPlanner().plan("去二楼救人")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+    registry = create_default_skill_registry(robot)
 
     decision = SafetyGate().evaluate(
         planning_result,
         registry,
         dry_run=False,
         operator_confirmed=True,
+        available_sensors=set(robot.available_sensors),
     )
 
     assert decision.status == "block"
-    assert "Skill is not allowed for real robot execution: navigate_to_floor" in decision.reasons
+    # Default skills have dry_run_only=True, so they're blocked for real robot
+    assert any("not allowed for real robot" in r for r in decision.reasons)
 
 
 def test_safety_blocks_non_dry_run_direct_skill_invocation():

@@ -97,7 +97,7 @@ def main() -> int:
         memory=JsonlMemoryStore(args.memory_path),
         workspace_skills_dir=None if args.no_workspace_skills else args.skills_dir,
         dry_run=not args.real_run,
-        available_sensors=set(args.available_sensor),
+        available_sensors=set(args.available_sensor) if args.available_sensor else None,
         session_id=args.session_id,
     )
     result = agent.run(args.command)
