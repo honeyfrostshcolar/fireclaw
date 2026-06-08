@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+MEMORY_RECORD_TYPES = {"outcome", "observation", "correction", "lesson"}
+
+
+@dataclass(frozen=True)
+class MissionMemoryRecord:
+    record_id: str
+    mission_id: str
+    record_type: str
+    content: dict[str, Any]
+    robot_id: str | None = None
+    subtask_id: str | None = None
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class MissionMemoryStore:
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def append(self, record: MissionMemoryRecord) -> None:
+        if record.record_type not in MEMORY_RECORD_TYPES:
+            raise ValueError(
+                f"Invalid record type: {record.record_type}. "
+                f"Must be one of: {sorted(MEMORY_RECORD_TYPES)}"
+            )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
+            handle.write("\n")
+
+    def list_records(
+        self,
+        *,
+        mission_id: str | None = None,
+        record_type: str | None = None,
+    ) -> list[MissionMemoryRecord]:
+        records = self._read_all()
+        if mission_id is not None:
+            records = [r for r in records if r.mission_id == mission_id]
+        if record_type is not None:
+            records = [r for r in records if r.record_type == record_type]
+        return records
+
+    def search(
+        self,
+        *,
+        mission_id: str | None = None,
+        record_type: str | None = None,
+        robot_id: str | None = None,
+        keyword: str | None = None,
+        limit: int = 10,
+    ) -> list[MissionMemoryRecord]:
+        if limit <= 0:
+            return []
+        records = self._read_all()
+        matches: list[MissionMemoryRecord] = []
+        for record in records:
+            if mission_id is not None and record.mission_id != mission_id:
+                continue
+            if record_type is not None and record.record_type != record_type:
+                continue
+            if robot_id is not None and record.robot_id != robot_id:
+                continue
+            if keyword is not None and not _content_contains(record.content, keyword):
+                continue
+            matches.append(record)
+        return list(reversed(matches))[:limit]
+
+    def summary(self, mission_id: str | None = None) -> dict[str, Any]:
+        records = self._read_all()
+        if mission_id is not None:
+            records = [r for r in records if r.mission_id == mission_id]
+        by_type: dict[str, int] = {}
+        for record in records:
+            by_type[record.record_type] = by_type.get(record.record_type, 0) + 1
+        return {
+            "total": len(records),
+            "by_type": by_type,
+        }
+
+    def _read_all(self) -> list[MissionMemoryRecord]:
+        if not self.path.exists():
+            return []
+        records: list[MissionMemoryRecord] = []
+        with self.path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                data = json.loads(stripped)
+                if isinstance(data, dict):
+                    records.append(_record_from_dict(data))
+        return records
+
+
+def _record_from_dict(data: dict[str, Any]) -> MissionMemoryRecord:
+    return MissionMemoryRecord(
+        record_id=str(data.get("record_id") or ""),
+        mission_id=str(data.get("mission_id") or ""),
+        record_type=str(data.get("record_type") or ""),
+        content=data.get("content") if isinstance(data.get("content"), dict) else {},
+        robot_id=data.get("robot_id") if isinstance(data.get("robot_id"), str) else None,
+        subtask_id=data.get("subtask_id") if isinstance(data.get("subtask_id"), str) else None,
+        created_at=str(data.get("created_at") or ""),
+    )
+
+
+def _content_contains(content: dict[str, Any], keyword: str) -> bool:
+    keyword_lower = keyword.lower()
+    for value in content.values():
+        if isinstance(value, str) and keyword_lower in value.lower():
+            return True
+    return False
