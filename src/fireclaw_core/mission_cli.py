@@ -40,6 +40,13 @@ def main() -> int:
     plan.add_argument("--session-id", default=None, help="Mission/session id.")
     _add_shared_paths(plan)
 
+    events = subparsers.add_parser("events", help="Aggregate and list mission events from robot subagents.")
+    events.add_argument("mission_id", help="Mission id to collect events for.")
+    events.add_argument("--robot-id", default=None, help="Filter events by robot id.")
+    events.add_argument("--type", dest="event_type", default=None, help="Filter events by event type.")
+    events.add_argument("--limit", type=int, default=200, help="Maximum number of events to return.")
+    _add_shared_paths(events)
+
     memory = subparsers.add_parser("memory", help="Manage mission memory records.")
     memory.add_argument("--memory-path", default="mission_memory.jsonl", help="Path to mission memory JSONL file.")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -83,6 +90,15 @@ def main() -> int:
         result = agent.plan_and_submit(args.command, session_id=args.session_id, operator=_mission_operator())
         _print_json(result)
         return 0 if result.get("status") == "planned" else 1
+    if args.command_name == "events":
+        result = _build_mission_agent(args).mission_events(
+            args.mission_id,
+            robot_id=args.robot_id,
+            event_type=args.event_type,
+            limit=args.limit,
+        )
+        _print_json(result)
+        return 0
     if args.command_name == "memory":
         return _handle_memory(args)
     parser.error(f"Unknown command: {args.command_name}")

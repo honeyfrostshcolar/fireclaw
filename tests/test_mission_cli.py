@@ -531,3 +531,75 @@ def test_mission_cli_memory_summary(tmp_path):
     summary = json.loads(completed.stdout)
     assert summary["total"] == 4
     assert summary["by_type"]["outcome"] == 2
+
+
+def test_mission_cli_events(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-1",
+            memory_path=str(tmp_path / "robot-memory.jsonl"),
+            event_path=str(tmp_path / "robot-events.jsonl"),
+            task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        robot_registry_path = tmp_path / "robots.json"
+        mission_registry_path = tmp_path / "missions.jsonl"
+        robot_registry_path.write_text(
+            json.dumps({"robots": [{"robot_id": "robot-1", "base_url": gateway.base_url}]}),
+            encoding="utf-8",
+        )
+        # Submit a mission first so the mission exists
+        subprocess.run(
+            [
+                ".venv/bin/python",
+                "-m",
+                "fireclaw_core.mission_cli",
+                "submit-subtask",
+                "--robot",
+                "robot-1",
+                "--command",
+                "去二楼搜索",
+                "--session-id",
+                "mission-events-test",
+                "--robot-registry",
+                str(robot_registry_path),
+                "--mission-registry",
+                str(mission_registry_path),
+            ],
+            check=True,
+            cwd=".",
+            text=True,
+            capture_output=True,
+        )
+
+        completed = subprocess.run(
+            [
+                ".venv/bin/python",
+                "-m",
+                "fireclaw_core.mission_cli",
+                "events",
+                "mission-events-test",
+                "--robot-registry",
+                str(robot_registry_path),
+                "--mission-registry",
+                str(mission_registry_path),
+            ],
+            check=True,
+            cwd=".",
+            text=True,
+            capture_output=True,
+        )
+        result = json.loads(completed.stdout)
+    finally:
+        gateway.stop()
+
+    assert result["mission_id"] == "mission-events-test"
+    assert "event_count" in result
+    assert "events" in result
+    assert isinstance(result["events"], list)

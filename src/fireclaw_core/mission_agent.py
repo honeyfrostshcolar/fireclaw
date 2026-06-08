@@ -230,6 +230,27 @@ class MissionAgent:
         trace["subtasks"] = enriched_subtasks
         return trace
 
+    def mission_events(
+        self,
+        mission_id: str,
+        *,
+        robot_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        deny = self._authorize("mission.read")
+        if deny is not None:
+            return {**deny, "mission_id": mission_id, "event_count": 0, "events": []}
+        if self.mission_registry is None:
+            return {"mission_id": mission_id, "status": "not_configured", "event_count": 0, "events": []}
+        from fireclaw_core.mission_event_aggregator import MissionEventAggregator
+        aggregator = MissionEventAggregator(
+            registry=self.registry,
+            subagent_client=self.subagent_client,
+            mission_registry=self.mission_registry,
+        )
+        return aggregator.aggregate(mission_id, robot_id=robot_id, event_type=event_type, limit=limit)
+
     def plan_and_submit(
         self,
         command: str,

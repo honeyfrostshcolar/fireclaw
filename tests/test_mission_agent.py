@@ -11,6 +11,7 @@ class FakeSubagentClient:
         self.cancel_calls = []
         self.traces = {}
         self.presence_results = {}
+        self.events_by_entry = {}
 
     def submit_task(self, entry, **kwargs):
         self.calls.append((entry, kwargs))
@@ -31,6 +32,10 @@ class FakeSubagentClient:
             "task_id": task_id,
             "robot_id": entry.robot_id,
         }
+
+    def get_events(self, entry, task_id=None, limit=100):
+        key = (entry.robot_id, task_id)
+        return self.events_by_entry.get(key, [])
 
     def check_presence(self, entry):
         if entry.robot_id in self.presence_results:
@@ -645,3 +650,91 @@ def test_mission_agent_no_memory_error_when_memory_not_configured():
     # Should not crash
     result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
     assert result["status"] == "accepted"
+
+
+# --- MissionEventAggregator integration tests ---
+
+def test_mission_agent_mission_events_returns_aggregated_events(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+    )
+    submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+    mission_id = submitted["mission_id"]
+
+    # Set up fake events from the robot subagent
+    client.events_by_entry[("robot-1", "task-robot-1")] = [
+        {"type": "sensor_update", "timestamp": "2026-06-08T12:00:01Z", "data": {"temp": 42}},
+        {"type": "task.completed", "timestamp": "2026-06-08T12:00:02Z", "data": {"status": "succeeded"}},
+    ]
+
+    result = mission.mission_events(mission_id)
+
+    assert result["mission_id"] == mission_id
+    assert result["event_count"] == 2
+    assert result["events"][0]["type"] == "sensor_update"
+    assert result["events"][0]["robot_id"] == "robot-1"
+    assert result["events"][1]["type"] == "task.completed"
+
+    # Test filtering by event_type
+    result_filtered = mission.mission_events(mission_id, event_type="task.completed")
+    assert result_filtered["event_count"] == 1
+    assert result_filtered["events"][0]["type"] == "task.completed"
+
+    # Test filtering by robot_id
+    result_robot = mission.mission_events(mission_id, robot_id="robot-1")
+    assert result_robot["event_count"] == 2
+
+    result_other = mission.mission_events(mission_id, robot_id="other-robot")
+    assert result_other["event_count"] == 0
+
+
+def test_mission_agent_mission_events_denied_without_scope(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-observer",
+        role="observer",
+        control_scopes=set(),  # no scopes at all
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+        control_policy=policy,
+        operator=operator,
+    )
+
+    result = mission.mission_events("some-mission-id")
+
+    assert result["status"] == "denied"
+    assert "mission.read" in result["message"]
+    assert result["mission_id"] == "some-mission-id"
+    assert result["event_count"] == 0
+    assert result["events"] == []
+
+
+def test_mission_agent_mission_events_returns_not_configured_without_registry():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission = MissionAgent(registry=registry, subagent_client=client)
+
+    result = mission.mission_events("some-mission-id")
+
+    assert result["mission_id"] == "some-mission-id"
+    assert result["status"] == "not_configured"
+    assert result["event_count"] == 0
+    assert result["events"] == []
