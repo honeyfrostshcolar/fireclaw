@@ -6,6 +6,7 @@ from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 class FakeSubagentClient:
     def __init__(self):
         self.calls = []
+        self.cancel_calls = []
         self.traces = {}
 
     def submit_task(self, entry, **kwargs):
@@ -19,6 +20,14 @@ class FakeSubagentClient:
 
     def get_task_trace(self, entry, task_id):
         return self.traces[(entry.robot_id, task_id)]
+
+    def cancel_task(self, entry, task_id, *, operator=None):
+        self.cancel_calls.append((entry, task_id, operator))
+        return {
+            "status": "cancel_requested",
+            "task_id": task_id,
+            "robot_id": entry.robot_id,
+        }
 
 
 def test_mission_agent_submits_explicit_subtask_to_registered_robot():
@@ -143,3 +152,78 @@ def test_mission_agent_aggregates_robot_subagent_traces(tmp_path):
     assert trace["subtasks"][0]["status"] == "succeeded"
     assert trace["subtasks"][0]["robot_trace"]["events"] == [{"type": "task.completed"}]
     assert mission_registry.get_mission("mission-1").subtasks[0].status == "succeeded"
+
+
+def test_mission_agent_cancels_recorded_non_terminal_subtasks(tmp_path):
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(
+                robot_id="robot-1",
+                base_url="http://robot-1.local:8765",
+            )
+        ]
+    )
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+    )
+    submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    result = mission.cancel_mission(
+        submitted["mission_id"],
+        operator={"operator_id": "mission-agent", "control_scopes": ["task.cancel"]},
+    )
+
+    assert result["status"] == "cancel_requested"
+    assert result["mission_id"] == "mission-1"
+    assert result["cancelled_subtask_count"] == 1
+    assert result["subtasks"] == [
+        {
+            "robot_id": "robot-1",
+            "task_id": "task-robot-1",
+            "status": "cancel_requested",
+            "cancel_result": {
+                "status": "cancel_requested",
+                "task_id": "task-robot-1",
+                "robot_id": "robot-1",
+            },
+        }
+    ]
+    assert client.cancel_calls[0][0].robot_id == "robot-1"
+    assert client.cancel_calls[0][1] == "task-robot-1"
+    assert mission_registry.get_mission("mission-1").subtasks[0].status == "cancel_requested"
+
+
+def test_mission_agent_cancel_skips_terminal_subtasks(tmp_path):
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(
+                robot_id="robot-1",
+                base_url="http://robot-1.local:8765",
+            )
+        ]
+    )
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+    )
+    submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+    mission_registry.update_subtask(
+        mission_id="mission-1",
+        robot_id="robot-1",
+        task_id=submitted["task_id"],
+        status="succeeded",
+        updated_at="2026-06-08T01:00:00+00:00",
+    )
+
+    result = mission.cancel_mission("mission-1")
+
+    assert result["status"] == "already_terminal"
+    assert result["cancelled_subtask_count"] == 0
+    assert client.cancel_calls == []

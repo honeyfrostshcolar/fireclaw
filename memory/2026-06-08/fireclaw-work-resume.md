@@ -512,3 +512,84 @@ Known limitations:
 Next recommended implementation:
 
 - Mission cancel v1: add mission-level cancellation that iterates recorded subtasks, calls each robot subagent's cancel endpoint, and updates mission subtask status.
+
+## Update 2026-06-08 15:35 CST
+
+### Mission Cancel v1 Started
+
+Created plan:
+
+- `docs/superpowers/plans/2026-06-08-mission-cancel-v1.md`
+
+Modified:
+
+- `src/fireclaw_core/mission_agent.py`
+- `src/fireclaw_core/mission_cli.py`
+- `tests/test_mission_agent.py`
+- `tests/test_mission_cli.py`
+- `README.md`
+- `memory/2026-06-08/fireclaw-work-resume.md`
+
+### Implementation Details
+
+- Added `MissionAgent.cancel_mission(mission_id, operator=None)`.
+- `cancel_mission(...)`:
+  - reads mission subtasks from `JsonlMissionRegistry`;
+  - skips terminal subtasks;
+  - calls each robot subagent's `cancel_task(...)`;
+  - updates mission subtask status from cancel response;
+  - returns cancelled/skipped subtask summaries.
+- Extended `SubagentClient` protocol with `cancel_task(...)`.
+- Added `python -m fireclaw_core.mission_cli cancel <mission_id>`.
+- Documented mission cancel CLI in README.
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_mission_agent.py -q`
+  - RED first: `'MissionAgent' object has no attribute 'cancel_mission'`
+  - GREEN after implementation: `6 passed`
+- `.venv/bin/python -m pytest tests/test_mission_cli.py -q`
+  - RED first: `invalid choice: 'cancel'`
+  - RED second: test command completed too quickly; corrected test command to use workspace slow skill invocation form `去二楼救人 使用 slow_policy`.
+  - GREEN after CLI implementation and stable test command: `3 passed`
+- `.venv/bin/python -m pytest tests/test_mission_cli.py tests/test_mission_agent.py tests/test_mission_registry.py -q`
+  - GREEN: `12 passed in 1.85s`
+
+### Current Hypothesis
+
+Mission Cancel v1 is implemented at Python API and CLI levels. It still needs full-suite verification. The cancellation is best-effort and depends on robot-local Gateway cancellation semantics.
+
+### Next Recommended Step
+
+Run full test suite. If green, next architecture step should be mission-level authorization scopes or a simple natural-language mission planner/TUI prototype, depending on whether safety policy or operator UX is more urgent.
+
+## Update 2026-06-08 15:45 CST
+
+### Verification Completed
+
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `234 passed in 13.61s`
+
+### Current Conclusion
+
+Mission Cancel v1 is implemented and verified.
+
+Implemented behavior:
+
+- mission-level cancel from `MissionAgent`;
+- mission CLI `cancel` subcommand;
+- skip terminal subtasks;
+- best-effort cancellation of active robot-local subtasks through each robot subagent Gateway;
+- mission registry subtask status update from cancel responses.
+
+Known limitations:
+
+- no mission-level authorization policy yet;
+- no mission HTTP API;
+- no streaming cancel progress;
+- no retry/escalation when a robot subagent is unreachable;
+- no autonomous mission planner.
+
+Next recommended implementation:
+
+- Mission-level authorization scopes before broader natural-language/TUI work, because the main agent can now submit and cancel robot subtasks.

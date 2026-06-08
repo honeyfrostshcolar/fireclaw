@@ -500,6 +500,10 @@ The same v1 contract is available from the mission CLI:
 .venv/bin/python -m fireclaw_core.mission_cli trace mission-001 \
   --robot-registry robots.json \
   --mission-registry memory/fireclaw-missions.jsonl
+
+.venv/bin/python -m fireclaw_core.mission_cli cancel mission-001 \
+  --robot-registry robots.json \
+  --mission-registry memory/fireclaw-missions.jsonl
 ```
 
 Each robot subagent remains authoritative over embodied execution. It may block, reject, cancel, ask for confirmation, or emergency-stop based on local state, safety rules, permissions, ROS availability, and hardware constraints.

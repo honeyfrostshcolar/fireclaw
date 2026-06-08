@@ -10,6 +10,7 @@ from fireclaw_core.robot_registry import load_robot_registry
 
 
 SUCCESS_STATUSES = {"accepted", "duplicate", "running", "succeeded"}
+CANCEL_SUCCESS_STATUSES = {"cancel_requested", "already_terminal", "empty"}
 
 
 def main() -> int:
@@ -27,6 +28,10 @@ def main() -> int:
     trace.add_argument("mission_id", help="Mission id to inspect.")
     _add_shared_paths(trace)
 
+    cancel = subparsers.add_parser("cancel", help="Cancel all active subtasks for a mission.")
+    cancel.add_argument("mission_id", help="Mission id to cancel.")
+    _add_shared_paths(cancel)
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -42,6 +47,10 @@ def main() -> int:
         result = _build_mission_agent(args).mission_trace(args.mission_id)
         _print_json(result)
         return 0 if result.get("status") != "not_found" else 1
+    if args.command_name == "cancel":
+        result = _build_mission_agent(args).cancel_mission(args.mission_id, operator=_mission_operator())
+        _print_json(result)
+        return 0 if result.get("status") in CANCEL_SUCCESS_STATUSES else 1
     parser.error(f"Unknown command: {args.command_name}")
     return 1
 

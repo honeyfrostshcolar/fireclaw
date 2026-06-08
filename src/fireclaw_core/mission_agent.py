@@ -5,6 +5,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from fireclaw_core.mission_registry import JsonlMissionRegistry
+from fireclaw_core.mission_registry import TERMINAL_SUBTASK_STATUSES
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.subagent_client import RobotSubagentClient
 
@@ -14,6 +15,15 @@ class SubagentClient(Protocol):
         ...
 
     def get_task_trace(self, entry: RobotRegistryEntry, task_id: str) -> dict[str, Any]:
+        ...
+
+    def cancel_task(
+        self,
+        entry: RobotRegistryEntry,
+        task_id: str,
+        *,
+        operator: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         ...
 
 
@@ -132,6 +142,73 @@ class MissionAgent:
             enriched_subtasks.append(enriched)
         trace["subtasks"] = enriched_subtasks
         return trace
+
+    def cancel_mission(
+        self,
+        mission_id: str,
+        *,
+        operator: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.mission_registry is None:
+            return {"mission_id": mission_id, "status": "not_configured", "subtasks": []}
+        mission = self.mission_registry.get_mission(mission_id)
+        if mission is None:
+            return {"mission_id": mission_id, "status": "not_found", "subtasks": []}
+        cancelled_subtasks = []
+        skipped_subtasks = []
+        now = datetime.now(timezone.utc).isoformat()
+        for subtask in mission.subtasks:
+            if subtask.status in TERMINAL_SUBTASK_STATUSES:
+                skipped_subtasks.append(
+                    {
+                        "robot_id": subtask.robot_id,
+                        "task_id": subtask.task_id,
+                        "status": subtask.status,
+                    }
+                )
+                continue
+            entry = self.registry.get(subtask.robot_id)
+            if entry is None:
+                skipped_subtasks.append(
+                    {
+                        "robot_id": subtask.robot_id,
+                        "task_id": subtask.task_id,
+                        "status": "not_found",
+                    }
+                )
+                continue
+            cancel_result = self.subagent_client.cancel_task(entry, subtask.task_id, operator=operator)
+            status = str(cancel_result.get("status") or "cancel_requested")
+            self.mission_registry.update_subtask(
+                mission_id=mission_id,
+                robot_id=subtask.robot_id,
+                task_id=subtask.task_id,
+                status=status,
+                updated_at=now,
+                result=cancel_result,
+            )
+            cancelled_subtasks.append(
+                {
+                    "robot_id": subtask.robot_id,
+                    "task_id": subtask.task_id,
+                    "status": status,
+                    "cancel_result": cancel_result,
+                }
+            )
+        if cancelled_subtasks:
+            status = "cancel_requested"
+        elif skipped_subtasks:
+            status = "already_terminal"
+        else:
+            status = "empty"
+        return {
+            "mission_id": mission_id,
+            "status": status,
+            "cancelled_subtask_count": len(cancelled_subtasks),
+            "skipped_subtask_count": len(skipped_subtasks),
+            "subtasks": cancelled_subtasks,
+            "skipped_subtasks": skipped_subtasks,
+        }
 
 
 def _mission_id(session_id: str | None) -> str:
