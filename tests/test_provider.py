@@ -1,0 +1,191 @@
+"""Tests for fireclaw_core.provider — data types, errors, protocol, OpenAICompatProvider."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from fireclaw_core.provider import (
+    ChatCompletion,
+    ModelProvider,
+    OpenAICompatProvider,
+    ProviderAPIError,
+    ProviderAuthError,
+    ProviderError,
+    ProviderTimeoutError,
+    TokenUsage,
+    ToolCall,
+)
+
+
+# --- Data type tests ---
+
+
+def test_chat_completion_fields():
+    usage = TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+    cc = ChatCompletion(
+        content="hello",
+        tool_calls=None,
+        usage=usage,
+        model="gpt-4",
+        finish_reason="stop",
+    )
+    assert cc.content == "hello"
+    assert cc.tool_calls is None
+    assert cc.usage is usage
+    assert cc.model == "gpt-4"
+    assert cc.finish_reason == "stop"
+
+
+def test_tool_call_fields():
+    tc = ToolCall(id="call_1", name="search", arguments={"query": "fire"})
+    assert tc.id == "call_1"
+    assert tc.name == "search"
+    assert tc.arguments == {"query": "fire"}
+
+
+def test_token_usage_fields():
+    tu = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+    assert tu.prompt_tokens == 100
+    assert tu.completion_tokens == 50
+    assert tu.total_tokens == 150
+
+
+# --- Error hierarchy tests ---
+
+
+def test_provider_error_hierarchy():
+    assert issubclass(ProviderTimeoutError, ProviderError)
+    assert issubclass(ProviderAPIError, ProviderError)
+    assert issubclass(ProviderAuthError, ProviderAPIError)
+    assert issubclass(ProviderError, Exception)
+
+
+def test_provider_api_error_fields():
+    err = ProviderAPIError(status_code=500, message="Internal Server Error")
+    assert err.status_code == 500
+    assert err.message == "Internal Server Error"
+    assert "500" in str(err)
+
+    auth_err = ProviderAuthError()
+    assert auth_err.status_code == 401
+    assert auth_err.message == "Invalid API key"
+
+
+# --- OpenAICompatProvider tests ---
+
+
+def _make_mock_response(status_code: int, json_body: dict[str, Any]) -> MagicMock:
+    """Create a mock httpx.Response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body
+    return resp
+
+
+def _sample_openai_response(
+    content: str = "Hello!",
+    tool_calls: list[dict[str, Any]] | None = None,
+    model: str = "gpt-4",
+) -> dict[str, Any]:
+    """Build a minimal OpenAI-compatible response body."""
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if tool_calls is not None:
+        message["tool_calls"] = tool_calls
+    return {
+        "id": "chatcmpl-123",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        },
+    }
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_returns_chat_completion(mock_post: MagicMock):
+    mock_post.return_value = _make_mock_response(200, _sample_openai_response())
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    result = provider.chat_completion(
+        messages=[{"role": "user", "content": "Hi"}],
+        model="gpt-4",
+    )
+
+    assert isinstance(result, ChatCompletion)
+    assert result.content == "Hello!"
+    assert result.tool_calls is None
+    assert result.model == "gpt-4"
+    assert result.finish_reason == "stop"
+    assert result.usage.prompt_tokens == 10
+    assert result.usage.completion_tokens == 5
+    assert result.usage.total_tokens == 15
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_sends_tools(mock_post: MagicMock):
+    mock_post.return_value = _make_mock_response(200, _sample_openai_response())
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search for victims",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    provider.chat_completion(
+        messages=[{"role": "user", "content": "search"}],
+        model="gpt-4",
+        tools=tools,
+    )
+
+    call_kwargs = mock_post.call_args
+    body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json") or call_kwargs[0][1]
+    assert body["tools"] == tools
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_raises_auth_error(mock_post: MagicMock):
+    mock_post.return_value = _make_mock_response(401, {"error": {"message": "Unauthorized"}})
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-bad")
+    with pytest.raises(ProviderAuthError) as exc_info:
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )
+    assert exc_info.value.status_code == 401
+
+
+@patch("fireclaw_core.provider.httpx.post")
+def test_openai_compat_provider_raises_api_error(mock_post: MagicMock):
+    mock_post.return_value = _make_mock_response(500, {"error": {"message": "Internal Server Error"}})
+
+    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    with pytest.raises(ProviderAPIError) as exc_info:
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )
+    assert exc_info.value.status_code == 500
