@@ -72,6 +72,11 @@ def main() -> int:
     mem_summary = memory_sub.add_parser("summary", help="Show mission memory summary.")
     mem_summary.add_argument("--mission-id", default=None, help="Filter by mission id.")
 
+    replay = subparsers.add_parser("replay", help="Reconstruct a mission timeline from persistent data.")
+    replay.add_argument("mission_id", help="Mission id to replay.")
+    replay.add_argument("--memory-path", default=None, help="Path to mission memory JSONL file (optional).")
+    _add_shared_paths(replay)
+
     approval = subparsers.add_parser("approval", help="Manage approval requests.")
     approval.add_argument("--approval-path", default="mission_approvals.jsonl", help="Path to approval store JSONL file.")
     approval_sub = approval.add_subparsers(dest="approval_command", required=True)
@@ -124,6 +129,10 @@ def main() -> int:
         )
         _print_json(result)
         return 0
+    if args.command_name == "replay":
+        result = _build_mission_agent_with_memory(args).replay_incident(args.mission_id)
+        _print_json(result)
+        return 0 if result.get("status") not in ("not_found", "not_configured") else 1
     if args.command_name == "corrections":
         return _handle_corrections(args)
     if args.command_name == "memory":
@@ -260,6 +269,25 @@ def _build_mission_agent_with_planner(args: argparse.Namespace) -> MissionAgent:
         planner=MissionPlanner(),
         control_policy=ControlPolicy(),
         operator=operator,
+    )
+
+
+def _build_mission_agent_with_memory(args: argparse.Namespace) -> MissionAgent:
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    scopes = set(args.scopes) if args.scopes else scopes_for_role(args.role)
+    operator = OperatorContext(
+        operator_id=args.operator_id,
+        role=args.role,
+        control_scopes=scopes,
+        source="mission_cli",
+    )
+    memory_store = MissionMemoryStore(args.memory_path) if args.memory_path else None
+    return MissionAgent(
+        registry=load_robot_registry(args.robot_registry),
+        mission_registry=JsonlMissionRegistry(args.mission_registry),
+        control_policy=ControlPolicy(),
+        operator=operator,
+        mission_memory=memory_store,
     )
 
 

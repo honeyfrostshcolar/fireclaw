@@ -462,6 +462,17 @@ class MissionAgent:
         )
         return {"status": "pending", "request": request.to_dict()}
 
+    def replay_incident(self, mission_id: str) -> dict[str, Any]:
+        """Reconstruct a mission timeline from persistent registry + memory data."""
+        if self.mission_registry is None:
+            return {"mission_id": mission_id, "status": "not_configured", "timeline": [], "summary": {}}
+        from fireclaw_core.incident_replay import IncidentReplay
+        replay = IncidentReplay(mission_registry=self.mission_registry, mission_memory=self.mission_memory)
+        try:
+            return replay.replay(mission_id)
+        except KeyError:
+            return {"mission_id": mission_id, "status": "not_found", "timeline": [], "summary": {}}
+
     def decide_approval(
         self,
         request_id: str,

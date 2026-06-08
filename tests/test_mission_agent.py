@@ -1029,3 +1029,56 @@ def test_mission_agent_decide_approval_not_configured():
     result = mission.decide_approval("some-id", decision="approve")
 
     assert result["status"] == "not_configured"
+
+
+# --- IncidentReplay integration tests ---
+
+def test_mission_agent_replay_incident(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+        mission_memory=memory_store,
+    )
+    submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+    mission_id = submitted["mission_id"]
+
+    result = mission.replay_incident(mission_id)
+
+    assert result["mission_id"] == "mission-1"
+    assert result["status"] in ("running", "created")
+    assert isinstance(result["timeline"], list)
+    assert len(result["timeline"]) >= 1
+    assert result["timeline"][0]["event_type"] == "subtask.submitted"
+    assert result["timeline"][0]["robot_id"] == "robot-1"
+    assert result["summary"]["subtask_count"] == 1
+
+
+def test_mission_agent_replay_incident_not_found(tmp_path):
+    registry = RobotRegistry([])
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(registry=registry, subagent_client=FakeSubagentClient(), mission_registry=mission_registry)
+
+    result = mission.replay_incident("nonexistent-mission")
+
+    assert result["mission_id"] == "nonexistent-mission"
+    assert result["status"] == "not_found"
+    assert result["timeline"] == []
+
+
+def test_mission_agent_replay_incident_not_configured():
+    registry = RobotRegistry([])
+    # mission_registry is None
+    mission = MissionAgent(registry=registry, subagent_client=FakeSubagentClient())
+
+    result = mission.replay_incident("some-mission")
+
+    assert result["mission_id"] == "some-mission"
+    assert result["status"] == "not_configured"
+    assert result["timeline"] == []

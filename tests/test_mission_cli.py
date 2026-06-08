@@ -780,3 +780,117 @@ def test_mission_cli_approval_decide_deny(tmp_path):
     assert updated is not None
     assert updated.status == "denied"
     assert updated.reason == "区域未确认安全"
+
+
+def test_mission_cli_replay(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-1",
+            memory_path=str(tmp_path / "robot-memory.jsonl"),
+            event_path=str(tmp_path / "robot-events.jsonl"),
+            task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        robot_registry_path = tmp_path / "robots.json"
+        mission_registry_path = tmp_path / "missions.jsonl"
+        memory_path = tmp_path / "mission_memory.jsonl"
+        robot_registry_path.write_text(
+            json.dumps({"robots": [{"robot_id": "robot-1", "base_url": gateway.base_url}]}),
+            encoding="utf-8",
+        )
+
+        # Submit a mission first
+        subprocess.run(
+            [
+                ".venv/bin/python",
+                "-m",
+                "fireclaw_core.mission_cli",
+                "submit-subtask",
+                "--robot",
+                "robot-1",
+                "--command",
+                "去二楼搜索",
+                "--session-id",
+                "mission-replay-test",
+                "--robot-registry",
+                str(robot_registry_path),
+                "--mission-registry",
+                str(mission_registry_path),
+            ],
+            check=True,
+            cwd=".",
+            text=True,
+            capture_output=True,
+        )
+
+        completed = subprocess.run(
+            [
+                ".venv/bin/python",
+                "-m",
+                "fireclaw_core.mission_cli",
+                "replay",
+                "mission-replay-test",
+                "--robot-registry",
+                str(robot_registry_path),
+                "--mission-registry",
+                str(mission_registry_path),
+                "--memory-path",
+                str(memory_path),
+            ],
+            check=True,
+            cwd=".",
+            text=True,
+            capture_output=True,
+        )
+        result = json.loads(completed.stdout)
+    finally:
+        gateway.stop()
+
+    assert result["mission_id"] == "mission-replay-test"
+    assert "timeline" in result
+    assert "summary" in result
+    assert isinstance(result["timeline"], list)
+    assert result["summary"]["subtask_count"] == 1
+
+
+def test_mission_cli_replay_not_found(tmp_path):
+    robot_registry_path = tmp_path / "robots.json"
+    mission_registry_path = tmp_path / "missions.jsonl"
+    memory_path = tmp_path / "mission_memory.jsonl"
+    robot_registry_path.write_text(
+        json.dumps({"robots": []}),
+        encoding="utf-8",
+    )
+    # Create empty mission registry
+    mission_registry_path.touch()
+
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core.mission_cli",
+            "replay",
+            "nonexistent-mission",
+            "--robot-registry",
+            str(robot_registry_path),
+            "--mission-registry",
+            str(mission_registry_path),
+            "--memory-path",
+            str(memory_path),
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    result = json.loads(completed.stdout)
+
+    assert result["mission_id"] == "nonexistent-mission"
+    assert result["status"] == "not_found"
+    assert result["timeline"] == []
