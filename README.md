@@ -882,6 +882,37 @@ result = agent.request_approval("m-1", action="mission.submit", risk_level="high
 agent.decide_approval(request_id, decision="approve")
 ```
 
+### Incident Replay v1
+
+Reconstruct mission timelines from persistent data for post-incident analysis.
+
+#### CLI Usage
+
+```bash
+python -m fireclaw_core.mission_cli replay <mission_id> [--memory-path <path>]
+```
+
+#### Python API
+
+```python
+from fireclaw_core.incident_replay import IncidentReplay
+
+replay = IncidentReplay(mission_registry=registry, mission_memory=memory)
+result = replay.replay("mission-1")
+# result: {"mission_id", "command", "status", "timeline": [...], "summary": {...}}
+```
+
+#### Timeline Events
+
+| Event Type | Source |
+|------------|--------|
+| `subtask.submitted` | Mission registry subtask creation |
+| `subtask.status_changed` | Mission registry subtask status update |
+| `outcome` | Mission memory outcome record |
+| `observation` | Mission memory observation record |
+| `correction` | Mission memory correction record |
+| `lesson` | Mission memory lesson record |
+
 ### Skill Typed Contracts v1
 
 Skills now carry typed `output_schema`, `domain`, `preconditions`, and `degraded_mode_policy` metadata alongside the existing `input_schema`.
