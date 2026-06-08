@@ -23,6 +23,7 @@ class RobotRegistry:
                 raise ValueError(f"Duplicate robot_id in robot registry: {entry.robot_id}")
             by_id[entry.robot_id] = entry
         self._entries = by_id
+        self._last_seen_at: dict[str, str] = {}
 
     def get(self, robot_id: str) -> RobotRegistryEntry | None:
         return self._entries.get(robot_id)
@@ -32,6 +33,18 @@ class RobotRegistry:
 
     def list_entries(self) -> list[RobotRegistryEntry]:
         return list(self._entries.values())
+
+    def update_presence(self, robot_id: str, last_seen_at: str) -> None:
+        self._last_seen_at[robot_id] = last_seen_at
+
+    def get_last_seen_at(self, robot_id: str) -> str | None:
+        return self._last_seen_at.get(robot_id)
+
+    def is_online(self, robot_id: str) -> bool:
+        return robot_id in self._last_seen_at
+
+    def online_entries(self) -> list[RobotRegistryEntry]:
+        return [entry for entry in self._entries.values() if entry.enabled and entry.robot_id in self._last_seen_at]
 
 
 def load_robot_registry(path: str | Path) -> RobotRegistry:

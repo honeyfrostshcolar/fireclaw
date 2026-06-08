@@ -65,3 +65,35 @@ def test_load_robot_registry_rejects_duplicate_robot_ids(tmp_path):
 
     with pytest.raises(ValueError, match="Duplicate robot_id"):
         load_robot_registry(config_path)
+
+
+def test_robot_registry_presence_tracking():
+    from fireclaw_core.robot_registry import RobotRegistry
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765"),
+    ])
+
+    assert registry.is_online("r1") is False
+    assert registry.get_last_seen_at("r1") is None
+
+    registry.update_presence("r1", "2026-06-08T00:00:00+00:00")
+
+    assert registry.is_online("r1") is True
+    assert registry.is_online("r2") is False
+    assert registry.get_last_seen_at("r1") == "2026-06-08T00:00:00+00:00"
+
+
+def test_robot_registry_online_entries():
+    from fireclaw_core.robot_registry import RobotRegistry
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765"),
+        RobotRegistryEntry(robot_id="r3", base_url="http://r3:8765", enabled=False),
+    ])
+    registry.update_presence("r1", "2026-06-08T00:00:00+00:00")
+
+    online = registry.online_entries()
+
+    assert len(online) == 1
+    assert online[0].robot_id == "r1"
