@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from typing import Any
+
+from fireclaw_core.mission_agent import SubagentClient
+from fireclaw_core.mission_registry import JsonlMissionRegistry
+from fireclaw_core.robot_registry import RobotRegistry
+
+
+class MissionEventAggregator:
+    """Collects events from multiple robot subagents and merges them
+    into a unified mission-level timeline."""
+
+    def __init__(
+        self,
+        *,
+        registry: RobotRegistry,
+        subagent_client: SubagentClient,
+        mission_registry: JsonlMissionRegistry,
+    ) -> None:
+        self.registry = registry
+        self.subagent_client = subagent_client
+        self.mission_registry = mission_registry
+
+    def aggregate(
+        self,
+        mission_id: str,
+        *,
+        robot_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Collect events from all robot subagents for a mission.
+
+        Returns:
+            {
+                "mission_id": str,
+                "event_count": int,
+                "events": list[dict],  # sorted by timestamp ascending
+            }
+        """
+        mission = self.mission_registry.get_mission(mission_id)
+        if mission is None:
+            return {"mission_id": mission_id, "event_count": 0, "events": []}
+
+        all_events: list[dict[str, Any]] = []
+        for subtask in mission.subtasks:
+            if robot_id is not None and subtask.robot_id != robot_id:
+                continue
+            entry = self.registry.get(subtask.robot_id)
+            if entry is None:
+                continue
+            events = self.subagent_client.get_events(entry, task_id=subtask.task_id)
+            for event in events:
+                enriched = dict(event)
+                enriched["robot_id"] = subtask.robot_id
+                all_events.append(enriched)
+
+        if event_type is not None:
+            all_events = [e for e in all_events if e.get("type") == event_type]
+
+        all_events.sort(key=lambda e: e.get("timestamp", ""))
+
+        all_events = all_events[:limit]
+
+        return {
+            "mission_id": mission_id,
+            "event_count": len(all_events),
+            "events": all_events,
+        }
