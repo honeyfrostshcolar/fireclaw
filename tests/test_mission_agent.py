@@ -1,4 +1,5 @@
 from fireclaw_core.mission_agent import MissionAgent
+from fireclaw_core.mission_memory import MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
@@ -534,3 +535,113 @@ def test_mission_agent_plan_and_submit_skips_offline_robots():
     assert result["status"] == "planned"
     assert len(result["subtask_results"]) == 1
     assert result["subtask_results"][0]["robot_id"] == "r1"
+
+
+# --- MissionMemoryStore integration tests ---
+
+def test_mission_agent_records_outcome_on_plan_and_submit(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼和三楼搜索受困人员",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned",
+        message="ok",
+        intent="search",
+        plan=plan,
+    ))
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_memory=memory_store,
+    )
+
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+
+    assert result["status"] == "planned"
+    records = memory_store.list_records(mission_id=result["mission_id"], record_type="outcome")
+    # 2 records from submit_subtask (one per robot) + 1 plan-level record
+    assert len(records) == 3
+    plan_record = [r for r in records if "subtask_count" in r.content][0]
+    assert plan_record.mission_id == result["mission_id"]
+    assert plan_record.record_type == "outcome"
+    assert plan_record.content["command"] == "去二楼和三楼搜索受困人员"
+    assert plan_record.content["subtask_count"] == 2
+    assert plan_record.content["status"] == "planned"
+    assert plan_record.record_id  # non-empty
+    assert plan_record.created_at  # non-empty
+
+
+def test_mission_agent_records_outcome_on_cancel(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+        mission_memory=memory_store,
+    )
+    submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    result = mission.cancel_mission(submitted["mission_id"])
+
+    assert result["status"] == "cancel_requested"
+    records = memory_store.list_records(mission_id="mission-1", record_type="outcome")
+    # One record from submit_subtask, one from cancel_mission
+    cancel_records = [r for r in records if "cancel" in r.content.get("status", "")]
+    assert len(cancel_records) >= 1
+    cancel_record = cancel_records[-1]
+    assert cancel_record.content["cancelled_subtask_count"] == 1
+    assert cancel_record.content["skipped_subtask_count"] == 0
+
+
+def test_mission_agent_records_outcome_on_submit_subtask(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_memory=memory_store,
+    )
+
+    result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "accepted"
+    records = memory_store.list_records(mission_id=result["mission_id"], record_type="outcome")
+    assert len(records) == 1
+    record = records[0]
+    assert record.content["robot_id"] == "robot-1"
+    assert record.content["task_id"] == "task-robot-1"
+    assert record.content["command"] == "去二楼搜索"
+    assert record.robot_id == "robot-1"
+
+
+def test_mission_agent_no_memory_error_when_memory_not_configured():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    # mission_memory is None (default)
+    mission = MissionAgent(registry=registry, subagent_client=client)
+
+    # Should not crash
+    result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+    assert result["status"] == "accepted"

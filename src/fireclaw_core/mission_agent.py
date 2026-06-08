@@ -5,6 +5,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from fireclaw_core.control import ControlPolicy, OperatorContext
+from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlannerContext, MissionPlanningResult
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.mission_registry import TERMINAL_SUBTASK_STATUSES
@@ -42,6 +43,7 @@ class MissionAgent:
         planner: Any | None = None,
         control_policy: ControlPolicy | None = None,
         operator: OperatorContext | None = None,
+        mission_memory: MissionMemoryStore | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
@@ -49,6 +51,7 @@ class MissionAgent:
         self.planner = planner
         self.control_policy = control_policy
         self.operator = operator
+        self.mission_memory = mission_memory
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -62,6 +65,29 @@ class MissionAgent:
                 "decision": decision.to_dict(),
             }
         return None
+
+    def _record_mission_memory(
+        self,
+        mission_id: str,
+        record_type: str,
+        content: dict[str, Any],
+        *,
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
+    ) -> None:
+        """Record a memory entry if mission_memory is configured."""
+        if self.mission_memory is None:
+            return
+        record = MissionMemoryRecord(
+            record_id=uuid4().hex[:12],
+            mission_id=mission_id,
+            record_type=record_type,
+            content=content,
+            robot_id=robot_id,
+            subtask_id=subtask_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.mission_memory.append(record)
 
     def check_fleet_presence(self) -> dict[str, dict[str, Any]]:
         """Check presence of all enabled robots. Updates registry with last_seen_at."""
@@ -135,6 +161,13 @@ class MissionAgent:
             "status": status,
             "command": command,
         }
+        self._record_mission_memory(
+            mission_id,
+            "outcome",
+            {"robot_id": robot_id, "task_id": task_id, "command": command, "status": status},
+            robot_id=robot_id,
+            subtask_id=task_id if isinstance(task_id, str) else None,
+        )
         return {
             "status": status,
             "mission_id": mission_id,
@@ -235,6 +268,20 @@ class MissionAgent:
                 mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
             )
             subtask_results.append(result)
+        robot_assignments = [
+            {"robot_id": subtask.robot_id, "floor": subtask.floor}
+            for subtask in planning_result.plan.subtasks
+        ]
+        self._record_mission_memory(
+            mission_id,
+            "outcome",
+            {
+                "command": command,
+                "subtask_count": len(subtask_results),
+                "robot_assignments": robot_assignments,
+                "status": planning_result.status,
+            },
+        )
         return {
             "status": planning_result.status,
             "message": planning_result.message,
@@ -305,6 +352,15 @@ class MissionAgent:
             status = "already_terminal"
         else:
             status = "empty"
+        self._record_mission_memory(
+            mission_id,
+            "outcome",
+            {
+                "status": status,
+                "cancelled_subtask_count": len(cancelled_subtasks),
+                "skipped_subtask_count": len(skipped_subtasks),
+            },
+        )
         return {
             "mission_id": mission_id,
             "status": status,
