@@ -694,6 +694,35 @@ Each failure status (`failed`, `denied`, `lost`, `block`) maps to an independent
 
 The scheduler polls `mission_trace()` between groups to determine when all subtasks in a group have reached terminal state. Retry and reassign actions are evaluated in a loop until no more actions are needed or the mission is aborted.
 
+### Mission Trace Stream v1
+
+The mission trace stream provides a polling-based generator that yields `MissionEvent` objects as mission subtasks change state. It detects changes between `mission_trace()` snapshots and emits structured events.
+
+```python
+from fireclaw_core.mission_trace_stream import MissionTraceStream
+
+stream = MissionTraceStream(mission_agent=mission, poll_interval_seconds=0.1)
+
+for event in stream.stream("mission-004", timeout_seconds=300.0):
+    print(event.type, event.robot_id, event.status)
+    # "subtask.submitted"   r1  accepted
+    # "subtask.status_changed" r1  succeeded  (previous: accepted)
+    # "mission.succeeded"   None  succeeded
+```
+
+**Event types:**
+
+| Type | When |
+|---|---|
+| `subtask.submitted` | A new subtask appears in the mission trace. |
+| `subtask.status_changed` | A subtask's status changes (e.g., `accepted` → `succeeded`). |
+| `mission.succeeded` | All subtasks reached terminal status. |
+| `mission.failed` | Mission has a failed subtask. |
+| `mission.escalated` | Mission has an escalated subtask. |
+| `mission.timeout` | Stream timed out before mission completed. |
+
+The stream stops automatically when the mission reaches a terminal status or the timeout expires. Each event includes `mission_id`, `robot_id`, `task_id`, `status`, `previous_status`, `timestamp`, and `details`.
+
 ## Session State
 
 Every task result includes session metadata:
