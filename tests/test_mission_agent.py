@@ -1,3 +1,4 @@
+from fireclaw_core.approval_store import JsonlApprovalStore
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.mission_memory import MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
@@ -845,3 +846,186 @@ def test_mission_agent_correction_denied_without_scope():
 
     assert result["status"] == "denied"
     assert "mission.correct" in result["message"]
+
+
+# --- Approval workflow tests ---
+
+def test_mission_agent_request_approval(tmp_path):
+    registry = RobotRegistry([])
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    mission = MissionAgent(registry=registry, subagent_client=FakeSubagentClient(), approval_store=store)
+
+    result = mission.request_approval(
+        "mission-1", action="enter_building", risk_level="high", command="进入燃烧建筑搜索",
+    )
+
+    assert result["status"] == "pending"
+    request = result["request"]
+    assert request["mission_id"] == "mission-1"
+    assert request["action"] == "enter_building"
+    assert request["risk_level"] == "high"
+    assert request["command"] == "进入燃烧建筑搜索"
+    assert request["status"] == "pending"
+    assert request["request_id"]
+    assert request["requested_by"] == "unknown"  # no operator configured
+
+
+def test_mission_agent_request_approval_with_operator(tmp_path):
+    from fireclaw_core.control import OperatorContext
+    registry = RobotRegistry([])
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    operator = OperatorContext(operator_id="op-1", role="operator")
+    mission = MissionAgent(
+        registry=registry, subagent_client=FakeSubagentClient(),
+        approval_store=store, operator=operator,
+    )
+
+    result = mission.request_approval(
+        "mission-1", action="enter_building", risk_level="high", command="进入燃烧建筑搜索",
+    )
+
+    assert result["status"] == "pending"
+    assert result["request"]["requested_by"] == "op-1"
+    # Verify it was persisted
+    stored = store.get(result["request"]["request_id"])
+    assert stored is not None
+    assert stored.mission_id == "mission-1"
+
+
+def test_mission_agent_decide_approval_approve(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([])
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="supervisor-1", role="supervisor",
+        control_scopes=scopes_for_role("supervisor") | {"mission.approve"},
+    )
+    mission = MissionAgent(
+        registry=registry, subagent_client=FakeSubagentClient(),
+        approval_store=store, control_policy=policy, operator=operator,
+    )
+    created = store.create(
+        mission_id="mission-1", action="enter_building", risk_level="high",
+        command="进入燃烧建筑搜索", requested_by="op-1", created_at="2026-06-08T00:00:00+00:00",
+    )
+
+    result = mission.decide_approval(created.request_id, decision="approve")
+
+    assert result["status"] == "decided"
+    assert result["request"]["status"] == "approved"
+    assert result["request"]["decided_by"] == "supervisor-1"
+
+
+def test_mission_agent_decide_approval_deny(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([])
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="supervisor-1", role="supervisor",
+        control_scopes=scopes_for_role("supervisor") | {"mission.approve"},
+    )
+    mission = MissionAgent(
+        registry=registry, subagent_client=FakeSubagentClient(),
+        approval_store=store, control_policy=policy, operator=operator,
+    )
+    created = store.create(
+        mission_id="mission-1", action="enter_building", risk_level="high",
+        command="进入燃烧建筑搜索", requested_by="op-1", created_at="2026-06-08T00:00:00+00:00",
+    )
+
+    result = mission.decide_approval(created.request_id, decision="deny", reason="条件不满足")
+
+    assert result["status"] == "decided"
+    assert result["request"]["status"] == "denied"
+    assert result["request"]["reason"] == "条件不满足"
+    assert result["request"]["decided_by"] == "supervisor-1"
+
+
+def test_mission_agent_decide_approval_denied_without_scope(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext
+    registry = RobotRegistry([])
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-observer", role="observer",
+        control_scopes={"state.read", "mission.read"},
+    )
+    mission = MissionAgent(
+        registry=registry, subagent_client=FakeSubagentClient(),
+        approval_store=store, control_policy=policy, operator=operator,
+    )
+    created = store.create(
+        mission_id="mission-1", action="enter_building", risk_level="high",
+        command="进入燃烧建筑搜索", requested_by="op-1", created_at="2026-06-08T00:00:00+00:00",
+    )
+
+    result = mission.decide_approval(created.request_id, decision="approve")
+
+    assert result["status"] == "denied"
+    assert "mission.approve" in result["message"]
+
+
+def test_mission_agent_decide_approval_invalid_decision(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([])
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="supervisor-1", role="supervisor",
+        control_scopes=scopes_for_role("supervisor") | {"mission.approve"},
+    )
+    mission = MissionAgent(
+        registry=registry, subagent_client=FakeSubagentClient(),
+        approval_store=store, control_policy=policy, operator=operator,
+    )
+    created = store.create(
+        mission_id="mission-1", action="enter_building", risk_level="high",
+        command="进入燃烧建筑搜索", requested_by="op-1", created_at="2026-06-08T00:00:00+00:00",
+    )
+
+    result = mission.decide_approval(created.request_id, decision="maybe")
+
+    assert result["status"] == "error"
+    assert "Invalid decision" in result["message"]
+
+
+def test_mission_agent_decide_approval_not_found(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([])
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="supervisor-1", role="supervisor",
+        control_scopes=scopes_for_role("supervisor") | {"mission.approve"},
+    )
+    mission = MissionAgent(
+        registry=registry, subagent_client=FakeSubagentClient(),
+        approval_store=store, control_policy=policy, operator=operator,
+    )
+
+    result = mission.decide_approval("nonexistent-id", decision="approve")
+
+    assert result["status"] == "not_found"
+    assert result["request_id"] == "nonexistent-id"
+
+
+def test_mission_agent_request_approval_not_configured():
+    registry = RobotRegistry([])
+    mission = MissionAgent(registry=registry, subagent_client=FakeSubagentClient())
+
+    result = mission.request_approval(
+        "mission-1", action="enter_building", risk_level="high", command="进入燃烧建筑搜索",
+    )
+
+    assert result["status"] == "not_configured"
+
+
+def test_mission_agent_decide_approval_not_configured():
+    registry = RobotRegistry([])
+    mission = MissionAgent(registry=registry, subagent_client=FakeSubagentClient())
+
+    result = mission.decide_approval("some-id", decision="approve")
+
+    assert result["status"] == "not_configured"

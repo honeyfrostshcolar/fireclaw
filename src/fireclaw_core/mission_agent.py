@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+from fireclaw_core.approval_store import JsonlApprovalStore
 from fireclaw_core.control import ControlPolicy, OperatorContext
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlannerContext, MissionPlanningResult
@@ -55,6 +56,7 @@ class MissionAgent:
         control_policy: ControlPolicy | None = None,
         operator: OperatorContext | None = None,
         mission_memory: MissionMemoryStore | None = None,
+        approval_store: JsonlApprovalStore | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
@@ -63,6 +65,7 @@ class MissionAgent:
         self.control_policy = control_policy
         self.operator = operator
         self.mission_memory = mission_memory
+        self.approval_store = approval_store
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -436,6 +439,53 @@ class MissionAgent:
             "subtasks": cancelled_subtasks,
             "skipped_subtasks": skipped_subtasks,
         }
+
+    def request_approval(
+        self,
+        mission_id: str,
+        *,
+        action: str,
+        risk_level: str,
+        command: str,
+    ) -> dict[str, Any]:
+        """Create an approval request for a high-risk mission action."""
+        if self.approval_store is None:
+            return {"status": "not_configured"}
+        operator_id = self.operator.operator_id if self.operator else "unknown"
+        request = self.approval_store.create(
+            mission_id=mission_id,
+            action=action,
+            risk_level=risk_level,
+            command=command,
+            requested_by=operator_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return {"status": "pending", "request": request.to_dict()}
+
+    def decide_approval(
+        self,
+        request_id: str,
+        *,
+        decision: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Decide (approve/deny) a pending approval request."""
+        if self.approval_store is None:
+            return {"status": "not_configured"}
+        deny = self._authorize("mission.approve")
+        if deny is not None:
+            return {**deny, "status": "denied"}
+        operator_id = self.operator.operator_id if self.operator else "unknown"
+        now = datetime.now(timezone.utc).isoformat()
+        if decision == "approve":
+            result = self.approval_store.approve(request_id, decided_by=operator_id, decided_at=now)
+        elif decision == "deny":
+            result = self.approval_store.deny(request_id, decided_by=operator_id, reason=reason, decided_at=now)
+        else:
+            return {"status": "error", "message": f"Invalid decision: {decision}"}
+        if result is None:
+            return {"status": "not_found", "request_id": request_id}
+        return {"status": "decided", "request": result.to_dict()}
 
 
 def _mission_id(session_id: str | None) -> str:

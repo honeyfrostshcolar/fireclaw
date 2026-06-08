@@ -23,6 +23,7 @@ ROLE_SCOPES: dict[str, set[str]] = {
         "mission.plan",
         "mission.read",
         "mission.correct",
+        "mission.approve",
     },
     "admin": {
         "task.submit",
@@ -36,6 +37,7 @@ ROLE_SCOPES: dict[str, set[str]] = {
         "mission.plan",
         "mission.read",
         "mission.correct",
+        "mission.approve",
     },
 }
 
