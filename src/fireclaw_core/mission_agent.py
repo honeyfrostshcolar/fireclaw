@@ -4,6 +4,8 @@ from typing import Any, Protocol
 from uuid import uuid4
 from datetime import datetime, timezone
 
+from fireclaw_core.control import ControlPolicy, OperatorContext
+from fireclaw_core.mission_planner import MissionPlannerContext, MissionPlanningResult
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.mission_registry import TERMINAL_SUBTASK_STATUSES
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
@@ -34,10 +36,29 @@ class MissionAgent:
         registry: RobotRegistry,
         subagent_client: SubagentClient | None = None,
         mission_registry: JsonlMissionRegistry | None = None,
+        planner: Any | None = None,
+        control_policy: ControlPolicy | None = None,
+        operator: OperatorContext | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
         self.mission_registry = mission_registry
+        self.planner = planner
+        self.control_policy = control_policy
+        self.operator = operator
+
+    def _authorize(self, action: str) -> dict[str, Any] | None:
+        """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
+        if self.control_policy is None or self.operator is None:
+            return None
+        decision = self.control_policy.evaluate(self.operator, action)
+        if decision.status == "deny":
+            return {
+                "status": "denied",
+                "message": f"Operator {self.operator.operator_id} lacks required scope: {action}",
+                "decision": decision.to_dict(),
+            }
+        return None
 
     def submit_subtask(
         self,
@@ -49,6 +70,9 @@ class MissionAgent:
         operator: dict[str, Any] | None = None,
         mission: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        deny = self._authorize("mission.submit")
+        if deny is not None:
+            return {**deny, "robot_id": robot_id, "subtasks": []}
         entry = self.registry.get(robot_id)
         if entry is None:
             return {
@@ -108,6 +132,9 @@ class MissionAgent:
         }
 
     def mission_trace(self, mission_id: str) -> dict[str, Any]:
+        deny = self._authorize("mission.read")
+        if deny is not None:
+            return {**deny, "mission_id": mission_id, "subtasks": []}
         if self.mission_registry is None:
             return {"mission_id": mission_id, "status": "not_configured", "subtasks": []}
         mission = self.mission_registry.get_mission(mission_id)
@@ -143,12 +170,70 @@ class MissionAgent:
         trace["subtasks"] = enriched_subtasks
         return trace
 
+    def plan_and_submit(
+        self,
+        command: str,
+        *,
+        session_id: str | None = None,
+        operator: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        deny = self._authorize("mission.plan")
+        if deny is not None:
+            return {**deny, "subtask_results": []}
+        if self.planner is None:
+            return {
+                "status": "no_planner",
+                "message": "No mission planner configured.",
+                "subtask_results": [],
+            }
+        context = MissionPlannerContext(
+            available_robots=list(self.registry.enabled_entries()),
+        )
+        planning_result = self.planner.plan(command, context=context)
+        if planning_result.status != "planned" or planning_result.plan is None:
+            return {
+                "status": planning_result.status,
+                "message": planning_result.message,
+                "subtask_results": [],
+            }
+        mission_id = _mission_id(session_id)
+        created_at = datetime.now(timezone.utc).isoformat()
+        if self.mission_registry is not None and self.mission_registry.get_mission(mission_id) is None:
+            self.mission_registry.create_mission(
+                mission_id=mission_id,
+                session_id=session_id,
+                command=command,
+                created_at=created_at,
+            )
+        subtask_results: list[dict[str, Any]] = []
+        for subtask in planning_result.plan.subtasks:
+            result = self.submit_subtask(
+                subtask.robot_id,
+                subtask.command,
+                session_id=mission_id,
+                dedupe_key=f"{mission_id}-{subtask.robot_id}-{subtask.floor}",
+                operator=operator,
+                mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
+            )
+            subtask_results.append(result)
+        return {
+            "status": planning_result.status,
+            "message": planning_result.message,
+            "mission_id": mission_id,
+            "intent": planning_result.intent,
+            "plan": planning_result.plan.to_dict(),
+            "subtask_results": subtask_results,
+        }
+
     def cancel_mission(
         self,
         mission_id: str,
         *,
         operator: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        deny = self._authorize("mission.cancel")
+        if deny is not None:
+            return {**deny, "mission_id": mission_id, "subtasks": []}
         if self.mission_registry is None:
             return {"mission_id": mission_id, "status": "not_configured", "subtasks": []}
         mission = self.mission_registry.get_mission(mission_id)

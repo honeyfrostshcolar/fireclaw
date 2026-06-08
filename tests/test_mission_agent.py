@@ -1,4 +1,5 @@
 from fireclaw_core.mission_agent import MissionAgent
+from fireclaw_core.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 
@@ -227,3 +228,242 @@ def test_mission_agent_cancel_skips_terminal_subtasks(tmp_path):
     assert result["status"] == "already_terminal"
     assert result["cancelled_subtask_count"] == 0
     assert client.cancel_calls == []
+
+
+class FakeMissionPlanner:
+    def __init__(self, result):
+        self._result = result
+        self.calls = []
+
+    def plan(self, command, context=None):
+        self.calls.append((command, context))
+        return self._result
+
+
+def test_mission_agent_plan_and_submit_creates_subtasks_from_plan():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼和三楼搜索受困人员",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned",
+        message="ok",
+        intent="search",
+        plan=plan,
+    ))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+
+    assert result["status"] == "planned"
+    assert result["plan"]["intent"] == "search"
+    assert len(result["subtask_results"]) == 2
+    assert result["subtask_results"][0]["robot_id"] == "r1"
+    assert result["subtask_results"][1]["robot_id"] == "r2"
+    assert len(client.calls) == 2
+
+
+def test_mission_agent_plan_and_submit_returns_error_when_no_planner():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=None)
+
+    result = mission.plan_and_submit("去二楼搜索受困人员", session_id="mission-1")
+
+    assert result["status"] == "no_planner"
+    assert "planner" in result["message"]
+    assert client.calls == []
+
+
+def test_mission_agent_plan_and_submit_returns_clarify_from_planner():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+    ])
+    client = FakeSubagentClient()
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="clarify",
+        message="请指定目标楼层。",
+    ))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    result = mission.plan_and_submit("搜索整栋楼", session_id="mission-1")
+
+    assert result["status"] == "clarify"
+    assert "楼层" in result["message"]
+    assert client.calls == []
+
+
+# --- Authorization tests ---
+
+def test_mission_agent_denies_submit_without_mission_scope():
+    from fireclaw_core.control import ControlPolicy, OperatorContext
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-observer",
+        role="observer",
+        control_scopes={"state.read", "mission.read"},
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        control_policy=policy,
+        operator=operator,
+    )
+
+    result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "denied"
+    assert "mission.submit" in result["message"]
+    assert client.calls == []
+
+
+def test_mission_agent_allows_submit_with_mission_scope():
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-operator",
+        role="operator",
+        control_scopes=scopes_for_role("operator"),
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        control_policy=policy,
+        operator=operator,
+    )
+
+    result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "accepted"
+    assert len(client.calls) == 1
+
+
+def test_mission_agent_denies_cancel_without_mission_scope(tmp_path):
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    policy = ControlPolicy()
+    # First submit with admin to create mission
+    admin_operator = OperatorContext(
+        operator_id="admin",
+        role="admin",
+        control_scopes=scopes_for_role("admin"),
+    )
+    mission_admin = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+        control_policy=policy,
+        operator=admin_operator,
+    )
+    submitted = mission_admin.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    # Now try to cancel with observer
+    observer_operator = OperatorContext(
+        operator_id="test-observer",
+        role="observer",
+        control_scopes={"state.read", "mission.read"},
+    )
+    mission_observer = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+        control_policy=policy,
+        operator=observer_operator,
+    )
+    result = mission_observer.cancel_mission(submitted["mission_id"])
+
+    assert result["status"] == "denied"
+    assert "mission.cancel" in result["message"]
+
+
+def test_mission_agent_denies_plan_without_mission_scope():
+    from fireclaw_core.control import ControlPolicy, OperatorContext
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="test-observer",
+        role="observer",
+        control_scopes={"state.read", "mission.read"},
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search",
+        plan=MissionPlan(intent="search", command="test", subtasks=[]),
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        control_policy=policy,
+        operator=operator,
+        planner=planner,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "denied"
+    assert "mission.plan" in result["message"]
+    assert client.calls == []
+
+
+def test_mission_agent_admin_bypasses_mission_scopes():
+    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    policy = ControlPolicy()
+    operator = OperatorContext(
+        operator_id="admin",
+        role="admin",
+        control_scopes=scopes_for_role("admin"),
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        control_policy=policy,
+        operator=operator,
+    )
+
+    result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "accepted"
+    assert len(client.calls) == 1
+
+
+def test_mission_agent_no_authorization_when_policy_not_configured():
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    # No control_policy or operator configured
+    mission = MissionAgent(registry=registry, subagent_client=client)
+
+    result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "accepted"
+    assert len(client.calls) == 1
