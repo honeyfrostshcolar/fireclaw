@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Protocol
+from typing import Any
 
 from fireclaw_core.llm_trace import LLMTraceRecord, LLMTraceStore
 from fireclaw_core.mission_planner import (
@@ -11,7 +11,6 @@ from fireclaw_core.mission_planner import (
     MissionPlanningResult,
     MissionSubtask,
 )
-from fireclaw_core.planner import Plan, PlannerContext, PlanningResult, PlanStep, RuleBasedPlanner
 from fireclaw_core.provider import (
     ChatCompletion,
     ModelProvider,
@@ -21,83 +20,6 @@ from fireclaw_core.provider import (
     TokenUsage,
 )
 from fireclaw_core.robot_registry import RobotRegistryEntry
-from fireclaw_core.tool_schema import build_planner_request
-
-
-class PlanningClient(Protocol):
-    def plan(self, request: dict[str, Any]) -> dict[str, Any]:
-        ...
-
-
-class LLMToolCallingPlanner:
-    def __init__(
-        self,
-        *,
-        client: PlanningClient,
-        fallback: RuleBasedPlanner | None = None,
-    ) -> None:
-        self._client = client
-        self._fallback = fallback or RuleBasedPlanner()
-
-    def plan(self, command: str, context: PlannerContext | None = None) -> PlanningResult:
-        request = self._build_request(command, context)
-        try:
-            response = self._client.plan(request)
-        except Exception:
-            return self._fallback.plan(command, context=context)
-        try:
-            return self._parse_response(response)
-        except ValueError:
-            return self._fallback.plan(command, context=context)
-
-    def _build_request(self, command: str, context: PlannerContext | None) -> dict[str, Any]:
-        return build_planner_request(command, context)
-
-    def _parse_response(self, response: dict[str, Any]) -> PlanningResult:
-        if not isinstance(response, dict):
-            raise ValueError("Planner response must be an object.")
-
-        status = response.get("status")
-        message = response.get("message")
-        if not isinstance(status, str) or not isinstance(message, str):
-            raise ValueError("Planner response requires string status and message.")
-
-        if status == "clarify":
-            return PlanningResult(status="clarify", message=message)
-        if status != "planned":
-            raise ValueError(f"Unsupported planner status: {status}")
-
-        intent = response.get("intent")
-        if not isinstance(intent, str) or not intent:
-            raise ValueError("Planned response requires intent.")
-
-        steps_payload = response.get("steps")
-        if not isinstance(steps_payload, list) or not steps_payload:
-            raise ValueError("Planned response requires non-empty steps.")
-
-        steps: list[PlanStep] = []
-        for step_payload in steps_payload:
-            if not isinstance(step_payload, dict):
-                raise ValueError("Each planner step must be an object.")
-            skill_name = step_payload.get("skill_name")
-            inputs = step_payload.get("inputs", {})
-            if not isinstance(skill_name, str) or not skill_name:
-                raise ValueError("Each planner step requires skill_name.")
-            if not isinstance(inputs, dict):
-                raise ValueError("Each planner step inputs field must be an object.")
-            steps.append(PlanStep(skill_name=skill_name, inputs=inputs))
-
-        target_floor = response.get("target_floor")
-        if target_floor is not None and not isinstance(target_floor, int):
-            raise ValueError("target_floor must be an integer or null.")
-
-        return PlanningResult(
-            status="planned",
-            message=message,
-            intent=intent,
-            target_floor=target_floor,
-            plan=Plan(intent=intent, steps=steps),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +76,14 @@ def build_system_prompt(context: MissionPlannerContext) -> str:
         lines.append(f"- {robot.robot_id}: 能力=[{caps}], 区域={zone}, 状态={status}")
     if not context.available_robots:
         lines.append("- (无可用机器人)")
+    lines.append("")
+    lines.append("## 输出要求")
+    lines.append("请调用 create_mission_plan 工具，输出结构化的任务计划。")
+    lines.append("- intent: 任务意图（search/patrol/firefight/recon/transport）")
+    lines.append("- subtasks: 子任务列表，每个子任务包含 robot_id, command, floor, capability_required, execution_group")
+    lines.append("- execution_group: 执行组编号，同组可并行，不同组按顺序执行")
+    lines.append("- robot_id 必须是上面列出的可用机器人之一")
+    lines.append("- capability_required 必须是该机器人具备的能力之一")
     return "\n".join(lines)
 
 
@@ -191,6 +121,8 @@ class LLMMissionPlanner:
                 messages=messages,
                 model=self._model_id,
                 tools=[MISSION_PLAN_TOOL],
+                temperature=0.0,
+                max_tokens=4096,
             )
         except ProviderTimeoutError:
             return self._record_and_return(
