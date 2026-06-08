@@ -806,6 +806,38 @@ agent = MissionAgent(
 )
 ```
 
+### Cross-Robot Event Aggregation v1
+
+Aggregates events from multiple robot subagents into a unified mission-level timeline.
+
+#### CLI Usage
+
+```bash
+# Get all events for a mission
+python -m fireclaw_core.mission_cli events <mission_id> [--robot-id <id>] [--type <event_type>] [--limit 100]
+```
+
+#### Python API
+
+```python
+from fireclaw_core.mission_event_aggregator import MissionEventAggregator
+
+aggregator = MissionEventAggregator(
+    registry=robot_registry,
+    subagent_client=subagent_client,
+    mission_registry=mission_registry,
+)
+result = aggregator.aggregate("mission-1", robot_id="robot-a", event_type="skill.completed")
+# result: {"mission_id": "mission-1", "event_count": 5, "events": [...]}
+```
+
+#### Gateway Endpoint
+
+Robot subagents expose `GET /events` for fetching local events:
+```
+GET /events?task_id=<id>&limit=<N>
+```
+
 ### Skill Typed Contracts v1
 
 Skills now carry typed `output_schema`, `domain`, `preconditions`, and `degraded_mode_policy` metadata alongside the existing `input_schema`.
