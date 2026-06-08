@@ -675,3 +675,225 @@ Known limitations:
 Next recommended implementation:
 
 - Mission-level authorization scopes or fleet presence/heartbeat, depending on whether safety policy or operational reliability is more urgent.
+
+## Update 2026-06-08 17:00 CST
+
+### Task Goal
+
+The user asked to complete the first recovery step after re-reading memory: revalidate the current HEAD, inspect repository status, and fill the missing memory gap before starting the next feature.
+
+### Current Git State
+
+- Branch: `master`
+- Relationship to remote: `master...origin/master [领先 8]`
+- Latest commit: `4cf1120 feat: add fleet heartbeat v1 with presence-based robot filtering`
+- Recent mission/fleet commits after Mission Planner v1:
+  - `369f6e4 feat: add mission-level scopes to ROLE_SCOPES`
+  - `1ad20f7 feat: add mission-level authorization to MissionAgent`
+  - `a55371b feat: add operator authorization flags to mission CLI`
+  - `1cca242 docs: add mission-level authorization documentation`
+  - `52b0872 feat: add mission planner v1`
+  - `ee73408 feat: add presence tracking to RobotRegistry`
+  - `a740bda feat: add check_presence to RobotSubagentClient`
+  - `4cf1120 feat: add fleet heartbeat v1 with presence-based robot filtering`
+
+### Verified Current Behavior
+
+Mission authorization and fleet heartbeat are now present in committed code after the previously recorded Mission Planner v1 update:
+
+- mission-level scopes were added to `ROLE_SCOPES`;
+- `MissionAgent` gained mission-level authorization checks;
+- mission CLI gained operator/role/scope flags;
+- `RobotRegistryEntry` gained presence tracking;
+- `RobotSubagentClient` gained `check_presence(...)`;
+- mission planning/submission filters robot subagents by fleet presence before assignment.
+
+The latest code therefore has both safety-policy gating at the mission layer and basic online/offline filtering at the fleet layer.
+
+### Commands Executed
+
+- `git status --branch --short`
+  - Result: branch is ahead of `origin/master` by 8 commits.
+  - No tracked file modifications were present.
+  - Untracked files remain:
+    - `.claude/`
+    - `CLAUDE.md`
+    - `CLAUDE.zh-CN.md`
+    - `docs/superpowers/plans/2026-06-08-fleet-heartbeat-v1.md`
+    - `docs/superpowers/plans/2026-06-08-mission-authorization-v1.md`
+    - `docs/superpowers/plans/2026-06-08-mission-planner-v1.md`
+- `git log --oneline -10`
+  - Confirmed latest commit sequence listed above.
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `265 passed in 15.22s`
+
+### Current Conclusion
+
+The latest committed code is verified by the full local test suite. The memory gap after Mission Planner v1 has been corrected at a summary level. No business-code edits were made during this recovery step.
+
+The untracked plan files appear to be documentation/planning artifacts for work that is already represented in committed code. They should either be intentionally added in a documentation commit or left untracked/removed by user decision; they are not required for the current test suite.
+
+### Next Recommended Step
+
+Proceed with `Mission Scheduler v1`:
+
+- respect `MissionPlan.execution_group`;
+- submit same-group subtasks in parallel where possible;
+- execute later groups only after earlier groups reach acceptable terminal states;
+- define mission-level stop/continue/escalate policy for denied, offline, failed, and cancelled subtasks;
+- test with multiple local robot subagent Gateways.
+
+## Update 2026-06-08 17:20 CST
+
+### Task Goal
+
+The user asked to align the larger FireClaw architecture with OpenClaw first, before continuing feature implementation. The requested document should be engineering-implementation oriented, not research-paper oriented, and should include a Chinese version.
+
+### Files Created
+
+- `docs/architecture/fireclaw-openclaw-alignment.md`
+- `docs/architecture/fireclaw-openclaw-alignment.zh-CN.md`
+
+### Document Scope
+
+The architecture document records:
+
+- target system shape:
+  `Operator -> FireClaw Main Mission Agent -> Robot FireClaw Subagents -> local Gateway/planner/safety/skills/ROS adapter`;
+- OpenClaw concept mapping:
+  agent, session, subagent, gateway/control plane, task registry, task runtime progress, permissions/scopes, safety/sandbox, memory, provider runtime, tools/skills/plugins, config/doctor/onboarding;
+- FireClaw layer responsibilities:
+  operator interface, main mission agent, fleet/subagent contract, robot subagent control plane, robot agent/planner/skill runtime, robot adapter/ROS integration, memory/audit, model/provider runtime;
+- current implementation status and missing pieces for each layer;
+- core data flows for mission execution, robot-local execution, and cancellation;
+- framework completion roadmap;
+- near-term recommendation: `Mission Scheduler v1`.
+
+### Self-Review
+
+- Ran placeholder scan:
+  - `rg -n "TBD|TODO|PLACEHOLDER|待定|占位" docs/architecture/fireclaw-openclaw-alignment.md docs/architecture/fireclaw-openclaw-alignment.zh-CN.md || true`
+  - Result: no matches.
+- Checked document sizes:
+  - English: 391 lines.
+  - Chinese: 392 lines.
+
+### Current Conclusion
+
+The project now has a top-level engineering architecture baseline outside the per-feature Superpowers plan/spec documents. Future implementation plans should use this document as the reference boundary before adding new mission, fleet, robot-subagent, memory, provider, or ROS integration work.
+
+No commit was made because the user did not explicitly request a commit.
+
+## Update 2026-06-08 18:30 CST
+
+### Task Goal
+
+Continue Phase 1 implementation from `docs/architecture/fireclaw-openclaw-alignment.md` roadmap. The user directed to follow the alignment document's near-term engineering priority.
+
+### Phase 1 Completed
+
+All four Phase 1 tasks from the alignment document are now implemented and verified:
+
+**1. Fleet Heartbeat v1** (`4cf1120`)
+- `MissionAgent.check_fleet_presence()` pings all enabled robots
+- `plan_and_submit()` automatically filters offline robots before planning
+- `RobotRegistry` tracks `last_seen_at` in-memory with `is_online`/`online_entries`
+- 2 new tests
+
+**2. Mission Scheduler v1** (`a07a8e5`)
+- `MissionScheduler` groups subtasks by `execution_group`
+- Same group submitted as one batch, later groups wait for earlier groups to reach terminal
+- `MissionSchedulerConfig` with poll interval and group timeout
+- 5 tests: config defaults, parallel group, sequential groups
+
+**3. Mission Failure Policy v1** (`3f29cfb`)
+- `MissionFailurePolicy` with per-failure-status decisions: `on_failed`, `on_denied`, `on_lost`, `on_block`
+- Decisions: `retry` (same robot), `reassign` (alt robot with matching capability), `skip`, `escalate`, `abort`
+- `max_retries` and `max_reassigns` limits
+- Scheduler evaluates failures per-subtask after group terminal
+- 8 tests total (including scheduler tests)
+
+**4. Mission Trace Stream v1** (`0184909`)
+- `MissionTraceStream.stream()` polling-based generator
+- Detects changes between `mission_trace()` snapshots
+- Events: `subtask.submitted`, `subtask.status_changed`, `mission.succeeded`/`failed`/`escalated`/`timeout`
+- Auto-stops on mission terminal status or timeout
+- 5 tests
+
+**5. Fleet Doctor v1** (`357344f`)
+- `FleetDoctor` validates registry entries, robot reachability, capabilities
+- `diagnose()` returns findings with severity/category/message
+- `summary()` returns healthy/unhealthy status
+- 6 tests
+
+### Current Git State
+
+- Branch: `master`, ahead of `origin/master` by 13 commits
+- Latest commit: `357344f feat: add fleet doctor v1 for registry and reachability validation`
+- Verification: `284 passed in 17.57s`
+
+### Current Conclusion
+
+Phase 1 of the alignment document ("Stabilize the Main/Subagent Skeleton") is complete:
+- ✅ Mission Scheduler v1
+- ✅ Mission failure policy
+- ✅ Mission trace stream
+- ✅ Fleet doctor
+
+### Next Recommended Step
+
+Phase 2: "Complete Robot-Local Embodied Runtime"
+- richer skill metadata for firefighting operations;
+- typed skill input/output contracts;
+- adapter-specific capability declarations;
+- ROS1 smoke tests with a real ROS master;
+- simulator/real-robot separation checks;
+- stronger local failure taxonomy.
+
+## Update 2026-06-08 18:20 CST
+
+### Phase 2 Completed
+
+Phase 2 of alignment document ("Complete Robot-Local Embodied Runtime") — all 3 core tasks implemented and verified in one commit.
+
+**Commit:** `eac5648 feat: Phase 2 — skill typed contracts, adapter capabilities, local failure taxonomy`
+
+**1. Skill Typed Contracts v1**
+- Added `output_schema`, `domain`, `preconditions`, `degraded_mode_policy` to `Skill` dataclass
+- Default skills carry typed output schemas (`NAVIGATE_OUTPUT_SCHEMA`, `SEARCH_OUTPUT_SCHEMA`, etc.)
+- Domains: navigation, perception, communication, safety, manipulation
+- Degraded mode policies: skip, fallback, retry, abort, escalate
+- `create_subprocess_skill()` accepts new fields
+- `list_metadata()` includes new fields
+
+**2. Adapter Capabilities v1**
+- Added `AdapterCapabilities` frozen dataclass
+- All adapters (`DryRunRobotAdapter`, `MockRos1RobotAdapter`, `MockRos2RobotAdapter`, `SimulatorRobotAdapter`, `Ros1RobotAdapter`) implement `capabilities()`
+- Added `validate_simulator_real_separation()` check function
+- Default mock/dry-run adapters now include `["rgb_camera", "thermal_camera"]` sensors
+
+**3. Local Failure Taxonomy v1**
+- Added `FailureCategory` enum (14 categories)
+- Added `LocalFailureReason` frozen dataclass with `retryable` semantics
+- `RETRYABLE_CATEGORIES`: transport, timeout, sensor_unavailable
+- `NON_RETRYABLE_CATEGORIES`: robot_offline, low_battery, emergency_stop, safety_blocked, authorization_denied, not_configured, target_unreachable
+- `from_robot_result()` factory infers category from legacy status/error strings
+
+**Side fixes:**
+- Safety gate now infers `available_sensors` from `robot_state` when not explicitly provided
+- Agent/Gateway/CLI pass `None` sensors (triggers robot-based inference) instead of empty set
+- 30 new tests (8 skill metadata, 10 adapter capabilities, 12 local failure)
+
+### Verification
+
+- `.venv/bin/python -m pytest -q` -> `314 passed in 17.57s`
+- Branch: `master`, 14 commits ahead of `origin/master`
+
+### Next Recommended Step
+
+Phase 3: "Add Mission Memory and Operator Workflow"
+- mission memory records
+- cross-robot event aggregation
+- operator correction recording
+- approval workflow for high-risk mission operations
+- incident replay from mission and robot-local traces
