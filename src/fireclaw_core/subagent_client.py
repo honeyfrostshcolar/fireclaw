@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 from urllib import request
 from urllib.error import HTTPError
@@ -56,6 +57,23 @@ class RobotSubagentClient:
         result = self._request_json("POST", entry.base_url, f"/tasks/{task_id}/cancel", payload)
         result.setdefault("robot_id", entry.robot_id)
         return result
+
+    def check_presence(self, entry: RobotRegistryEntry) -> dict[str, Any]:
+        try:
+            state = self.get_state(entry)
+            now = datetime.now(timezone.utc).isoformat()
+            return {
+                "robot_id": entry.robot_id,
+                "online": True,
+                "last_seen_at": now,
+                "state": state,
+            }
+        except Exception as exc:
+            return {
+                "robot_id": entry.robot_id,
+                "online": False,
+                "error": str(exc),
+            }
 
     def _request_json(
         self,

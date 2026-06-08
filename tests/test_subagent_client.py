@@ -112,3 +112,42 @@ def test_robot_subagent_client_cancels_task(tmp_path):
 
     assert cancelled["status"] == "cancel_requested"
     assert cancelled["robot_id"] == "robot-2"
+
+
+def test_robot_subagent_client_check_presence_online(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        entry = RobotRegistryEntry(robot_id="robot-1", base_url=gateway.base_url)
+        client = RobotSubagentClient()
+
+        result = client.check_presence(entry)
+    finally:
+        gateway.stop()
+
+    assert result["robot_id"] == "robot-1"
+    assert result["online"] is True
+    assert "last_seen_at" in result
+    assert "state" in result
+
+
+def test_robot_subagent_client_check_presence_offline():
+    entry = RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:1")
+    client = RobotSubagentClient(timeout_seconds=0.1)
+
+    result = client.check_presence(entry)
+
+    assert result["robot_id"] == "robot-1"
+    assert result["online"] is False
+    assert "error" in result
