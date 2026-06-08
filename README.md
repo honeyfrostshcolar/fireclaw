@@ -536,6 +536,41 @@ CLI usage:
 
 Each robot subagent remains authoritative over embodied execution. It may block, reject, cancel, ask for confirmation, or emergency-stop based on local state, safety rules, permissions, ROS availability, and hardware constraints.
 
+### Model Provider Runtime v1
+
+FireClaw supports LLM-driven mission planning through an OpenAI-compatible provider abstraction.
+
+**Supported providers:** Any OpenAI-compatible API (DeepSeek, Qwen, GLM, Moonshot, Ollama, etc.)
+
+**CLI usage:**
+
+```bash
+# LLM-driven planning
+python -m fireclaw_core.mission_cli plan-mission \
+  --command "去二楼和三楼搜索受困人员" \
+  --planner llm \
+  --provider-base-url https://api.deepseek.com \
+  --provider-api-key sk-xxx \
+  --model deepseek-chat \
+  --registry-path robots.json \
+  --registry-out missions.jsonl \
+  --llm-trace-path logs/llm-traces.jsonl
+
+# Deterministic planning (default, backward compatible)
+python -m fireclaw_core.mission_cli plan-mission \
+  --command "去二楼搜索受困人员" \
+  --registry-path robots.json \
+  --registry-out missions.jsonl
+```
+
+**Components:**
+- `provider.py` — `ModelProvider` protocol and `OpenAICompatProvider` (httpx-based)
+- `model_catalog.py` — `ModelCatalog` for model metadata (context window, capabilities, cost)
+- `llm_planner.py` — `LLMMissionPlanner` with tool calling for structured output
+- `llm_trace.py` — `LLMTraceStore` for recording full LLM call traces (prompt, response, tokens, latency)
+
+**LLM Trace:** Record every LLM call for debugging and audit. Use `--llm-trace-path` to enable.
+
 ### Mission Authorization v1
 
 MissionAgent supports mission-level authorization scopes, aligned with OpenClaw's operator scope pattern. When a `ControlPolicy` and `OperatorContext` are configured, MissionAgent checks authorization before executing mission operations.
