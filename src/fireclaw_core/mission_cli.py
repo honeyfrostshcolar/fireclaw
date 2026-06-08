@@ -5,6 +5,7 @@ import json
 import sys
 from typing import Any
 
+from fireclaw_core.approval_store import JsonlApprovalStore
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlanner
@@ -71,6 +72,25 @@ def main() -> int:
     mem_summary = memory_sub.add_parser("summary", help="Show mission memory summary.")
     mem_summary.add_argument("--mission-id", default=None, help="Filter by mission id.")
 
+    approval = subparsers.add_parser("approval", help="Manage approval requests.")
+    approval.add_argument("--approval-path", default="mission_approvals.jsonl", help="Path to approval store JSONL file.")
+    approval_sub = approval.add_subparsers(dest="approval_command", required=True)
+
+    app_list = approval_sub.add_parser("list", help="List approval requests.")
+    app_list.add_argument("--mission-id", default=None, help="Filter by mission id.")
+    app_list.add_argument("--status", default=None, help="Filter by status (pending, approved, denied, expired).")
+
+    app_request = approval_sub.add_parser("request", help="Create an approval request.")
+    app_request.add_argument("--mission-id", required=True, help="Mission id.")
+    app_request.add_argument("--action", required=True, help="Action requiring approval.")
+    app_request.add_argument("--risk-level", required=True, help="Risk level (low, medium, high, critical).")
+    app_request.add_argument("--command", required=True, help="Command to execute.")
+
+    app_decide = approval_sub.add_parser("decide", help="Approve or deny an approval request.")
+    app_decide.add_argument("request_id", help="Request id to decide on.")
+    app_decide.add_argument("--decision", required=True, choices=["approve", "deny"], help="Decision: approve or deny.")
+    app_decide.add_argument("--reason", default=None, help="Reason for the decision.")
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -108,6 +128,8 @@ def main() -> int:
         return _handle_corrections(args)
     if args.command_name == "memory":
         return _handle_memory(args)
+    if args.command_name == "approval":
+        return _handle_approval(args)
     parser.error(f"Unknown command: {args.command_name}")
     return 1
 
@@ -157,6 +179,44 @@ def _handle_memory(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Error: unknown memory subcommand: {args.memory_command}", file=sys.stderr)
+    return 1
+
+
+def _handle_approval(args: argparse.Namespace) -> int:
+    from datetime import datetime, timezone
+
+    store = JsonlApprovalStore(args.approval_path)
+
+    if args.approval_command == "list":
+        requests = store.list_requests(mission_id=args.mission_id, status=args.status)
+        print(json.dumps([r.to_dict() for r in requests], ensure_ascii=False, indent=2))
+        return 0
+
+    if args.approval_command == "request":
+        request = store.create(
+            mission_id=args.mission_id,
+            action=args.action,
+            risk_level=args.risk_level,
+            command=args.command,
+            requested_by="mission_cli",
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        _print_json(request.to_dict())
+        return 0
+
+    if args.approval_command == "decide":
+        now = datetime.now(timezone.utc).isoformat()
+        if args.decision == "approve":
+            result = store.approve(args.request_id, decided_by="mission_cli", decided_at=now)
+        else:
+            result = store.deny(args.request_id, decided_by="mission_cli", reason=args.reason, decided_at=now)
+        if result is None:
+            print(f"Error: request {args.request_id} not found or already decided", file=sys.stderr)
+            return 1
+        _print_json(result.to_dict())
+        return 0
+
+    print(f"Error: unknown approval subcommand: {args.approval_command}", file=sys.stderr)
     return 1
 
 

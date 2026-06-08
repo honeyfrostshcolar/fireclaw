@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 
+from fireclaw_core.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 
@@ -650,3 +651,132 @@ def test_mission_cli_events(tmp_path):
     assert "event_count" in result
     assert "events" in result
     assert isinstance(result["events"], list)
+
+
+def _run_approval_cli(tmp_path, *extra_args):
+    approval_path = tmp_path / "mission_approvals.jsonl"
+    argv = [
+        ".venv/bin/python",
+        "-m",
+        "fireclaw_core.mission_cli",
+        "approval",
+        "--approval-path",
+        str(approval_path),
+        *extra_args,
+    ]
+    return subprocess.run(argv, check=False, cwd=".", text=True, capture_output=True)
+
+
+def test_mission_cli_approval_list(tmp_path):
+    approval_path = tmp_path / "mission_approvals.jsonl"
+    store = JsonlApprovalStore(approval_path)
+    store.create(
+        mission_id="m-1", action="navigate", risk_level="high",
+        command="去三楼", requested_by="op-1", created_at="2026-06-08T12:00:00Z",
+    )
+    store.create(
+        mission_id="m-1", action="spray", risk_level="critical",
+        command="喷水", requested_by="op-1", created_at="2026-06-08T12:01:00Z",
+    )
+    store.create(
+        mission_id="m-2", action="navigate", risk_level="low",
+        command="去一楼", requested_by="op-2", created_at="2026-06-08T12:02:00Z",
+    )
+
+    # List all
+    completed = _run_approval_cli(tmp_path, "list")
+    assert completed.returncode == 0
+    requests = json.loads(completed.stdout)
+    assert len(requests) == 3
+
+    # List filtered by mission-id
+    completed = _run_approval_cli(tmp_path, "list", "--mission-id", "m-1")
+    assert completed.returncode == 0
+    requests = json.loads(completed.stdout)
+    assert len(requests) == 2
+    assert all(r["mission_id"] == "m-1" for r in requests)
+
+    # List filtered by status
+    completed = _run_approval_cli(tmp_path, "list", "--status", "pending")
+    assert completed.returncode == 0
+    requests = json.loads(completed.stdout)
+    assert len(requests) == 3
+    assert all(r["status"] == "pending" for r in requests)
+
+
+def test_mission_cli_approval_request(tmp_path):
+    completed = _run_approval_cli(
+        tmp_path,
+        "request",
+        "--mission-id", "m-1",
+        "--action", "navigate",
+        "--risk-level", "high",
+        "--command", "去三楼搜索",
+    )
+    assert completed.returncode == 0
+    request = json.loads(completed.stdout)
+    assert request["mission_id"] == "m-1"
+    assert request["action"] == "navigate"
+    assert request["risk_level"] == "high"
+    assert request["command"] == "去三楼搜索"
+    assert request["status"] == "pending"
+    assert request["request_id"]
+
+    # Verify it was actually written to the store
+    store = JsonlApprovalStore(tmp_path / "mission_approvals.jsonl")
+    records = store.list_requests()
+    assert len(records) == 1
+    assert records[0].mission_id == "m-1"
+
+
+def test_mission_cli_approval_decide_approve(tmp_path):
+    approval_path = tmp_path / "mission_approvals.jsonl"
+    store = JsonlApprovalStore(approval_path)
+    req = store.create(
+        mission_id="m-1", action="navigate", risk_level="high",
+        command="去三楼", requested_by="op-1", created_at="2026-06-08T12:00:00Z",
+    )
+
+    completed = _run_approval_cli(
+        tmp_path,
+        "decide",
+        req.request_id,
+        "--decision", "approve",
+    )
+    assert completed.returncode == 0
+    result = json.loads(completed.stdout)
+    assert result["status"] == "approved"
+    assert result["request_id"] == req.request_id
+
+    # Verify in store
+    updated = store.get(req.request_id)
+    assert updated is not None
+    assert updated.status == "approved"
+
+
+def test_mission_cli_approval_decide_deny(tmp_path):
+    approval_path = tmp_path / "mission_approvals.jsonl"
+    store = JsonlApprovalStore(approval_path)
+    req = store.create(
+        mission_id="m-1", action="spray", risk_level="critical",
+        command="喷水", requested_by="op-1", created_at="2026-06-08T12:00:00Z",
+    )
+
+    completed = _run_approval_cli(
+        tmp_path,
+        "decide",
+        req.request_id,
+        "--decision", "deny",
+        "--reason", "区域未确认安全",
+    )
+    assert completed.returncode == 0
+    result = json.loads(completed.stdout)
+    assert result["status"] == "denied"
+    assert result["request_id"] == req.request_id
+    assert result["reason"] == "区域未确认安全"
+
+    # Verify in store
+    updated = store.get(req.request_id)
+    assert updated is not None
+    assert updated.status == "denied"
+    assert updated.reason == "区域未确认安全"
