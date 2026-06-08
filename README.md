@@ -838,6 +838,50 @@ Robot subagents expose `GET /events` for fetching local events:
 GET /events?task_id=<id>&limit=<N>
 ```
 
+### Approval Workflow v1
+
+High-risk mission operations can require explicit supervisor approval before execution.
+
+#### Risk Levels
+
+| Level | Behavior |
+|-------|----------|
+| `low` | Auto-approved, no approval needed |
+| `medium` | Auto-approved, logged |
+| `high` | Requires supervisor approval |
+| `critical` | Requires supervisor approval |
+
+#### CLI Usage
+
+```bash
+# List approval requests
+python -m fireclaw_core.mission_cli approval list [--mission-id <id>] [--status pending]
+
+# Request approval for a high-risk operation
+python -m fireclaw_core.mission_cli approval request \
+  --mission-id <id> --action mission.submit --risk-level high \
+  --command "去三楼搜救"
+
+# Approve or deny
+python -m fireclaw_core.mission_cli approval decide <request_id> --decision approve
+python -m fireclaw_core.mission_cli approval decide <request_id> --decision deny --reason "Too dangerous"
+```
+
+#### Python API
+
+```python
+from fireclaw_core.approval_store import JsonlApprovalStore
+
+store = JsonlApprovalStore("mission_approvals.jsonl")
+agent = MissionAgent(registry=registry, approval_store=store)
+
+# Request approval
+result = agent.request_approval("m-1", action="mission.submit", risk_level="high", command="去三楼搜救")
+
+# Decide
+agent.decide_approval(request_id, decision="approve")
+```
+
 ### Skill Typed Contracts v1
 
 Skills now carry typed `output_schema`, `domain`, `preconditions`, and `degraded_mode_policy` metadata alongside the existing `input_schema`.
