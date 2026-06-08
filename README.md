@@ -656,30 +656,43 @@ Robot presence is tracked in-memory on `RobotRegistry`. `is_online(robot_id)` an
 The mission scheduler executes `MissionPlan.execution_group` in ordered batches. Subtasks in the same group are submitted in parallel; later groups wait until earlier groups reach terminal state.
 
 ```python
-from fireclaw_core.mission_scheduler import MissionScheduler, MissionSchedulerConfig
+from fireclaw_core.mission_scheduler import MissionScheduler, MissionSchedulerConfig, MissionFailurePolicy
 
 scheduler = MissionScheduler(
     mission_agent=mission,
+    registry=registry,  # optional, defaults to mission_agent.registry
     config=MissionSchedulerConfig(
-        failure_policy="stop",  # "stop" or "continue"
+        failure_policy=MissionFailurePolicy(
+            on_failed="reassign",   # "retry", "reassign", "skip", "escalate", "abort"
+            on_denied="abort",
+            on_lost="abort",
+            on_block="escalate",
+            max_retries=1,
+            max_reassigns=1,
+        ),
         poll_interval_seconds=0.1,
         group_timeout_seconds=300.0,
     ),
 )
 
 result = scheduler.schedule(plan, mission_id="mission-004", session_id="mission-004")
-# result["status"] == "succeeded" or "stopped"
-# result["group_results"] contains per-group subtask results and terminal states
+# result["status"]: "succeeded", "aborted", or "escalated"
+# result["failure_decisions"]: per-subtask failure handling records
 ```
 
-Failure policies:
+**Failure decisions:**
 
-| Policy | Behavior |
+| Decision | Behavior |
 |---|---|
-| `stop` | If any subtask in a group fails (`failed`, `block`, `denied`, `lost`), later groups are not submitted. |
-| `continue` | Later groups are submitted regardless of earlier failures. |
+| `retry` | Resubmit to the same robot (up to `max_retries` times). |
+| `reassign` | Submit to a different robot with matching capability (up to `max_reassigns` times). |
+| `skip` | Ignore the failure and continue. |
+| `escalate` | Mark as needing operator intervention; mission continues. |
+| `abort` | Stop the mission immediately. |
 
-The scheduler polls `mission_trace()` between groups to determine when all subtasks in a group have reached terminal state. This is the natural place to add retry, reassign, and escalation logic in future versions.
+Each failure status (`failed`, `denied`, `lost`, `block`) maps to an independent decision. For example, `on_failed="reassign"` means sensor failures get reassigned to another robot, while `on_denied="abort"` means safety gate denials stop the entire mission.
+
+The scheduler polls `mission_trace()` between groups to determine when all subtasks in a group have reached terminal state. Retry and reassign actions are evaluated in a loop until no more actions are needed or the mission is aborted.
 
 ## Session State
 
