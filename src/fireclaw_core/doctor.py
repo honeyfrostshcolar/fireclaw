@@ -10,6 +10,7 @@ from fireclaw_core.action_runtime import RobotAdapterActionBackend
 from fireclaw_core.ros1_config import ROS1_ACTION_NAMES
 from fireclaw_core.ros1_config import load_ros1_adapter_config
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
+from fireclaw_core.task_queue import JsonlTaskQueue
 from fireclaw_core.workspace_skills import load_workspace_skills
 from fireclaw_core.workspace_skills import WorkspaceSkillLoadResult
 
@@ -33,8 +34,13 @@ def run_doctor(
     event_path: str = "memory/fireclaw-events.jsonl",
     skills_dir: str | None = "skills",
     ros1_config_path: str | None = None,
+    task_queue_path: str | None = None,
+    memory_index_path: str | None = None,
+    plugin_dir: str | None = None,
+    fix: bool = False,
 ) -> dict[str, Any]:
     checks: list[DoctorCheck] = []
+    repairs: list[dict[str, Any]] = []
     robot = None
     try:
         robot = create_robot_adapter(adapter, robot_id, config_path=ros1_config_path)
@@ -75,9 +81,26 @@ def run_doctor(
         checks.append(_emergency_stop_hook_check(robot))
         checks.append(_action_feedback_boundary_check(robot))
 
+    # --- repair-flow checks ---
+    # Memory index and plugin descriptors are always report-only.
+    checks.append(_memory_index_check(memory_index_path))
+    checks.append(_plugin_descriptor_check(plugin_dir))
+
+    # --- repair actions (only when fix=True) ---
+    if fix:
+        repairs.extend(_repair_stale_task_queue(task_queue_path))
+        # Memory index missing and invalid plugins are report-only;
+        # they are not auto-repaired.
+
+    # Stale task queue check runs AFTER potential repairs so fix=True
+    # can show the repaired state.
+    checks.append(_stale_task_queue_check(task_queue_path))
+
     return {
         "status": _overall_status(checks),
         "checks": [asdict(check) for check in checks],
+        "repairs": repairs,
+        "fixed": len(repairs),
     }
 
 
@@ -294,6 +317,113 @@ def _action_feedback_boundary_check(robot: Any) -> DoctorCheck:
     )
 
 
+def _stale_task_queue_check(task_queue_path: str | None) -> DoctorCheck:
+    if task_queue_path is None:
+        return DoctorCheck(
+            name="stale_task_queue",
+            status="pass",
+            message="No task queue path configured.",
+            details={"stale_count": 0, "stale_task_ids": []},
+        )
+    queue = JsonlTaskQueue(task_queue_path)
+    records = queue.list_records()
+    stale = [r for r in records if not r.is_terminal]
+    if stale:
+        return DoctorCheck(
+            name="stale_task_queue",
+            status="warn",
+            message=f"{len(stale)} non-terminal task queue record(s) found.",
+            details={"stale_count": len(stale), "stale_task_ids": [r.task_id for r in stale]},
+        )
+    return DoctorCheck(
+        name="stale_task_queue",
+        status="pass",
+        message="No stale task queue records.",
+        details={"stale_count": 0, "stale_task_ids": []},
+    )
+
+
+def _memory_index_check(memory_index_path: str | None) -> DoctorCheck:
+    if memory_index_path is None:
+        return DoctorCheck(
+            name="memory_index",
+            status="pass",
+            message="No memory index path configured.",
+            details={"path": None},
+        )
+    target = Path(memory_index_path)
+    if not target.exists():
+        return DoctorCheck(
+            name="memory_index",
+            status="warn",
+            message=f"Memory index not found: {target}",
+            details={"path": str(target), "exists": False},
+        )
+    return DoctorCheck(
+        name="memory_index",
+        status="pass",
+        message="Memory index file exists.",
+        details={"path": str(target), "exists": True},
+    )
+
+
+def _plugin_descriptor_check(plugin_dir: str | None) -> DoctorCheck:
+    if plugin_dir is None:
+        return DoctorCheck(
+            name="plugin_descriptors",
+            status="pass",
+            message="No plugin directory configured.",
+            details={"plugin_dir": None, "invalid_count": 0, "invalid_files": []},
+        )
+    dir_path = Path(plugin_dir)
+    if not dir_path.exists():
+        return DoctorCheck(
+            name="plugin_descriptors",
+            status="pass",
+            message="Plugin directory does not exist; skipping.",
+            details={"plugin_dir": str(dir_path), "invalid_count": 0, "invalid_files": []},
+        )
+    invalid: list[str] = []
+    for manifest_file in sorted(dir_path.glob("*.plugin.json")):
+        try:
+            json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            invalid.append(manifest_file.name)
+    if invalid:
+        return DoctorCheck(
+            name="plugin_descriptors",
+            status="warn",
+            message=f"{len(invalid)} invalid plugin descriptor file(s).",
+            details={"plugin_dir": str(dir_path), "invalid_count": len(invalid), "invalid_files": invalid},
+        )
+    return DoctorCheck(
+        name="plugin_descriptors",
+        status="pass",
+        message="All plugin descriptors are valid JSON.",
+        details={"plugin_dir": str(dir_path), "invalid_count": 0, "invalid_files": []},
+    )
+
+
+def _repair_stale_task_queue(task_queue_path: str | None) -> list[dict[str, Any]]:
+    if task_queue_path is None:
+        return []
+    queue = JsonlTaskQueue(task_queue_path)
+    stale_before = [r for r in queue.list_records() if not r.is_terminal]
+    if not stale_before:
+        return []
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    lost = queue.mark_non_terminal_lost(
+        ended_at=now,
+        error="auto-repaired by doctor --fix: marked stale non-terminal record as lost",
+    )
+    return [
+        {"action": "mark_stale_lost", "task_id": record.task_id, "old_status": stale_before[i].status}
+        for i, record in enumerate(lost)
+    ]
+
+
 def _overall_status(checks: list[DoctorCheck]) -> str:
     return max(checks, key=lambda check: STATUS_ORDER[check.status]).status
 
@@ -307,6 +437,10 @@ def main() -> int:
     parser.add_argument("--skills-dir", default="skills")
     parser.add_argument("--no-workspace-skills", action="store_true")
     parser.add_argument("--ros1-config", default=None)
+    parser.add_argument("--task-queue", default=None, help="Path to JSONL task queue file")
+    parser.add_argument("--memory-index", default=None, help="Path to memory index SQLite file")
+    parser.add_argument("--plugin-dir", default=None, help="Path to plugin descriptor directory")
+    parser.add_argument("--fix", action="store_true", help="Attempt to repair detected issues")
     args = parser.parse_args()
 
     report = run_doctor(
@@ -316,6 +450,10 @@ def main() -> int:
         event_path=args.event_path,
         skills_dir=None if args.no_workspace_skills else args.skills_dir,
         ros1_config_path=args.ros1_config,
+        task_queue_path=args.task_queue,
+        memory_index_path=args.memory_index,
+        plugin_dir=args.plugin_dir,
+        fix=args.fix,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if report["status"] == "fail" else 0

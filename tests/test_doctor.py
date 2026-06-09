@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 from fireclaw_core.doctor import run_doctor
 
@@ -191,3 +192,155 @@ def test_doctor_module_cli_outputs_json_report(tmp_path):
     report = json.loads(completed.stdout)
     assert report["status"] == "warn"
     assert _check(report, "adapter")["details"]["robot_id"] == "doctor-cli"
+
+
+# ---------------------------------------------------------------------------
+# Doctor --fix mode tests
+# ---------------------------------------------------------------------------
+
+
+def _write_stale_queue(path: Path, task_id: str, status: str, session_id: str = "s1") -> None:
+    """Append a task queue record to a JSONL file."""
+    record = {
+        "task_id": task_id,
+        "session_id": session_id,
+        "command": f"do {task_id}",
+        "status": status,
+        "created_at": "2026-06-09T10:00:00Z",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def test_doctor_reports_stale_queue_records(tmp_path):
+    """Doctor detects non-terminal task queue records as stale."""
+    queue_path = tmp_path / "queue.jsonl"
+    _write_stale_queue(queue_path, "task-1", "accepted")
+    _write_stale_queue(queue_path, "task-2", "running")
+    # Terminal record should NOT be flagged.
+    _write_stale_queue(queue_path, "task-3", "completed")
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-fix",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        task_queue_path=str(queue_path),
+    )
+
+    stale_check = _check(report, "stale_task_queue")
+    assert stale_check["status"] == "warn"
+    assert stale_check["details"]["stale_count"] == 2
+    assert stale_check["details"]["stale_task_ids"] == ["task-1", "task-2"]
+
+
+def test_doctor_fix_marks_stale_lost(tmp_path):
+    """fix=True marks non-terminal queue records as lost."""
+    queue_path = tmp_path / "queue.jsonl"
+    _write_stale_queue(queue_path, "task-10", "accepted")
+    _write_stale_queue(queue_path, "task-20", "running")
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-fix",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        task_queue_path=str(queue_path),
+        fix=True,
+    )
+
+    stale_check = _check(report, "stale_task_queue")
+    assert stale_check["status"] == "pass"
+    assert stale_check["details"]["stale_count"] == 0
+    assert report["repairs"] != []
+    assert report["fixed"] >= 1
+
+
+def test_doctor_dry_run_does_not_mutate(tmp_path):
+    """fix=False (default) does not modify the task queue file."""
+    queue_path = tmp_path / "queue.jsonl"
+    _write_stale_queue(queue_path, "task-99", "accepted")
+
+    original_content = queue_path.read_text(encoding="utf-8")
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-fix",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        task_queue_path=str(queue_path),
+        fix=False,
+    )
+
+    # File must not have changed.
+    assert queue_path.read_text(encoding="utf-8") == original_content
+    # No repairs reported.
+    assert report["repairs"] == []
+    assert report["fixed"] == 0
+
+
+def test_doctor_reports_missing_memory_index(tmp_path):
+    """Doctor reports when memory index path does not exist."""
+    index_path = tmp_path / "missing" / "index.sqlite"
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-fix",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        memory_index_path=str(index_path),
+    )
+
+    index_check = _check(report, "memory_index")
+    assert index_check["status"] == "warn"
+    assert "not found" in index_check["message"].lower() or "missing" in index_check["message"].lower()
+
+
+def test_doctor_reports_invalid_plugin_descriptor(tmp_path):
+    """Doctor detects corrupt plugin descriptor JSON."""
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "broken.plugin.json").write_text("NOT VALID JSON {{", encoding="utf-8")
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-fix",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        plugin_dir=str(plugin_dir),
+    )
+
+    plugin_check = _check(report, "plugin_descriptors")
+    assert plugin_check["status"] == "warn"
+    assert plugin_check["details"]["invalid_count"] >= 1
+    assert "broken.plugin.json" in str(plugin_check["details"]["invalid_files"])
+
+
+def test_doctor_fix_returns_repair_count(tmp_path):
+    """Report includes repair count and list when fix=True."""
+    queue_path = tmp_path / "queue.jsonl"
+    _write_stale_queue(queue_path, "stale-a", "accepted")
+    _write_stale_queue(queue_path, "stale-b", "running")
+    _write_stale_queue(queue_path, "done-c", "completed")
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-fix",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        task_queue_path=str(queue_path),
+        fix=True,
+    )
+
+    assert "repairs" in report
+    assert "fixed" in report
+    assert isinstance(report["repairs"], list)
+    assert isinstance(report["fixed"], int)
+    assert report["fixed"] >= 1
