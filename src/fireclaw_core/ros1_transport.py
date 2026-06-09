@@ -129,17 +129,59 @@ class Ros1RuntimeModule:
         package, _, class_name = type_name.partition("/")
         if not package or not class_name:
             raise ValueError(f"ROS type must be in package/Class form: {type_name}")
-        module = import_module(f"{package}.{preferred_module}")
-        return getattr(module, class_name)
+        try:
+            module = import_module(f"{package}.{preferred_module}")
+        except ImportError as exc:
+            raise RuntimeError(
+                f"ROS type package '{package}' not installed. "
+                f"Install with: apt install ros-$(rosversion -d)-{package.replace('_', '-')}"
+            ) from exc
+        try:
+            return getattr(module, class_name)
+        except AttributeError as exc:
+            available = [n for n in dir(module) if not n.startswith("_")]
+            raise RuntimeError(
+                f"ROS type '{class_name}' not found in {package}.{preferred_module}. "
+                f"Available types: {available}"
+            ) from exc
 
 
 def _response_to_data(response: Any) -> Any:
+    """Convert a ROS response to a plain dict/list/scalar.
+
+    Prefers __slots__ (used by ROS messages) over __dict__.
+    """
     if isinstance(response, (dict, list, str, int, float, bool)) or response is None:
         return response
+    if isinstance(response, (tuple, list)):
+        return [_response_to_data(item) for item in response]
+    if hasattr(response, "__slots__"):
+        return {
+            slot: _response_to_data(getattr(response, slot))
+            for slot in response.__slots__
+        }
     if hasattr(response, "__dict__"):
         return {
-            key: value
+            key: _response_to_data(value)
             for key, value in vars(response).items()
             if not key.startswith("_")
         }
     return str(response)
+
+
+def validate_payload_against_type(payload: dict[str, Any], msg_class: Any) -> list[str]:
+    """Check payload fields against a ROS message type's slots.
+
+    Returns a list of error strings. Empty list means valid.
+    """
+    errors: list[str] = []
+    if not hasattr(msg_class, "__slots__"):
+        return errors  # Cannot validate without slots
+    valid_fields = set(msg_class.__slots__)
+    for key in payload:
+        if key not in valid_fields:
+            errors.append(
+                f"Unknown field '{key}' for {msg_class.__name__}. "
+                f"Valid fields: {sorted(valid_fields)}"
+            )
+    return errors

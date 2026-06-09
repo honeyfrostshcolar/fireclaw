@@ -155,3 +155,79 @@ def test_ros1_transport_cancels_active_action_when_requested():
     assert result["status"] == "cancelled"
     assert fake.action_client.cancelled is True
     assert fake.action_client.wait_count == 1
+
+
+def test_resolve_ros_type_gives_clear_error_on_missing_package():
+    import pytest
+    from fireclaw_core.ros1_transport import Ros1RuntimeModule
+
+    module = Ros1RuntimeModule(rospy=SimpleNamespace(), actionlib=SimpleNamespace())
+    with pytest.raises(RuntimeError, match="not installed"):
+        module._resolve_ros_type("nonexistent_pkg/Foo", preferred_module="msg")
+
+
+def test_resolve_ros_type_gives_clear_error_on_missing_class():
+    import pytest
+    from unittest.mock import patch
+    from fireclaw_core.ros1_transport import Ros1RuntimeModule
+
+    module = Ros1RuntimeModule(rospy=SimpleNamespace(), actionlib=SimpleNamespace())
+    fake_module = SimpleNamespace(String=type("String", (), {}))
+    with patch("fireclaw_core.ros1_transport.import_module", return_value=fake_module):
+        with pytest.raises(RuntimeError, match="not found"):
+            module._resolve_ros_type("std_msgs/NonexistentType", preferred_module="msg")
+
+
+def test_response_to_data_handles_slots():
+    from fireclaw_core.ros1_transport import _response_to_data
+
+    class SlottedMsg:
+        __slots__ = ("x", "y")
+        def __init__(self):
+            self.x = 1.0
+            self.y = 2.0
+
+    result = _response_to_data(SlottedMsg())
+    assert result == {"x": 1.0, "y": 2.0}
+
+
+def test_response_to_data_handles_nested_slots():
+    from fireclaw_core.ros1_transport import _response_to_data
+
+    class Inner:
+        __slots__ = ("value",)
+        def __init__(self):
+            self.value = 42
+
+    class Outer:
+        __slots__ = ("inner", "name")
+        def __init__(self):
+            self.inner = Inner()
+            self.name = "test"
+
+    result = _response_to_data(Outer())
+    assert result == {"inner": {"value": 42}, "name": "test"}
+
+
+def test_validate_payload_against_type():
+    from fireclaw_core.ros1_transport import validate_payload_against_type
+
+    class Twist:
+        __slots__ = ("linear", "angular")
+
+    errors = validate_payload_against_type({"linear": 1.0, "angular": 0.5}, Twist)
+    assert errors == []
+
+    errors = validate_payload_against_type({"linear": 1.0, "bogus": 0.5}, Twist)
+    assert len(errors) == 1
+    assert "bogus" in errors[0]
+
+
+def test_validate_payload_skips_when_no_slots():
+    from fireclaw_core.ros1_transport import validate_payload_against_type
+
+    class NoSlots:
+        pass
+
+    errors = validate_payload_against_type({"anything": 1}, NoSlots)
+    assert errors == []
