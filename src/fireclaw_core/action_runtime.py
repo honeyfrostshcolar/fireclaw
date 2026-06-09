@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Dict, Protocol
 from uuid import uuid4
 
 from fireclaw_core.robot import RobotActionResult, RobotAdapter
 
 
-ActionEventSink = Callable[[str, dict[str, Any]], None]
-ActionFeedbackSink = Callable[[dict[str, Any]], None]
+ActionEventSink = Callable[[str, Dict[str, Any]], None]
+ActionFeedbackSink = Callable[[Dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
 
 

@@ -303,23 +303,52 @@ class MissionGateway:
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "keep-alive")
                     self.end_headers()
-                    # Send historical mission events as initial batch
-                    try:
-                        history = gateway.get_mission_events(mission_id, limit=200)
-                        for evt in history.get("events", []):
-                            se = StreamEvent(
-                                event_type=evt.get("type", "unknown"),
-                                source="mission-history",
-                                mission_id=mission_id,
-                                payload=evt.get("payload", evt),
+                    # Cursor replay: parse Last-Event-ID header or after_sequence query param
+                    after_seq: int | None = None
+                    last_event_id = self.headers.get("Last-Event-ID")
+                    if last_event_id is not None:
+                        try:
+                            after_seq = int(last_event_id)
+                        except ValueError:
+                            after_seq = None
+                    else:
+                        qs = parse_qs(parsed.query)
+                        raw = qs.get("after_sequence", [None])[0]
+                        if raw is not None:
+                            try:
+                                after_seq = int(raw)
+                            except ValueError:
+                                after_seq = None
+                    # Track sequences already sent to avoid duplicates
+                    sent_sequences: set[int] = set()
+                    if after_seq is not None:
+                        # Replay recent mission-filtered events from EventBus
+                        for evt in gateway._event_bus.get_recent_events(after_sequence=after_seq):
+                            if evt.mission_id == mission_id or evt.mission_id is None:
+                                try:
+                                    self.wfile.write(evt.to_sse_format().encode("utf-8"))
+                                    self.wfile.flush()
+                                    sent_sequences.add(evt.sequence)
+                                except Exception:
+                                    return
+                    else:
+                        # Send historical mission events as initial batch (no cursor)
+                        try:
+                            history = gateway.get_mission_events(mission_id, limit=200)
+                            for evt in history.get("events", []):
+                                se = StreamEvent(
+                                    event_type=evt.get("type", "unknown"),
+                                    source="mission-history",
+                                    mission_id=mission_id,
+                                    payload=evt.get("payload", evt),
+                                )
+                                self.wfile.write(se.to_sse_format().encode("utf-8"))
+                            self.wfile.flush()
+                        except Exception:
+                            logging.getLogger(__name__).debug(
+                                "Failed to send historical events for mission %s",
+                                mission_id, exc_info=True,
                             )
-                            self.wfile.write(se.to_sse_format().encode("utf-8"))
-                        self.wfile.flush()
-                    except Exception:
-                        logging.getLogger(__name__).debug(
-                            "Failed to send historical events for mission %s",
-                            mission_id, exc_info=True,
-                        )
                     # Stream live events (filtered by mission_id)
                     event_queue: Queue[StreamEvent | None] = Queue()
                     def _on_event(event: StreamEvent) -> None:
@@ -332,6 +361,8 @@ class MissionGateway:
                                 event = event_queue.get(timeout=15.0)
                                 if event is None:
                                     break
+                                if event.sequence in sent_sequences:
+                                    continue
                                 self.wfile.write(event.to_sse_format().encode("utf-8"))
                                 self.wfile.flush()
                             except QueueEmpty:

@@ -52,8 +52,8 @@ class StreamEvent:
         }
 
     def to_sse_format(self) -> str:
-        """Format as SSE text/event-stream wire format: 'event: <type>\ndata: <json>\n\n'."""
-        return f"event: {self.event_type}\ndata: {json.dumps(self.to_dict(), ensure_ascii=False)}\n\n"
+        """Format as SSE text/event-stream wire format: 'event: <type>\nid: <sequence>\ndata: <json>\n\n'."""
+        return f"event: {self.event_type}\nid: {self.sequence}\ndata: {json.dumps(self.to_dict(), ensure_ascii=False)}\n\n"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StreamEvent:
@@ -114,12 +114,16 @@ class EventBus:
     Adapted from OpenClaw's emitAgentEvent/onAgentEvent pattern.
     Supports optional event_type filtering per subscriber.
     Auto-increments sequence numbers per published event.
+    Maintains a bounded ring buffer of recent events for cursor replay.
     """
+
+    _MAX_RECENT = 1000
 
     def __init__(self) -> None:
         self._subscriptions: dict[str, _Subscription] = {}
         self._lock = threading.Lock()
         self._sequence = 0
+        self._recent: list[StreamEvent] = []
 
     def subscribe(
         self,
@@ -147,6 +151,9 @@ class EventBus:
         with self._lock:
             self._sequence += 1
             event.sequence = self._sequence
+            self._recent.append(event)
+            if len(self._recent) > self._MAX_RECENT:
+                self._recent = self._recent[-self._MAX_RECENT:]
             subs = list(self._subscriptions.values())
 
         for sub in subs:
@@ -156,6 +163,22 @@ class EventBus:
                 sub.handler(event)
             except Exception:
                 _logger.exception("EventBus subscriber error")
+
+    def get_recent_events(
+        self,
+        after_sequence: int = 0,
+        *,
+        limit: int = 200,
+    ) -> list[StreamEvent]:
+        """Return events with sequence > after_sequence, up to *limit*.
+
+        Thread-safe snapshot for cursor replay in SSE handlers.
+        """
+        with self._lock:
+            candidates = [e for e in self._recent if e.sequence > after_sequence]
+            if len(candidates) > limit:
+                candidates = candidates[-limit:]
+            return list(candidates)
 
     @property
     def current_sequence(self) -> int:

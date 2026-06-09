@@ -283,9 +283,32 @@ class FireClawGateway:
     def cancel_task(self, task_id: str, operator: OperatorContext | None = None) -> dict[str, Any]:
         resolved_operator = operator or operator_from_payload(None)
         control_decision = ControlPolicy().evaluate(resolved_operator, "task.cancel")
-        with self._task_lock:
-            control = self._task_controls.get(task_id)
-        if control is None:
+        if control_decision.status == "allow":
+            with self._task_lock:
+                control = self._task_controls.get(task_id)
+                queue_record = self.task_queue.get(task_id)
+                if control is not None and queue_record is not None and queue_record.is_terminal:
+                    control = None
+                if control is not None:
+                    already_requested = control.cancel_event.is_set()
+                    control.cancel_event.set()
+                    if not already_requested:
+                        self.task_queue.update(
+                            task_id,
+                            status="cancel_requested",
+                        )
+                        self._append_event(
+                            task_id=task_id,
+                            session_id=control.session_id,
+                            type="task.cancel_requested",
+                            payload={"status": "cancel_requested", "task_id": task_id},
+                        )
+                    return {
+                        "status": "cancel_requested",
+                        "task_id": task_id,
+                        "session_id": control.session_id,
+                        "message": "已请求取消任务，当前 skill 返回后将停止后续步骤。",
+                    }
             trace = self.task_trace(task_id)
             if trace.get("result") is not None:
                 return {
@@ -293,6 +316,14 @@ class FireClawGateway:
                     "task_id": task_id,
                     "message": "任务已经结束，无法取消。",
                 }
+            return {
+                "status": "not_found",
+                "task_id": task_id,
+                "message": "没有找到正在运行的任务。",
+            }
+        with self._task_lock:
+            control = self._task_controls.get(task_id)
+        if control is None:
             return {
                 "status": "not_found",
                 "task_id": task_id,
@@ -317,25 +348,6 @@ class FireClawGateway:
                 "message": "操作员没有权限取消任务。",
                 "control": control_decision.to_dict(),
             }
-        already_requested = control.cancel_event.is_set()
-        control.cancel_event.set()
-        if not already_requested:
-            self.task_queue.update(
-                task_id,
-                status="cancel_requested",
-            )
-            self._append_event(
-                task_id=task_id,
-                session_id=control.session_id,
-                type="task.cancel_requested",
-                payload={"status": "cancel_requested", "task_id": task_id},
-            )
-        return {
-            "status": "cancel_requested",
-            "task_id": task_id,
-            "session_id": control.session_id,
-            "message": "已请求取消任务，当前 skill 返回后将停止后续步骤。",
-        }
 
     def emergency_stop(
         self,
@@ -711,23 +723,34 @@ class FireClawGateway:
                     },
                 )
 
-        final_type = "task.cancelled" if result.get("status") == "cancelled" else "task.completed"
-        self._append_event(
-            task_id=task_id,
-            session_id=session_id,
-            type=final_type,
-            payload={
-                "status": result.get("status"),
-                "message": result.get("message"),
-                "result": result,
-            },
-        )
-        self.task_queue.update(
-            task_id,
-            status="cancelled" if result.get("status") == "cancelled" else "completed",
-            ended_at=datetime.now(timezone.utc).isoformat(),
-            result=result,
-        )
+        with self._task_lock:
+            control = self._task_controls.get(task_id)
+            queue_record = self.task_queue.get(task_id)
+            was_cancel_requested = (
+                result.get("status") == "cancelled"
+                or (control is not None and control.cancel_event.is_set())
+                or (queue_record is not None and queue_record.status == "cancel_requested")
+                or self._has_event_type(task_id, "task.cancel_requested")
+            )
+            terminal_status = "cancelled" if was_cancel_requested else "completed"
+            final_type = "task.cancelled" if terminal_status == "cancelled" else "task.completed"
+            self._append_event(
+                task_id=task_id,
+                session_id=session_id,
+                type=final_type,
+                payload={
+                    "status": terminal_status if was_cancel_requested else result.get("status"),
+                    "message": result.get("message"),
+                    "result": result,
+                    "cancel_requested": was_cancel_requested,
+                },
+            )
+            self.task_queue.update(
+                task_id,
+                status=terminal_status,
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                result=result,
+            )
 
     def _task_result_from_events(self, events: list[dict[str, Any]]) -> dict[str, Any] | None:
         for event in reversed(events):
@@ -735,6 +758,8 @@ class FireClawGateway:
                 payload = event.get("payload") or {}
                 result = payload.get("result")
                 if isinstance(result, dict):
+                    if event.get("type") == "task.cancelled":
+                        return {**result, "status": "cancelled"}
                     return result
         return None
 
@@ -915,6 +940,34 @@ class FireClawGateway:
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "keep-alive")
                     self.end_headers()
+                    # Cursor replay: parse Last-Event-ID header or after_sequence query param
+                    after_seq: int | None = None
+                    last_event_id = self.headers.get("Last-Event-ID")
+                    if last_event_id is not None:
+                        try:
+                            after_seq = int(last_event_id)
+                        except ValueError:
+                            after_seq = None
+                    else:
+                        qs = parse_qs(parsed.query)
+                        raw = qs.get("after_sequence", [None])[0]
+                        if raw is not None:
+                            try:
+                                after_seq = int(raw)
+                            except ValueError:
+                                after_seq = None
+                    # Replay recent events after cursor
+                    if after_seq is not None:
+                        for evt in gateway._event_bus.get_recent_events(after_sequence=after_seq):
+                            try:
+                                self.wfile.write(evt.to_sse_format().encode("utf-8"))
+                                self.wfile.flush()
+                            except Exception:
+                                return
+                    # Track sequences already sent to avoid duplicates
+                    sent_sequences: set[int] = set()
+                    if after_seq is not None:
+                        sent_sequences = {e.sequence for e in gateway._event_bus.get_recent_events(after_sequence=after_seq)}
                     event_queue: Queue[StreamEvent | None] = Queue()
                     def _on_event(event: StreamEvent) -> None:
                         event_queue.put(event)
@@ -925,6 +978,8 @@ class FireClawGateway:
                                 event = event_queue.get(timeout=15.0)
                                 if event is None:
                                     break
+                                if event.sequence in sent_sequences:
+                                    continue
                                 self.wfile.write(event.to_sse_format().encode("utf-8"))
                                 self.wfile.flush()
                             except QueueEmpty:

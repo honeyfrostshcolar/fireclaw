@@ -64,9 +64,12 @@ class TestStreamEvent:
             source="gateway",
         )
         sse = event.to_sse_format()
-        assert sse.startswith("event: task.received\ndata: ")
+        lines = sse.split("\n")
+        assert lines[0] == "event: task.received"
+        assert lines[1] == "id: 0"
+        assert lines[2].startswith("data: ")
         assert sse.endswith("\n\n")
-        data = json.loads(sse.split("data: ", 1)[1].strip())
+        data = json.loads(lines[2].split("data: ", 1)[1])
         assert data["event_type"] == "task.received"
 
     def test_from_dict_roundtrip(self) -> None:

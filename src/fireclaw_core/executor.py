@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Dict
 
 from fireclaw_core.monitor import FailurePolicy
 from fireclaw_core.planner import Plan
@@ -9,7 +9,7 @@ from fireclaw_core.robot import RobotActionResult
 from fireclaw_core.skills import SkillRegistry
 
 
-ExecutionEventSink = Callable[[str, dict[str, Any]], None]
+ExecutionEventSink = Callable[[str, Dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
 
 

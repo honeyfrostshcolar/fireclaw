@@ -377,7 +377,52 @@ def test_gateway_cancel_updates_task_queue_state(tmp_path):
         gateway.stop()
 
     assert cancel["status"] == "cancel_requested"
-    assert record.status == "cancel_requested"
+    assert record.status in {"cancel_requested", "cancelled"}
+
+
+def test_gateway_result_recording_preserves_prior_cancel_request(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    task_id = "task-cancel-race"
+    session_id = "operator-a"
+    gateway.task_queue.create(
+        task_id=task_id,
+        session_id=session_id,
+        command="slow_policy",
+        created_at="2026-06-09T00:00:00+00:00",
+    )
+    gateway.task_queue.update(task_id, status="cancel_requested")
+    gateway._append_event(
+        task_id=task_id,
+        session_id=session_id,
+        type="task.cancel_requested",
+        payload={"status": "cancel_requested", "task_id": task_id},
+    )
+
+    gateway._record_result_events(
+        task_id,
+        session_id,
+        {"status": "succeeded", "message": "worker completed after cancellation"},
+    )
+
+    record = gateway.task_queue.get(task_id)
+    trace = gateway.task_trace(task_id)
+    event_types = [event["type"] for event in trace["events"]]
+
+    assert record.status == "cancelled"
+    assert trace["status"] == "cancelled"
+    assert "task.cancelled" in event_types
+    assert "task.completed" not in event_types
 
 
 def test_gateway_marks_stale_non_terminal_queue_records_lost_on_startup(tmp_path):

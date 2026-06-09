@@ -1258,12 +1258,15 @@ def test_sse_stream_uses_stream_event_schema():
     )
     sse_output = event.to_sse_format()
 
-    # Verify SSE format: event: <type>\ndata: <json>\n\n
-    assert sse_output.startswith("event: mission.submitted\ndata: ")
+    # Verify SSE format: event: <type>\nid: <sequence>\ndata: <json>\n\n
+    lines = sse_output.split("\n")
+    assert lines[0] == "event: mission.submitted"
+    assert lines[1] == "id: 0"
+    assert lines[2].startswith("data: ")
     assert sse_output.endswith("\n\n")
 
     # Parse the JSON data from SSE format
-    data_line = sse_output.split("\n")[1]
+    data_line = lines[2]
     assert data_line.startswith("data: ")
     event_data = json.loads(data_line[6:])
 

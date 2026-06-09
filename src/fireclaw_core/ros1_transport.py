@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Dict
 
 from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
 
 
-FeedbackSink = Callable[[dict[str, Any]], None]
+FeedbackSink = Callable[[Dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
 
 
