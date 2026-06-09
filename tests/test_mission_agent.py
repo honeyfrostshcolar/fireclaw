@@ -1082,3 +1082,94 @@ def test_mission_agent_replay_incident_not_configured():
     assert result["mission_id"] == "some-mission"
     assert result["status"] == "not_configured"
     assert result["timeline"] == []
+
+
+# --- Stale robot exclusion tests ---
+
+def test_mission_agent_check_fleet_presence_marks_stale_robots():
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+            RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765"),
+        ],
+        heartbeat_timeout_seconds=30.0,
+    )
+    # r2 was seen long ago -> stale
+    registry.update_presence("r2", "2000-01-01T00:00:00+00:00")
+    client = FakeSubagentClient()
+    # r2 doesn't respond to presence check
+    client.presence_results["r2"] = {
+        "robot_id": "r2",
+        "online": False,
+        "error": "Connection refused",
+    }
+    mission = MissionAgent(registry=registry, subagent_client=client)
+
+    results = mission.check_fleet_presence()
+
+    assert results["r1"]["online"] is True
+    assert results["r2"]["online"] is False
+    assert results["r2"]["stale"] is True
+
+
+def test_mission_agent_check_fleet_presence_marks_non_stale_offline():
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+            RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765"),
+        ],
+        heartbeat_timeout_seconds=30.0,
+    )
+    from datetime import datetime, timezone
+    # r2 was seen recently -> not stale, just offline this time
+    registry.update_presence("r2", datetime.now(timezone.utc).isoformat())
+    client = FakeSubagentClient()
+    client.presence_results["r2"] = {
+        "robot_id": "r2",
+        "online": False,
+        "error": "Connection refused",
+    }
+    mission = MissionAgent(registry=registry, subagent_client=client)
+
+    results = mission.check_fleet_presence()
+
+    assert results["r2"]["online"] is False
+    assert results["r2"]["stale"] is False
+
+
+def test_mission_agent_plan_and_submit_excludes_stale_robots():
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+            RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        ],
+        heartbeat_timeout_seconds=30.0,
+    )
+    # r2 is stale (seen long ago)
+    registry.update_presence("r2", "2000-01-01T00:00:00+00:00")
+    client = FakeSubagentClient()
+    client.presence_results["r2"] = {
+        "robot_id": "r2",
+        "online": False,
+        "error": "Connection refused",
+    }
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼和三楼搜索受困人员",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+
+    # r2 is stale -> excluded from enabled_entries -> not in available_robots
+    # Only r1 should be submitted
+    assert result["status"] == "planned"
+    assert len(result["subtask_results"]) == 1
+    assert result["subtask_results"][0]["robot_id"] == "r1"

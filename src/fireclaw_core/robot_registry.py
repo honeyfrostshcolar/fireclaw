@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,16 @@ class RobotRegistryEntry:
     enabled: bool = True
 
 
+_HEARTBEAT_DISABLED = -1.0
+
+
 class RobotRegistry:
-    def __init__(self, entries: list[RobotRegistryEntry]) -> None:
+    def __init__(
+        self,
+        entries: list[RobotRegistryEntry],
+        *,
+        heartbeat_timeout_seconds: float = _HEARTBEAT_DISABLED,
+    ) -> None:
         by_id: dict[str, RobotRegistryEntry] = {}
         for entry in entries:
             if entry.robot_id in by_id:
@@ -24,12 +33,45 @@ class RobotRegistry:
             by_id[entry.robot_id] = entry
         self._entries = by_id
         self._last_seen_at: dict[str, str] = {}
+        self._heartbeat_timeout_seconds = heartbeat_timeout_seconds
 
     def get(self, robot_id: str) -> RobotRegistryEntry | None:
         return self._entries.get(robot_id)
 
-    def enabled_entries(self) -> list[RobotRegistryEntry]:
-        return [entry for entry in self._entries.values() if entry.enabled]
+    @property
+    def _heartbeat_enabled(self) -> bool:
+        return self._heartbeat_timeout_seconds > 0
+
+    def is_stale(self, robot_id: str) -> bool:
+        """Return True if the robot's last heartbeat is missing or older than timeout.
+
+        Returns False when heartbeat_timeout_seconds is not set (disabled).
+        """
+        if not self._heartbeat_enabled:
+            return False
+        last_seen = self._last_seen_at.get(robot_id)
+        if last_seen is None:
+            return True
+        try:
+            seen_at = datetime.fromisoformat(last_seen)
+        except (ValueError, TypeError):
+            return True
+        if seen_at.tzinfo is None:
+            seen_at = seen_at.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - seen_at).total_seconds()
+        return elapsed > self._heartbeat_timeout_seconds
+
+    def enabled_entries(self, *, include_stale: bool = False) -> list[RobotRegistryEntry]:
+        entries = [entry for entry in self._entries.values() if entry.enabled]
+        if not include_stale and self._heartbeat_enabled:
+            entries = [entry for entry in entries if not self.is_stale(entry.robot_id)]
+        return entries
+
+    def stale_entries(self) -> list[RobotRegistryEntry]:
+        """Return enabled entries whose heartbeat has expired or was never seen."""
+        if not self._heartbeat_enabled:
+            return []
+        return [entry for entry in self._entries.values() if entry.enabled and self.is_stale(entry.robot_id)]
 
     def list_entries(self) -> list[RobotRegistryEntry]:
         return list(self._entries.values())

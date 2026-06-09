@@ -107,10 +107,16 @@ class MissionAgent:
             logger.warning("Failed to write mission memory record", exc_info=True)
 
     def check_fleet_presence(self) -> dict[str, dict[str, Any]]:
-        """Check presence of all enabled robots. Updates registry with last_seen_at."""
+        """Check presence of all enabled robots. Updates registry with last_seen_at.
+
+        For robots that don't respond, marks them as stale if their heartbeat
+        has expired.
+        """
         results = {}
-        for entry in self.registry.enabled_entries():
+        for entry in self.registry.enabled_entries(include_stale=True):
             result = self.subagent_client.check_presence(entry)
+            if not result["online"]:
+                result["stale"] = self.registry.is_stale(entry.robot_id)
             results[entry.robot_id] = result
             if result["online"]:
                 self.registry.update_presence(entry.robot_id, result["last_seen_at"])
