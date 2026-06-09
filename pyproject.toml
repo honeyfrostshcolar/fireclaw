@@ -23,4 +23,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "ros1_smoke: requires running ROS1 master (roscore + turtlesim + actionlib_tutorials)",
+]
 
