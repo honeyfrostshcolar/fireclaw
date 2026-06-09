@@ -280,7 +280,7 @@ def test_mission_agent_plan_and_submit_creates_subtasks_from_plan():
     ))
     mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
 
-    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1", use_scheduler=False)
 
     assert result["status"] == "planned"
     assert result["plan"]["intent"] == "search"
@@ -535,7 +535,7 @@ def test_mission_agent_plan_and_submit_skips_offline_robots():
     ))
     mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
 
-    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1", use_scheduler=False)
 
     # Should still submit since r1 is online, but r2 should be skipped
     assert result["status"] == "planned"
@@ -573,7 +573,7 @@ def test_mission_agent_records_outcome_on_plan_and_submit(tmp_path):
         mission_memory=memory_store,
     )
 
-    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1", use_scheduler=False)
 
     assert result["status"] == "planned"
     records = memory_store.list_records(mission_id=result["mission_id"], record_type="outcome")
@@ -1166,10 +1166,137 @@ def test_mission_agent_plan_and_submit_excludes_stale_robots():
     ))
     mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
 
-    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1")
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1", use_scheduler=False)
 
     # r2 is stale -> excluded from enabled_entries -> not in available_robots
     # Only r1 should be submitted
     assert result["status"] == "planned"
     assert len(result["subtask_results"]) == 1
     assert result["subtask_results"][0]["robot_id"] == "r1"
+
+
+# --- MissionScheduler integration tests ---
+
+def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
+    """Test that plan_and_submit(use_scheduler=True) delegates to MissionScheduler."""
+    from unittest.mock import patch, MagicMock
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_registry=mission_registry,
+    )
+
+    # Mock the MissionScheduler class to avoid actual polling
+    mock_scheduler = MagicMock()
+    mock_scheduler.schedule.return_value = {
+        "status": "succeeded",
+        "mission_id": "mission-1",
+        "group_results": [{"group_index": 0, "subtask_results": []}],
+        "failure_decisions": [],
+    }
+
+    with patch('fireclaw_core.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
+        result = mission.plan_and_submit("去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "succeeded"
+    assert result["plan"]["intent"] == "search"
+    assert "group_results" in result
+    assert "failure_decisions" in result
+    mock_scheduler.schedule.assert_called_once()
+
+
+def test_plan_and_submit_preserves_direct_iteration_when_scheduler_disabled():
+    """Test that plan_and_submit(use_scheduler=False) preserves direct iteration."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼和三楼搜索受困人员",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    assert "subtask_results" in result
+    assert len(result["subtask_results"]) == 2
+    assert result["subtask_results"][0]["robot_id"] == "r1"
+    assert result["subtask_results"][1]["robot_id"] == "r2"
+    assert len(client.calls) == 2
+
+
+def test_plan_and_submit_scheduler_result_includes_failure_decisions():
+    """Test that scheduler result includes failure_decisions and group_results."""
+    from unittest.mock import patch, MagicMock
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    # Mock scheduler to return failure decisions
+    mock_scheduler = MagicMock()
+    mock_scheduler.schedule.return_value = {
+        "status": "succeeded",
+        "mission_id": "mission-1",
+        "group_results": [
+            {
+                "group_index": 0,
+                "subtask_results": [{"status": "failed"}],
+                "terminal_states": [{"status": "failed", "robot_id": "r1"}],
+            }
+        ],
+        "failure_decisions": [
+            {"robot_id": "r1", "status": "failed", "decision": "retry"}
+        ],
+    }
+
+    with patch('fireclaw_core.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
+        result = mission.plan_and_submit("去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "succeeded"
+    assert "group_results" in result
+    assert isinstance(result["group_results"], list)
+    assert len(result["group_results"]) == 1
+    assert "failure_decisions" in result
+    assert isinstance(result["failure_decisions"], list)
+    assert len(result["failure_decisions"]) == 1
+    assert result["failure_decisions"][0]["decision"] == "retry"

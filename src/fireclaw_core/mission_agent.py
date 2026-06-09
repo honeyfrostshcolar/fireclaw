@@ -266,6 +266,7 @@ class MissionAgent:
         *,
         session_id: str | None = None,
         operator: dict[str, Any] | None = None,
+        use_scheduler: bool = True,
     ) -> dict[str, Any]:
         deny = self._authorize("mission.plan")
         if deny is not None:
@@ -298,6 +299,25 @@ class MissionAgent:
                 command=command,
                 created_at=created_at,
             )
+
+        if use_scheduler:
+            from fireclaw_core.mission_scheduler import MissionScheduler
+            scheduler = MissionScheduler(mission_agent=self)
+            scheduler_result = scheduler.schedule(
+                planning_result.plan,
+                mission_id=mission_id,
+                operator=operator,
+            )
+            return {
+                "status": scheduler_result.get("status", planning_result.status),
+                "message": planning_result.message,
+                "mission_id": mission_id,
+                "intent": planning_result.intent,
+                "plan": planning_result.plan.to_dict(),
+                "group_results": scheduler_result.get("group_results", []),
+                "failure_decisions": scheduler_result.get("failure_decisions", []),
+            }
+
         subtask_results: list[dict[str, Any]] = []
         for subtask in planning_result.plan.subtasks:
             # Skip offline robots
