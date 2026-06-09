@@ -252,3 +252,26 @@ def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node):
     result = transport.execute(endpoint, payload, config)
 
     assert result["status"] == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# Service smoke test – call turtlesim /clear via Ros1Transport
+# ---------------------------------------------------------------------------
+
+def test_ros1_service_call_clear(ros_master, turtlesim_node):
+    """Call turtlesim /clear service through Ros1Transport."""
+    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros1_transport import Ros1Transport
+
+    module = _make_real_ros_module()
+    transport = Ros1Transport(module=module)
+    endpoint = Ros1EndpointConfig(
+        interface="service",
+        name="/clear",
+        type="std_srvs/Empty",
+    )
+    config = Ros1TransportConfig(enabled=True)
+
+    result = transport.execute(endpoint, {}, config)
+
+    assert result["status"] == "succeeded"
