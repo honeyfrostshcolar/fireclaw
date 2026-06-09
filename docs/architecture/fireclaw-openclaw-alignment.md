@@ -291,11 +291,11 @@ operator cancel mission
 
 ## Current Build Status
 
-Latest verified state recorded on 2026-06-08:
+Latest verified state recorded on 2026-06-09:
 
-- branch: `master`, ahead of `origin/master` by ~20 commits;
-- latest commit: Phase 4 provider runtime v1 complete;
-- verification: `.venv/bin/python -m pytest -q` -> `422 passed`.
+- branch: `master`, ahead of `origin/master` by ~60 commits;
+- latest commit: Phase 9 ROS1 integration proof complete;
+- verification: `.venv/bin/python -m pytest -q --ignore=tests/test_ros1_smoke.py` -> `575 passed`.
 
 Untracked planning/config artifacts existed at that point:
 
@@ -330,7 +330,7 @@ Tasks:
 - richer skill metadata for firefighting operations;
 - typed skill input/output contracts;
 - adapter-specific capability declarations;
-- ROS1 smoke tests with a real ROS master;
+- ROS1 smoke tests with a real ROS master (**done** — Phase 9);
 - simulator/real-robot separation checks;
 - stronger local failure taxonomy.
 
@@ -370,7 +370,7 @@ Remaining:
 
 Goal: prepare for real robot or high-fidelity simulation deployments.
 
-Status: **Partial** (2026-06-08) — 4 of 6 tasks completed
+Status: **Partial** (2026-06-09) — 5 of 6 tasks completed
 
 Implemented:
 
@@ -379,10 +379,10 @@ Implemented:
 - Heartbeat expiration with stale robot exclusion (`heartbeat_timeout_seconds`, `is_stale()`);
 - Queue compaction (`compact(keep_terminal=N)`);
 - Log redaction for secrets (`redact_secrets()`, `redact_dict()`, `LLMTraceStore.redact_all()`).
+- Deployment config examples (`examples/ros1_configs/`).
 
 Remaining:
 
-- deployment config examples;
 - security review for robot control endpoints.
 
 ## Near-Term Engineering Priority
