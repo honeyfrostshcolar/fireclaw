@@ -370,12 +370,18 @@ Remaining:
 
 Goal: prepare for real robot or high-fidelity simulation deployments.
 
-Tasks:
+Status: **Partial** (2026-06-08) — 4 of 6 tasks completed
 
-- authentication and signed operator approvals;
-- robot pairing/enrollment;
-- heartbeat freshness and degraded network policy;
-- queue retention and log redaction;
+Implemented:
+
+- Gateway API token authentication (`api_token` in GatewayConfig, Bearer header check);
+- Robot enrollment with one-time pairing codes (`JsonlEnrollmentStore`);
+- Heartbeat expiration with stale robot exclusion (`heartbeat_timeout_seconds`, `is_stale()`);
+- Queue compaction (`compact(keep_terminal=N)`);
+- Log redaction for secrets (`redact_secrets()`, `redact_dict()`, `LLMTraceStore.redact_all()`).
+
+Remaining:
+
 - deployment config examples;
 - security review for robot control endpoints.
 
