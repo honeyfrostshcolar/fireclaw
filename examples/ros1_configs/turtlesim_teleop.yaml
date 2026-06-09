@@ -1,0 +1,22 @@
+# ROS1 turtlesim teleop example
+# Use with: rosrun turtlesim turtlesim_node
+robot_id: "turtle1"
+transport:
+  enabled: true
+  wait_for_server_seconds: 5.0
+  wait_for_result_seconds: 10.0
+endpoints:
+  navigate_to_floor:
+    interface: topic
+    name: "/turtle1/cmd_vel"
+    type: "geometry_msgs/Twist"
+    goal_template:
+      linear:
+        x: "${floor}"
+        y: 0.0
+        z: 0.0
+      angular:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+targets:
