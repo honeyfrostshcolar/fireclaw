@@ -37,6 +37,7 @@ class GatewayConfig:
     default_session_id: str = "default"
     max_active_execution_tasks: int = 1
     authorization_expiry_seconds: int = 300
+    api_token: str | None = None
 
 
 @dataclass
@@ -835,15 +836,36 @@ class FireClawGateway:
 
         class GatewayRequestHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
+                if not gateway._check_auth(self):
+                    return
                 gateway._handle_get(self)
 
             def do_POST(self) -> None:
+                if not gateway._check_auth(self):
+                    return
                 gateway._handle_post(self)
 
             def log_message(self, format: str, *args: object) -> None:
                 return
 
         return GatewayRequestHandler
+
+    def _check_auth(self, handler: BaseHTTPRequestHandler) -> bool:
+        if self.config.api_token is None:
+            return True
+        parsed = urlparse(handler.path)
+        if parsed.path == "/health":
+            return True
+        auth_header = handler.headers.get("Authorization", "")
+        if auth_header == f"Bearer {self.config.api_token}":
+            return True
+        body = json.dumps({"error": "Unauthorized"}, ensure_ascii=False).encode("utf-8")
+        handler.send_response(HTTPStatus.UNAUTHORIZED)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+        return False
 
     def _handle_get(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlparse(handler.path)

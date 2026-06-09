@@ -10,8 +10,9 @@ from fireclaw_core.robot_registry import RobotRegistryEntry
 
 
 class RobotSubagentClient:
-    def __init__(self, *, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, *, timeout_seconds: float = 5.0, api_token: str | None = None) -> None:
         self.timeout_seconds = timeout_seconds
+        self.api_token = api_token
 
     def get_state(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         return self._request_json("GET", entry.base_url, "/state")
@@ -95,11 +96,14 @@ class RobotSubagentClient:
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_token is not None:
+            headers["Authorization"] = f"Bearer {self.api_token}"
         req = request.Request(
             f"{base_url.rstrip('/')}{path}",
             data=data,
             method=method,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             with request.urlopen(req, timeout=self.timeout_seconds) as response:

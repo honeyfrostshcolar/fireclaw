@@ -192,3 +192,39 @@ def test_robot_subagent_client_get_events(tmp_path):
         assert len(limited) <= 3
     finally:
         gateway.stop()
+
+
+def test_robot_subagent_client_sends_auth_token_header(tmp_path):
+    token = "test-api-token"
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+            api_token=token,
+        )
+    )
+    gateway.start()
+    try:
+        entry = RobotRegistryEntry(robot_id="robot-1", base_url=gateway.base_url)
+        client_with_token = RobotSubagentClient(api_token=token)
+        client_without_token = RobotSubagentClient()
+
+        state = client_with_token.get_state(entry)
+        assert state["robot_state"]["robot_id"] == "robot-1"
+
+        submitted = client_with_token.submit_task(entry, command="去二楼救人", session_id="mission-1")
+        assert submitted["status"] == "accepted"
+        result = _wait_for_result(client_with_token, entry, submitted["task_id"])
+        assert result["status"] == "succeeded"
+
+        unauthorized_result = client_without_token.get_state(entry)
+        assert unauthorized_result.get("error") == "Unauthorized"
+        assert unauthorized_result.get("http_status") == 401
+    finally:
+        gateway.stop()

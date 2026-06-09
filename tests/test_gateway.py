@@ -11,6 +11,24 @@ from fireclaw_core.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.task_queue import JsonlTaskQueue
 
 
+def _json_request_with_headers(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> tuple[int, dict]:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    req_headers = {"Content-Type": "application/json"}
+    if headers:
+        req_headers.update(headers)
+    req = request.Request(
+        f"{base_url}{path}",
+        data=data,
+        method=method,
+        headers=req_headers,
+    )
+    try:
+        with request.urlopen(req, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
 def _json_request(base_url: str, method: str, path: str, payload: dict | None = None) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     req = request.Request(
@@ -955,3 +973,77 @@ def test_gateway_events_endpoint_respects_limit(tmp_path):
 
     assert "events" in limited
     assert len(limited["events"]) <= 3
+
+
+def test_gateway_returns_401_without_token_when_api_token_set(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            workspace_skills_dir=None,
+            api_token="secret-token",
+        )
+    )
+    gateway.start()
+    try:
+        status_code, body = _json_request_with_headers(gateway.base_url, "GET", "/state")
+        post_status, post_body = _json_request_with_headers(
+            gateway.base_url, "POST", "/tasks", {"command": "去二楼救人"}
+        )
+    finally:
+        gateway.stop()
+
+    assert status_code == 401
+    assert body == {"error": "Unauthorized"}
+    assert post_status == 401
+    assert post_body == {"error": "Unauthorized"}
+
+
+def test_gateway_returns_200_with_correct_token(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            workspace_skills_dir=None,
+            api_token="secret-token",
+        )
+    )
+    gateway.start()
+    try:
+        status_code, body = _json_request_with_headers(
+            gateway.base_url, "GET", "/state", headers={"Authorization": "Bearer secret-token"}
+        )
+    finally:
+        gateway.stop()
+
+    assert status_code == 200
+    assert body["robot_state"]["robot_id"] == "robot-gateway"
+
+
+def test_gateway_health_endpoint_bypasses_auth(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            workspace_skills_dir=None,
+            api_token="secret-token",
+        )
+    )
+    gateway.start()
+    try:
+        status_code, body = _json_request_with_headers(gateway.base_url, "GET", "/health")
+    finally:
+        gateway.stop()
+
+    assert status_code == 200
+    assert body["status"] == "ok"
+    assert body["robot_id"] == "robot-gateway"
