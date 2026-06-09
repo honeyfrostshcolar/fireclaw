@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 from fireclaw_core.approval_store import JsonlApprovalStore
 from fireclaw_core.control import ControlPolicy, OperatorContext
+from fireclaw_core.log_redaction import redact_dict
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlannerContext, MissionPlanningResult
 from fireclaw_core.mission_registry import JsonlMissionRegistry
@@ -260,6 +261,53 @@ class MissionAgent:
         )
         return aggregator.aggregate(mission_id, robot_id=robot_id, event_type=event_type, limit=limit)
 
+    def _retrieve_planner_context(
+        self,
+        command: str,
+        *,
+        max_memories: int = 5,
+        max_corrections: int = 3,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Retrieve relevant memories and operator corrections for planning context.
+
+        Returns (memories, corrections) with secrets redacted.
+        """
+        if self.mission_memory is None:
+            return [], []
+
+        memories: list[dict[str, Any]] = []
+        corrections: list[dict[str, Any]] = []
+
+        try:
+            # Search for relevant outcome records matching the command
+            outcome_records = self.mission_memory.search(
+                record_type="outcome",
+                keyword=command.strip()[:50] if command.strip() else None,
+                limit=max_memories,
+            )
+            memories = [
+                redact_dict(r.to_dict())
+                for r in outcome_records
+            ]
+        except Exception:
+            logger.warning("Failed to retrieve planner memories", exc_info=True)
+
+        try:
+            # Search for all recent operator corrections (not keyword-filtered,
+            # since corrections may reference different commands than the current one)
+            correction_records = self.mission_memory.search(
+                record_type="correction",
+                limit=max_corrections,
+            )
+            corrections = [
+                redact_dict(r.to_dict())
+                for r in correction_records
+            ]
+        except Exception:
+            logger.warning("Failed to retrieve operator corrections", exc_info=True)
+
+        return memories, corrections
+
     def plan_and_submit(
         self,
         command: str,
@@ -280,8 +328,14 @@ class MissionAgent:
         # Check fleet presence before planning
         presence = self.check_fleet_presence()
         online_robot_ids = {rid for rid, info in presence.items() if info.get("online")}
+
+        # Retrieve memories and corrections for planner context
+        memories, corrections = self._retrieve_planner_context(command)
+
         context = MissionPlannerContext(
             available_robots=[e for e in self.registry.enabled_entries() if e.robot_id in online_robot_ids],
+            retrieved_memories=memories,
+            operator_corrections=corrections,
         )
         planning_result = self.planner.plan(command, context=context)
         if planning_result.status != "planned" or planning_result.plan is None:
@@ -308,12 +362,34 @@ class MissionAgent:
                 mission_id=mission_id,
                 operator=operator,
             )
+            # Flatten group subtask results into a top-level list for API consistency
+            subtask_results: list[dict[str, Any]] = []
+            for group in scheduler_result.get("group_results", []):
+                subtask_results.extend(group.get("subtask_results", []))
+
+            robot_assignments = [
+                {"robot_id": r.get("robot_id", "unknown"), "task_id": r.get("task_id", "")}
+                for r in subtask_results
+                if r.get("status") not in ("skipped", "error")
+            ]
+            self._record_mission_memory(
+                mission_id,
+                "dispatch",
+                {
+                    "command": command,
+                    "subtask_count": len(subtask_results),
+                    "robot_assignments": robot_assignments,
+                    "status": scheduler_result.get("status", planning_result.status),
+                },
+            )
+
             return {
                 "status": scheduler_result.get("status", planning_result.status),
-                "message": planning_result.message,
+                "message": scheduler_result.get("message", planning_result.message),
                 "mission_id": mission_id,
                 "intent": planning_result.intent,
                 "plan": planning_result.plan.to_dict(),
+                "subtask_results": subtask_results,
                 "group_results": scheduler_result.get("group_results", []),
                 "failure_decisions": scheduler_result.get("failure_decisions", []),
             }

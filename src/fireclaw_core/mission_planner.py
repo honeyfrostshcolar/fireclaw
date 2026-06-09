@@ -60,6 +60,8 @@ class MissionPlanningResult:
 @dataclass(frozen=True)
 class MissionPlannerContext:
     available_robots: list[RobotRegistryEntry] = field(default_factory=list)
+    retrieved_memories: list[dict[str, Any]] = field(default_factory=list)
+    operator_corrections: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --- Protocol ---

@@ -76,6 +76,31 @@ def build_system_prompt(context: MissionPlannerContext) -> str:
         lines.append(f"- {robot.robot_id}: 能力=[{caps}], 区域={zone}, 状态={status}")
     if not context.available_robots:
         lines.append("- (无可用机器人)")
+
+    # Include retrieved memories if available
+    if context.retrieved_memories:
+        lines.append("")
+        lines.append("## 相关历史记录")
+        for i, mem in enumerate(context.retrieved_memories, 1):
+            content = mem.get("content", {})
+            mission_id = mem.get("mission_id", "")
+            command = content.get("command", "")
+            status = content.get("status", "")
+            lines.append(f"{i}. 任务 {mission_id}: \"{command}\" -> 状态: {status}")
+
+    # Include operator corrections if available
+    if context.operator_corrections:
+        lines.append("")
+        lines.append("## 操作员纠正（请参考以下历史纠正，避免重复错误）")
+        for i, corr in enumerate(context.operator_corrections, 1):
+            content = corr.get("content", {})
+            correction = content.get("correction", "")
+            ctx = content.get("context", "")
+            summary = f"{i}. 纠正: {correction}"
+            if ctx:
+                summary += f" (原因: {ctx})"
+            lines.append(summary)
+
     lines.append("")
     lines.append("## 输出要求")
     lines.append("请调用 create_mission_plan 工具，输出结构化的任务计划。")

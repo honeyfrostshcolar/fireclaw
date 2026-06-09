@@ -33,11 +33,18 @@ class Ros1Transport:
         module = self.module or Ros1RuntimeModule.load()
         if endpoint.interface == "topic":
             publisher = module.create_publisher(endpoint.name, endpoint.type)
-            publisher.publish(payload)
+            if isinstance(payload, dict) and hasattr(module, "resolve_message_class"):
+                msg_cls = module.resolve_message_class(endpoint.type)
+                publisher.publish(_build_ros_message(msg_cls, payload))
+            else:
+                publisher.publish(payload)
             return {"status": "succeeded", "response": None}
         if endpoint.interface == "service":
             service = module.create_service_proxy(endpoint.name, endpoint.type)
-            response = service(payload)
+            if payload:
+                response = service(payload)
+            else:
+                response = service()
             return {"status": "succeeded", "response": _response_to_data(response)}
         if endpoint.interface == "action":
             client = module.create_action_client(endpoint.name, endpoint.type)
@@ -45,7 +52,12 @@ class Ros1Transport:
             if not client.wait_for_server(timeout=module.duration(config.wait_for_server_seconds)):
                 self.active_action_client = None
                 return {"status": "failed", "error": f"ROS1 action server unavailable: {endpoint.name}"}
-            client.send_goal(payload, feedback_cb=self._handle_feedback)
+            if isinstance(payload, dict) and hasattr(module, "resolve_action_goal_class"):
+                goal_cls = module.resolve_action_goal_class(endpoint.type)
+                goal = _build_ros_message(goal_cls, payload)
+            else:
+                goal = payload
+            client.send_goal(goal, feedback_cb=self._handle_feedback)
             result_status = self._wait_for_action_result(
                 client=client,
                 endpoint=endpoint,
@@ -58,7 +70,7 @@ class Ros1Transport:
                 return {"status": "succeeded", "response": _response_to_data(client.get_result())}
             if result_status == "cancelled":
                 return {"status": "cancelled", "error": f"ROS1 action cancelled: {endpoint.name}"}
-            return {"status": "failed", "error": f"ROS1 action result timeout: {endpoint.name}"}
+            return {"status": "timeout", "error": f"ROS1 action result timeout: {endpoint.name}"}
         return {"status": "failed", "error": f"Unsupported ROS1 interface: {endpoint.interface}"}
 
     def cancel_active_action(self) -> bool:
@@ -125,6 +137,21 @@ class Ros1RuntimeModule:
     def duration(self, seconds: float) -> Any:
         return self.rospy.Duration(seconds)
 
+    def resolve_message_class(self, type_name: str) -> Any:
+        """Resolve a ROS message type name (e.g. ``geometry_msgs/Twist``) to its class."""
+        return self._resolve_ros_type(type_name, preferred_module="msg")
+
+    def resolve_action_goal_class(self, action_type_name: str) -> Any:
+        """Resolve a ROS action type name to its *Goal message class."""
+        action_cls = self._resolve_ros_type(action_type_name, preferred_module="msg")
+        goal_cls_name = action_cls.__name__.removesuffix("Action") + "Goal"
+        # Prefer the package-level msg module (e.g. actionlib_tutorials.msg)
+        # because action_cls.__module__ may point to a private submodule
+        # (e.g. actionlib_tutorials.msg._FibonacciAction) that doesn't export Goal.
+        package = action_type_name.partition("/")[0]
+        module = import_module(f"{package}.msg")
+        return getattr(module, goal_cls_name)
+
     def _resolve_ros_type(self, type_name: str, *, preferred_module: str) -> Any:
         package, _, class_name = type_name.partition("/")
         if not package or not class_name:
@@ -144,6 +171,34 @@ class Ros1RuntimeModule:
                 f"ROS type '{class_name}' not found in {package}.{preferred_module}. "
                 f"Available types: {available}"
             ) from exc
+
+
+def _build_ros_message(message_cls: Any, payload: Any) -> Any:
+    """Recursively build a ROS message object from a plain dict.
+
+    Uses ``__slots__`` and ``_slot_types`` (standard ROS message attributes)
+    to walk the message structure.  Nested dicts are converted to sub-message
+    objects when the corresponding default value on the message instance has
+    ``__slots__``.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    msg = message_cls()
+    slots = getattr(msg, "__slots__", ())
+    slot_types = getattr(msg, "_slot_types", ())
+    for field_name, field_type in zip(slots, slot_types):
+        if field_name not in payload:
+            continue
+        value = payload[field_name]
+        current = getattr(msg, field_name, None)
+        if isinstance(value, dict) and hasattr(current, "__slots__"):
+            setattr(msg, field_name, _build_ros_message(type(current), value))
+        else:
+            setattr(msg, field_name, value)
+    unknown = set(payload) - set(slots)
+    if unknown:
+        raise ValueError(f"Unknown ROS message fields for {message_cls.__name__}: {sorted(unknown)}")
+    return msg
 
 
 def _response_to_data(response: Any) -> Any:

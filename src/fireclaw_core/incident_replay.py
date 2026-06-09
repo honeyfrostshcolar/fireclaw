@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from fireclaw_core.event_ledger import EventLedger
 from fireclaw_core.mission_memory import MissionMemoryStore
 from fireclaw_core.mission_registry import JsonlMissionRegistry, TERMINAL_SUBTASK_STATUSES
 
@@ -15,9 +16,11 @@ class IncidentReplay:
         *,
         mission_registry: JsonlMissionRegistry,
         mission_memory: MissionMemoryStore | None = None,
+        event_ledger: EventLedger | None = None,
     ) -> None:
         self._registry = mission_registry
         self._memory = mission_memory
+        self._event_ledger = event_ledger
 
     def replay(self, mission_id: str) -> dict[str, Any]:
         """
@@ -41,19 +44,25 @@ class IncidentReplay:
             timeline.append({
                 "timestamp": subtask.created_at,
                 "event_type": "subtask.submitted",
+                "source": "mission-registry",
+                "mission_id": mission_id,
                 "robot_id": subtask.robot_id,
                 "task_id": subtask.task_id,
                 "status": None,
                 "content": None,
+                "payload": {},
             })
             if subtask.status != "submitted":
                 timeline.append({
                     "timestamp": subtask.updated_at,
                     "event_type": "subtask.status_changed",
+                    "source": "mission-registry",
+                    "mission_id": mission_id,
                     "robot_id": subtask.robot_id,
                     "task_id": subtask.task_id,
                     "status": subtask.status,
                     "content": None,
+                    "payload": {"status": subtask.status},
                 })
 
         # Add memory records if memory store configured
@@ -68,11 +77,33 @@ class IncidentReplay:
                 timeline.append({
                     "timestamp": record.created_at,
                     "event_type": record.record_type,
+                    "source": "memory",
+                    "mission_id": mission_id,
                     "robot_id": record.robot_id,
                     "task_id": record.subtask_id,
                     "status": None,
                     "content": record.content,
+                    "payload": {"content": record.content},
                 })
+
+        # Add action-level events from event ledger if configured
+        action_event_count = 0
+        if self._event_ledger is not None:
+            task_ids = {subtask.task_id for subtask in mission.subtasks}
+            for task_id in task_ids:
+                for event in self._event_ledger.events_for_task(task_id):
+                    action_event_count += 1
+                    timeline.append({
+                        "timestamp": event["timestamp"],
+                        "event_type": event["type"],
+                        "source": "event-ledger",
+                        "mission_id": mission_id,
+                        "robot_id": None,
+                        "task_id": event["task_id"],
+                        "status": None,
+                        "content": event.get("payload"),
+                        "payload": event.get("payload") or {},
+                    })
 
         # Sort timeline by timestamp
         timeline.sort(key=lambda event: event["timestamp"])
@@ -113,6 +144,7 @@ class IncidentReplay:
                 "cancelled_count": cancelled_count,
                 "memory_record_count": memory_record_count,
                 "correction_count": correction_count,
+                "action_event_count": action_event_count,
                 "duration_seconds": duration_seconds,
             },
         }

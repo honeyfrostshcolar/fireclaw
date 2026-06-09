@@ -311,6 +311,7 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
                 str(robot_registry_path),
                 "--mission-registry",
                 str(mission_registry_path),
+                "--no-use-scheduler",
             ],
             check=True,
             cwd=".",

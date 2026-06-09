@@ -1300,3 +1300,139 @@ def test_plan_and_submit_scheduler_result_includes_failure_decisions():
     assert isinstance(result["failure_decisions"], list)
     assert len(result["failure_decisions"]) == 1
     assert result["failure_decisions"][0]["decision"] == "retry"
+
+
+# --- Planner context with memories and corrections ---
+
+def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_path):
+    """plan_and_submit should retrieve memories and corrections and pass them in context."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+
+    # Pre-populate memory with an outcome and a correction
+    from fireclaw_core.mission_memory import MissionMemoryRecord
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    memory_store.append(MissionMemoryRecord(
+        record_id="mem-1", mission_id="old-mission", record_type="outcome",
+        content={"command": "去二楼搜索", "status": "succeeded", "subtask_count": 1},
+        created_at=now,
+    ))
+    memory_store.append(MissionMemoryRecord(
+        record_id="corr-1", mission_id="old-mission", record_type="correction",
+        content={"correction": "应先搜索三楼再搜索二楼", "context": "三楼有浓烟"},
+        created_at=now,
+    ))
+
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_memory=memory_store,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    # Verify the planner received context with memories and corrections
+    assert len(planner.calls) == 1
+    ctx = planner.calls[0][1]
+    assert ctx is not None
+    assert len(ctx.retrieved_memories) == 1
+    assert ctx.retrieved_memories[0]["content"]["command"] == "去二楼搜索"
+    assert len(ctx.operator_corrections) == 1
+    assert ctx.operator_corrections[0]["content"]["correction"] == "应先搜索三楼再搜索二楼"
+
+
+def test_plan_and_submit_empty_context_when_no_memory_configured():
+    """When mission_memory is None, context should have empty memories and corrections."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        # mission_memory is None
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    ctx = planner.calls[0][1]
+    assert ctx is not None
+    assert ctx.retrieved_memories == []
+    assert ctx.operator_corrections == []
+
+
+def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
+    """Secrets in memory content should be redacted before passing to planner."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+
+    from fireclaw_core.mission_memory import MissionMemoryRecord
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Record with a secret in the correction
+    memory_store.append(MissionMemoryRecord(
+        record_id="corr-1", mission_id="old-mission", record_type="correction",
+        content={"correction": "使用 api_key=sk-abc1234567890 进行认证", "context": "需要更新token=secretvalue1234"},
+        created_at=now,
+    ))
+
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_memory=memory_store,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    ctx = planner.calls[0][1]
+    assert ctx is not None
+    assert len(ctx.operator_corrections) == 1
+    # Secrets should be redacted
+    correction_text = ctx.operator_corrections[0]["content"]["correction"]
+    assert "sk-abc1234567890" not in correction_text
+    assert "***" in correction_text

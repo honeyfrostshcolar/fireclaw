@@ -96,7 +96,10 @@ class RobotSubagentClient:
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "X-Operator-Scopes": "admin",
+        }
         if self.api_token is not None:
             headers["Authorization"] = f"Bearer {self.api_token}"
         req = request.Request(

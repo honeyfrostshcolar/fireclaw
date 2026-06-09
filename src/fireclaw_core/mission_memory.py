@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from fireclaw_core.memory_index import SqliteMemoryIndex
 
 MEMORY_RECORD_TYPES = {"outcome", "observation", "correction", "lesson"}
 
@@ -23,8 +26,25 @@ class MissionMemoryRecord:
 
 
 class MissionMemoryStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        index_path: str | Path | None = None,
+    ) -> None:
         self.path = Path(path)
+        self._index: SqliteMemoryIndex | None = None
+        self._index_path: Path | None = Path(index_path) if index_path else None
+
+    @property
+    def index(self) -> SqliteMemoryIndex | None:
+        """Return the optional FTS index, lazily instantiated."""
+        if self._index is not None:
+            return self._index
+        if self._index_path is not None:
+            from fireclaw_core.memory_index import SqliteMemoryIndex
+            self._index = SqliteMemoryIndex(self._index_path)
+        return self._index
 
     def append(self, record: MissionMemoryRecord) -> None:
         if record.record_type not in MEMORY_RECORD_TYPES:
@@ -36,6 +56,8 @@ class MissionMemoryStore:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
             handle.write("\n")
+        if self.index is not None:
+            self.index.upsert(record.to_dict())
 
     def list_records(
         self,
@@ -61,6 +83,15 @@ class MissionMemoryStore:
     ) -> list[MissionMemoryRecord]:
         if limit <= 0:
             return []
+        # If an FTS index is configured, delegate to it.
+        if self.index is not None:
+            return self._search_via_index(
+                mission_id=mission_id,
+                record_type=record_type,
+                robot_id=robot_id,
+                keyword=keyword,
+                limit=limit,
+            )
         records = self._read_all()
         matches: list[MissionMemoryRecord] = []
         for record in records:
@@ -74,6 +105,45 @@ class MissionMemoryStore:
                 continue
             matches.append(record)
         return list(reversed(matches))[:limit]
+
+    def search_indexed(
+        self,
+        query: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        limit: int = 10,
+    ) -> list[MissionMemoryRecord]:
+        """Full-text search using the optional FTS index.
+
+        Raises ``RuntimeError`` if no index is configured.
+        """
+        if self.index is None:
+            raise RuntimeError(
+                "No memory index configured. Pass index_path to MissionMemoryStore."
+            )
+        raw = self.index.search(query, filters=filters, limit=limit)
+        return [_record_from_dict(r) for r in raw]
+
+    def _search_via_index(
+        self,
+        *,
+        mission_id: str | None = None,
+        record_type: str | None = None,
+        robot_id: str | None = None,
+        keyword: str | None = None,
+        limit: int = 10,
+    ) -> list[MissionMemoryRecord]:
+        """Translate the existing search() keyword API into index queries."""
+        filters: dict[str, Any] = {}
+        if mission_id is not None:
+            filters["mission_id"] = mission_id
+        if record_type is not None:
+            filters["record_type"] = record_type
+        if robot_id is not None:
+            filters["robot_id"] = robot_id
+        query = keyword if keyword else "*"
+        raw = self.index.search(query, filters=filters or None, limit=limit)
+        return [_record_from_dict(r) for r in raw]
 
     def summary(self, mission_id: str | None = None) -> dict[str, Any]:
         records = self._read_all()

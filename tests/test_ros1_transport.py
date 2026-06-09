@@ -157,6 +157,27 @@ def test_ros1_transport_cancels_active_action_when_requested():
     assert fake.action_client.wait_count == 1
 
 
+def test_ros1_transport_reports_action_result_timeout():
+    fake = FakeRos1Module()
+    fake.action_client = CancellableActionClient()
+    transport = Ros1Transport(module=fake)
+    endpoint = Ros1EndpointConfig(
+        interface="action",
+        name="/move_base",
+        type="move_base_msgs/MoveBaseAction",
+        cancel_supported=True,
+    )
+
+    result = transport.execute(
+        endpoint,
+        {"target_pose": {}},
+        Ros1TransportConfig(enabled=True, wait_for_server_seconds=0.1, wait_for_result_seconds=0.01),
+    )
+
+    assert result["status"] == "timeout"
+    assert "result timeout" in result["error"]
+
+
 def test_resolve_ros_type_gives_clear_error_on_missing_package():
     import pytest
     from fireclaw_core.ros1_transport import Ros1RuntimeModule
@@ -231,3 +252,79 @@ def test_validate_payload_skips_when_no_slots():
 
     errors = validate_payload_against_type({"anything": 1}, NoSlots)
     assert errors == []
+
+
+# --- Fake message classes for dict-to-message conversion tests ---
+
+class FakeVector3:
+    __slots__ = ("x", "y", "z")
+    _slot_types = ("float64", "float64", "float64")
+
+    def __init__(self):
+        self.x = 0.0
+        self.y = 0.0
+        self.z = 0.0
+
+
+class FakeTwist:
+    __slots__ = ("linear", "angular")
+    _slot_types = ("geometry_msgs/Vector3", "geometry_msgs/Vector3")
+
+    def __init__(self):
+        self.linear = FakeVector3()
+        self.angular = FakeVector3()
+
+
+class FakeFibonacciGoal:
+    __slots__ = ("order",)
+    _slot_types = ("int32",)
+
+    def __init__(self):
+        self.order = 0
+
+
+def test_ros1_transport_builds_topic_message_from_dict():
+    """Transport should convert dict payload to ROS message object before publishing."""
+    fake = FakeRos1Module()
+    # Stub out resolve_message_class so the test can verify conversion
+    fake.resolve_message_class = lambda type_name: FakeTwist
+    transport = Ros1Transport(module=fake)
+    endpoint = Ros1EndpointConfig(interface="topic", name="/cmd_vel", type="geometry_msgs/Twist")
+
+    result = transport.execute(
+        endpoint,
+        {"linear": {"x": 1.0}, "angular": {"z": 0.5}},
+        Ros1TransportConfig(enabled=True),
+    )
+
+    assert result["status"] == "succeeded"
+    # Publisher should have received a FakeTwist object, not a raw dict
+    published = fake.publisher.published
+    assert len(published) == 1
+    msg = published[0]
+    assert isinstance(msg, FakeTwist), f"Expected FakeTwist but got {type(msg).__name__}: {msg}"
+    assert msg.linear.x == 1.0
+    assert msg.angular.z == 0.5
+
+
+def test_ros1_transport_builds_action_goal_from_dict():
+    """Transport should convert dict payload to ROS action goal object before sending."""
+    fake = FakeRos1Module()
+    # Stub out resolve_action_goal_class so the test can verify conversion
+    fake.resolve_action_goal_class = lambda type_name: FakeFibonacciGoal
+    transport = Ros1Transport(module=fake)
+    endpoint = Ros1EndpointConfig(interface="action", name="/fibonacci", type="actionlib_tutorials/FibonacciAction")
+
+    result = transport.execute(
+        endpoint,
+        {"order": 5},
+        Ros1TransportConfig(enabled=True, wait_for_server_seconds=2.0, wait_for_result_seconds=3.0),
+    )
+
+    assert result["status"] == "succeeded"
+    # Action client should have received a FakeFibonacciGoal object, not a raw dict
+    goals = fake.action_client.goals
+    assert len(goals) == 1
+    goal = goals[0]
+    assert isinstance(goal, FakeFibonacciGoal), f"Expected FakeFibonacciGoal but got {type(goal).__name__}: {goal}"
+    assert goal.order == 5

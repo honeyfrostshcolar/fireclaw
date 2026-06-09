@@ -3,17 +3,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import threading
 import time
 from urllib import request
 from urllib.error import HTTPError
 
 from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.stream_events import StreamEvent
 from fireclaw_core.task_queue import JsonlTaskQueue
 
 
 def _json_request_with_headers(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> tuple[int, dict]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req_headers = {"Content-Type": "application/json"}
+    req_headers = {"Content-Type": "application/json", "X-Operator-Scopes": "admin"}
     if headers:
         req_headers.update(headers)
     req = request.Request(
@@ -29,21 +31,24 @@ def _json_request_with_headers(base_url: str, method: str, path: str, payload: d
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
-def _json_request(base_url: str, method: str, path: str, payload: dict | None = None) -> dict:
+def _json_request(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
+    req_headers = {"Content-Type": "application/json", "X-Operator-Scopes": "admin"}
+    if headers:
+        req_headers.update(headers)
     req = request.Request(
         f"{base_url}{path}",
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers=req_headers,
     )
     with request.urlopen(req, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _json_error_request(base_url: str, method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+def _json_error_request(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> tuple[int, dict]:
     try:
-        return 200, _json_request(base_url, method, path, payload)
+        return 200, _json_request(base_url, method, path, payload, headers=headers)
     except HTTPError as exc:
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
@@ -1047,3 +1052,128 @@ def test_gateway_health_endpoint_bypasses_auth(tmp_path):
     assert status_code == 200
     assert body["status"] == "ok"
     assert body["robot_id"] == "robot-gateway"
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /events/stream (SSE)
+# ---------------------------------------------------------------------------
+
+
+class TestGatewaySSEStream:
+    def test_sse_endpoint_returns_event_stream_content_type(self, tmp_path):
+        gateway = FireClawGateway(
+            GatewayConfig(
+                host="127.0.0.1",
+                port=0,
+                adapter="simulator",
+                robot_id="robot-gateway",
+                memory_path=str(tmp_path / "memory.jsonl"),
+                event_path=str(tmp_path / "events.jsonl"),
+                workspace_skills_dir=None,
+            )
+        )
+        gateway.start()
+        try:
+            req = request.Request(
+                f"{gateway.base_url}/events/stream",
+                method="GET",
+                headers={"X-Operator-Scopes": "state.read"},
+            )
+            # Use a short timeout — SSE will not close on its own
+            response = request.urlopen(req, timeout=2)
+            try:
+                assert response.status == 200
+                assert "text/event-stream" in response.headers.get("Content-Type", "")
+                assert response.headers.get("Cache-Control") == "no-cache"
+                assert response.headers.get("Connection") == "keep-alive"
+            finally:
+                response.close()
+        except Exception:
+            # Timeout is expected for a long-lived SSE connection
+            pass
+        finally:
+            gateway.stop()
+
+    def test_sse_endpoint_requires_read_scope(self, tmp_path):
+        gateway = FireClawGateway(
+            GatewayConfig(
+                host="127.0.0.1",
+                port=0,
+                adapter="simulator",
+                robot_id="robot-gateway",
+                memory_path=str(tmp_path / "memory.jsonl"),
+                workspace_skills_dir=None,
+            )
+        )
+        gateway.start()
+        try:
+            req = request.Request(
+                f"{gateway.base_url}/events/stream",
+                method="GET",
+                headers={"X-Operator-Scopes": "mission.approve"},
+            )
+            try:
+                with request.urlopen(req, timeout=2):
+                    pass
+                assert False, "Expected HTTPError 403"
+            except HTTPError as exc:
+                assert exc.code == 403
+                body = json.loads(exc.read().decode("utf-8"))
+                assert "Missing required scope" in body["message"]
+        finally:
+            gateway.stop()
+
+    def test_sse_receives_task_lifecycle_events(self, tmp_path):
+        """Subscribe to EventBus before submitting a task and verify lifecycle events."""
+        gateway = FireClawGateway(
+            GatewayConfig(
+                host="127.0.0.1",
+                port=0,
+                adapter="simulator",
+                robot_id="robot-gateway",
+                memory_path=str(tmp_path / "memory.jsonl"),
+                event_path=str(tmp_path / "events.jsonl"),
+                workspace_skills_dir=None,
+            )
+        )
+        collected: list[StreamEvent] = []
+
+        def _capture(event: StreamEvent) -> None:
+            collected.append(event)
+
+        gateway.start()
+        try:
+            token = gateway._event_bus.subscribe(_capture)
+            accepted = _json_request(
+                gateway.base_url,
+                "POST",
+                "/tasks",
+                {"command": "去二楼救人", "session_id": "operator-a"},
+            )
+            result = _wait_for_task_result(gateway, accepted["task_id"])
+        finally:
+            gateway._event_bus.unsubscribe(token)
+            gateway.stop()
+
+        assert result["status"] == "succeeded"
+        event_types = [e.event_type for e in collected]
+        # Must include the key lifecycle events
+        assert "task.received" in event_types, f"Expected task.received in {event_types}"
+        assert "task.running" in event_types, f"Expected task.running in {event_types}"
+        assert "task.completed" in event_types, f"Expected task.completed in {event_types}"
+        # task.running should come after task.received
+        received_idx = event_types.index("task.received")
+        running_idx = event_types.index("task.running")
+        completed_idx = event_types.index("task.completed")
+        assert received_idx < running_idx < completed_idx
+        # All lifecycle events should be for the accepted task
+        lifecycle_events = [
+            e for e in collected
+            if e.event_type in ("task.received", "task.running", "task.completed")
+        ]
+        for event in lifecycle_events:
+            assert event.task_id == accepted["task_id"]
+        # task.running is published via _publish_stream_event and sets robot_id
+        running_event = collected[running_idx]
+        assert running_event.robot_id == "robot-gateway"
+        assert running_event.source == "robot-gateway"

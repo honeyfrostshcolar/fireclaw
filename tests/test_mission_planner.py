@@ -126,3 +126,25 @@ def test_mission_planner_no_robots_at_all():
     result = planner.plan("去二楼搜索受困人员", context=robots)
 
     assert result.status == "clarify"
+
+
+def test_mission_planner_context_has_memory_fields():
+    """MissionPlannerContext should support retrieved_memories and operator_corrections."""
+    ctx = MissionPlannerContext(
+        available_robots=[],
+        retrieved_memories=[{"mission_id": "m1", "content": {"command": "test"}}],
+        operator_corrections=[{"content": {"correction": "fix this"}}],
+    )
+
+    assert len(ctx.retrieved_memories) == 1
+    assert ctx.retrieved_memories[0]["mission_id"] == "m1"
+    assert len(ctx.operator_corrections) == 1
+    assert ctx.operator_corrections[0]["content"]["correction"] == "fix this"
+
+
+def test_mission_planner_context_defaults_to_empty_memory_fields():
+    """MissionPlannerContext should default to empty lists for memory fields."""
+    ctx = MissionPlannerContext()
+
+    assert ctx.retrieved_memories == []
+    assert ctx.operator_corrections == []

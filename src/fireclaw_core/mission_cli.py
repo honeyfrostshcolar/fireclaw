@@ -49,6 +49,10 @@ def main() -> int:
     plan.add_argument("--model", default=None, help="LLM model id (required when --planner=llm).")
     plan.add_argument("--catalog", default=None, help="Path to model catalog JSON file.")
     plan.add_argument("--llm-trace-path", default=None, help="Path to LLM trace JSONL file.")
+    plan.add_argument("--use-scheduler", dest="use_scheduler", action="store_true", default=True,
+                       help="Use MissionScheduler for execution group ordering (default).")
+    plan.add_argument("--no-use-scheduler", dest="use_scheduler", action="store_false",
+                       help="Disable MissionScheduler, submit subtasks directly.")
     _add_shared_paths(plan)
 
     events = subparsers.add_parser("events", help="Aggregate and list mission events from robot subagents.")
@@ -127,7 +131,7 @@ def main() -> int:
         return 0 if result.get("status") in CANCEL_SUCCESS_STATUSES else 1
     if args.command_name == "plan-mission":
         agent = _build_mission_agent_with_planner(args)
-        result = agent.plan_and_submit(args.command, session_id=args.session_id, operator=_mission_operator())
+        result = agent.plan_and_submit(args.command, session_id=args.session_id, operator=_mission_operator(), use_scheduler=args.use_scheduler)
         _print_json(result)
         return 0 if result.get("status") == "planned" else 1
     if args.command_name == "events":

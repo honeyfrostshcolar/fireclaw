@@ -254,3 +254,140 @@ def test_manifest_rejects_invalid_risk_level(tmp_path):
 
     with pytest.raises(ValueError, match="risk_level"):
         load_subprocess_skill_from_manifest(manifest_path)
+
+
+# ---------------------------------------------------------------------------
+# descriptor_from_skill_manifest conversion tests
+# ---------------------------------------------------------------------------
+
+from fireclaw_core.plugin_descriptor import (
+    FireClawPluginDescriptor,
+    descriptor_from_skill_manifest,
+)
+from fireclaw_core.skills import Skill
+
+
+def _make_skill(**overrides):
+    """Return a minimal valid Skill, optionally overriding fields."""
+    defaults = dict(
+        name="navigate_to_floor",
+        description="Navigate robot to a target floor.",
+        handler=lambda inputs: None,
+        domain="navigation",
+        preconditions=["robot_online", "floor_reachable"],
+        required_sensors=[],
+        risk_level="low",
+    )
+    defaults.update(overrides)
+    return Skill(**defaults)
+
+
+class TestDescriptorFromSkillManifest:
+    def test_basic_conversion(self):
+        skill = _make_skill()
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert isinstance(desc, FireClawPluginDescriptor)
+        assert desc.plugin_id == "navigate_to_floor"
+        assert "navigate_to_floor" in desc.capabilities
+        assert "navigation" in desc.capabilities
+        assert desc.risk_level == "low"
+
+    def test_capabilities_include_name_and_domain(self):
+        skill = _make_skill(name="search_for_victims", domain="perception")
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert "search_for_victims" in desc.capabilities
+        assert "perception" in desc.capabilities
+
+    def test_preconditions_from_skill(self):
+        skill = _make_skill(preconditions=["robot_online", "camera_available"])
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.preconditions == ("robot_online", "camera_available")
+
+    def test_fallback_precondition_when_empty(self):
+        skill = _make_skill(preconditions=[])
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.preconditions == ("skill_available",)
+
+    def test_required_sensors_forwarded(self):
+        skill = _make_skill(required_sensors=["rgb_camera", "thermal_camera"])
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.required_sensors == ("rgb_camera", "thermal_camera")
+
+    def test_adapter_bindings_from_sensors(self):
+        skill = _make_skill(required_sensors=["rgb_camera", "thermal_camera"])
+        desc = descriptor_from_skill_manifest(skill)
+
+        # Sensors are sorted and deduplicated
+        assert "rgb_camera" in desc.adapter_bindings
+        assert "thermal_camera" in desc.adapter_bindings
+
+    def test_adapter_bindings_from_domain_when_no_sensors(self):
+        skill = _make_skill(required_sensors=[], domain="safety")
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.adapter_bindings == ("safety",)
+
+    def test_approval_scope_maps_risk_low(self):
+        skill = _make_skill(risk_level="low")
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.approval_scope is None
+
+    def test_approval_scope_maps_risk_medium(self):
+        skill = _make_skill(risk_level="medium")
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.approval_scope == "operator_confirm"
+
+    def test_approval_scope_maps_risk_high(self):
+        skill = _make_skill(risk_level="high")
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.approval_scope == "safety_officer"
+
+    def test_approval_scope_maps_risk_critical(self):
+        skill = _make_skill(risk_level="critical")
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.approval_scope == "emergency_override"
+
+    def test_provider_hooks_default_empty(self):
+        skill = _make_skill()
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.provider_hooks == ()
+
+    def test_memory_hooks_default_empty(self):
+        skill = _make_skill()
+        desc = descriptor_from_skill_manifest(skill)
+
+        assert desc.memory_hooks == ()
+
+    def test_converted_descriptor_is_frozen(self):
+        skill = _make_skill()
+        desc = descriptor_from_skill_manifest(skill)
+
+        with pytest.raises(AttributeError):
+            desc.plugin_id = "changed"  # type: ignore[misc]
+
+    def test_conversion_with_real_skill_registry_entries(self):
+        """Smoke-test conversion against every default skill in the registry."""
+        from unittest.mock import MagicMock
+
+        from fireclaw_core.skills import create_default_skill_registry
+
+        robot = MagicMock()
+        robot.dry_run = True
+        registry = create_default_skill_registry(robot)
+
+        for skill_name in registry.names():
+            skill = registry.get(skill_name)
+            assert skill is not None
+            desc = descriptor_from_skill_manifest(skill)
+            assert desc.plugin_id == skill_name
+            assert desc.risk_level == skill.risk_level

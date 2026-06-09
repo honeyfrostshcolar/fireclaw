@@ -1,0 +1,144 @@
+# FireClaw Deployment Checklist
+
+Use this checklist before deploying FireClaw to a real robot or fleet environment.
+
+## 1. API Token Configuration
+
+- [ ] Generate a unique API token per robot gateway
+- [ ] Set `GatewayConfig.api_token` in robot config (not hardcoded in source)
+- [ ] Set mission gateway token separately from robot gateway token
+- [ ] Verify health endpoint (`GET /health`) bypasses auth (intended)
+- [ ] Verify all other endpoints require valid Bearer token
+
+```python
+from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+config = GatewayConfig(adapter="dry-run", api_token="your-secret-token")
+```
+
+## 2. Operator Scopes
+
+- [ ] Assign minimum required scopes to each operator role:
+  - `observer`: `state.read` (read-only fleet/mission state)
+  - `operator`: `state.read`, `task.submit`, `task.cancel`
+  - `supervisor`: `state.read`, `task.submit`, `task.cancel`, `approvals.decide`
+  - `admin`: `admin` (bypasses all scope checks)
+- [ ] Verify `X-Operator-Scopes` header is sent by operator clients
+- [ ] Confirm default-deny blocks unclassified endpoints
+- [ ] Review scope matrix: `docs/security/gateway-endpoint-security-review.md`
+
+Scope constants defined in `src/fireclaw_core/method_scopes.py`:
+- `ADMIN_SCOPE = "admin"`
+- `READ_SCOPE = "state.read"`
+- `WRITE_SCOPE = "task.submit"`
+- `APPROVALS_SCOPE = "approvals.decide"`
+- `PAIRING_SCOPE = "pairing.manage"`
+- `EMERGENCY_SCOPE = "emergency.stop"`
+
+## 3. Network Binding
+
+- [ ] Bind robot gateway to `0.0.0.0` only if remote access needed; prefer `127.0.0.1` for local-only
+- [ ] Bind mission gateway to operator network interface only
+- [ ] Use firewall rules to restrict gateway ports
+- [ ] Do not expose gateway ports to public internet without TLS proxy
+
+```python
+GatewayConfig(adapter="ros1", host="127.0.0.1", port=18080)
+MissionGatewayConfig(host="10.0.1.100", port=18090)
+```
+
+## 4. ROS Mode Separation
+
+- [ ] Verify adapter mode matches deployment target:
+  - `dry-run`: no ROS dependency, logs actions only
+  - `simulator`: connects to ROS simulator (Gazebo, etc.)
+  - `ros1`: connects to real ROS1 master
+- [ ] Never run `dry-run` mode on a robot expecting real actuation
+- [ ] Never run `ros1` mode without a running roscore
+- [ ] Verify `ros1_transport.py` `enabled` flag in config matches mode
+
+Adapter config example:
+```yaml
+# examples/ros1_configs/fireclaw_robot.yaml
+robot_id: "firebot_01"
+transport:
+  enabled: true  # MUST be true for ros1 mode
+  wait_for_server_seconds: 10.0
+  wait_for_result_seconds: 60.0
+```
+
+## 5. ROS Smoke Test Command
+
+Run smoke tests to verify ROS1 integration before deployment:
+
+```bash
+# Requires: roscore, turtlesim, actionlib_tutorials
+# Start roscore + turtlesim + fibonacci_server first, then:
+.venv/bin/python -m pytest -m ros1_smoke -v
+
+# Specific test:
+.venv/bin/python -m pytest -m ros1_smoke tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -v
+```
+
+Expected: all 6 tests pass (infrastructure, topic, service, action, cancel, timeout).
+
+## 6. Log Redaction
+
+- [ ] Verify `redact_secrets()` is applied to all log outputs
+- [ ] Patterns redacted: `sk-*`, `Bearer *`, `api_key=*`, `password=*`, `token=*`
+- [ ] LLM trace store uses `redact_all()` before persisting
+- [ ] No raw API keys in gateway request/response logs
+
+```python
+from fireclaw_core.log_redaction import redact_secrets, redact_dict
+safe_text = redact_secrets(raw_log_text)
+safe_data = redact_dict(raw_dict_data)
+```
+
+## 7. Queue Compaction / Retention
+
+- [ ] Configure task queue compaction: `JsonlTaskQueue.compact(keep_terminal=100)`
+- [ ] Schedule periodic compaction (e.g., every 6 hours or per N tasks)
+- [ ] Verify terminal records (succeeded/failed/cancelled) are retained per policy
+- [ ] Verify non-terminal records (queued/running) are always kept
+- [ ] LLM trace retention: rotate or compact trace files periodically
+
+## 8. Memory Index Storage
+
+- [ ] Choose index storage path with adequate disk space
+- [ ] SQLite FTS index is created on first use; no migration needed
+- [ ] If no index path configured, system falls back to JSONL keyword search
+- [ ] Index rebuild: `SqliteMemoryIndex.rebuild(records)` from JSONL store
+- [ ] Verify index path is writable by gateway process
+
+```python
+from fireclaw_core.memory_index import SqliteMemoryIndex
+index = SqliteMemoryIndex("/var/lib/fireclaw/memory_index.db")
+```
+
+## 9. Emergency Stop Verification
+
+- [ ] Test emergency stop endpoint: `POST /tasks/{id}/emergency-stop`
+- [ ] Verify emergency stop propagates to ROS layer (if using ros1 adapter)
+- [ ] Verify emergency stop bypasses normal authorization (EMERGENCY_SCOPE)
+- [ ] Verify robot enters safe state (stop motion, hold position)
+- [ ] Log emergency stop events with full context (reason, timestamp, robot state)
+- [ ] Test emergency stop from both robot-local gateway and mission gateway
+
+```bash
+# Test emergency stop via curl
+curl -X POST http://localhost:18080/tasks/{task_id}/emergency-stop \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Operator-Scopes: emergency.stop" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "pre-deployment safety test"}'
+```
+
+## 10. Pre-Deployment Verification
+
+- [ ] Full test suite passes: `.venv/bin/python -m pytest -q` (expect 688+ passed)
+- [ ] ROS smoke tests pass (if deploying with ROS): `.venv/bin/python -m pytest -m ros1_smoke -v`
+- [ ] Gateway starts without errors on target machine
+- [ ] Robot adapter connects to ROS master (if applicable)
+- [ ] Mission gateway reachable from operator console
+- [ ] SSE event stream delivers real-time events: `curl -N http://localhost:18080/events/stream`
+- [ ] Fleet doctor reports no critical issues: `GET /fleet/doctor`

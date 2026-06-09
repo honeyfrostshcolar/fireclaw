@@ -27,6 +27,38 @@ pip install -e .
 
 FireClaw uses YAML config files for ROS1 adapter configuration.
 
+### Dict Payload Conversion
+
+`Ros1Transport.execute()` accepts dict payloads and automatically converts them to ROS message objects. This means you do **not** need to import ROS message classes (e.g. `geometry_msgs.msg.Twist`) or construct messages manually — just pass a plain dict whose keys match the ROS message field names.
+
+**Topic example (Twist):**
+```python
+result = transport.execute(
+    endpoint,
+    {"linear": {"x": 2.0, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.0}},
+    config,
+)
+```
+
+**Action example (FibonacciGoal):**
+```python
+result = transport.execute(
+    endpoint,
+    {"order": 5},
+    config,
+)
+```
+
+**When to use dicts vs real message objects:**
+
+| Scenario | Recommended | Reason |
+|----------|-------------|--------|
+| Normal skill/agent code | Dict payload | Simpler, no ROS imports needed |
+| Cancellation workflows | Real message + direct client | `transport.execute()` is blocking; cancellation needs client reference |
+| Custom feedback handling | Dict payload | Feedback sink handles conversion automatically |
+
+The transport checks for `module.resolve_message_class()` and `module.resolve_action_goal_class()` to convert dicts. If the module does not support resolution, the payload is passed through as-is (useful for pre-constructed ROS message objects).
+
 ### Config Structure
 
 ```yaml

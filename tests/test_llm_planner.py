@@ -273,3 +273,90 @@ def test_llm_planner_records_trace():
     assert trace.model == "gpt-4"
     assert trace.status == "success"
     assert trace.tool_calls is not None
+
+
+# --- Test: system prompt includes memories and corrections ---
+
+
+def test_build_system_prompt_includes_corrections():
+    """System prompt should include operator corrections."""
+    ctx = MissionPlannerContext(
+        available_robots=[
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        ],
+        operator_corrections=[
+            {
+                "content": {
+                    "correction": "应先搜索三楼再搜索二楼",
+                    "context": "三楼有浓烟，优先级更高",
+                },
+            },
+        ],
+    )
+
+    prompt = build_system_prompt(ctx)
+
+    assert "操作员纠正" in prompt
+    assert "应先搜索三楼再搜索二楼" in prompt
+    assert "三楼有浓烟，优先级更高" in prompt
+
+
+def test_build_system_prompt_includes_memories():
+    """System prompt should include retrieved memories."""
+    ctx = MissionPlannerContext(
+        available_robots=[
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        ],
+        retrieved_memories=[
+            {
+                "mission_id": "old-mission",
+                "content": {
+                    "command": "去二楼搜索",
+                    "status": "succeeded",
+                },
+            },
+        ],
+    )
+
+    prompt = build_system_prompt(ctx)
+
+    assert "相关历史记录" in prompt
+    assert "old-mission" in prompt
+    assert "去二楼搜索" in prompt
+    assert "succeeded" in prompt
+
+
+def test_build_system_prompt_omits_empty_sections():
+    """When no memories or corrections, those sections should not appear."""
+    ctx = MissionPlannerContext(
+        available_robots=[
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        ],
+    )
+
+    prompt = build_system_prompt(ctx)
+
+    assert "相关历史记录" not in prompt
+    assert "操作员纠正" not in prompt
+
+
+def test_build_system_prompt_includes_both_memories_and_corrections():
+    """System prompt should include both memories and corrections when present."""
+    ctx = MissionPlannerContext(
+        available_robots=[
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        ],
+        retrieved_memories=[
+            {"mission_id": "m1", "content": {"command": "巡逻", "status": "succeeded"}},
+        ],
+        operator_corrections=[
+            {"content": {"correction": "不要在一楼停留过久", "context": "一楼温度过高"}},
+        ],
+    )
+
+    prompt = build_system_prompt(ctx)
+
+    assert "相关历史记录" in prompt
+    assert "操作员纠正" in prompt
+    assert "不要在一楼停留过久" in prompt
+    assert "巡逻" in prompt

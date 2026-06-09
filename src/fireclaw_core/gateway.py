@@ -6,11 +6,16 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 from pathlib import Path
+from queue import Empty as QueueEmpty, Queue
 import threading
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
+from fireclaw_core.method_scopes import authorize_method
+
+from fireclaw_core.stream_events import EventBus, StreamEvent, TelemetryTracker
 
 from fireclaw_core.agent import FireClawAgent
 from fireclaw_core.control import AuthorizationRequest, ControlPolicy, OperatorContext, operator_from_payload
@@ -74,6 +79,8 @@ class FireClawGateway:
         self._emergency_stop = EmergencyStopState()
         self._authorization_lock = threading.Lock()
         self._pending_authorizations_by_session: dict[str, AuthorizationRequest] = {}
+        self._event_bus = EventBus()
+        self._telemetry = TelemetryTracker()
         self._reconcile_stale_task_queue_records()
 
     @property
@@ -219,6 +226,10 @@ class FireClawGateway:
                     task_id,
                     status="running",
                     started_at=datetime.now(timezone.utc).isoformat(),
+                )
+                self._publish_stream_event(
+                    "task.running",
+                    task_id=task_id,
                 )
                 self._execute_agent_task(
                     command=command,
@@ -805,12 +816,49 @@ class FireClawGateway:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         with self._event_lock:
-            return self.events.append(
+            result = self.events.append(
                 task_id=task_id,
                 session_id=session_id,
                 type=type,
                 payload=payload,
             )
+        stream_event = StreamEvent(
+            event_type=type,
+            source=self.config.robot_id,
+            robot_id=self.config.robot_id,
+            task_id=task_id,
+            mission_id=session_id,
+            payload=payload,
+        )
+        self._event_bus.publish(stream_event)
+        self._telemetry.record_event(stream_event)
+        return result
+
+    def _publish_stream_event(
+        self,
+        event_type: str,
+        *,
+        task_id: str | None = None,
+        mission_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Publish a StreamEvent to the EventBus and TelemetryTracker.
+
+        Use this for direct StreamEvent emission without creating an
+        EventLedger record first.  For events that also need ledger
+        persistence, use ``_append_event`` instead (it already bridges
+        to EventBus/Telemetry).
+        """
+        event = StreamEvent(
+            event_type=event_type,
+            source=self.config.robot_id,
+            robot_id=self.config.robot_id,
+            task_id=task_id,
+            mission_id=mission_id,
+            payload=payload or {},
+        )
+        self._event_bus.publish(event)
+        self._telemetry.record_event(event)
 
     def _reconcile_stale_task_queue_records(self) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -838,10 +886,62 @@ class FireClawGateway:
             def do_GET(self) -> None:
                 if not gateway._check_auth(self):
                     return
+                parsed = urlparse(self.path)
+                # Health check bypasses scope enforcement
+                if parsed.path == "/health":
+                    gateway._handle_get(self)
+                    return
+                scopes = _extract_scopes_from_header(self)
+                result = authorize_method(f"GET {parsed.path}", scopes)
+                if not result.allowed:
+                    gateway._write_error(
+                        self, HTTPStatus.FORBIDDEN,
+                        f"Missing required scope: {result.missing_scope}",
+                    )
+                    return
+                # SSE long-lived response — handle before normal dispatch
+                if parsed.path == "/events/stream":
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    event_queue: Queue[StreamEvent | None] = Queue()
+                    def _on_event(event: StreamEvent) -> None:
+                        event_queue.put(event)
+                    token = gateway._event_bus.subscribe(_on_event)
+                    try:
+                        while True:
+                            try:
+                                event = event_queue.get(timeout=15.0)
+                                if event is None:
+                                    break
+                                self.wfile.write(event.to_sse_format().encode("utf-8"))
+                                self.wfile.flush()
+                            except QueueEmpty:
+                                try:
+                                    self.wfile.write(b": heartbeat\n\n")
+                                    self.wfile.flush()
+                                except Exception:
+                                    break
+                            except Exception:
+                                break
+                    finally:
+                        gateway._event_bus.unsubscribe(token)
+                    return
                 gateway._handle_get(self)
 
             def do_POST(self) -> None:
                 if not gateway._check_auth(self):
+                    return
+                parsed = urlparse(self.path)
+                scopes = _extract_scopes_from_header(self)
+                result = authorize_method(f"POST {parsed.path}", scopes)
+                if not result.allowed:
+                    gateway._write_error(
+                        self, HTTPStatus.FORBIDDEN,
+                        f"Missing required scope: {result.missing_scope}",
+                    )
                     return
                 gateway._handle_post(self)
 
@@ -1104,6 +1204,14 @@ def _task_cancel_path(path: str) -> str | None:
         return parts[1]
     return None
 
+
+
+def _extract_scopes_from_header(handler: BaseHTTPRequestHandler) -> set[str]:
+    """Extract operator scopes from X-Operator-Scopes header or default to read-only."""
+    scopes_header = handler.headers.get("X-Operator-Scopes", "")
+    if scopes_header:
+        return {s.strip() for s in scopes_header.split(",") if s.strip()}
+    return {"state.read"}
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw local HTTP gateway.")

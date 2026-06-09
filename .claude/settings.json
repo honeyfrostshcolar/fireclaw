@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "mcp__codegraph__*",
+      "mcp__agentmemory__*",
+      "mcp__plugin_ecc_playwright__*",
+      "mcp__plugin_ecc_github__*",
+      "mcp__plugin_ecc_memory__*",
+      "mcp__plugin_ecc_exa__*",
+      "mcp__plugin_ecc_context7__*",
+      "mcp__plugin_ecc_sequential-thinking__*"
+    ]
+  }
+}

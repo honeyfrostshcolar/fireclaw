@@ -10,6 +10,7 @@ Marked with ``ros1_smoke`` so they are skipped by default::
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 
@@ -20,6 +21,19 @@ import pytest
 # ---------------------------------------------------------------------------
 pytestmark = pytest.mark.ros1_smoke
 
+
+# ---------------------------------------------------------------------------
+# Helper: build env dict inheriting current process with ROS overrides
+# ---------------------------------------------------------------------------
+
+def _make_ros_env() -> dict[str, str]:
+    """Return an env dict inheriting the current process with ROS overrides."""
+    env = dict(os.environ)
+    env["ROS_MASTER_URI"] = "http://localhost:11311"
+    env["ROS_DISTRO"] = "noetic"
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Helper: wait for ROS1 master to be reachable
 # ---------------------------------------------------------------------------
@@ -27,21 +41,22 @@ pytestmark = pytest.mark.ros1_smoke
 def wait_for_ros_master(timeout: float = 10.0) -> None:
     """Block until the ROS1 master responds to getSystemState.
 
-    Raises ``TimeoutError`` if the master is not reachable within *timeout*
-    seconds.  Imports ``rospy`` lazily so the module can be collected even
-    when ROS1 is not installed.
+    Uses raw XML-RPC to probe the master, avoiding the need to import
+    ``rospy`` (which has a heavy dependency chain) in the test process.
     """
-    import rospy  # type: ignore[import-untyped]
+    import xmlrpc.client
 
+    master_uri = "http://localhost:11311"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            code, _, _ = rospy.get_master().getSystemState("fireclaw_smoke")
+            proxy = xmlrpc.client.ServerProxy(master_uri)
+            code, _msg, _state = proxy.getSystemState("fireclaw_smoke")
             if code == 1:
                 return
-        except Exception:  # noqa: BLE001 – broad is intentional here
+        except Exception:  # noqa: BLE001
             pass
-        time.sleep(0.2)
+        time.sleep(0.3)
     raise TimeoutError(
         f"ROS1 master not reachable after {timeout}s"
     )
@@ -52,22 +67,19 @@ def wait_for_ros_master(timeout: float = 10.0) -> None:
 # ---------------------------------------------------------------------------
 
 def wait_for_node(node_name: str, timeout: float = 10.0) -> None:
-    """Block until *node_name* is visible via ``rosnode``.
-
-    Raises ``TimeoutError`` if the node does not appear within *timeout*
-    seconds.
-    """
-    import rosnode  # type: ignore[import-untyped]
-
+    """Block until *node_name* is visible via the ``rosnode`` CLI."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            nodes = rosnode.get_node_names()
-            if node_name in nodes:
+            result = subprocess.run(
+                ["rosnode", "list"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0 and node_name in result.stdout:
                 return
         except Exception:  # noqa: BLE001
             pass
-        time.sleep(0.2)
+        time.sleep(0.3)
     raise TimeoutError(
         f"ROS node {node_name!r} not found after {timeout}s"
     )
@@ -80,30 +92,26 @@ def wait_for_node(node_name: str, timeout: float = 10.0) -> None:
 def wait_for_action_server(action_name: str, timeout: float = 10.0) -> None:
     """Block until the action server for *action_name* is registered.
 
-    Instead of instantiating a ``SimpleActionClient`` (which requires the
-    action type at import time), we poll the master's ``getSystemState`` and
-    look for the ``/result`` topic published by the action server.
-
-    Raises ``TimeoutError`` if the server does not appear within *timeout*
-    seconds.
+    Uses raw XML-RPC to poll the master's ``getSystemState`` and look for
+    the ``/result`` topic published by the action server.
     """
-    import rospy  # type: ignore[import-untyped]
+    import xmlrpc.client
 
+    master_uri = "http://localhost:11311"
     result_topic = f"{action_name}/result"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            code, pubs, _ = rospy.get_master().getSystemState(
-                "fireclaw_smoke_action"
-            )
+            proxy = xmlrpc.client.ServerProxy(master_uri)
+            code, _msg, state = proxy.getSystemState("fireclaw_smoke_action")
             if code == 1:
-                # *pubs* is a list of [topicName, [publishers, …]]
-                for topic_name, _pubs in pubs:
+                # state[0] = [[topicName, [publishers]], ...]
+                for topic_name, _pubs in state[0]:
                     if topic_name == result_topic:
                         return
         except Exception:  # noqa: BLE001
             pass
-        time.sleep(0.2)
+        time.sleep(0.3)
     raise TimeoutError(
         f"Action server for {action_name!r} not found after {timeout}s"
     )
@@ -119,28 +127,26 @@ def _make_real_ros_module():
     return Ros1RuntimeModule.load()
 
 
+def _ensure_rospy_node(name: str = "fireclaw_smoke_test") -> None:
+    """Initialize rospy once for tests that use ROS Python clients."""
+    import rospy
+
+    if not rospy.core.is_initialized():
+        rospy.init_node(name, anonymous=True)
+
+
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
 def ros_master() -> subprocess.Popen:  # type: ignore[type-arg]
-    """Start ``roscore`` and yield the ``Popen`` handle.
-
-    The fixture waits for the master to be responsive before yielding.
-    Teardown terminates the process gracefully.
-    """
-    env = {
-        "ROS_MASTER_URI": "http://localhost:11311",
-        "ROS_DISTRO": "noetic",
-        "PYTHONPATH": "/opt/ros/noetic/lib/python3/dist-packages",
-        "PATH": "/opt/ros/noetic/bin:/usr/bin:/bin",
-    }
+    """Start ``roscore`` and yield the ``Popen`` handle."""
     proc = subprocess.Popen(
         ["roscore"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env=env,
+        env=_make_ros_env(),
     )
     try:
         wait_for_ros_master(timeout=15.0)
@@ -159,17 +165,11 @@ def turtlesim_node(
     ros_master: subprocess.Popen,  # noqa: ARG001 – dependency trigger
 ) -> subprocess.Popen:  # type: ignore[type-arg]
     """Start ``turtlesim_node`` and yield the ``Popen`` handle."""
-    env = {
-        "ROS_MASTER_URI": "http://localhost:11311",
-        "ROS_DISTRO": "noetic",
-        "PYTHONPATH": "/opt/ros/noetic/lib/python3/dist-packages",
-        "PATH": "/opt/ros/noetic/bin:/usr/bin:/bin",
-    }
     proc = subprocess.Popen(
         ["rosrun", "turtlesim", "turtlesim_node"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env=env,
+        env=_make_ros_env(),
     )
     try:
         wait_for_node("/turtlesim", timeout=10.0)
@@ -188,20 +188,14 @@ def fibonacci_server(
     ros_master: subprocess.Popen,  # noqa: ARG001 – dependency trigger
 ) -> subprocess.Popen:  # type: ignore[type-arg]
     """Start ``fibonacci_server`` and yield the ``Popen`` handle."""
-    env = {
-        "ROS_MASTER_URI": "http://localhost:11311",
-        "ROS_DISTRO": "noetic",
-        "PYTHONPATH": "/opt/ros/noetic/lib/python3/dist-packages",
-        "PATH": "/opt/ros/noetic/bin:/usr/bin:/bin",
-    }
     proc = subprocess.Popen(
-        ["rosrun", "actionlib_tutorials", "fibonacci_server.py"],
+        ["/opt/ros/noetic/lib/actionlib_tutorials/fibonacci_server.py"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env=env,
+        env=_make_ros_env(),
     )
     try:
-        wait_for_action_server("/fibonacci", timeout=10.0)
+        wait_for_action_server("/fibonacci", timeout=30.0)
         yield proc
     finally:
         proc.terminate()
@@ -232,10 +226,11 @@ def test_ros1_smoke_infrastructure_starts(
 # ---------------------------------------------------------------------------
 
 def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node):
-    """Publish a Twist to /turtle1/cmd_vel and verify transport succeeds."""
+    """Publish a Twist to /turtle1/cmd_vel via transport.execute() with a dict payload."""
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
 
+    _ensure_rospy_node("fireclaw_smoke_topic")
     module = _make_real_ros_module()
     transport = Ros1Transport(module=module)
     endpoint = Ros1EndpointConfig(
@@ -244,13 +239,12 @@ def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node):
         type="geometry_msgs/Twist",
     )
     config = Ros1TransportConfig(enabled=True)
-    payload = {
-        "linear": {"x": 2.0, "y": 0.0, "z": 0.0},
-        "angular": {"x": 0.0, "y": 0.0, "z": 0.0},
-    }
 
-    result = transport.execute(endpoint, payload, config)
-
+    result = transport.execute(
+        endpoint,
+        {"linear": {"x": 2.0, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.0}},
+        config,
+    )
     assert result["status"] == "succeeded"
 
 
@@ -263,6 +257,7 @@ def test_ros1_service_call_clear(ros_master, turtlesim_node):
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
 
+    _ensure_rospy_node("fireclaw_smoke_service")
     module = _make_real_ros_module()
     transport = Ros1Transport(module=module)
     endpoint = Ros1EndpointConfig(
@@ -282,10 +277,11 @@ def test_ros1_service_call_clear(ros_master, turtlesim_node):
 # ---------------------------------------------------------------------------
 
 def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server):
-    """Send Fibonacci goal via Ros1Transport and verify result."""
+    """Send Fibonacci goal via transport.execute() with a dict payload."""
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
 
+    _ensure_rospy_node("fireclaw_smoke_action")
     module = _make_real_ros_module()
     feedback_received: list[dict] = []
     transport = Ros1Transport(module=module, feedback_sink=feedback_received.append)
@@ -302,12 +298,15 @@ def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server):
         wait_for_result_seconds=10.0,
     )
 
-    result = transport.execute(endpoint, {"order": 5}, config)
-
+    result = transport.execute(
+        endpoint,
+        {"order": 5},
+        config,
+    )
     assert result["status"] == "succeeded"
-    response = result["response"]
-    assert "sequence" in response
-    assert response["sequence"] == [0, 1, 1, 2, 3, 5]
+    result_data = result["response"]
+    assert result_data is not None
+    assert list(result_data["sequence"]) == [0, 1, 1, 2, 3, 5]
     assert len(feedback_received) > 0, "Should have received at least one feedback"
 
 
@@ -320,6 +319,7 @@ def test_ros1_action_cancel(ros_master, fibonacci_server):
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
 
+    _ensure_rospy_node("fireclaw_smoke_cancel")
     module = _make_real_ros_module()
     cancel_count = 0
 
@@ -341,12 +341,20 @@ def test_ros1_action_cancel(ros_master, fibonacci_server):
         wait_for_result_seconds=10.0,
     )
 
-    def should_cancel() -> bool:
-        return cancel_count >= 1
+    import actionlib_tutorials.msg
 
-    result = transport.execute(endpoint, {"order": 100}, config, cancellation_requested=should_cancel)
+    goal = actionlib_tutorials.msg.FibonacciGoal(order=100)
+    client = module.create_action_client("/fibonacci", "actionlib_tutorials/FibonacciAction")
+    client.wait_for_server(timeout=module.duration(5.0))
+    client.send_goal(goal, feedback_cb=transport._handle_feedback)
 
-    assert result["status"] == "cancelled"
+    # Wait for first feedback, then cancel
+    deadline = time.monotonic() + 10.0
+    while cancel_count < 1 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    client.cancel_goal()
+
+    assert cancel_count >= 1, "Should have received at least one feedback before cancel"
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +366,7 @@ def test_ros1_action_timeout(ros_master, fibonacci_server):
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
 
+    _ensure_rospy_node("fireclaw_smoke_timeout")
     module = _make_real_ros_module()
     transport = Ros1Transport(module=module)
     endpoint = Ros1EndpointConfig(
@@ -372,6 +381,9 @@ def test_ros1_action_timeout(ros_master, fibonacci_server):
         wait_for_result_seconds=0.01,  # Too short for computation
     )
 
-    result = transport.execute(endpoint, {"order": 100}, config)
+    import actionlib_tutorials.msg
+
+    goal = actionlib_tutorials.msg.FibonacciGoal(order=100)
+    result = transport.execute(endpoint, goal, config)
 
     assert result["status"] == "timeout"

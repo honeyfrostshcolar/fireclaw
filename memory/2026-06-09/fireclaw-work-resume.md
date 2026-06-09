@@ -677,3 +677,165 @@ This partially started (cancel test was being fixed when user asked to stop).
 ### Next Step
 
 Fix the 3 remaining action smoke tests to use proper ROS message objects, then commit all changes and verify all 6 tests pass.
+
+## Update 2026-06-09 23:59 CST — Roadmap/State Reconciliation
+
+### Task Goal
+
+Answer the user's request to recall previous work from code changes, memory, plans, and architecture files, then identify what is still missing against the roadmap.
+
+### Sources Checked
+
+- `memory/2026-06-08/fireclaw-work-resume.md`
+- `memory/2026-06-09/fireclaw-work-resume.md`
+- `docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`
+- `docs/superpowers/plans/2026-06-09-phase7-method-scopes.md`
+- `docs/superpowers/plans/2026-06-09-phase8-realtime-event-stream.md`
+- `docs/superpowers/plans/2026-06-09-phase9-ros1-integration-proof.md`
+- `src/fireclaw_core/mission_agent.py`
+- `src/fireclaw_core/mission_gateway.py`
+- `src/fireclaw_core/method_scopes.py`
+- `src/fireclaw_core/stream_events.py`
+- `src/fireclaw_core/ros2_adapter.py`
+- `docs/security/gateway-endpoint-security-review.md`
+- current `git status --short --branch`
+
+### Current Git State
+
+- Branch: `master`, ahead of `origin/master` by 67 commits.
+- There are many uncommitted changes and untracked files, including Phase 7/8/9 work:
+  - modified: `gateway.py`, `incident_replay.py`, `mission_agent.py`, `mission_cli.py`, `ros1_transport.py`, `subagent_client.py`, related tests
+  - untracked: `mission_gateway.py`, `method_scopes.py`, `stream_events.py`, `ros2_adapter.py`, tests and docs/security/docs/deployment/examples files
+
+### Current Findings
+
+- Phase 6 is partially/mostly done in code: `MissionAgent.plan_and_submit()` defaults to `use_scheduler=True`, delegates to `MissionScheduler`, and `MissionGateway` exists with mission submit/trace/events/cancel/approval/fleet endpoints.
+- Phase 7 is substantially done: `method_scopes.py` defines descriptor table, default-deny authorization, scope constants, and robot/mission Gateway integrations; security review doc exists.
+- Phase 8 is partially done: `StreamEvent`, `EventBus`, `TelemetryTracker`, robot-local `/events/stream`, mission `/missions/{id}/events/stream`, and incident replay action-event inclusion exist. Remaining concern: live stream appears mostly in-process and not yet fully tied to all real task/action/mission lifecycle sources as the single authoritative telemetry stream.
+- Phase 9 is only partially proven despite an earlier stale "complete" statement: config examples, deployment guide, ROS2 protocol boundary, and some ROS1 smoke infrastructure exist, but live ROS1 smoke tests still fail.
+
+### Verification
+
+- Command: `.venv/bin/python -m pytest -q`
+- Result: RED, `2 failed, 579 passed, 6 warnings in 60.71s`
+- Failures:
+  - `tests/test_mission_gateway.py::test_post_body_too_large` raises `urllib.error.URLError: Broken pipe` instead of producing the expected HTTP error response path.
+  - `tests/test_ros1_smoke.py::test_ros1_action_timeout` still calls `transport.execute(..., {"order": 100}, ...)`, causing real `actionlib` serialization failure: `AttributeError: 'dict' object has no attribute 'order'`.
+
+### Remaining Work
+
+Immediate:
+- Fix the two current test failures and rerun full suite.
+- Update stale plan/memory checkboxes/comments so Phase 9 is not described as complete until smoke tests pass.
+
+Roadmap:
+- Complete Phase 8 wiring so unified events are emitted consistently from real task/action/mission lifecycle paths and replay uses the same event source as live stream.
+- Complete Phase 9 ROS1 action smoke proof with proper ROS message construction or transport-level message conversion; then verify marker-gated smoke tests.
+- Phase 10 remains open: stronger memory retrieval/indexing and plugin/skill descriptor runtime.
+
+## Update 2026-06-10 00:08 CST — Fixed Current Test Failures
+
+### Task Goal
+
+Fix the two failing tests from the previous reconciliation and restore the full test suite to green.
+
+### Root Causes
+
+1. `tests/test_mission_gateway.py::test_post_body_too_large`
+   - `MissionGateway._read_json()` rejected an oversized request from `Content-Length` before consuming the request body.
+   - `urllib` was still sending the 1 MB+ body when the server closed the connection, producing `BrokenPipeError` / `URLError` instead of the expected HTTP 400 path.
+
+2. `tests/test_ros1_smoke.py::test_ros1_action_timeout`
+   - The test passed a raw `dict` as a real ROS1 Fibonacci action goal, which actionlib cannot serialize.
+   - After converting to `FibonacciGoal`, the focused test exposed hidden order coupling: `rospy.init_node()` had only been called by an earlier topic smoke test.
+   - Once initialized independently, the transport returned `status="failed"` for action result timeout while the smoke test and task-state model expected a distinct `timeout` status.
+
+### Files Modified
+
+- `src/fireclaw_core/mission_gateway.py`
+  - Oversized request bodies are now consumed before raising `_BadRequestError`, so clients can receive the intended HTTP error response.
+- `tests/test_ros1_smoke.py`
+  - Added `_ensure_rospy_node()`.
+  - Smoke tests now initialize `rospy` independently instead of relying on test order.
+  - Timeout test now uses `actionlib_tutorials.msg.FibonacciGoal(order=100)`.
+- `tests/test_ros1_transport.py`
+  - Added `test_ros1_transport_reports_action_result_timeout`.
+- `src/fireclaw_core/ros1_transport.py`
+  - Action result timeout now returns `{"status": "timeout", ...}` instead of `{"status": "failed", ...}`.
+
+### Verification
+
+- `.venv/bin/python -m pytest tests/test_mission_gateway.py::test_post_body_too_large -q`
+  - GREEN: `1 passed`
+- `.venv/bin/python -m pytest tests/test_ros1_transport.py::test_ros1_transport_reports_action_result_timeout -q`
+  - RED first, then GREEN: `1 passed`
+- `.venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_timeout -q`
+  - GREEN: `1 passed, 5 warnings`
+- `.venv/bin/python -m pytest tests/test_mission_gateway.py tests/test_ros1_transport.py tests/test_ros1_smoke.py -q`
+  - GREEN: `47 passed, 6 warnings`
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `582 passed, 6 warnings in 58.86s`
+
+### Current Conclusion
+
+The two current test failures are fixed and the full local test suite is green again. Warnings are from ROS/actionlib deprecations in ROS Noetic dependencies, not FireClaw test failures.
+
+## Update 2026-06-09 Task 11: Deployment and Documentation Cleanup
+
+### Task Goal
+
+Execute Task 11 from `docs/superpowers/plans/2026-06-09-phase8-10-completion-and-deployment-cleanup.md`: update roadmap, create deployment checklist, update plan checkboxes, update memory.
+
+### Files Modified
+
+- `docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`
+  - Updated test count: 470 -> 688 passed
+  - Rewrote capabilities table: added Mission Gateway, Method scopes, Realtime event stream, Log redaction, ROS1 smoke proof, updated Mission scheduler (now default), updated Robot adapters (ROS2 protocol), updated Memory (SQLite FTS), updated Skill runtime (plugin descriptor v1)
+  - Updated OpenClaw comparison table: Gateway now "部分覆盖" with method scopes, Method scopes now "部分覆盖" with descriptor table, Memory now "部分覆盖" with FTS, Streaming now "已实现 v1"
+  - Added Phase 6-10 completion status sections with verification evidence
+  - Updated remaining gaps: removed P0 items (all implemented), kept P1/P2 items
+  - Updated recommended next steps
+
+- `docs/deployment/fireclaw-deployment-checklist.md` (NEW)
+  - 10 sections: API token, operator scopes, network binding, ROS mode separation, ROS smoke test, log redaction, queue compaction, memory index, emergency stop, pre-deployment verification
+
+- `docs/superpowers/plans/2026-06-09-phase8-realtime-event-stream.md`
+  - Updated status header: IMPLEMENTED
+  - All checkboxes marked [x]
+  - Added verification evidence section
+
+- `docs/superpowers/plans/2026-06-09-phase9-ros1-integration-proof.md`
+  - Updated status header: IMPLEMENTED (local smoke proof)
+  - All checkboxes marked [x]
+  - Added verification evidence and known limitations sections
+  - Updated file structure to include _build_ros_message
+
+- `docs/superpowers/plans/2026-06-09-phase8-10-completion-and-deployment-cleanup.md`
+  - Task 11 steps 1-3 marked [x]
+
+### Commands Run
+
+- `.venv/bin/python -m pytest -q --tb=no` -> GREEN: `688 passed, 6 warnings in 75.55s`
+
+### Current Git State
+
+- Branch: `master`
+- This is a docs-only change: 5 files modified/created, no production code changes
+
+### Current Conclusion
+
+All Phase 6-10 documentation is now reconciled with actual code state. The roadmap accurately reflects implemented capabilities and remaining gaps. The deployment checklist covers all critical deployment concerns. Plan files have been updated with completion status and verification evidence.
+
+### Known Gaps
+
+- Real robot hardware smoke proof (current proof is ROS1 local master + tutorials)
+- ROS2 adapter implementation (protocol boundary only)
+- Stronger memory retrieval (embedding provider, ranking)
+- Plugin SDK runtime hooks (provider/memory/tool approval)
+- Migration/repair flow, fleet onboarding wizard
+
+### Next Recommended Step
+
+1. Commit all documentation updates
+2. If continuing engineering: real ROS1 robot hardware test, ROS2 adapter implementation, or stronger memory retrieval
+3. If preparing for paper: use current Phase 6-10 evidence as baseline for research contribution claims

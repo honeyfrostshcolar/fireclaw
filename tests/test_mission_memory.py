@@ -203,3 +203,124 @@ def test_mission_memory_record_to_dict():
     assert d["robot_id"] == "r-1"
     assert d["subtask_id"] == "s-1"
     assert d["created_at"] == "2026-06-08T12:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: MissionMemoryStore with optional FTS index
+# ---------------------------------------------------------------------------
+
+
+def test_store_with_index_search_returns_results(tmp_path):
+    """When index_path is configured, search() uses FTS."""
+    store = MissionMemoryStore(
+        tmp_path / "mem.jsonl",
+        index_path=tmp_path / "mem.db",
+    )
+    store.append(_make_record(
+        record_id="mem-1",
+        content={"note": "rescued survivor on floor 2"},
+    ))
+    store.append(_make_record(
+        record_id="mem-2",
+        content={"detail": "heavy smoke detected"},
+    ))
+
+    results = store.search(keyword="smoke")
+    assert len(results) == 1
+    assert results[0].record_id == "mem-2"
+
+
+def test_store_with_index_search_filters(tmp_path):
+    """Index-backed search() respects structured filters."""
+    store = MissionMemoryStore(
+        tmp_path / "mem.jsonl",
+        index_path=tmp_path / "mem.db",
+    )
+    store.append(_make_record(record_id="mem-1", mission_id="m-1", robot_id="r-1"))
+    store.append(_make_record(record_id="mem-2", mission_id="m-1", robot_id="r-2"))
+    store.append(_make_record(record_id="mem-3", mission_id="m-2", robot_id="r-1"))
+
+    results = store.search(mission_id="m-1")
+    assert len(results) == 2
+    assert {r.record_id for r in results} == {"mem-1", "mem-2"}
+
+    results = store.search(robot_id="r-1")
+    assert len(results) == 2
+    assert {r.record_id for r in results} == {"mem-1", "mem-3"}
+
+
+def test_store_with_index_search_combined_filters(tmp_path):
+    """Index-backed search() combines text + structured filters."""
+    store = MissionMemoryStore(
+        tmp_path / "mem.jsonl",
+        index_path=tmp_path / "mem.db",
+    )
+    store.append(_make_record(
+        record_id="mem-1", mission_id="m-1",
+        content={"note": "rescued survivor"},
+    ))
+    store.append(_make_record(
+        record_id="mem-2", mission_id="m-2",
+        content={"note": "rescued survivor"},
+    ))
+
+    results = store.search(keyword="survivor", mission_id="m-1")
+    assert len(results) == 1
+    assert results[0].record_id == "mem-1"
+
+
+def test_store_without_index_uses_jsonl_fallback(tmp_path):
+    """When no index_path is set, search() falls back to JSONL keyword search."""
+    store = MissionMemoryStore(tmp_path / "mem.jsonl")
+    store.append(_make_record(
+        record_id="mem-1",
+        content={"note": "smoke on floor 3"},
+    ))
+    store.append(_make_record(
+        record_id="mem-2",
+        content={"note": "cleared stairwell"},
+    ))
+
+    results = store.search(keyword="smoke")
+    assert len(results) == 1
+    assert results[0].record_id == "mem-1"
+
+
+def test_store_search_indexed_raises_without_index(tmp_path):
+    """search_indexed() raises RuntimeError when no index is configured."""
+    store = MissionMemoryStore(tmp_path / "mem.jsonl")
+    with pytest.raises(RuntimeError, match="No memory index configured"):
+        store.search_indexed("anything")
+
+
+def test_store_search_indexed_with_index(tmp_path):
+    """search_indexed() delegates to the FTS index."""
+    store = MissionMemoryStore(
+        tmp_path / "mem.jsonl",
+        index_path=tmp_path / "mem.db",
+    )
+    store.append(_make_record(
+        record_id="mem-1",
+        content={"note": "found victim in basement"},
+    ))
+    results = store.search_indexed("basement")
+    assert len(results) == 1
+    assert results[0].record_id == "mem-1"
+
+
+def test_store_index_property_lazy(tmp_path):
+    """The index property is lazily created."""
+    store = MissionMemoryStore(
+        tmp_path / "mem.jsonl",
+        index_path=tmp_path / "mem.db",
+    )
+    # Index not created until first access.
+    assert store._index is None
+    _ = store.index
+    assert store._index is not None
+
+
+def test_store_without_index_property_is_none(tmp_path):
+    """Without index_path, the index property returns None."""
+    store = MissionMemoryStore(tmp_path / "mem.jsonl")
+    assert store.index is None
