@@ -110,6 +110,16 @@ def wait_for_action_server(action_name: str, timeout: float = 10.0) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Helper: create a Ros1RuntimeModule backed by real rospy/actionlib
+# ---------------------------------------------------------------------------
+
+def _make_real_ros_module():
+    """Create a Ros1RuntimeModule backed by real rospy/actionlib."""
+    from fireclaw_core.ros1_transport import Ros1RuntimeModule
+    return Ros1RuntimeModule.load()
+
+
+# ---------------------------------------------------------------------------
 # Session-scoped fixtures
 # ---------------------------------------------------------------------------
 
@@ -215,3 +225,30 @@ def test_ros1_smoke_infrastructure_starts(
     assert ros_master.poll() is None, "roscore exited unexpectedly"
     assert turtlesim_node.poll() is None, "turtlesim_node exited unexpectedly"
     assert fibonacci_server.poll() is None, "fibonacci_server exited unexpectedly"
+
+
+# ---------------------------------------------------------------------------
+# Topic smoke test – publish Twist to turtlesim via Ros1Transport
+# ---------------------------------------------------------------------------
+
+def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node):
+    """Publish a Twist to /turtle1/cmd_vel and verify transport succeeds."""
+    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros1_transport import Ros1Transport
+
+    module = _make_real_ros_module()
+    transport = Ros1Transport(module=module)
+    endpoint = Ros1EndpointConfig(
+        interface="topic",
+        name="/turtle1/cmd_vel",
+        type="geometry_msgs/Twist",
+    )
+    config = Ros1TransportConfig(enabled=True)
+    payload = {
+        "linear": {"x": 2.0, "y": 0.0, "z": 0.0},
+        "angular": {"x": 0.0, "y": 0.0, "z": 0.0},
+    }
+
+    result = transport.execute(endpoint, payload, config)
+
+    assert result["status"] == "succeeded"
