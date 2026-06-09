@@ -190,5 +190,36 @@ class JsonlTaskQueue:
             handle.write("\n")
 
 
+def queue_record_to_task_record(
+    record: TaskQueueRecord,
+    *,
+    owner_id: str,
+    runtime: str = "robot_gateway",
+) -> "TaskRecord":
+    """Convert a legacy ``TaskQueueRecord`` into a ``TaskRecord``.
+
+    Imports ``TaskRecord`` lazily to avoid circular imports.
+    """
+    from fireclaw_core.task_registry import TaskRecord  # local import
+
+    return TaskRecord(
+        task_id=record.task_id,
+        runtime=runtime,
+        requester_session_id=record.session_id,
+        owner_id=owner_id,
+        scope_kind="mission",
+        command=record.command,
+        status=record.status,
+        delivery_status="not_applicable",
+        notify_policy="done_only",
+        created_at=record.created_at,
+        started_at=record.started_at,
+        ended_at=record.ended_at,
+        error=record.error,
+        result=record.result,
+        dedupe_key=record.dedupe_key,
+    )
+
+
 def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
