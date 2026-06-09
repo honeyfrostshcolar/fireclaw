@@ -7,12 +7,20 @@ from urllib import request
 from urllib.error import HTTPError
 
 from fireclaw_core.robot_registry import RobotRegistryEntry
+from fireclaw_core.subagent_registry import JsonlSubagentRegistry
 
 
 class RobotSubagentClient:
-    def __init__(self, *, timeout_seconds: float = 5.0, api_token: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 5.0,
+        api_token: str | None = None,
+        registry: JsonlSubagentRegistry | None = None,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
         self.api_token = api_token
+        self.registry = registry
 
     def get_state(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         return self._request_json("GET", entry.base_url, "/state")
@@ -38,6 +46,27 @@ class RobotSubagentClient:
             payload["mission"] = mission
         result = self._request_json("POST", entry.base_url, "/tasks", payload)
         result.setdefault("robot_id", entry.robot_id)
+
+        if self.registry is not None:
+            task_id = result.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                mission_id = ""
+                subtask_id = None
+                if isinstance(mission, dict):
+                    mission_id = str(mission.get("mission_id") or "")
+                    subtask_id = mission.get("subtask_id")
+                    if isinstance(subtask_id, str) and subtask_id:
+                        pass
+                    else:
+                        subtask_id = None
+                self.registry.create(
+                    parent_mission_id=mission_id,
+                    parent_subtask_id=subtask_id,
+                    robot_id=entry.robot_id,
+                    child_task_id=task_id,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+
         return result
 
     def get_task_trace(self, entry: RobotRegistryEntry, task_id: str) -> dict[str, Any]:
@@ -57,6 +86,16 @@ class RobotSubagentClient:
             payload["operator"] = operator
         result = self._request_json("POST", entry.base_url, f"/tasks/{task_id}/cancel", payload)
         result.setdefault("robot_id", entry.robot_id)
+
+        if self.registry is not None:
+            record = self.registry.get_by_child_task_id(task_id)
+            if record is not None:
+                self.registry.update(
+                    record.run_id,
+                    status="cancelled",
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+
         return result
 
     def get_events(
