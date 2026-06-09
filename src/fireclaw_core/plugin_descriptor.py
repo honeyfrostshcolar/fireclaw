@@ -29,6 +29,7 @@ class FireClawPluginDescriptor:
     approval_scope: str | None = None
     provider_hooks: tuple[str, ...] = ()
     memory_hooks: tuple[str, ...] = ()
+    tool_approval_hooks: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty_string(self.plugin_id, "plugin_id")
@@ -43,6 +44,7 @@ class FireClawPluginDescriptor:
             _require_non_empty_string(self.approval_scope, "approval_scope")
         _require_string_tuple(self.provider_hooks, "provider_hooks")
         _require_string_tuple(self.memory_hooks, "memory_hooks")
+        _require_string_tuple(self.tool_approval_hooks, "tool_approval_hooks")
 
 
 # ---------------------------------------------------------------------------
