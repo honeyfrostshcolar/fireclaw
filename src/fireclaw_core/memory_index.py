@@ -173,19 +173,65 @@ class SqliteMemoryIndex:
                 if col is not None and value is not None:
                     active_filters.append((col, str(value)))
 
-        # Build the query.
-        where_parts: list[str] = []
-        params: list[Any] = []
+        return self._search_with_filters(
+            conn,
+            query=query,
+            active_filters=active_filters,
+            limit=limit,
+        )
 
-        # FTS match clause.
-        if query == "*":
-            # Match all — use a subquery that selects everything from FTS.
-            fts_sql = "SELECT record_id FROM memory_fts"
-        else:
-            fts_sql = "SELECT record_id FROM memory_fts WHERE memory_fts MATCH ?"
-            params.append(query)
+    def _search_with_filters(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        query: str,
+        active_filters: list[tuple[str, str]],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Run FTS search with a LIKE fallback for operator natural language."""
+        safe_query = _safe_fts_query(query)
+        try:
+            rows = self._run_search_query(
+                conn,
+                record_id_subquery=(
+                    "SELECT record_id FROM memory_fts"
+                    if safe_query == "*"
+                    else "SELECT record_id FROM memory_fts WHERE memory_fts MATCH ?"
+                ),
+                subquery_params=[] if safe_query == "*" else [safe_query],
+                active_filters=active_filters,
+                limit=limit,
+            )
+        except sqlite3.OperationalError:
+            rows = []
+        if rows or safe_query == "*":
+            return [_row_to_dict(row) for row in rows]
 
-        where_parts.append(f"mr.record_id IN ({fts_sql})")
+        terms = _plain_search_terms(query)
+        if not terms:
+            return []
+        like_clauses = " AND ".join("text_blob LIKE ?" for _ in terms)
+        like_params = [f"%{term}%" for term in terms]
+        rows = self._run_search_query(
+            conn,
+            record_id_subquery=f"SELECT record_id FROM memory_fts WHERE {like_clauses}",
+            subquery_params=like_params,
+            active_filters=active_filters,
+            limit=limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _run_search_query(
+        conn: sqlite3.Connection,
+        *,
+        record_id_subquery: str,
+        subquery_params: list[Any],
+        active_filters: list[tuple[str, str]],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        where_parts: list[str] = [f"mr.record_id IN ({record_id_subquery})"]
+        params: list[Any] = list(subquery_params)
 
         for col, value in active_filters:
             where_parts.append(f"mr.{col} = ?")
@@ -200,8 +246,7 @@ class SqliteMemoryIndex:
             ORDER BY mr.created_at DESC
             LIMIT ?
         """
-        rows = conn.execute(sql, params).fetchall()
-        return [_row_to_dict(row) for row in rows]
+        return conn.execute(sql, params).fetchall()
 
     def rebuild(self, records: Iterable[dict[str, Any]]) -> int:
         """Rebuild the entire index from a sequence of records.
@@ -267,6 +312,26 @@ def _build_text_blob(record: dict[str, Any], content: dict[str, Any]) -> str:
         if isinstance(val, str):
             parts.append(val)
     return " ".join(parts)
+
+
+def _plain_search_terms(query: str) -> list[str]:
+    """Extract literal natural-language terms from a user query string."""
+    return [
+        token.strip('"')
+        for token in query.replace(":", " ").split()
+        if token.strip('"') and token.upper() not in {"AND", "OR", "NOT", "NEAR"}
+    ]
+
+
+def _safe_fts_query(query: str) -> str:
+    """Convert operator text into a safe FTS5 phrase query."""
+    stripped = query.strip()
+    if not stripped or stripped == "*":
+        return "*"
+    terms = _plain_search_terms(stripped)
+    if not terms:
+        return "*"
+    return " ".join(f'"{term.replace(chr(34), chr(34) + chr(34))}"' for term in terms)
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

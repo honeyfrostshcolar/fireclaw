@@ -49,6 +49,15 @@ result = transport.execute(
 )
 ```
 
+**Service example (TriggerRequest):**
+```python
+result = transport.execute(
+    endpoint,
+    {"reason": "operator stop"},
+    config,
+)
+```
+
 **When to use dicts vs real message objects:**
 
 | Scenario | Recommended | Reason |
@@ -57,7 +66,7 @@ result = transport.execute(
 | Cancellation workflows | Real message + direct client | `transport.execute()` is blocking; cancellation needs client reference |
 | Custom feedback handling | Dict payload | Feedback sink handles conversion automatically |
 
-The transport checks for `module.resolve_message_class()` and `module.resolve_action_goal_class()` to convert dicts. If the module does not support resolution, the payload is passed through as-is (useful for pre-constructed ROS message objects).
+The transport checks for `module.resolve_message_class()`, `module.resolve_service_request_class()`, and `module.resolve_action_goal_class()` to convert dicts. If the module does not support resolution, the payload is passed through as-is (useful for pre-constructed ROS message objects).
 
 ### Config Structure
 
@@ -122,11 +131,15 @@ python -m fireclaw_core.mission_cli submit-subtask \
 Smoke tests verify ROS1 integration against a real ROS master.
 
 ```bash
-# Requires: roscore + turtlesim + actionlib_tutorials installed
-pytest -m ros1_smoke -v
+# Default unit suite skips ROS1 smoke tests.
+.venv/bin/python -m pytest -q
+
+# Explicit ROS1 smoke proof.
+# Requires ROS1 commands on PATH: roscore, rosrun, turtlesim, actionlib_tutorials.
+FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q
 
 # Run specific smoke test
-pytest -m ros1_smoke tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -v
+FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -q
 ```
 
 ## Troubleshooting

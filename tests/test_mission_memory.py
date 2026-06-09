@@ -230,6 +230,23 @@ def test_store_with_index_search_returns_results(tmp_path):
     assert results[0].record_id == "mem-2"
 
 
+def test_store_index_search_handles_unsafe_natural_language_query(tmp_path):
+    """Index-backed search() accepts operator-like natural-language fragments."""
+    store = MissionMemoryStore(
+        tmp_path / "mem.jsonl",
+        index_path=tmp_path / "mem.db",
+    )
+    store.append(_make_record(
+        record_id="mem-1",
+        content={"note": "command: 去二楼搜索"},
+    ))
+
+    results = store.search(keyword="command: 去二楼")
+
+    assert len(results) == 1
+    assert results[0].record_id == "mem-1"
+
+
 def test_store_with_index_search_filters(tmp_path):
     """Index-backed search() respects structured filters."""
     store = MissionMemoryStore(

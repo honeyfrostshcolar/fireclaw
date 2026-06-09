@@ -1,6 +1,6 @@
 # Phase 8-10 Completion and Deployment Cleanup Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Complete the remaining Phase 9 ROS1 proof, Phase 8 realtime event stream integration, Phase 10 memory/plugin runtime, and deployment/documentation cleanup in one coordinated roadmap.
 
@@ -113,7 +113,7 @@
 - Inspect: `src/fireclaw_core/ros1_transport.py`
 - Inspect: `tests/test_ros1_smoke.py`
 
-- [ ] **Step 1: Identify current transport gaps**
+- [x] **Step 1: Identify current transport gaps**
 
 Run:
 
@@ -126,7 +126,7 @@ Expected:
 - At least one ROS1 smoke action/topic path constructs real message objects directly.
 - `Ros1Transport.execute()` still passes raw payloads to publisher/service/action client.
 
-- [ ] **Step 2: Add failing unit tests for dict-to-message construction**
+- [x] **Step 2: Add failing unit tests for dict-to-message construction**
 
 Add tests to `tests/test_ros1_transport.py` using fake message classes:
 
@@ -173,7 +173,7 @@ def test_ros1_transport_builds_action_goal_from_dict():
     # Assert fake action client received FakeFibonacciGoal(order=5).
 ```
 
-- [ ] **Step 3: Run red tests**
+- [x] **Step 3: Run red tests**
 
 Run:
 
@@ -193,7 +193,7 @@ Expected:
 - Modify: `src/fireclaw_core/ros1_transport.py`
 - Modify: `tests/test_ros1_transport.py`
 
-- [ ] **Step 1: Add resolver methods to `Ros1RuntimeModule`**
+- [x] **Step 1: Add resolver methods to `Ros1RuntimeModule`**
 
 Implement methods equivalent to:
 
@@ -210,7 +210,7 @@ def resolve_action_goal_class(self, action_type_name: str) -> Any:
     return getattr(module, goal_cls_name)
 ```
 
-- [ ] **Step 2: Add recursive message builder**
+- [x] **Step 2: Add recursive message builder**
 
 Implement:
 
@@ -238,7 +238,7 @@ def _build_ros_message(message_cls: Any, payload: Any) -> Any:
 
 Use a helper `_fill_ros_message(existing_msg, payload)` for nested objects.
 
-- [ ] **Step 3: Convert payloads at transport boundary**
+- [x] **Step 3: Convert payloads at transport boundary**
 
 Rules:
 
@@ -252,7 +252,7 @@ Rules:
   - If payload is dict, resolve action goal class from `endpoint.type`, build goal, send goal.
   - If payload is already a ROS goal object, send it unchanged.
 
-- [ ] **Step 4: Run unit tests**
+- [x] **Step 4: Run unit tests**
 
 Run:
 
@@ -271,7 +271,7 @@ Expected:
 **Files:**
 - Modify: `tests/test_ros1_smoke.py`
 
-- [ ] **Step 1: Update smoke tests**
+- [x] **Step 1: Update smoke tests**
 
 Change at least:
 
@@ -279,7 +279,7 @@ Change at least:
 - `test_ros1_action_fibonacci_goal` to call `transport.execute(endpoint, {"order": 5}, config)` instead of directly sending `FibonacciGoal`.
 - Keep `test_ros1_action_cancel` direct if cancellation requires direct client control before transport exposes a cancellable async operation.
 
-- [ ] **Step 2: Run ROS smoke tests**
+- [x] **Step 2: Run ROS smoke tests**
 
 Run:
 
@@ -291,7 +291,7 @@ Expected:
 
 - PASS with only ROS dependency deprecation warnings.
 
-- [ ] **Step 3: Update ROS docs/examples**
+- [x] **Step 3: Update ROS docs/examples**
 
 Update `docs/deployment/ros1-deployment-guide.md` and `examples/ros1_configs/*.yaml` to show dict payload shapes that transport can convert.
 
@@ -306,7 +306,7 @@ Update `docs/deployment/ros1-deployment-guide.md` and `examples/ros1_configs/*.y
 - Inspect: `src/fireclaw_core/stream_events.py`
 - Modify: `memory/2026-06-09/fireclaw-work-resume.md` or current date memory file
 
-- [ ] **Step 1: Build event coverage table**
+- [x] **Step 1: Build event coverage table**
 
 Audit these event types:
 
@@ -342,7 +342,7 @@ IncidentReplay
 TelemetryTracker
 ```
 
-- [ ] **Step 2: Decide minimum v1 event set**
+- [x] **Step 2: Decide minimum v1 event set**
 
 For this plan, v1 must cover:
 
@@ -364,7 +364,7 @@ Do not add UI-specific events.
 - Modify: `tests/test_gateway.py`
 - Modify: `tests/test_stream_events.py`
 
-- [ ] **Step 1: Add helper tests**
+- [x] **Step 1: Add helper tests**
 
 Add tests proving a ledger-style task event can become a `StreamEvent`:
 
@@ -387,7 +387,7 @@ def test_stream_event_from_task_ledger_event():
     assert event.task_id == "task-1"
 ```
 
-- [ ] **Step 2: Add Gateway event publishing helper**
+- [x] **Step 2: Add Gateway event publishing helper**
 
 In `FireClawGateway`, add a private helper:
 
@@ -412,7 +412,7 @@ def _publish_stream_event(
     self._telemetry.record_event(event)
 ```
 
-- [ ] **Step 3: Emit lifecycle events**
+- [x] **Step 3: Emit lifecycle events**
 
 Call the helper from task submit/run/cancel/emergency paths so the following are emitted:
 
@@ -427,7 +427,7 @@ task.cancelled
 emergency.stop
 ```
 
-- [ ] **Step 4: Test robot SSE receives lifecycle events**
+- [x] **Step 4: Test robot SSE receives lifecycle events**
 
 Add tests in `tests/test_gateway.py` that:
 
@@ -436,7 +436,7 @@ Add tests in `tests/test_gateway.py` that:
 - submit/cancel task or trigger emergency stop;
 - assert SSE payload has `event_type`, `source`, `robot_id`, `task_id`, `timestamp`, `sequence`, `payload`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -457,7 +457,7 @@ Expected:
 - Modify: `src/fireclaw_core/mission_agent.py`
 - Modify: `tests/test_mission_gateway.py`
 
-- [ ] **Step 1: Add mission event tests**
+- [x] **Step 1: Add mission event tests**
 
 Add tests that prove:
 
@@ -466,11 +466,11 @@ Add tests that prove:
 - `POST /missions/{id}/approvals` emits approval events;
 - `GET /missions/{id}/events/stream` uses `StreamEvent` schema.
 
-- [ ] **Step 2: Add mission publish helper**
+- [x] **Step 2: Add mission publish helper**
 
 Use the existing `MissionGateway.publish_event(...)`, but make sure every mission control endpoint calls it after successful operations.
 
-- [ ] **Step 3: Include subtask dispatch metadata**
+- [x] **Step 3: Include subtask dispatch metadata**
 
 When mission submit returns subtask results, publish one `mission.subtask_dispatched` event per accepted subtask:
 
@@ -482,7 +482,7 @@ payload = {
 }
 ```
 
-- [ ] **Step 4: Run focused mission tests**
+- [x] **Step 4: Run focused mission tests**
 
 Run:
 
@@ -503,7 +503,7 @@ Expected:
 - Modify: `tests/test_incident_replay.py`
 - Modify: `src/fireclaw_core/stream_events.py`
 
-- [ ] **Step 1: Add replay schema tests**
+- [x] **Step 1: Add replay schema tests**
 
 Add assertions that replay timeline entries include:
 
@@ -517,11 +517,11 @@ task_id
 payload
 ```
 
-- [ ] **Step 2: Normalize replay entries**
+- [x] **Step 2: Normalize replay entries**
 
 Use `StreamEvent.to_dict()` shape for replay events where possible. If replay needs extra fields, place them under `payload` or add a documented `replay_metadata` key.
 
-- [ ] **Step 3: Run replay tests**
+- [x] **Step 3: Run replay tests**
 
 Run:
 
@@ -543,7 +543,7 @@ Expected:
 - Create: `tests/test_memory_index.py`
 - Modify: `tests/test_mission_memory.py`
 
-- [ ] **Step 1: Add failing tests for SQLite FTS index**
+- [x] **Step 1: Add failing tests for SQLite FTS index**
 
 Test:
 
@@ -553,7 +553,7 @@ Test:
 - tolerate missing index file;
 - rebuild index from JSONL records.
 
-- [ ] **Step 2: Implement `SqliteMemoryIndex`**
+- [x] **Step 2: Implement `SqliteMemoryIndex`**
 
 Minimal API:
 
@@ -571,11 +571,11 @@ class SqliteMemoryIndex:
     def rebuild(self, records: Iterable[dict[str, Any]]) -> int: ...
 ```
 
-- [ ] **Step 3: Integrate optional index into mission memory store**
+- [x] **Step 3: Integrate optional index into mission memory store**
 
 Do not make SQLite mandatory for existing users. If no index path is configured, keep JSONL keyword search behavior.
 
-- [ ] **Step 4: Run memory tests**
+- [x] **Step 4: Run memory tests**
 
 Run:
 
@@ -599,7 +599,7 @@ Expected:
 - Modify: `tests/test_mission_planner.py`
 - Modify: `tests/test_llm_planner.py`
 
-- [ ] **Step 1: Extend planner context tests**
+- [x] **Step 1: Extend planner context tests**
 
 Add tests that:
 
@@ -608,7 +608,7 @@ Add tests that:
 - verify retrieved correction appears in `MissionPlannerContext`;
 - verify LLM planner prompt includes a concise correction summary.
 
-- [ ] **Step 2: Extend `MissionPlannerContext`**
+- [x] **Step 2: Extend `MissionPlannerContext`**
 
 Add fields:
 
@@ -617,7 +617,7 @@ retrieved_memories: list[dict[str, Any]] = field(default_factory=list)
 operator_corrections: list[dict[str, Any]] = field(default_factory=list)
 ```
 
-- [ ] **Step 3: Populate context in `MissionAgent.plan_and_submit()`**
+- [x] **Step 3: Populate context in `MissionAgent.plan_and_submit()`**
 
 Before planner invocation:
 
@@ -625,7 +625,7 @@ Before planner invocation:
 - cap context size;
 - redact secrets before passing to LLM planner.
 
-- [ ] **Step 4: Run planner tests**
+- [x] **Step 4: Run planner tests**
 
 Run:
 
@@ -647,7 +647,7 @@ Expected:
 - Create: `tests/test_plugin_descriptor.py`
 - Modify: `tests/test_skill_manifest.py`
 
-- [ ] **Step 1: Add descriptor validation tests**
+- [x] **Step 1: Add descriptor validation tests**
 
 Required descriptor fields:
 
@@ -663,7 +663,7 @@ provider_hooks
 memory_hooks
 ```
 
-- [ ] **Step 2: Implement descriptor dataclasses**
+- [x] **Step 2: Implement descriptor dataclasses**
 
 Minimal classes:
 
@@ -681,7 +681,7 @@ class FireClawPluginDescriptor:
     memory_hooks: tuple[str, ...] = ()
 ```
 
-- [ ] **Step 3: Add conversion from skill manifest metadata**
+- [x] **Step 3: Add conversion from skill manifest metadata**
 
 Add a helper:
 
@@ -692,7 +692,7 @@ def descriptor_from_skill_manifest(skill: SkillManifest) -> FireClawPluginDescri
 
 It should map existing skill metadata without changing runtime behavior.
 
-- [ ] **Step 4: Run descriptor tests**
+- [x] **Step 4: Run descriptor tests**
 
 Run:
 
@@ -757,7 +757,7 @@ Record:
 **Files:**
 - No production files unless tests reveal issues.
 
-- [ ] **Step 1: Run focused suites**
+- [x] **Step 1: Run focused suites**
 
 Run:
 
@@ -782,7 +782,7 @@ Expected:
 
 - PASS.
 
-- [ ] **Step 2: Run full suite**
+- [x] **Step 2: Run full suite**
 
 Run:
 
@@ -794,7 +794,7 @@ Expected:
 
 - PASS.
 
-- [ ] **Step 3: Review dirty worktree**
+- [x] **Step 3: Review dirty worktree**
 
 Run:
 
@@ -808,7 +808,7 @@ Expected:
 - All changed files are intentional.
 - No generated secrets, private robot logs, or large artifacts are staged or ready for commit.
 
-- [ ] **Step 4: Prepare handoff summary**
+- [x] **Step 4: Prepare handoff summary**
 
 Summarize:
 

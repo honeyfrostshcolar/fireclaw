@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from queue import Empty as QueueEmpty, Queue
 import threading
+import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
@@ -643,6 +644,14 @@ class FireClawGateway:
         with self._task_lock:
             return self._active_task_summaries_locked()
 
+    def _wait_until_task_inactive(self, task_id: str, *, timeout_seconds: float = 1.0) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            with self._task_lock:
+                if task_id not in self._task_controls:
+                    return
+            time.sleep(0.01)
+
     def _record_result_events(
         self,
         task_id: str,
@@ -1070,6 +1079,9 @@ class FireClawGateway:
                 if not authorized:
                     self._write_json(handler, HTTPStatus.FORBIDDEN, authorization_payload)
                     return
+                authorization = authorization_payload.get("authorization")
+                if isinstance(authorization, dict) and isinstance(authorization.get("task_id"), str):
+                    self._wait_until_task_inactive(authorization["task_id"])
                 result = self.submit_agent(
                     "确认执行",
                     session_id=session_id,

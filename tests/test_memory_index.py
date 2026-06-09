@@ -97,6 +97,42 @@ class TestSearch:
         results = idx.search("nonexistent_term_xyz")
         assert len(results) == 0
 
+    def test_search_escapes_colon_query(self, tmp_path):
+        idx = SqliteMemoryIndex(tmp_path / "mem.db")
+        idx.upsert(_make_record(
+            record_id="mem-1",
+            content={"note": "command: 去二楼搜索"},
+        ))
+
+        results = idx.search("command: 去二楼")
+
+        assert len(results) == 1
+        assert results[0]["record_id"] == "mem-1"
+
+    def test_search_escapes_unterminated_quote(self, tmp_path):
+        idx = SqliteMemoryIndex(tmp_path / "mem.db")
+        idx.upsert(_make_record(
+            record_id="mem-1",
+            content={"note": 'operator said "search second floor'},
+        ))
+
+        results = idx.search('"search second floor')
+
+        assert len(results) == 1
+        assert results[0]["record_id"] == "mem-1"
+
+    def test_search_escapes_trailing_operator(self, tmp_path):
+        idx = SqliteMemoryIndex(tmp_path / "mem.db")
+        idx.upsert(_make_record(
+            record_id="mem-1",
+            content={"note": "二楼 OR 搜索"},
+        ))
+
+        results = idx.search("二楼 OR")
+
+        assert len(results) == 1
+        assert results[0]["record_id"] == "mem-1"
+
     def test_search_respects_limit(self, tmp_path):
         idx = SqliteMemoryIndex(tmp_path / "mem.db")
         for i in range(5):

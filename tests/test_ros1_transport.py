@@ -21,6 +21,14 @@ class FakeServiceProxy:
         return {"accepted": True}
 
 
+class FakeTriggerRequest:
+    __slots__ = ("reason",)
+    _slot_types = ("string",)
+
+    def __init__(self):
+        self.reason = ""
+
+
 class FakeActionClient:
     def __init__(self):
         self.goals = []
@@ -70,6 +78,10 @@ class FakeRos1Module:
         self.service_args = (name, type_name)
         return self.service
 
+    def resolve_service_request_class(self, type_name):
+        assert type_name == "std_srvs/Trigger"
+        return FakeTriggerRequest
+
     def create_action_client(self, name, type_name):
         self.action_args = (name, type_name)
         return self.action_client
@@ -100,7 +112,22 @@ def test_ros1_transport_calls_service_payload():
     assert result["status"] == "succeeded"
     assert result["response"] == {"accepted": True}
     assert fake.service_args == ("/stop", "std_srvs/Trigger")
-    assert fake.service.calls == [{"reason": "test"}]
+    request = fake.service.calls[0]
+    assert isinstance(request, FakeTriggerRequest)
+    assert request.reason == "test"
+
+
+def test_ros1_transport_builds_service_request_from_dict():
+    fake = FakeRos1Module()
+    transport = Ros1Transport(module=fake)
+    endpoint = Ros1EndpointConfig(interface="service", name="/stop", type="std_srvs/Trigger")
+
+    result = transport.execute(endpoint, {"reason": "operator stop"}, Ros1TransportConfig(enabled=True))
+
+    assert result["status"] == "succeeded"
+    request = fake.service.calls[0]
+    assert isinstance(request, FakeTriggerRequest)
+    assert request.reason == "operator stop"
 
 
 def test_ros1_transport_sends_action_goal_and_feedback():

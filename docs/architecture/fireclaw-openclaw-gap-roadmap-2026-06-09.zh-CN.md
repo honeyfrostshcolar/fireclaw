@@ -22,7 +22,8 @@ operator command
 
 Phase 6-10 全部已实现（v1 级别）。FireClaw 现在具备：scheduler 默认路径、mission Gateway、method scopes 默认拒绝、SSE 实时事件流、ROS1 smoke proof、SQLite FTS memory index、plugin descriptor v1。
 
-当前全量测试结果：`.venv/bin/python -m pytest -q`，`688 passed`。
+当前默认全量测试结果：`.venv/bin/python -m pytest -q`，`687 passed, 6 skipped`。
+ROS1 smoke 显式验证：`FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`，`6 passed`。
 
 ## 当前已经实现的能力
 
@@ -48,7 +49,7 @@ Phase 6-10 全部已实现（v1 级别）。FireClaw 现在具备：scheduler �
 | Provider runtime | 已实现 OpenAI-compatible provider、model catalog、LLM trace store | `src/fireclaw_core/provider.py`, `src/fireclaw_core/model_catalog.py`, `src/fireclaw_core/llm_trace.py` |
 | Diagnostics | 已实现 robot doctor 和 fleet doctor 基础检查 | `src/fireclaw_core/doctor.py`, `src/fireclaw_core/fleet_doctor.py` |
 | Log redaction | 已实现 secret pattern redaction（sk-*, Bearer, api_key, password, token） | `src/fireclaw_core/log_redaction.py` |
-| ROS1 smoke proof | 已实现 topic/service/action/cancel/timeout smoke tests（需 ROS1 环境，gated by `@pytest.mark.ros1_smoke`） | `tests/test_ros1_smoke.py` |
+| ROS1 smoke proof | 已实现 topic/service/action/cancel/timeout smoke tests；默认跳过，需 `FIRECLAW_RUN_ROS1_SMOKE=1` 显式启用 | `tests/test_ros1_smoke.py`, `tests/conftest.py` |
 
 ## 与 OpenClaw 的对应关系
 
@@ -96,11 +97,11 @@ Phase 6-10 全部已实现（v1 级别）。FireClaw 现在具备：scheduler �
 
 - ROS1 smoke test infrastructure: session-scoped fixtures for roscore/turtlesim/fibonacci_server
 - 6 个 smoke tests: infrastructure start, topic publish, service call, action goal, action cancel, action timeout
-- 所有 smoke tests gated by `@pytest.mark.ros1_smoke`
+- 所有 smoke tests 使用 `@pytest.mark.ros1_smoke` 标记，默认全量测试跳过；需要 `FIRECLAW_RUN_ROS1_SMOKE=1` 显式启用
 - YAML config examples: turtlesim_teleop, fibonacci_action, fireclaw_robot
 - ROS2 adapter protocol boundary 定义（`Ros2AdapterProtocol`，无实现）
 - Message introspection enhancement: `__slots__` support, better error messages, `validate_payload_against_type`
-- ROS dict-to-message 转换: `_build_ros_message` 支持递归构建
+- ROS dict-to-message 转换: `_build_ros_message` 支持 topic message、service request、action goal 的递归构建
 - Deployment guide: `docs/deployment/ros1-deployment-guide.md`
 
 **剩余未来工作：** 真实机器人硬件 smoke proof（当前仅 ROS1 本地 roscore + tutorials stack）

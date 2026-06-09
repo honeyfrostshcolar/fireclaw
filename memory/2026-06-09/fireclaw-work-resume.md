@@ -901,17 +901,17 @@ Execute all 12 tasks from `docs/superpowers/plans/2026-06-09-phase8-10-completio
 
 ### Known Remaining Gaps
 
-- ROS1 smoke tests need real ROS environment (marker skip mechanism incomplete)
-- 2 pre-existing gateway test failures (test_gateway_confirms_pending_high_risk_skill, test_gateway_denies_high_risk_confirmation_from_operator_without_override)
-- `_build_ros_message` lacks direct unit tests (covered only via integration)
-- FTS5 MATCH query syntax not validated against user input
+- ROS1 smoke tests need real ROS environment when explicitly enabled.
+- Gateway tests are green in the latest full-suite verification.
+- `_build_ros_message` has topic/action conversion unit coverage.
+- FTS5 MATCH query syntax requires hardening for operator natural-language input.
 - SqliteMemoryIndex not thread-safe (documented)
 - Real robot hardware proof still future work
 - ROS2 implementation still future work (protocol boundary only)
 
 ### Next Recommended Steps
 
-1. Fix pre-existing gateway test failures
+1. Harden FTS5 query handling for operator natural-language input.
 2. Add ros1_smoke marker auto-skip in conftest.py
 3. Real LLM smoke test with DeepSeek/Qwen API
 4. ROS2 adapter implementation
@@ -923,3 +923,74 @@ Execute all 12 tasks from `docs/superpowers/plans/2026-06-09-phase8-10-completio
 1. Commit all documentation updates
 2. If continuing engineering: real ROS1 robot hardware test, ROS2 adapter implementation, or stronger memory retrieval
 3. If preparing for paper: use current Phase 6-10 evidence as baseline for research contribution claims
+
+## Update 2026-06-09 Phase 8-10 Hardening Fixes
+
+### Task Goal
+
+Execute `docs/superpowers/plans/2026-06-09-phase8-10-hardening-fixes.md` to fix the four review findings:
+
+- unsafe SQLite FTS5 MATCH queries;
+- ROS1 smoke tests not skipped by default;
+- stale memory/plan/roadmap status;
+- missing ROS1 service dict-to-request conversion.
+
+### Files Modified
+
+- `src/fireclaw_core/memory_index.py`
+  - Added safe FTS query generation and LIKE fallback for operator natural-language query fragments.
+  - Queries such as `command: 去二楼`, `"unterminated`, and `二楼 OR` no longer raise SQLite syntax errors.
+- `tests/test_memory_index.py`
+  - Added unsafe-query regression tests.
+- `tests/test_mission_memory.py`
+  - Added store-level unsafe natural-language query regression test.
+- `tests/conftest.py`
+  - Added collection hook to skip `ros1_smoke` tests unless `FIRECLAW_RUN_ROS1_SMOKE=1` and ROS commands are available.
+- `src/fireclaw_core/ros1_transport.py`
+  - Added `resolve_service_request_class()`.
+  - Converts non-empty service dict payloads into ROS service request objects when the runtime module supports resolution.
+- `tests/test_ros1_transport.py`
+  - Added service request conversion test and updated service payload expectations.
+- `src/fireclaw_core/gateway.py`
+  - Fixed high-risk confirmation race by waiting briefly for the original pending authorization task to leave active controls before submitting the confirmed task.
+- `docs/deployment/ros1-deployment-guide.md`
+- `docs/deployment/fireclaw-deployment-checklist.md`
+- `docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`
+- `docs/superpowers/plans/2026-06-09-phase8-10-completion-and-deployment-cleanup.md`
+- `docs/superpowers/plans/2026-06-09-phase8-10-hardening-fixes.md`
+
+### Commands Executed
+
+- `.venv/bin/python -m pytest tests/test_memory_index.py::TestSearch::test_search_escapes_colon_query tests/test_memory_index.py::TestSearch::test_search_escapes_unterminated_quote tests/test_memory_index.py::TestSearch::test_search_escapes_trailing_operator -q`
+  - RED first: 3 failed with SQLite FTS syntax errors.
+  - GREEN after sanitizer/fallback: `3 passed`.
+- `.venv/bin/python -m pytest tests/test_memory_index.py tests/test_mission_memory.py -q`
+  - GREEN: `47 passed`.
+- `.venv/bin/python -m pytest tests/test_mission_agent.py::test_plan_and_submit_populates_context_with_memories_and_corrections tests/test_mission_agent.py::test_plan_and_submit_empty_context_when_no_memory_configured tests/test_mission_agent.py::test_plan_and_submit_redacts_secrets_in_context -q`
+  - GREEN: `3 passed`.
+- `.venv/bin/python -m pytest tests/test_ros1_smoke.py -q`
+  - GREEN default skip: `6 skipped`.
+- `FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`
+  - GREEN explicit ROS proof: `6 passed, 6 warnings`.
+- `.venv/bin/python -m pytest tests/test_ros1_transport.py::test_ros1_transport_builds_service_request_from_dict -q`
+  - RED first: service received raw dict.
+  - GREEN after conversion: `1 passed`.
+- `.venv/bin/python -m pytest tests/test_ros1_transport.py -q`
+  - GREEN: `15 passed`.
+- `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_confirms_pending_high_risk_skill tests/test_gateway.py::test_gateway_denies_high_risk_confirmation_from_operator_without_override -q`
+  - RED first due `NameError` during race fix; GREEN after correcting `self._wait_until_task_inactive`: `2 passed`.
+- `.venv/bin/python -m pytest tests/test_memory_index.py tests/test_mission_memory.py tests/test_mission_agent.py tests/test_ros1_transport.py tests/test_ros1_smoke.py -q`
+  - GREEN: `110 passed, 6 skipped`.
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `687 passed, 6 skipped in 69.27s`.
+
+### Current Conclusion
+
+The hardening review findings are addressed. Default full-suite verification no longer depends on ROS1 being installed because smoke tests skip by default. The explicit ROS1 smoke proof still passes on this ROS-equipped workstation. FTS-backed memory search now tolerates common operator natural-language syntax and falls back to literal LIKE matching when FTS produces no result.
+
+### Remaining Known Gaps
+
+- Real robot hardware proof remains future work; current ROS1 proof uses local roscore/turtlesim/actionlib tutorials.
+- ROS2 implementation remains future work; current module is a protocol boundary.
+- Memory retrieval still lacks embedding/ranking/provider lifecycle beyond SQLite FTS v1.
+- Plugin SDK runtime hooks remain future work beyond descriptor v1.

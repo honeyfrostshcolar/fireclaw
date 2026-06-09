@@ -42,7 +42,12 @@ class Ros1Transport:
         if endpoint.interface == "service":
             service = module.create_service_proxy(endpoint.name, endpoint.type)
             if payload:
-                response = service(payload)
+                if isinstance(payload, dict) and hasattr(module, "resolve_service_request_class"):
+                    request_cls = module.resolve_service_request_class(endpoint.type)
+                    request = _build_ros_message(request_cls, payload)
+                else:
+                    request = payload
+                response = service(request)
             else:
                 response = service()
             return {"status": "succeeded", "response": _response_to_data(response)}
@@ -140,6 +145,14 @@ class Ros1RuntimeModule:
     def resolve_message_class(self, type_name: str) -> Any:
         """Resolve a ROS message type name (e.g. ``geometry_msgs/Twist``) to its class."""
         return self._resolve_ros_type(type_name, preferred_module="msg")
+
+    def resolve_service_request_class(self, service_type_name: str) -> Any:
+        """Resolve a ROS service type name to its *Request class."""
+        service_cls = self._resolve_ros_type(service_type_name, preferred_module="srv")
+        request_cls_name = service_cls.__name__ + "Request"
+        package = service_type_name.partition("/")[0]
+        module = import_module(f"{package}.srv")
+        return getattr(module, request_cls_name)
 
     def resolve_action_goal_class(self, action_type_name: str) -> Any:
         """Resolve a ROS action type name to its *Goal message class."""

@@ -71,12 +71,15 @@ transport:
 Run smoke tests to verify ROS1 integration before deployment:
 
 ```bash
-# Requires: roscore, turtlesim, actionlib_tutorials
-# Start roscore + turtlesim + fibonacci_server first, then:
-.venv/bin/python -m pytest -m ros1_smoke -v
+# Default test suite skips ROS1 smoke tests.
+.venv/bin/python -m pytest -q
+
+# Explicit ROS1 smoke proof.
+# Requires ROS1 commands on PATH: roscore, rosrun, turtlesim, actionlib_tutorials.
+FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q
 
 # Specific test:
-.venv/bin/python -m pytest -m ros1_smoke tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -v
+FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -q
 ```
 
 Expected: all 6 tests pass (infrastructure, topic, service, action, cancel, timeout).
@@ -135,8 +138,8 @@ curl -X POST http://localhost:18080/tasks/{task_id}/emergency-stop \
 
 ## 10. Pre-Deployment Verification
 
-- [ ] Full test suite passes: `.venv/bin/python -m pytest -q` (expect 688+ passed)
-- [ ] ROS smoke tests pass (if deploying with ROS): `.venv/bin/python -m pytest -m ros1_smoke -v`
+- [ ] Full test suite passes: `.venv/bin/python -m pytest -q` (ROS1 smoke skipped by default)
+- [ ] ROS smoke tests pass (if deploying with ROS): `FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`
 - [ ] Gateway starts without errors on target machine
 - [ ] Robot adapter connects to ROS master (if applicable)
 - [ ] Mission gateway reachable from operator console
