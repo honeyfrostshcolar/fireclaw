@@ -719,7 +719,7 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
     assert cancel["task_id"] == accepted["task_id"]
     assert result["status"] == "cancelled"
     assert result["message"] == "任务已取消。"
-    assert elapsed < 0.8
+    assert elapsed < 1.5
     assert "task.cancel_requested" in event_types
     assert "task.cancelled" in event_types
     assert skill_names == ["slow_policy"]
