@@ -120,24 +120,26 @@ class ApprovalRuntime:
     def expire_stale(self) -> int:
         """Mark expired tokens as resolved(expired). Returns count expired."""
         now = datetime.now(timezone.utc)
-        count = 0
+        expired: List[Tuple[str, str]] = []  # (token_hash, resolved_at)
         for token_hash, record in self._tokens.items():
             if record.resolved:
                 continue
             expires_dt = datetime.fromisoformat(record.expires_at)
             if now >= expires_dt:
-                resolved_at = datetime.now(timezone.utc).isoformat()
-                self._tokens[token_hash] = ApprovalRuntimeToken(
-                    token_hash=record.token_hash,
-                    request_id=record.request_id,
-                    mission_id=record.mission_id,
-                    action=record.action,
-                    risk_level=record.risk_level,
-                    created_at=record.created_at,
-                    expires_at=record.expires_at,
-                    resolved=True,
-                    resolved_at=resolved_at,
-                    resolution="expired",
-                )
-                count += 1
-        return count
+                expired.append((token_hash, now.isoformat()))
+
+        for token_hash, resolved_at in expired:
+            record = self._tokens[token_hash]
+            self._tokens[token_hash] = ApprovalRuntimeToken(
+                token_hash=record.token_hash,
+                request_id=record.request_id,
+                mission_id=record.mission_id,
+                action=record.action,
+                risk_level=record.risk_level,
+                created_at=record.created_at,
+                expires_at=record.expires_at,
+                resolved=True,
+                resolved_at=resolved_at,
+                resolution="expired",
+            )
+        return len(expired)
