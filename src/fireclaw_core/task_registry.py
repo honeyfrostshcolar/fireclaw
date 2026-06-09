@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 
+_UNSET = object()
+"""Sentinel for distinguishing ``None`` (explicit clear) from 'not provided'."""
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -249,17 +253,27 @@ class JsonlTaskRegistryStore:
         self,
         task_id: str,
         *,
-        status: str | None = None,
-        started_at: str | None = None,
-        ended_at: str | None = None,
-        error: str | None = None,
-        result: dict[str, Any] | None = None,
-        delivery_status: str | None = None,
-        last_event_at: str | None = None,
-        progress_summary: str | None = None,
-        terminal_summary: str | None = None,
-        terminal_outcome: str | None = None,
+        status: str | None = _UNSET,  # type: ignore[assignment]
+        started_at: str | None | object = _UNSET,
+        ended_at: str | None | object = _UNSET,
+        error: str | None | object = _UNSET,
+        result: dict[str, Any] | None | object = _UNSET,
+        delivery_status: str | None | object = _UNSET,
+        last_event_at: str | None | object = _UNSET,
+        progress_summary: str | None | object = _UNSET,
+        terminal_summary: str | None | object = _UNSET,
+        terminal_outcome: str | None | object = _UNSET,
     ) -> TaskRecord:
+        """Update a registry record.
+
+        Fields set to ``_UNSET`` (the default) preserve the current value.
+        Fields explicitly set to ``None`` clear the field.  This allows
+        callers to reset ``error``, ``result``, etc. after a retry succeeds.
+        """
+
+        def _resolve(new: Any, current: Any) -> Any:
+            return current if new is _UNSET else new
+
         current = self.get(task_id)
         if current is None:
             raise KeyError(f"Task registry record not found: {task_id}")
@@ -271,8 +285,8 @@ class JsonlTaskRegistryStore:
             owner_id=current.owner_id,
             scope_kind=current.scope_kind,
             command=current.command,
-            status=status if status is not None else current.status,
-            delivery_status=delivery_status if delivery_status is not None else current.delivery_status,
+            status=_resolve(status, current.status),
+            delivery_status=_resolve(delivery_status, current.delivery_status),
             notify_policy=current.notify_policy,
             created_at=current.created_at,
             task_kind=current.task_kind,
@@ -282,16 +296,16 @@ class JsonlTaskRegistryStore:
             agent_id=current.agent_id,
             run_id=current.run_id,
             label=current.label,
-            started_at=started_at if started_at is not None else current.started_at,
-            ended_at=ended_at if ended_at is not None else current.ended_at,
-            last_event_at=last_event_at if last_event_at is not None else current.last_event_at,
+            started_at=_resolve(started_at, current.started_at),
+            ended_at=_resolve(ended_at, current.ended_at),
+            last_event_at=_resolve(last_event_at, current.last_event_at),
             cleanup_after=current.cleanup_after,
-            error=error if error is not None else current.error,
-            result=result if result is not None else current.result,
+            error=_resolve(error, current.error),
+            result=_resolve(result, current.result),
             dedupe_key=current.dedupe_key,
-            progress_summary=progress_summary if progress_summary is not None else current.progress_summary,
-            terminal_summary=terminal_summary if terminal_summary is not None else current.terminal_summary,
-            terminal_outcome=terminal_outcome if terminal_outcome is not None else current.terminal_outcome,
+            progress_summary=_resolve(progress_summary, current.progress_summary),
+            terminal_summary=_resolve(terminal_summary, current.terminal_summary),
+            terminal_outcome=_resolve(terminal_outcome, current.terminal_outcome),
         )
         self._append(record.to_dict())
         return record

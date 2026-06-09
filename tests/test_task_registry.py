@@ -281,6 +281,33 @@ def test_jsonl_store_update_missing_raises(tmp_path):
         pass
 
 
+def test_jsonl_store_update_clears_fields_to_none(tmp_path):
+    """update() must allow clearing optional fields back to None."""
+    store = JsonlTaskRegistryStore(tmp_path / "registry.jsonl")
+    store.create(
+        task_id="t1",
+        runtime="robot_gateway",
+        requester_session_id="s1",
+        owner_id="o1",
+        scope_kind="mission",
+        command="搜索",
+    )
+    # Set error and result
+    store.update("t1", status="failed", error="boom", result={"code": 1})
+    rec = store.get("t1")
+    assert rec is not None
+    assert rec.error == "boom"
+    assert rec.result == {"code": 1}
+
+    # Clear them back to None
+    store.update("t1", status="running", error=None, result=None)
+    rec = store.get("t1")
+    assert rec is not None
+    assert rec.error is None
+    assert rec.result is None
+    assert rec.status == "running"
+
+
 def test_jsonl_store_corrupt_line_tolerance(tmp_path):
     path = tmp_path / "registry.jsonl"
     path.write_text(
