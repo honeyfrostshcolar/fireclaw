@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fireclaw_core.memory_index import SqliteMemoryIndex
 
-MEMORY_RECORD_TYPES = {"outcome", "observation", "correction", "lesson"}
+MEMORY_RECORD_TYPES = {
+    "command",
+    "plan",
+    "observation",
+    "outcome",
+    "correction",
+    "lesson",
+}
 
 
 @dataclass(frozen=True)
@@ -58,6 +67,50 @@ class MissionMemoryStore:
             handle.write("\n")
         if self.index is not None:
             self.index.upsert(record.to_dict())
+
+    def ingest_transcript(
+        self,
+        *,
+        mission_id: str,
+        entry_type: str,
+        content: dict[str, Any],
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
+        created_at: str | None = None,
+    ) -> MissionMemoryRecord:
+        """Append a structured transcript entry to memory.
+
+        This is a convenience wrapper around :meth:`append` that generates
+        a ``record_id`` and defaults ``created_at`` to the current UTC time
+        when not provided.
+
+        Parameters
+        ----------
+        mission_id:
+            The mission this entry belongs to.
+        entry_type:
+            One of the allowed record types (e.g. ``"command"``, ``"plan"``,
+            ``"observation"``, ``"outcome"``, ``"correction"``, ``"lesson"``).
+        content:
+            Arbitrary structured content for this entry.
+        robot_id:
+            Optional identifier of the robot associated with this entry.
+        subtask_id:
+            Optional identifier of the subtask associated with this entry.
+        created_at:
+            ISO-8601 timestamp.  Defaults to current UTC time when ``None``.
+        """
+        record = MissionMemoryRecord(
+            record_id=uuid.uuid4().hex,
+            mission_id=mission_id,
+            record_type=entry_type,
+            content=content,
+            robot_id=robot_id,
+            subtask_id=subtask_id,
+            created_at=created_at or datetime.now(timezone.utc).isoformat(),
+        )
+        self.append(record)
+        return record
 
     def list_records(
         self,

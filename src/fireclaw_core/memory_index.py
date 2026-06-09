@@ -81,6 +81,12 @@ class SqliteMemoryIndex:
                 record_id UNINDEXED,
                 text_blob
             );
+
+            CREATE TABLE IF NOT EXISTS memory_embeddings (
+                record_id TEXT PRIMARY KEY,
+                embedding BLOB NOT NULL,
+                dimensions INTEGER NOT NULL
+            );
             """
         )
 
@@ -248,6 +254,72 @@ class SqliteMemoryIndex:
         """
         return conn.execute(sql, params).fetchall()
 
+    def store_embedding(
+        self, record_id: str, embedding: list[float]
+    ) -> None:
+        """Store an embedding vector for a record.
+
+        The embedding is stored as a compact byte array.  If an embedding
+        already exists for the given ``record_id`` it is replaced.
+        """
+        if not record_id or not embedding:
+            return
+        conn = self._get_conn()
+        blob = _floats_to_bytes(embedding)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_embeddings
+                (record_id, embedding, dimensions)
+            VALUES (?, ?, ?)
+            """,
+            (record_id, blob, len(embedding)),
+        )
+        conn.commit()
+
+    def get_embedding(self, record_id: str) -> list[float] | None:
+        """Retrieve the stored embedding vector for a record.
+
+        Returns ``None`` when no embedding exists for the given record.
+        """
+        if not record_id:
+            return None
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT embedding FROM memory_embeddings WHERE record_id = ?",
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _bytes_to_floats(row["embedding"])
+
+    def search_by_embedding(
+        self,
+        query_embedding: list[float],
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return records ranked by cosine similarity to the query embedding.
+
+        Each result dict contains ``record_id`` and ``score`` keys, sorted
+        by descending score.
+        """
+        if limit <= 0:
+            return []
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT record_id, embedding FROM memory_embeddings"
+        ).fetchall()
+        scored: list[tuple[str, float]] = []
+        for row in rows:
+            stored = _bytes_to_floats(row["embedding"])
+            sim = _cosine_similarity(query_embedding, stored)
+            scored.append((row["record_id"], sim))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [
+            {"record_id": rid, "score": score}
+            for rid, score in scored[:limit]
+        ]
+
     def rebuild(self, records: Iterable[dict[str, Any]]) -> int:
         """Rebuild the entire index from a sequence of records.
 
@@ -257,6 +329,7 @@ class SqliteMemoryIndex:
         conn = self._get_conn()
         conn.execute("DELETE FROM memory_records")
         conn.execute("DELETE FROM memory_fts")
+        conn.execute("DELETE FROM memory_embeddings")
         count = 0
         for record in records:
             record_id = record.get("record_id")
@@ -332,6 +405,30 @@ def _safe_fts_query(query: str) -> str:
     if not terms:
         return "*"
     return " ".join(f'"{term.replace(chr(34), chr(34) + chr(34))}"' for term in terms)
+
+
+def _floats_to_bytes(values: list[float]) -> bytes:
+    """Pack a list of floats into a compact byte string (big-endian doubles)."""
+    import struct
+    return struct.pack(f">{len(values)}d", *values)
+
+
+def _bytes_to_floats(data: bytes) -> list[float]:
+    """Unpack a byte string back into a list of floats."""
+    import struct
+    count = len(data) // 8
+    return list(struct.unpack(f">{count}d", data))
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two equal-length vectors."""
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
