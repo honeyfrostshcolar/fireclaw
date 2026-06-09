@@ -275,3 +275,37 @@ def test_ros1_service_call_clear(ros_master, turtlesim_node):
     result = transport.execute(endpoint, {}, config)
 
     assert result["status"] == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# Action smoke test – send Fibonacci goal via Ros1Transport
+# ---------------------------------------------------------------------------
+
+def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server):
+    """Send Fibonacci goal via Ros1Transport and verify result."""
+    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros1_transport import Ros1Transport
+
+    module = _make_real_ros_module()
+    feedback_received: list[dict] = []
+    transport = Ros1Transport(module=module, feedback_sink=feedback_received.append)
+    endpoint = Ros1EndpointConfig(
+        interface="action",
+        name="/fibonacci",
+        type="actionlib_tutorials/FibonacciAction",
+        cancel_supported=True,
+        feedback_supported=True,
+    )
+    config = Ros1TransportConfig(
+        enabled=True,
+        wait_for_server_seconds=5.0,
+        wait_for_result_seconds=10.0,
+    )
+
+    result = transport.execute(endpoint, {"order": 5}, config)
+
+    assert result["status"] == "succeeded"
+    response = result["response"]
+    assert "sequence" in response
+    assert response["sequence"] == [0, 1, 1, 2, 3, 5]
+    assert len(feedback_received) > 0, "Should have received at least one feedback"
