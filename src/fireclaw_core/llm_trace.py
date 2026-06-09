@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from fireclaw_core.log_redaction import redact_secrets
 from fireclaw_core.provider import TokenUsage
 
 
@@ -62,6 +63,53 @@ class LLMTraceStore:
                 return trace
         return None
 
+    def redact_all(self) -> int:
+        """Apply secret redaction to all stored traces.
+
+        Returns the number of traces that were modified.
+        """
+        traces = self._read_all()
+        if not traces:
+            return 0
+
+        redacted_count = 0
+        redacted_traces: list[LLMTraceRecord] = []
+
+        for trace in traces:
+            original = trace.to_dict()
+            new_messages = _redact_messages(trace.messages)
+            new_response = _redact_dict_values(trace.response) if trace.response else None
+
+            if new_messages != trace.messages or new_response != trace.response:
+                redacted_count += 1
+
+            redacted_traces.append(
+                LLMTraceRecord(
+                    trace_id=trace.trace_id,
+                    timestamp=trace.timestamp,
+                    provider=trace.provider,
+                    model=trace.model,
+                    messages=new_messages,
+                    response=new_response,
+                    tool_calls=trace.tool_calls,
+                    latency_ms=trace.latency_ms,
+                    token_usage=trace.token_usage,
+                    status=trace.status,
+                    error=trace.error,
+                )
+            )
+
+        if redacted_count == 0:
+            return 0
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as handle:
+            for trace in redacted_traces:
+                handle.write(json.dumps(trace.to_dict(), ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+
+        return redacted_count
+
     def _read_all(self) -> list[LLMTraceRecord]:
         """Read all valid traces from the JSONL file."""
         if not self.path.exists():
@@ -104,3 +152,30 @@ def _trace_from_dict(data: dict[str, Any]) -> LLMTraceRecord:
         status=str(data.get("status") or "unknown"),
         error=data.get("error") if isinstance(data.get("error"), str) else None,
     )
+
+
+def _redact_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Redact secrets in message content fields."""
+    result = []
+    for msg in messages:
+        new_msg = dict(msg)
+        if isinstance(new_msg.get("content"), str):
+            new_msg["content"] = redact_secrets(new_msg["content"])
+        elif isinstance(new_msg.get("content"), list):
+            new_msg["content"] = [
+                {**part, "text": redact_secrets(part["text"])} if isinstance(part.get("text"), str) else part
+                for part in new_msg["content"]
+            ]
+        result.append(new_msg)
+    return result
+
+
+def _redact_dict_values(data: dict[str, Any]) -> dict[str, Any]:
+    """Redact secrets in top-level string values of a dict."""
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, str):
+            result[key] = redact_secrets(value)
+        else:
+            result[key] = value
+    return result

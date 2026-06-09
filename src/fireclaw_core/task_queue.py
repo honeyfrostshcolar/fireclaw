@@ -111,6 +111,34 @@ class JsonlTaskQueue:
             )
         return lost
 
+    def compact(self, keep_terminal: int = 100) -> int:
+        """Remove old terminal records, keeping only the most recent ones.
+
+        Returns the number of records removed.
+        """
+        records = self.list_records()
+        non_terminal = [r for r in records if not r.is_terminal]
+        terminal = [r for r in records if r.is_terminal]
+
+        # Keep only the last `keep_terminal` terminal records by created_at
+        terminal.sort(key=lambda r: r.created_at)
+        removed_count = max(0, len(terminal) - keep_terminal)
+        kept_terminal = terminal[removed_count:]
+
+        kept = non_terminal + kept_terminal
+
+        if removed_count == 0:
+            return 0
+
+        # Rewrite the file with only kept records
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as handle:
+            for record in kept:
+                handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+
+        return removed_count
+
     def summary(self) -> dict[str, Any]:
         records = self.list_records()
         active = [record for record in records if not record.is_terminal]
