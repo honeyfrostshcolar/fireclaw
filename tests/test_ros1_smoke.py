@@ -309,3 +309,69 @@ def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server):
     assert "sequence" in response
     assert response["sequence"] == [0, 1, 1, 2, 3, 5]
     assert len(feedback_received) > 0, "Should have received at least one feedback"
+
+
+# ---------------------------------------------------------------------------
+# Action cancel smoke test – cancel Fibonacci goal after first feedback
+# ---------------------------------------------------------------------------
+
+def test_ros1_action_cancel(ros_master, fibonacci_server):
+    """Send Fibonacci goal and cancel it after first feedback."""
+    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros1_transport import Ros1Transport
+
+    module = _make_real_ros_module()
+    cancel_count = 0
+
+    def on_feedback(feedback: dict) -> None:
+        nonlocal cancel_count
+        cancel_count += 1
+
+    transport = Ros1Transport(module=module, feedback_sink=on_feedback)
+    endpoint = Ros1EndpointConfig(
+        interface="action",
+        name="/fibonacci",
+        type="actionlib_tutorials/FibonacciAction",
+        cancel_supported=True,
+        feedback_supported=True,
+    )
+    config = Ros1TransportConfig(
+        enabled=True,
+        wait_for_server_seconds=5.0,
+        wait_for_result_seconds=10.0,
+    )
+
+    def should_cancel() -> bool:
+        return cancel_count >= 1
+
+    result = transport.execute(endpoint, {"order": 100}, config, cancellation_requested=should_cancel)
+
+    assert result["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Action timeout smoke test – verify timeout on short wait
+# ---------------------------------------------------------------------------
+
+def test_ros1_action_timeout(ros_master, fibonacci_server):
+    """Verify timeout produces correct status when result takes too long."""
+    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros1_transport import Ros1Transport
+
+    module = _make_real_ros_module()
+    transport = Ros1Transport(module=module)
+    endpoint = Ros1EndpointConfig(
+        interface="action",
+        name="/fibonacci",
+        type="actionlib_tutorials/FibonacciAction",
+        cancel_supported=True,
+    )
+    config = Ros1TransportConfig(
+        enabled=True,
+        wait_for_server_seconds=5.0,
+        wait_for_result_seconds=0.01,  # Too short for computation
+    )
+
+    result = transport.execute(endpoint, {"order": 100}, config)
+
+    assert result["status"] == "timeout"
