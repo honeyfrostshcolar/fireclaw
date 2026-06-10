@@ -53,6 +53,8 @@ class MissionGateway:
         approval_runtime: ApprovalRuntime | None = None,
         approval_relay: ApprovalRelay | None = None,
         plugin_runtime: Any | None = None,
+        task_registry: Any | None = None,
+        subagent_registry: Any | None = None,
     ) -> None:
         self.config = config
         self.mission_agent = mission_agent
@@ -61,6 +63,8 @@ class MissionGateway:
         self.approval_runtime = approval_runtime
         self.approval_relay = approval_relay
         self.plugin_runtime = plugin_runtime
+        self.task_registry = task_registry
+        self.subagent_registry = subagent_registry
         self._approval_relays: dict[str, dict[str, Any]] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -329,7 +333,12 @@ class MissionGateway:
         }
 
     def fleet_doctor(self) -> dict[str, Any]:
-        doctor = FleetDoctor(registry=self.registry, subagent_client=self.subagent_client)
+        doctor = FleetDoctor(
+            registry=self.registry,
+            subagent_client=self.subagent_client,
+            task_registry=self.task_registry,
+            subagent_registry=self.subagent_registry,
+        )
         findings = doctor.diagnose()
         return doctor.summary(findings)
 

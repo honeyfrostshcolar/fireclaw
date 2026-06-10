@@ -780,6 +780,71 @@ def test_fleet_doctor_empty_registry():
         gw.stop()
 
 
+def test_fleet_doctor_exposes_lifecycle(tmp_path):
+    """Gateway should expose lifecycle maintenance in fleet doctor when registries are provided."""
+    from datetime import datetime, timezone
+    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.task_registry import JsonlTaskRegistryStore
+
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    tasks = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+    subagents = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+
+    # Create a task with a very recent timestamp so it is not stale at 300s threshold
+    now_iso = datetime.now(timezone.utc).isoformat()
+    tasks.create(
+        task_id="fresh-t",
+        runtime="robot_gateway",
+        requester_session_id="mission-1",
+        owner_id="robot-1",
+        scope_kind="mission",
+        command="search",
+        created_at=now_iso,
+    )
+
+    agent = _make_agent(registry=registry, subagent_client=client)
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+        task_registry=tasks,
+        subagent_registry=subagents,
+    )
+    base = _start_gateway(gw)
+    try:
+        status, body = _json_request(base, "GET", "/fleet/doctor")
+        assert status == 200
+        assert "lifecycle" in body
+        assert body["lifecycle"]["status"] == "ok"
+        assert body["lifecycle"]["stale_tasks"] == []
+        assert body["lifecycle"]["orphaned_subagents"] == []
+        assert "checked_at" in body["lifecycle"]
+    finally:
+        gw.stop()
+
+
+def test_fleet_doctor_no_lifecycle_without_registries():
+    """Gateway fleet doctor should omit lifecycle section when registries not provided."""
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    agent = _make_agent(registry=registry, subagent_client=client)
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+    )
+    base = _start_gateway(gw)
+    try:
+        status, body = _json_request(base, "GET", "/fleet/doctor")
+        assert status == 200
+        assert "lifecycle" not in body
+    finally:
+        gw.stop()
+
+
 # ---------------------------------------------------------------------------
 # Tests: Auth
 # ---------------------------------------------------------------------------

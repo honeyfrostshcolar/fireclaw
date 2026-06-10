@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from fireclaw_core.lifecycle_maintenance import LifecycleMaintenanceRunner
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.subagent_client import RobotSubagentClient
 
@@ -33,14 +34,18 @@ class FleetDoctor:
     subagent_client: RobotSubagentClient = field(default_factory=RobotSubagentClient)
     ros1_skill_remapping: dict[str, str] = field(default_factory=dict)
     approval_relay_config: dict[str, Any] | None = None
+    task_registry: Any | None = None
+    subagent_registry: Any | None = None
 
-    def diagnose(self) -> list[FleetDoctorFinding]:
+    def diagnose(self, *, now: str | None = None, stale_threshold_seconds: float = 300.0) -> list[FleetDoctorFinding]:
         """Run all fleet checks and return findings."""
         findings: list[FleetDoctorFinding] = []
         findings.extend(self._check_registry())
         findings.extend(self._check_reachability())
         findings.extend(self._check_capabilities())
         findings.extend(self._check_onboarding())
+        # Store lifecycle result for summary() to include
+        self._last_lifecycle = self._check_lifecycle(now=now, stale_threshold_seconds=stale_threshold_seconds)
         return findings
 
     def _check_registry(self) -> list[FleetDoctorFinding]:
@@ -192,14 +197,38 @@ class FleetDoctor:
 
         return findings
 
+    def _check_lifecycle(
+        self,
+        *,
+        now: str | None = None,
+        stale_threshold_seconds: float = 300.0,
+    ) -> dict[str, Any] | None:
+        """Run lifecycle maintenance when both registries are provided."""
+        if self.task_registry is None or self.subagent_registry is None:
+            return None
+        runner = LifecycleMaintenanceRunner(
+            task_registry=self.task_registry,
+            subagent_registry=self.subagent_registry,
+        )
+        return runner.run(now=now, stale_threshold_seconds=stale_threshold_seconds)
+
     def summary(self, findings: list[FleetDoctorFinding]) -> dict[str, Any]:
         """Summarize findings by severity."""
         errors = [f for f in findings if f.severity == "error"]
         warnings = [f for f in findings if f.severity == "warning"]
-        return {
+        result: dict[str, Any] = {
             "status": "healthy" if not errors else "unhealthy",
             "error_count": len(errors),
             "warning_count": len(warnings),
             "total_count": len(findings),
             "findings": [f.to_dict() for f in findings],
         }
+        lifecycle = getattr(self, "_last_lifecycle", None)
+        if lifecycle is not None:
+            result["lifecycle"] = {
+                "status": lifecycle["status"],
+                "stale_tasks": lifecycle["stale_tasks"],
+                "orphaned_subagents": lifecycle["orphaned_subagents"],
+                "checked_at": lifecycle["checked_at"],
+            }
+        return result

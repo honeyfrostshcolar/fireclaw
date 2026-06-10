@@ -233,3 +233,116 @@ def test_onboarding_clean_fleet_has_no_warnings():
     errors = [f for f in onboarding if f.severity == "error"]
     assert len(warnings) == 0
     assert len(errors) == 0
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle maintenance integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_fleet_doctor_reports_lifecycle_maintenance_warnings(tmp_path):
+    """Fleet doctor should include lifecycle section when stale tasks and orphaned subagents exist."""
+    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.task_registry import JsonlTaskRegistryStore
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+
+    # Set up task and subagent registries with test data
+    tasks = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+    subagents = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+
+    # Create one stale active task (created long ago, still active)
+    tasks.create(
+        task_id="stale-task-1",
+        runtime="robot_gateway",
+        requester_session_id="mission-1",
+        owner_id="r1",
+        scope_kind="mission",
+        command="search",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    # Create one orphaned subagent (child_task_id has no matching task)
+    subagents.create(
+        parent_mission_id="mission-1",
+        robot_id="r1",
+        child_task_id="ghost-child-1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    doctor = FleetDoctor(
+        registry=registry,
+        subagent_client=client,
+        task_registry=tasks,
+        subagent_registry=subagents,
+    )
+
+    # Force a known "now" so stale detection is deterministic
+    findings = doctor.diagnose(now="2026-06-10T00:10:00+00:00", stale_threshold_seconds=60)
+    report = doctor.summary(findings)
+
+    assert report["lifecycle"]["status"] == "warn"
+    assert report["lifecycle"]["stale_tasks"]
+    assert report["lifecycle"]["orphaned_subagents"]
+
+
+def test_fleet_doctor_lifecycle_ok_when_registries_healthy(tmp_path):
+    """Fleet doctor lifecycle section should be 'ok' when no stale tasks or orphans exist."""
+    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.task_registry import JsonlTaskRegistryStore
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+
+    tasks = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+    subagents = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+
+    # Healthy: task + matching subagent, both recent
+    tasks.create(
+        task_id="child-1",
+        runtime="robot_gateway",
+        requester_session_id="mission-1",
+        owner_id="r1",
+        scope_kind="mission",
+        command="search",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+    subagents.create(
+        parent_mission_id="mission-1",
+        robot_id="r1",
+        child_task_id="child-1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    doctor = FleetDoctor(
+        registry=registry,
+        subagent_client=client,
+        task_registry=tasks,
+        subagent_registry=subagents,
+    )
+
+    findings = doctor.diagnose(now="2026-06-10T00:01:00+00:00", stale_threshold_seconds=300)
+    report = doctor.summary(findings)
+
+    assert report["lifecycle"]["status"] == "ok"
+    assert report["lifecycle"]["stale_tasks"] == []
+    assert report["lifecycle"]["orphaned_subagents"] == []
+
+
+def test_fleet_doctor_no_lifecycle_section_without_registries():
+    """Fleet doctor should not include lifecycle section when registries not provided."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+
+    doctor = FleetDoctor(registry=registry, subagent_client=client)
+    findings = doctor.diagnose()
+    report = doctor.summary(findings)
+
+    assert "lifecycle" not in report
