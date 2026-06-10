@@ -10,6 +10,8 @@ behaviour exactly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from fireclaw_core.memory_index import SqliteMemoryIndex, _cosine_similarity
@@ -72,7 +74,7 @@ class MemoryRetriever:
 
     def __init__(
         self,
-        index: SqliteMemoryIndex,
+        index: SqliteMemoryIndex | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         *,
         lexical_weight: float = 0.6,
@@ -97,10 +99,21 @@ class MemoryRetriever:
             except Exception:
                 embedding_available = False
 
+        last_indexing_timestamp: str | None = None
+        if index_available:
+            try:
+                index_path = getattr(self._index, "_path", None)
+                if index_path is not None:
+                    mtime = Path(index_path).stat().st_mtime
+                    last_indexing_timestamp = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+
         return {
             "lexical_index_available": index_available,
             "embedding_provider_configured": embedding_configured,
             "embedding_provider_available": embedding_available,
+            "last_indexing_timestamp": last_indexing_timestamp,
             "lexical_weight": self._lexical_weight,
             "embedding_weight": self._embedding_weight,
         }
@@ -113,6 +126,9 @@ class MemoryRetriever:
         of lexical + embedding scores.
         """
         if limit <= 0:
+            return []
+
+        if self._index is None:
             return []
 
         # Step 1: Lexical search — always run for candidate retrieval.

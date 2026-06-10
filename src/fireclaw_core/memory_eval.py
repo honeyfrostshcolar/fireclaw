@@ -76,7 +76,7 @@ def evaluate_retrieval(
     Each case has:
     - query: the search query
     - must_match: list of patterns that must appear in returned content
-    - record_type: optional filter for record type
+    - record_type: optional expected record type (matched against returned records)
 
     Returns an ``EvalReport`` with hit rate, per-case results, and missing cases.
     """

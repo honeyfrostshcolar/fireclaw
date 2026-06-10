@@ -438,3 +438,42 @@ class TestTranscriptIngestion:
         results = store.search_indexed("basement")
         assert len(results) == 1
         assert results[0].record_id == record.record_id
+
+
+def test_memory_retriever_status_reports_last_indexing_timestamp(tmp_path):
+    """status() includes last_indexing_timestamp when index exists."""
+    from fireclaw_core.memory_index import SqliteMemoryIndex
+    from fireclaw_core.memory_retrieval import MemoryRetriever
+
+    index = SqliteMemoryIndex(tmp_path / "mem.db")
+    # Ingest a record so the index file has content.
+    index.upsert({
+        "record_id": "r1",
+        "mission_id": "m-1",
+        "record_type": "observation",
+        "content": {"note": "test"},
+        "source": "test",
+        "created_at": "2026-06-10T00:00:00+00:00",
+    })
+    retriever = MemoryRetriever(index=index)
+
+    result = retriever.status()
+
+    assert result["lexical_index_available"] is True
+    assert "last_indexing_timestamp" in result
+    assert result["last_indexing_timestamp"] is not None
+    # Should be a valid ISO timestamp.
+    from datetime import datetime
+    datetime.fromisoformat(result["last_indexing_timestamp"])
+
+
+def test_memory_retriever_status_no_index(tmp_path):
+    """status() returns None for last_indexing_timestamp when no index."""
+    from fireclaw_core.memory_retrieval import MemoryRetriever
+
+    retriever = MemoryRetriever(index=None)
+
+    result = retriever.status()
+
+    assert result["lexical_index_available"] is False
+    assert result["last_indexing_timestamp"] is None
