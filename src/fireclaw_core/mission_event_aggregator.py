@@ -19,11 +19,13 @@ class MissionEventAggregator:
         subagent_client: SubagentClient,
         mission_registry: JsonlMissionRegistry,
         subagent_registry: Any | None = None,
+        task_registry: Any | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client
         self.mission_registry = mission_registry
         self.subagent_registry = subagent_registry
+        self.task_registry = task_registry
 
     def aggregate(
         self,
@@ -77,6 +79,22 @@ class MissionEventAggregator:
                         status=status,
                         updated_at=str(event.get("timestamp") or datetime.now(timezone.utc).isoformat()),
                     )
+
+        # Route terminal robot events into TaskRegistry
+        if self.task_registry is not None:
+            for event in all_events:
+                status = _terminal_status_from_event(event)
+                task_id = event.get("task_id")
+                if status is not None and isinstance(task_id, str):
+                    registry_task_id = f"{mission_id}:{task_id}"
+                    try:
+                        self.task_registry.update(
+                            task_id=registry_task_id,
+                            status=status,
+                            ended_at=str(event.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+                        )
+                    except KeyError:
+                        pass  # Record not yet projected; skip
 
         return {
             "mission_id": mission_id,

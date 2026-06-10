@@ -292,6 +292,8 @@ class MissionAgent:
             registry=self.registry,
             subagent_client=self.subagent_client,
             mission_registry=self.mission_registry,
+            subagent_registry=self.subagent_registry,
+            task_registry=self.task_registry,
         )
         return aggregator.aggregate(mission_id, robot_id=robot_id, event_type=event_type, limit=limit)
 
