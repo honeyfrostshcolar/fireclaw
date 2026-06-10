@@ -86,6 +86,7 @@ class PluginRuntime:
     def __init__(self) -> None:
         self._descriptors: list[FireClawPluginDescriptor] = []
         self._callables: dict[tuple[str, str], list[tuple[str, PluginHookCallback]]] = {}
+        self.plugin_policy: Any = None  # PluginPolicy | None — avoid circular import
 
     # ------------------------------------------------------------------
     # Loading
@@ -173,12 +174,27 @@ class PluginRuntime:
         """Register a callable for a known hook.
 
         Raises ``ValueError`` if *hook_type* or *hook_name* is not in the
-        known sets.
+        known sets, or if a plugin policy rejects the registration.
         """
         self._validate_known_hook(hook_type, hook_name, plugin_id)
+        if self.plugin_policy is not None:
+            descriptor = self._find_descriptor(plugin_id)
+            if descriptor is not None:
+                result = self.plugin_policy.evaluate_registration(
+                    descriptor, hook_type, hook_name,
+                )
+                if not result.allowed:
+                    raise ValueError(result.reason)
         self._callables.setdefault((hook_type, hook_name), []).append(
             (plugin_id, callback)
         )
+
+    def _find_descriptor(self, plugin_id: str) -> FireClawPluginDescriptor | None:
+        """Return the descriptor with *plugin_id*, or ``None``."""
+        for d in self._descriptors:
+            if d.plugin_id == plugin_id:
+                return d
+        return None
 
     def run_provider_hooks(
         self, hook_name: str, payload: dict[str, Any]
