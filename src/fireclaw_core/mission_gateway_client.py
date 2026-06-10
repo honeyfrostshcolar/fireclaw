@@ -6,6 +6,7 @@ urllib.request (stdlib). Supports Bearer token auth and X-Operator-Scopes header
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any
 from urllib import request
 from urllib.error import HTTPError
@@ -69,6 +70,76 @@ class MissionGatewayClient:
         """GET /fleet/doctor"""
         return self._get("/fleet/doctor")
 
+    def stream_mission_events(
+        self,
+        mission_id: str,
+        *,
+        after_sequence: int | None = None,
+        last_event_id: int | None = None,
+        max_events: int | None = None,
+        timeout: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream SSE events from /missions/{id}/events/stream.
+
+        Yields parsed event dicts. Supports cursor replay via after_sequence
+        or last_event_id. Stops after max_events or on connection close/timeout.
+
+        For reconnect, pass after_sequence=<last_seen_sequence>.
+        """
+        path = f"/missions/{mission_id}/events/stream"
+        params: list[str] = []
+        if after_sequence is not None:
+            params.append(f"after_sequence={after_sequence}")
+        if params:
+            path = f"{path}?{'&'.join(params)}"
+
+        headers = self._headers()
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = str(last_event_id)
+
+        url = f"{self._base_url}{path}"
+        req = request.Request(url, method="GET", headers=headers)
+        effective_timeout = timeout if timeout is not None else self._timeout
+
+        count = 0
+        try:
+            with request.urlopen(req, timeout=effective_timeout) as resp:
+                for event in _iter_sse_events(resp):
+                    yield event
+                    count += 1
+                    if max_events is not None and count >= max_events:
+                        return
+        except Exception:
+            # On any error (timeout, connection reset), return what we have.
+            # Caller can reconnect with after_sequence=<last_seen_sequence>.
+            return
+
+    def stream_mission_events_with_cursor(
+        self,
+        mission_id: str,
+        *,
+        after_sequence: int | None = None,
+        max_events: int | None = None,
+        timeout: float | None = None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Like stream_mission_events, but returns (events, last_sequence).
+
+        The last_sequence can be passed to after_sequence on reconnect.
+        """
+        events: list[dict[str, Any]] = []
+        last_seq = after_sequence
+        for event in self.stream_mission_events(
+            mission_id,
+            after_sequence=after_sequence,
+            max_events=max_events,
+            timeout=timeout,
+        ):
+            events.append(event)
+            seq = event.get("sequence")
+            if isinstance(seq, int):
+                last_seq = seq
+        return events, last_seq
+
     # ------------------------------------------------------------------
     # Internal HTTP helpers
     # ------------------------------------------------------------------
@@ -106,3 +177,69 @@ class MissionGatewayClient:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError:
             raise
+
+
+# ---------------------------------------------------------------------------
+# Module-level SSE parser
+# ---------------------------------------------------------------------------
+
+
+def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
+    """Parse SSE event blocks from an HTTP response.
+
+    Yields parsed data dicts for each complete event block.
+    Handles: event:, id:, data:, comments (:), and blank-line delimiters.
+    """
+    current_event: dict[str, str] = {}
+    data_lines: list[str] = []
+
+    for raw_line in response:
+        line = raw_line.decode("utf-8").rstrip("\r\n")
+
+        if line == "":
+            # Blank line = end of event block
+            parsed = _finalize_sse_event(data_lines, current_event)
+            if parsed is not None:
+                yield parsed
+            current_event = {}
+            data_lines = []
+            continue
+
+        if line.startswith(":"):
+            # Comment (e.g., heartbeat) — skip
+            continue
+
+        if line.startswith("event:"):
+            current_event["event"] = line[6:].strip()
+        elif line.startswith("id:"):
+            current_event["id"] = line[3:].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].removeprefix(" "))
+        # Ignore unknown fields
+
+    # Handle final event without trailing blank line
+    parsed = _finalize_sse_event(data_lines, current_event)
+    if parsed is not None:
+        yield parsed
+
+
+def _finalize_sse_event(
+    data_lines: list[str],
+    current_event: dict[str, str],
+) -> dict[str, Any] | None:
+    """Convert accumulated SSE data lines into a parsed event dict."""
+    if not data_lines:
+        return None
+    data_str = "\n".join(data_lines)
+    try:
+        parsed: dict[str, Any] = json.loads(data_str)
+    except (json.JSONDecodeError, ValueError):
+        parsed = {"raw": data_str}
+    if "event" in current_event:
+        parsed.setdefault("event_type", current_event["event"])
+    if "id" in current_event:
+        try:
+            parsed.setdefault("sequence", int(current_event["id"]))
+        except (ValueError, TypeError):
+            parsed.setdefault("event_id", current_event["id"])
+    return parsed

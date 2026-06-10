@@ -665,6 +665,81 @@ class TestMissionGatewayClientIntegration:
         finally:
             gw.stop()
 
+    def test_client_stream_mission_events_parses_sse(self) -> None:
+        """stream_mission_events() parses SSE event/id/data blocks."""
+
+        class SSEHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for i in range(1, 4):
+                    event_data = json.dumps(
+                        {"event_type": f"ev.{i}", "source": "test", "sequence": i, "payload": {}}
+                    )
+                    block = f"event: ev.{i}\nid: {i}\ndata: {event_data}\n\n"
+                    self.wfile.write(block.encode())
+                    self.wfile.flush()
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), SSEHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address
+        try:
+            client = MissionGatewayClient(f"http://{host}:{port}")
+            events = list(client.stream_mission_events("mission-1", max_events=3))
+            assert len(events) == 3
+            assert events[0]["sequence"] == 1
+            assert events[1]["sequence"] == 2
+            assert events[2]["sequence"] == 3
+            assert events[0]["event_type"] == "ev.1"
+        finally:
+            server.shutdown()
+
+    def test_client_stream_reconnect_with_after_sequence(self) -> None:
+        """Verify reconnect by resuming from a given after_sequence."""
+        from urllib.parse import urlparse, parse_qs
+
+        class SSEHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                parsed = urlparse(self.path)
+                qs = parse_qs(parsed.query)
+                after = int(qs.get("after_sequence", [0])[0])
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for i in range(after + 1, after + 4):
+                    event_data = json.dumps(
+                        {"event_type": f"ev.{i}", "source": "test", "sequence": i, "payload": {}}
+                    )
+                    block = f"event: ev.{i}\nid: {i}\ndata: {event_data}\n\n"
+                    self.wfile.write(block.encode())
+                    self.wfile.flush()
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), SSEHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address
+        try:
+            client = MissionGatewayClient(f"http://{host}:{port}")
+            events1, last_seq = client.stream_mission_events_with_cursor("m-1", max_events=3)
+            assert len(events1) == 3
+            assert last_seq == 3
+            events2, last_seq2 = client.stream_mission_events_with_cursor(
+                "m-1", after_sequence=last_seq, max_events=3
+            )
+            assert len(events2) == 3
+            assert events2[0]["sequence"] == 4
+            assert last_seq2 == 6
+        finally:
+            server.shutdown()
+
     def test_client_auth_real(self) -> None:
         """Test client sends auth headers to real gateway."""
         from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
