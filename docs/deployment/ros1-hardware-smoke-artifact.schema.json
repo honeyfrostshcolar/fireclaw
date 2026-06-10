@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireclaw.dev/schemas/ros1-hardware-smoke-artifact.json",
+  "title": "ROS1 Hardware Smoke Test Artifact",
+  "description": "Records the result of a FireClaw ROS1 hardware smoke test run. Explicitly excludes robot IP addresses, credentials, and site-specific paths.",
+  "type": "object",
+  "required": [
+    "robot_id",
+    "timestamp",
+    "tests",
+    "overall_passed"
+  ],
+  "properties": {
+    "robot_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the robot under test. Must match the robot_id in the ROS1 adapter config."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the smoke test was performed."
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SmokeTestResult"
+      },
+      "minItems": 1,
+      "description": "Individual test results."
+    },
+    "overall_passed": {
+      "type": "boolean",
+      "description": "True if every test in the run passed."
+    },
+    "operator_notes": {
+      "type": "string",
+      "description": "Free-text notes from the operator. Must not contain robot IPs, credentials, or site-specific paths."
+    },
+    "fireclaw_version": {
+      "type": "string",
+      "description": "FireClaw version under test (e.g. '0.1.0')."
+    },
+    "ros_distro": {
+      "type": "string",
+      "enum": [
+        "noetic",
+        "melodic",
+        "kinetic"
+      ],
+      "description": "ROS1 distribution on the robot."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "SmokeTestResult": {
+      "type": "object",
+      "required": [
+        "test_type",
+        "endpoint_name",
+        "interface",
+        "passed",
+        "duration_ms"
+      ],
+      "properties": {
+        "test_type": {
+          "type": "string",
+          "enum": [
+            "topic_publish",
+            "service_call",
+            "action_goal",
+            "action_cancel",
+            "action_timeout",
+            "emergency_stop"
+          ],
+          "description": "Category of smoke test."
+        },
+        "endpoint_name": {
+          "type": "string",
+          "description": "ROS topic, service, or action name as it appears on the ROS network (e.g. '/fireclaw/firebot_01/navigate')."
+        },
+        "interface": {
+          "type": "string",
+          "enum": [
+            "topic",
+            "service",
+            "action"
+          ],
+          "description": "ROS interface type."
+        },
+        "passed": {
+          "type": "boolean",
+          "description": "Whether this individual test passed."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Wall-clock duration of the test in milliseconds."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error message if the test failed. Omit or null if passed."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Free-text notes for this test. Must not contain robot IPs, credentials, or site-specific paths."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
