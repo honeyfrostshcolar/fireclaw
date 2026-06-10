@@ -1,0 +1,17 @@
+[
+  {
+    "query": "去二楼搜索受困人员",
+    "must_match": ["二楼", "search"],
+    "record_type": "outcome"
+  },
+  {
+    "query": "灭火任务失败原因",
+    "must_match": ["firefight", "failed"],
+    "record_type": "outcome"
+  },
+  {
+    "query": "巡逻路线规划",
+    "must_match": ["patrol"],
+    "record_type": "observation"
+  }
+]

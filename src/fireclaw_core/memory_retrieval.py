@@ -83,6 +83,28 @@ class MemoryRetriever:
         self._lexical_weight = lexical_weight
         self._embedding_weight = embedding_weight
 
+    def status(self) -> dict[str, Any]:
+        """Return a cheap status report for preflight checks."""
+        index_available = self._index is not None
+        embedding_configured = self._embedding_provider is not None
+        embedding_available: bool | None = None
+
+        if embedding_configured:
+            try:
+                # Cheap probe: check dimensions property.
+                dims = self._embedding_provider.dimensions  # type: ignore[union-attr]
+                embedding_available = dims > 0
+            except Exception:
+                embedding_available = False
+
+        return {
+            "lexical_index_available": index_available,
+            "embedding_provider_configured": embedding_configured,
+            "embedding_provider_available": embedding_available,
+            "lexical_weight": self._lexical_weight,
+            "embedding_weight": self._embedding_weight,
+        }
+
     def retrieve(self, query: str, *, limit: int = 10) -> list[RetrievedMemory]:
         """Retrieve memories ranked by relevance.
 
