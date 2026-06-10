@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from fireclaw_core.mission_agent import SubagentClient
@@ -17,10 +18,12 @@ class MissionEventAggregator:
         registry: RobotRegistry,
         subagent_client: SubagentClient,
         mission_registry: JsonlMissionRegistry,
+        subagent_registry: Any | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client
         self.mission_registry = mission_registry
+        self.subagent_registry = subagent_registry
 
     def aggregate(
         self,
@@ -63,8 +66,37 @@ class MissionEventAggregator:
 
         all_events = all_events[:limit]
 
+        # Route terminal robot events into SubagentRegistry
+        if self.subagent_registry is not None:
+            for event in all_events:
+                status = _terminal_status_from_event(event)
+                task_id = event.get("task_id")
+                if status is not None and isinstance(task_id, str):
+                    self.subagent_registry.mark_terminal(
+                        child_task_id=task_id,
+                        status=status,
+                        updated_at=str(event.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+                    )
+
         return {
             "mission_id": mission_id,
             "event_count": len(all_events),
             "events": all_events,
         }
+
+
+def _terminal_status_from_event(event: dict[str, Any]) -> str | None:
+    """Extract terminal status from a robot event, if applicable."""
+    event_type = event.get("type") or event.get("event_type")
+    if event_type == "task.completed":
+        return "completed"
+    if event_type == "task.failed":
+        return "failed"
+    if event_type == "task.cancelled":
+        return "cancelled"
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        status = payload.get("status")
+        if status in {"completed", "failed", "cancelled", "timed_out", "lost"}:
+            return str(status)
+    return None

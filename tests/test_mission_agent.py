@@ -6,6 +6,8 @@ from fireclaw_core.mission_planner import MissionPlan, MissionPlannerContext, Mi
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.plugin_runtime import PluginRuntime
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task_registry import JsonlTaskRegistryStore
 
 
 class FakeSubagentClient:
@@ -1585,3 +1587,46 @@ def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
     ctx = planner.calls[0][1]
     assert len(ctx.retrieved_memories) == 1
     assert ctx.retrieved_memories[0]["record_id"] == "valid-memory"
+
+
+# --- TaskRegistry and SubagentRegistry lifecycle projection tests ---
+
+def test_plan_and_submit_projects_subtask_lifecycle_records(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    task_registry = JsonlTaskRegistryStore(tmp_path / "task_registry.jsonl")
+    subagent_registry = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims"),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        task_registry=task_registry,
+        subagent_registry=subagent_registry,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    projected = task_registry.list_records()
+    assert len(projected) == 2
+    # Find the subtask record (not the mission itself)
+    subtask_records = [r for r in projected if r.parent_task_id is not None]
+    assert len(subtask_records) == 1
+    assert subtask_records[0].requester_session_id == "mission-1"
+    assert subtask_records[0].owner_id == "r1"
+    assert subtask_records[0].status in {"accepted", "queued"}
+    # Find the mission record
+    mission_records = [r for r in projected if r.parent_task_id is None]
+    assert len(mission_records) == 1
+    assert mission_records[0].task_id == "mission-1"
+    assert mission_records[0].status == "planned"

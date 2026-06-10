@@ -61,6 +61,8 @@ class MissionAgent:
         memory_retriever: Any | None = None,
         approval_store: JsonlApprovalStore | None = None,
         plugin_runtime: Any | None = None,
+        task_registry: Any | None = None,
+        subagent_registry: Any | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
@@ -72,6 +74,8 @@ class MissionAgent:
         self.memory_retriever = memory_retriever
         self.approval_store = approval_store
         self.plugin_runtime = plugin_runtime
+        self.task_registry = task_registry
+        self.subagent_registry = subagent_registry
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -377,6 +381,21 @@ class MissionAgent:
                 created_at=created_at,
             )
 
+        # Project mission lifecycle into task registry
+        if self.task_registry is not None:
+            self.task_registry.project_task_state(
+                task_id=mission_id,
+                requester_session_id=mission_id,
+                owner_id="operator",
+                command=command,
+                runtime="mission_agent",
+                scope_kind="mission",
+                status="planned",
+                delivery_status="delivered",
+                notify_policy="state_changes",
+                created_at=created_at,
+            )
+
         if use_scheduler:
             from fireclaw_core.mission_scheduler import MissionScheduler
             scheduler = MissionScheduler(mission_agent=self)
@@ -431,6 +450,23 @@ class MissionAgent:
                 mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
             )
             subtask_results.append(result)
+
+            # Project subtask lifecycle into task registry
+            if self.task_registry is not None and result.get("task_id"):
+                self.task_registry.project_task_state(
+                    task_id=f"{mission_id}:{result.get('task_id')}",
+                    requester_session_id=mission_id,
+                    owner_id=str(result.get("robot_id") or subtask.robot_id),
+                    command=subtask.command,
+                    runtime="robot_gateway",
+                    scope_kind="mission",
+                    status=str(result.get("status") or "accepted"),
+                    delivery_status="delivered" if result.get("status") == "accepted" else "pending",
+                    notify_policy="state_changes",
+                    created_at=created_at,
+                    parent_task_id=mission_id,
+                    child_session_id=str(result.get("task_id")),
+                )
         robot_assignments = [
             {"robot_id": r.get("robot_id", "unknown"), "task_id": r.get("task_id", "")}
             for r in subtask_results

@@ -7,6 +7,7 @@ from fireclaw_core.mission_registry import (
     MissionSubtaskRecord,
 )
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.subagent_registry import JsonlSubagentRegistry
 
 
 class MockSubagentClient:
@@ -201,3 +202,126 @@ def test_aggregator_returns_empty_for_missing_mission(tmp_path):
     assert result["mission_id"] == "nonexistent"
     assert result["event_count"] == 0
     assert result["events"] == []
+
+
+def test_aggregator_routes_terminal_robot_events_to_subagent_registry(tmp_path):
+    """Terminal robot events (task.completed, task.failed, etc.) should be
+    routed into SubagentRegistry.mark_terminal() during aggregation."""
+    subagents = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+    subagents.create(
+        parent_mission_id="m1",
+        parent_subtask_id="subtask-1",
+        robot_id="robot-1",
+        child_task_id="t1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+    subagents.create(
+        parent_mission_id="m1",
+        parent_subtask_id="subtask-2",
+        robot_id="robot-2",
+        child_task_id="t2",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient(
+        {
+            "t1": [
+                {"event_id": "e1", "task_id": "t1", "type": "task.completed", "timestamp": "2026-06-08T10:01:00Z", "payload": {}},
+            ],
+            "t2": [
+                {"event_id": "e2", "task_id": "t2", "type": "task.failed", "timestamp": "2026-06-08T10:00:30Z", "payload": {"error": "obstacle"}},
+            ],
+        }
+    )
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        subagent_registry=subagents,
+    )
+
+    result = agg.aggregate("m1")
+
+    assert result["event_count"] == 2
+    # Verify terminal routing happened
+    r1 = subagents.get_by_child_task_id("t1")
+    assert r1 is not None
+    assert r1.status == "completed"
+    r2 = subagents.get_by_child_task_id("t2")
+    assert r2 is not None
+    assert r2.status == "failed"
+
+
+def test_aggregator_routes_terminal_status_from_payload(tmp_path):
+    """Terminal status can also come from payload.status field."""
+    subagents = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+    subagents.create(
+        parent_mission_id="m1",
+        parent_subtask_id="subtask-1",
+        robot_id="robot-1",
+        child_task_id="t1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient(
+        {
+            "t1": [
+                {"event_id": "e1", "task_id": "t1", "type": "status_update", "timestamp": "2026-06-08T10:01:00Z", "payload": {"status": "cancelled"}},
+            ],
+            "t2": [],
+        }
+    )
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        subagent_registry=subagents,
+    )
+
+    result = agg.aggregate("m1")
+
+    assert result["event_count"] == 1
+    r1 = subagents.get_by_child_task_id("t1")
+    assert r1 is not None
+    assert r1.status == "cancelled"
+
+
+def test_aggregator_skips_non_terminal_events(tmp_path):
+    """Non-terminal events should not trigger mark_terminal."""
+    subagents = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+    subagents.create(
+        parent_mission_id="m1",
+        parent_subtask_id="subtask-1",
+        robot_id="robot-1",
+        child_task_id="t1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient(
+        {
+            "t1": [
+                {"event_id": "e1", "task_id": "t1", "type": "sensor_reading", "timestamp": "2026-06-08T10:01:00Z", "payload": {}},
+            ],
+            "t2": [],
+        }
+    )
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        subagent_registry=subagents,
+    )
+
+    result = agg.aggregate("m1")
+
+    assert result["event_count"] == 1
+    r1 = subagents.get_by_child_task_id("t1")
+    assert r1 is not None
+    # Should remain at initial status since no terminal event was processed
+    assert r1.status == "dispatched"
