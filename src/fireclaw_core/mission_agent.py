@@ -16,6 +16,7 @@ from fireclaw_core.mission_planner import MissionPlannerContext, MissionPlanning
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.mission_registry import TERMINAL_SUBTASK_STATUSES
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.session_lineage import JsonlSessionLineageStore, MissionSessionLineage
 from fireclaw_core.subagent_client import RobotSubagentClient
 
 
@@ -63,6 +64,7 @@ class MissionAgent:
         plugin_runtime: Any | None = None,
         task_registry: Any | None = None,
         subagent_registry: Any | None = None,
+        session_lineage_store: JsonlSessionLineageStore | None = None,
     ) -> None:
         self.registry = registry
         if subagent_client is not None:
@@ -83,6 +85,7 @@ class MissionAgent:
         self.plugin_runtime = plugin_runtime
         self.task_registry = task_registry
         self.subagent_registry = subagent_registry
+        self._session_lineage_store = session_lineage_store
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -422,6 +425,22 @@ class MissionAgent:
                 command=command,
                 created_at=created_at,
             )
+
+        # Record session lineage for ownership tracking
+        if self._session_lineage_store is not None:
+            try:
+                self._session_lineage_store.upsert(MissionSessionLineage(
+                    session_id=mission_id,
+                    kind="mission",
+                    operator_id=(operator or {}).get("operator_id", "unknown"),
+                    parent_session_id=None,
+                    spawned_by=None,
+                    spawn_depth=0,
+                    created_at=created_at,
+                    updated_at=created_at,
+                ))
+            except Exception:
+                logger.warning("Failed to write session lineage for %s", mission_id, exc_info=True)
 
         # Project mission lifecycle into task registry
         if self.task_registry is not None:

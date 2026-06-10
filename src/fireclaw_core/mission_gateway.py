@@ -20,6 +20,7 @@ from fireclaw_core.control import OperatorContext, operator_from_payload
 from fireclaw_core.fleet_doctor import FleetDoctor
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.robot_registry import RobotRegistry
+from fireclaw_core.session_lineage import JsonlSessionLineageStore, validate_resume_ownership
 from fireclaw_core.subagent_client import RobotSubagentClient
 from fireclaw_core.subagent_registry import JsonlSubagentRegistry
 from fireclaw_core.task_registry import JsonlTaskRegistryStore
@@ -57,6 +58,7 @@ class MissionGateway:
         plugin_runtime: Any | None = None,
         task_registry: JsonlTaskRegistryStore | None = None,
         subagent_registry: JsonlSubagentRegistry | None = None,
+        session_lineage_store: JsonlSessionLineageStore | None = None,
     ) -> None:
         self.config = config
         self.mission_agent = mission_agent
@@ -67,6 +69,7 @@ class MissionGateway:
         self.plugin_runtime = plugin_runtime
         self.task_registry = task_registry
         self.subagent_registry = subagent_registry
+        self._session_lineage_store = session_lineage_store
         self._approval_relays: dict[str, dict[str, Any]] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -115,6 +118,20 @@ class MissionGateway:
         operator: OperatorContext | None = None,
         use_scheduler: bool = True,
     ) -> dict[str, Any]:
+        # Guard: validate resume ownership when session_id is provided
+        if (
+            session_id is not None
+            and self._session_lineage_store is not None
+            and operator is not None
+        ):
+            decision = validate_resume_ownership(
+                self._session_lineage_store,
+                session_id=session_id,
+                operator_id=operator.operator_id,
+            )
+            if not decision.ok:
+                return {"status": "denied", "message": decision.reason}
+
         operator_dict = operator.to_dict() if operator is not None else None
         result = self.mission_agent.plan_and_submit(
             command,
