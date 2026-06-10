@@ -1551,3 +1551,37 @@ def test_plan_and_submit_applies_provider_context_hook(tmp_path):
     assert result["status"] == "planned"
     ctx = planner.calls[0][1]
     assert ctx.retrieved_memories[0]["record_id"] == "plugin-memory"
+
+
+def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="provider",
+        hook_name="enrich_context",
+        plugin_id="fire.context",
+        callback=lambda payload: {"retrieved_memories": [
+            "not-a-dict",
+            42,
+            {"record_id": "valid-memory", "mission_id": "plugin", "record_type": "lesson", "content": {}, "source": "plugin"},
+        ]},
+    )
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims"),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner, plugin_runtime=runtime)
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    ctx = planner.calls[0][1]
+    assert len(ctx.retrieved_memories) == 1
+    assert ctx.retrieved_memories[0]["record_id"] == "valid-memory"

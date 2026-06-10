@@ -1376,3 +1376,95 @@ def test_approval_request_applies_tool_approval_hook(tmp_path):
             "reason": "High heat area requires supervisor review.",
         }
     ]
+
+
+def test_approval_request_plugin_hook_without_approval_runtime_has_no_token(tmp_path):
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    approval_store = JsonlApprovalStore(str(tmp_path / "approvals.jsonl"))
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="tool_approval",
+        hook_name="add_reason",
+        plugin_id="fire.approval",
+        callback=lambda payload: {"reason": "test reason"},
+    )
+    agent = MissionAgent(registry=registry, subagent_client=client, approval_store=approval_store)
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+        plugin_runtime=runtime,
+    )
+
+    result = gw.handle_approval("mission-1", {
+        "action": "request",
+        "semantic_action": "enter_building",
+        "risk_level": "high",
+        "command": "enter burning building",
+    })
+
+    assert result["status"] == "pending"
+    assert result["approval_reasons"] == [{"plugin_id": "fire.approval", "reason": "test reason"}]
+    assert "approval_token" not in result
+
+
+def test_resolve_token_returns_pending_result(tmp_path):
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    approval_store = JsonlApprovalStore(str(tmp_path / "approvals.jsonl"))
+    runtime = ApprovalRuntime(approval_store, token_ttl_seconds=300)
+    agent = MissionAgent(registry=registry, subagent_client=client, approval_store=approval_store)
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+        approval_runtime=runtime,
+    )
+
+    request_result = gw.handle_approval("mission-1", {
+        "action": "request",
+        "semantic_action": "enter_building",
+        "risk_level": "high",
+        "command": "enter burning building",
+    })
+    assert request_result["status"] == "pending"
+    raw_token = request_result["approval_token"]
+
+    resolve_result = gw.handle_approval("mission-1", {
+        "action": "resolve_token",
+        "approval_token": raw_token,
+    })
+    assert resolve_result["status"] == "resolved"
+    assert resolve_result["token"]["request_id"] == request_result["request"]["request_id"]
+
+
+def test_resolve_token_rejects_mismatched_mission_id(tmp_path):
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    approval_store = JsonlApprovalStore(str(tmp_path / "approvals.jsonl"))
+    runtime = ApprovalRuntime(approval_store, token_ttl_seconds=300)
+    agent = MissionAgent(registry=registry, subagent_client=client, approval_store=approval_store)
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+        approval_runtime=runtime,
+    )
+
+    request_result = gw.handle_approval("mission-1", {
+        "action": "request",
+        "semantic_action": "enter_building",
+        "risk_level": "high",
+        "command": "enter burning building",
+    })
+    raw_token = request_result["approval_token"]
+
+    resolve_result = gw.handle_approval("mission-OTHER", {
+        "action": "resolve_token",
+        "approval_token": raw_token,
+    })
+    assert resolve_result["status"] == "not_found"
