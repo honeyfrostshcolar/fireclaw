@@ -19,11 +19,13 @@ class MissionEventAggregator:
         subagent_client: SubagentClient,
         mission_registry: JsonlMissionRegistry,
         subagent_registry: Any | None = None,
+        task_registry: Any | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client
         self.mission_registry = mission_registry
         self.subagent_registry = subagent_registry
+        self.task_registry = task_registry
 
     def aggregate(
         self,
@@ -66,17 +68,29 @@ class MissionEventAggregator:
 
         all_events = all_events[:limit]
 
-        # Route terminal robot events into SubagentRegistry
-        if self.subagent_registry is not None:
+        # Route terminal robot events into SubagentRegistry and TaskRegistry
+        if self.subagent_registry is not None or self.task_registry is not None:
             for event in all_events:
                 status = _terminal_status_from_event(event)
                 task_id = event.get("task_id")
                 if status is not None and isinstance(task_id, str):
-                    self.subagent_registry.mark_terminal(
-                        child_task_id=task_id,
-                        status=status,
-                        updated_at=str(event.get("timestamp") or datetime.now(timezone.utc).isoformat()),
-                    )
+                    updated_at = str(event.get("timestamp") or datetime.now(timezone.utc).isoformat())
+                    if self.subagent_registry is not None:
+                        self.subagent_registry.mark_terminal(
+                            child_task_id=task_id,
+                            status=status,
+                            updated_at=updated_at,
+                        )
+                    if self.task_registry is not None:
+                        composite_id = f"{mission_id}:{task_id}"
+                        try:
+                            self.task_registry.update(
+                                composite_id,
+                                status=status,
+                                ended_at=updated_at,
+                            )
+                        except KeyError:
+                            pass  # no task record exists for this subtask
 
         return {
             "mission_id": mission_id,

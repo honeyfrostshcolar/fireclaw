@@ -756,6 +756,82 @@ def test_mission_agent_mission_events_returns_not_configured_without_registry():
     assert result["events"] == []
 
 
+def test_mission_events_updates_subagent_registry_on_terminal_robot_event(tmp_path):
+    """Terminal robot lifecycle events should propagate into SubagentRegistry via mission_events()."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    subagent_registry = JsonlSubagentRegistry(tmp_path / "subagent.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+        subagent_registry=subagent_registry,
+    )
+    submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+    mission_id = submitted["mission_id"]
+    task_id = submitted["task_id"]
+
+    # Create a subagent run record so mark_terminal can find it
+    subagent_registry.create(
+        parent_mission_id=mission_id,
+        robot_id="robot-1",
+        child_task_id=task_id,
+        created_at="2026-06-08T12:00:00Z",
+    )
+
+    # Set up terminal event from robot
+    client.events_by_entry[("robot-1", task_id)] = [
+        {"type": "task.completed", "task_id": task_id, "timestamp": "2026-06-08T12:00:02Z"},
+    ]
+
+    mission.mission_events(mission_id)
+
+    # SubagentRegistry should have been updated to terminal
+    run_record = subagent_registry.get_by_child_task_id(task_id)
+    assert run_record is not None
+    assert run_record.status == "completed"
+
+
+def test_mission_events_updates_task_registry_on_terminal_robot_event(tmp_path):
+    """Terminal robot lifecycle events should propagate into TaskRegistry via mission_events()."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
+    ])
+    client = FakeSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    task_registry = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+        task_registry=task_registry,
+    )
+    submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+    mission_id = submitted["mission_id"]
+    task_id = submitted["task_id"]
+
+    # submit_subtask should have created a task record with format mission_id:task_id
+    composite_id = f"{mission_id}:{task_id}"
+    record = task_registry.get(composite_id)
+    assert record is not None
+    assert record.status == "accepted"
+
+    # Set up terminal event from robot
+    client.events_by_entry[("robot-1", task_id)] = [
+        {"type": "task.completed", "task_id": task_id, "timestamp": "2026-06-08T12:00:02Z"},
+    ]
+
+    mission.mission_events(mission_id)
+
+    # TaskRegistry should have been updated to terminal status
+    updated = task_registry.get(composite_id)
+    assert updated is not None
+    assert updated.status == "completed"
+
+
 # --- Operator correction tests ---
 
 def test_mission_agent_records_correction(tmp_path):
