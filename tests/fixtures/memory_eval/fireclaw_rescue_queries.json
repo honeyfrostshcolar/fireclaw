@@ -1,0 +1,12 @@
+[
+  {
+    "query": "去二楼救人",
+    "must_match": ["rescue", "floor"],
+    "record_type": "mission_outcome"
+  },
+  {
+    "query": "热成像误报",
+    "must_match": ["thermal", "false"],
+    "record_type": "operator_correction"
+  }
+]

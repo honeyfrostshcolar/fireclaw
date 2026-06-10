@@ -255,6 +255,24 @@ class TestLoadEvalCases:
             assert "query" in case
             assert "must_match" in case
 
+    def test_rescue_fixture_loads_correctly(self) -> None:
+        """The rescue-query demo-gate fixture has the expected structure."""
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "memory_eval"
+            / "fireclaw_rescue_queries.json"
+        )
+        assert fixture_path.exists(), f"Fixture not found at {fixture_path}"
+        cases = load_eval_cases(fixture_path)
+        assert len(cases) == 2
+        assert cases[0]["query"] == "去二楼救人"
+        assert "rescue" in cases[0]["must_match"]
+        assert cases[0]["record_type"] == "mission_outcome"
+        assert cases[1]["query"] == "热成像误报"
+        assert "thermal" in cases[1]["must_match"]
+        assert cases[1]["record_type"] == "operator_correction"
+
 
 # ---------------------------------------------------------------------------
 # MemoryRetriever.status() tests
