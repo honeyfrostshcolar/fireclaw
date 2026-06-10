@@ -186,3 +186,32 @@ def test_token_hash_is_deterministic(tmp_path):
     hash2 = hashlib.sha256(raw_token.encode("ascii")).hexdigest()
     assert hash1 == hash2
     assert record.token_hash == hash1
+
+
+# ---- Test 9: persistence across restarts ----
+
+def test_approval_runtime_persists_token_hash_across_instances(tmp_path):
+    store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
+    request = store.create(
+        mission_id="m1",
+        action="enter_building",
+        risk_level="high",
+        command="enter burning building",
+        requested_by="op-1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+    token_path = tmp_path / "approval_tokens.jsonl"
+
+    runtime = ApprovalRuntime(store, token_store_path=token_path, token_ttl_seconds=300)
+    raw_token, record = runtime.create_token(request.request_id)
+
+    # Simulate restart: new instance, same file
+    restarted = ApprovalRuntime(store, token_store_path=token_path, token_ttl_seconds=300)
+    resolved = restarted.resolve_token(raw_token)
+
+    assert resolved is not None
+    assert resolved.request_id == request.request_id
+    # Raw token must NOT be in the file
+    assert raw_token not in token_path.read_text(encoding="utf-8")
+    # Token hash SHOULD be in the file
+    assert record.token_hash in token_path.read_text(encoding="utf-8")

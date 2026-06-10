@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from fireclaw_core.approval_store import JsonlApprovalStore
@@ -36,10 +38,48 @@ class ApprovalRuntimeToken:
 class ApprovalRuntime:
     """Manages approval token lifecycle and pending work projection."""
 
-    def __init__(self, store: JsonlApprovalStore, *, token_ttl_seconds: int = 300) -> None:
+    def __init__(
+        self,
+        store: JsonlApprovalStore,
+        *,
+        token_ttl_seconds: int = 300,
+        token_store_path: str | Path | None = None,
+    ) -> None:
         self._store = store
         self._token_ttl = token_ttl_seconds
-        self._tokens: Dict[str, ApprovalRuntimeToken] = {}  # keyed by token_hash
+        self._token_store_path: Path | None = (
+            Path(token_store_path) if token_store_path is not None else None
+        )
+        self._tokens: Dict[str, ApprovalRuntimeToken] = self._load_tokens()
+
+    # -- persistence helpers --------------------------------------------------
+
+    def _load_tokens(self) -> Dict[str, ApprovalRuntimeToken]:
+        """Load persisted token records from the JSONL file."""
+        if self._token_store_path is None or not self._token_store_path.exists():
+            return {}
+        records: Dict[str, ApprovalRuntimeToken] = {}
+        with self._token_store_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(data, dict) and isinstance(data.get("token_hash"), str):
+                    token = ApprovalRuntimeToken(**data)
+                    records[token.token_hash] = token
+        return records
+
+    def _persist_token(self, record: ApprovalRuntimeToken) -> None:
+        """Append a token record to the JSONL file."""
+        if self._token_store_path is None:
+            return
+        self._token_store_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._token_store_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
+            handle.write("\n")
+
+    # -- public API -----------------------------------------------------------
 
     def create_token(self, request_id: str) -> Tuple[str, ApprovalRuntimeToken]:
         """Create a token for an approval request.
@@ -68,6 +108,7 @@ class ApprovalRuntime:
             expires_at=expires_at,
         )
         self._tokens[token_hash] = record
+        self._persist_token(record)
         return raw_token, record
 
     def resolve_token(self, raw_token: str) -> ApprovalRuntimeToken | None:
@@ -130,7 +171,7 @@ class ApprovalRuntime:
 
         for token_hash, resolved_at in expired:
             record = self._tokens[token_hash]
-            self._tokens[token_hash] = ApprovalRuntimeToken(
+            updated = ApprovalRuntimeToken(
                 token_hash=record.token_hash,
                 request_id=record.request_id,
                 mission_id=record.mission_id,
@@ -142,4 +183,6 @@ class ApprovalRuntime:
                 resolved_at=resolved_at,
                 resolution="expired",
             )
+            self._tokens[token_hash] = updated
+            self._persist_token(updated)
         return len(expired)
