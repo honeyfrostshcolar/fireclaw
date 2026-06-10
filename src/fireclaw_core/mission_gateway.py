@@ -21,6 +21,8 @@ from fireclaw_core.fleet_doctor import FleetDoctor
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.robot_registry import RobotRegistry
 from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task_registry import JsonlTaskRegistryStore
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +55,8 @@ class MissionGateway:
         approval_runtime: ApprovalRuntime | None = None,
         approval_relay: ApprovalRelay | None = None,
         plugin_runtime: Any | None = None,
-        task_registry: Any | None = None,
-        subagent_registry: Any | None = None,
+        task_registry: JsonlTaskRegistryStore | None = None,
+        subagent_registry: JsonlSubagentRegistry | None = None,
     ) -> None:
         self.config = config
         self.mission_agent = mission_agent

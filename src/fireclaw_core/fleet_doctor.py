@@ -6,6 +6,8 @@ from typing import Any
 from fireclaw_core.lifecycle_maintenance import LifecycleMaintenanceRunner
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task_registry import JsonlTaskRegistryStore
 
 
 @dataclass(frozen=True)
@@ -34,8 +36,8 @@ class FleetDoctor:
     subagent_client: RobotSubagentClient = field(default_factory=RobotSubagentClient)
     ros1_skill_remapping: dict[str, str] = field(default_factory=dict)
     approval_relay_config: dict[str, Any] | None = None
-    task_registry: Any | None = None
-    subagent_registry: Any | None = None
+    task_registry: JsonlTaskRegistryStore | None = None
+    subagent_registry: JsonlSubagentRegistry | None = None
 
     def diagnose(self, *, now: str | None = None, stale_threshold_seconds: float = 300.0) -> list[FleetDoctorFinding]:
         """Run all fleet checks and return findings."""
@@ -212,8 +214,19 @@ class FleetDoctor:
         )
         return runner.run(now=now, stale_threshold_seconds=stale_threshold_seconds)
 
-    def summary(self, findings: list[FleetDoctorFinding]) -> dict[str, Any]:
-        """Summarize findings by severity."""
+    def summary(
+        self,
+        findings: list[FleetDoctorFinding],
+        lifecycle_report: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Summarize findings by severity.
+
+        Args:
+            findings: Findings produced by :meth:`diagnose`.
+            lifecycle_report: Optional explicit lifecycle report.  When
+                ``None``, falls back to the lifecycle data stored by the
+                most recent :meth:`diagnose()` call (``self._last_lifecycle``).
+        """
         errors = [f for f in findings if f.severity == "error"]
         warnings = [f for f in findings if f.severity == "warning"]
         result: dict[str, Any] = {
@@ -223,7 +236,7 @@ class FleetDoctor:
             "total_count": len(findings),
             "findings": [f.to_dict() for f in findings],
         }
-        lifecycle = getattr(self, "_last_lifecycle", None)
+        lifecycle = lifecycle_report if lifecycle_report is not None else getattr(self, "_last_lifecycle", None)
         if lifecycle is not None:
             result["lifecycle"] = {
                 "status": lifecycle["status"],
