@@ -151,7 +151,16 @@ v1 implemented: deployment checklist, ROS1 deployment guide, fleet doctor with o
 ## 推荐下一步
 
 1. 真实 ROS1 机器人硬件 smoke test（需要物理机器人或高保真仿真环境）
-2. ROS2 adapter 实现（当前仅 protocol boundary）
-3. Provider runtime fallback 深化（多 provider catalog, fallback chain, health/status dashboard）
-4. 跨进程 lifecycle reconciliation runner 和 orphan recovery 自动修复
-5. Operator web UI 接入 mission Gateway SSE
+2. 跨进程 lifecycle reconciliation runner（当前仅 in-process reconciliation；需要独立进程/容器级 orphan recovery 自动修复）
+3. Memory retrieval 质量回归验证（embedding provider lifecycle、session transcript indexing policy、retrieval 质量回归阈值集成 CI）
+4. Session lineage 和 resume ownership guard（task/session registry 作为 source of truth，防止多客户端 resume 竞争）
+
+### 以下为**平台可选工作**
+
+以下项目超出当前 ROS1-first embodied roadmap 范围，仅在平台成熟度需要时推进：
+
+- ROS2 native adapter（当前仅 protocol boundary 和实施计划）
+- Full ACP/IDE session parity（OpenClaw control-plane 级别的 session lineage、task-flow registry、observer）
+- 第三方插件 marketplace（sandbox loading、install policy、audit enforcement）
+- Full operator web UI（mission SSE 接入、实时 dashboard、approval 交互）
+- WebSocket 支持（当前仅 SSE + HTTP polling）

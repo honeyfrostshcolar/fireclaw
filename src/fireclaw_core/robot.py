@@ -578,7 +578,7 @@ class Ros1RobotAdapter:
             dry_run=self.dry_run,
             data=base_data,
             timestamp=timestamp,
-            error="Live ROS1 transport is not implemented yet.",
+            error="ROS1 transport is disabled by configuration. Set transport.enabled=true to execute live ROS1 commands.",
         )
 
 

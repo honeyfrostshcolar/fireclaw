@@ -244,7 +244,8 @@ def test_ros1_robot_adapter_records_configured_endpoint_but_refuses_live_executi
     assert result.data["ros1_interface"] == "action"
     assert result.data["ros1_name"] == "/fireclaw/robot-ros1-real/navigation"
     assert result.data["ros1_type"] == "fireclaw_msgs/NavigateFloorAction"
-    assert "Live ROS1 transport is not implemented" in str(result.error)
+    assert "disabled" in str(result.error).lower()
+    assert "not implemented" not in str(result.error).lower()
     assert robot.commands[0].name == "/fireclaw/robot-ros1-real/navigation"
     assert robot.commands[0].feedback_supported is True
 
