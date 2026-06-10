@@ -10,6 +10,7 @@ from fireclaw_core.approval_store import JsonlApprovalStore
 from fireclaw_core.control import OperatorContext
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.approval_runtime import ApprovalRuntime
 from fireclaw_core.mission_planner import (
     MissionPlan,
     MissionPlannerContext,
@@ -17,6 +18,7 @@ from fireclaw_core.mission_planner import (
     MissionSubtask,
 )
 from fireclaw_core.mission_registry import JsonlMissionRegistry
+from fireclaw_core.plugin_runtime import PluginRuntime
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
@@ -570,6 +572,58 @@ def test_request_approval_with_semantic_action(tmp_path):
         assert status == 200
         assert body["status"] == "pending"
         assert body["request"]["action"] == "enter_building"
+    finally:
+        gw.stop()
+
+
+def test_request_approval_creates_runtime_token_when_configured(tmp_path):
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    mission_reg = JsonlMissionRegistry(str(tmp_path / "missions.jsonl"))
+    approval_store = JsonlApprovalStore(str(tmp_path / "approvals.jsonl"))
+    runtime = ApprovalRuntime(approval_store, token_ttl_seconds=60)
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_reg,
+        approval_store=approval_store,
+    )
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+        approval_runtime=runtime,
+    )
+    base = _start_gateway(gw)
+    try:
+        status, body = _json_request(
+            base,
+            "POST",
+            "/missions/m-approve/approvals",
+            {
+                "action": "request",
+                "semantic_action": "enter_building",
+                "risk_level": "high",
+                "command": "enter burning building",
+            },
+        )
+        assert status == 200
+        assert body["status"] == "pending"
+        assert body["approval_token"]
+        assert "token_hash" not in body
+        assert body["token"]["request_id"] == body["request"]["request_id"]
+
+        status, pending = _json_request(
+            base,
+            "POST",
+            "/missions/m-approve/approvals",
+            {"action": "pending"},
+        )
+        assert status == 200
+        assert pending["status"] == "pending"
+        assert len(pending["pending_approvals"]) == 1
+        assert "approval_token" not in pending["pending_approvals"][0]
     finally:
         gw.stop()
 
@@ -1281,3 +1335,44 @@ def test_sse_stream_uses_stream_event_schema():
     assert event_data["mission_id"] == "m-sse"
     assert event_data["source"] == "mission-gateway"
     assert event_data["payload"] == {"command": "test"}
+
+
+# ---------------------------------------------------------------------------
+# Tests: Plugin hook integration
+# ---------------------------------------------------------------------------
+
+
+def test_approval_request_applies_tool_approval_hook(tmp_path):
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    approval_store = JsonlApprovalStore(str(tmp_path / "approvals.jsonl"))
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="tool_approval",
+        hook_name="add_reason",
+        plugin_id="fire.approval",
+        callback=lambda payload: {"reason": "High heat area requires supervisor review."},
+    )
+    agent = MissionAgent(registry=registry, subagent_client=client, approval_store=approval_store)
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+        plugin_runtime=runtime,
+    )
+
+    result = gw.handle_approval("mission-1", {
+        "action": "request",
+        "semantic_action": "enter_building",
+        "risk_level": "high",
+        "command": "enter burning building",
+    })
+
+    assert result["status"] == "pending"
+    assert result["approval_reasons"] == [
+        {
+            "plugin_id": "fire.approval",
+            "reason": "High heat area requires supervisor review.",
+        }
+    ]

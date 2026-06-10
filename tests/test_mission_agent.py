@@ -1,8 +1,10 @@
 from fireclaw_core.approval_store import JsonlApprovalStore
+from fireclaw_core.memory_retrieval import RetrievedMemory
 from fireclaw_core.mission_agent import MissionAgent
-from fireclaw_core.mission_memory import MissionMemoryStore
+from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission_registry import JsonlMissionRegistry
+from fireclaw_core.plugin_runtime import PluginRuntime
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
@@ -47,6 +49,16 @@ class FakeSubagentClient:
             "last_seen_at": "2026-06-08T00:00:00+00:00",
             "state": {},
         }
+
+
+class FakeMemoryRetriever:
+    def __init__(self, results):
+        self.results = results
+        self.calls = []
+
+    def retrieve(self, query, *, limit=10):
+        self.calls.append((query, limit))
+        return self.results[:limit]
 
 
 def test_mission_agent_submits_explicit_subtask_to_registered_robot():
@@ -1358,6 +1370,70 @@ def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_pat
     assert ctx.operator_corrections[0]["content"]["correction"] == "应先搜索三楼再搜索二楼"
 
 
+def test_plan_and_submit_uses_ranked_memory_retriever_when_configured(tmp_path):
+    """MissionAgent should feed ranked retriever results into planner context."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    memory_store.append(MissionMemoryRecord(
+        record_id="corr-1",
+        mission_id="old-mission",
+        record_type="correction",
+        content={"correction": "先确认楼梯间温度"},
+        created_at="2026-06-10T00:00:00+00:00",
+    ))
+    retriever = FakeMemoryRetriever([
+        RetrievedMemory(
+            record_id="ranked-1",
+            mission_id="m-old",
+            record_type="lesson",
+            content={"lesson": "二楼搜索优先走东侧楼梯"},
+            score=0.91,
+            source="fused",
+            created_at="2026-06-10T00:00:00+00:00",
+        )
+    ])
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="planned", message="ok", intent="search", plan=plan,
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_memory=memory_store,
+        memory_retriever=retriever,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    assert retriever.calls == [("去二楼搜索", 5)]
+    ctx = planner.calls[0][1]
+    assert ctx.retrieved_memories == [
+        {
+            "record_id": "ranked-1",
+            "mission_id": "m-old",
+            "record_type": "lesson",
+            "content": {"lesson": "二楼搜索优先走东侧楼梯"},
+            "score": 0.91,
+            "source": "fused",
+            "created_at": "2026-06-10T00:00:00+00:00",
+            "robot_id": None,
+            "subtask_id": None,
+        }
+    ]
+    assert ctx.operator_corrections[0]["content"]["correction"] == "先确认楼梯间温度"
+
+
 def test_plan_and_submit_empty_context_when_no_memory_configured():
     """When mission_memory is None, context should have empty memories and corrections."""
     registry = RobotRegistry([
@@ -1436,3 +1512,42 @@ def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
     correction_text = ctx.operator_corrections[0]["content"]["correction"]
     assert "sk-abc1234567890" not in correction_text
     assert "***" in correction_text
+
+
+# --- Plugin hook integration tests ---
+
+def test_plan_and_submit_applies_provider_context_hook(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="provider",
+        hook_name="enrich_context",
+        plugin_id="fire.context",
+        callback=lambda payload: {"retrieved_memories": [
+            {
+                "record_id": "plugin-memory",
+                "mission_id": "plugin",
+                "record_type": "lesson",
+                "content": {"lesson": "优先检查东侧楼梯"},
+                "source": "plugin",
+            }
+        ]},
+    )
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims"),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner, plugin_runtime=runtime)
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    ctx = planner.calls[0][1]
+    assert ctx.retrieved_memories[0]["record_id"] == "plugin-memory"

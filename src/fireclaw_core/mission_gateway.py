@@ -10,6 +10,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from fireclaw_core.approval_runtime import ApprovalRuntime
 from fireclaw_core.method_scopes import authorize_method
 
 from fireclaw_core.stream_events import EventBus, StreamEvent, TelemetryTracker
@@ -48,11 +49,15 @@ class MissionGateway:
         mission_agent: MissionAgent,
         registry: RobotRegistry,
         subagent_client: RobotSubagentClient | None = None,
+        approval_runtime: ApprovalRuntime | None = None,
+        plugin_runtime: Any | None = None,
     ) -> None:
         self.config = config
         self.mission_agent = mission_agent
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
+        self.approval_runtime = approval_runtime
+        self.plugin_runtime = plugin_runtime
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._event_bus = EventBus()
@@ -206,7 +211,49 @@ class MissionGateway:
                         "risk_level": payload.get("risk_level", "low"),
                     },
                 )
+            # Apply tool approval hooks from plugin runtime
+            approval_reasons: list[dict[str, str]] = []
+            if result.get("status") == "pending" and self.plugin_runtime is not None:
+                for effect in self.plugin_runtime.run_tool_approval_hooks(
+                    "add_reason",
+                    {"mission_id": mission_id, "action": semantic_action, "payload": dict(payload)},
+                ):
+                    reason = effect.get("effect", {}).get("reason")
+                    if isinstance(reason, str) and reason:
+                        approval_reasons.append({"plugin_id": str(effect.get("plugin_id", "")), "reason": reason})
+            if approval_reasons:
+                result = {**result, "approval_reasons": approval_reasons}
+            if result.get("status") == "pending" and self.approval_runtime is not None:
+                request = result.get("request")
+                request_id = request.get("request_id") if isinstance(request, dict) else None
+                if isinstance(request_id, str) and request_id:
+                    raw_token, token = self.approval_runtime.create_token(request_id)
+                    return {
+                        **result,
+                        "approval_token": raw_token,
+                        "token": _public_token_dict(token.to_dict()),
+                    }
             return result
+        if action == "pending":
+            if self.approval_runtime is None:
+                return {"status": "not_configured", "pending_approvals": []}
+            self.approval_runtime.expire_stale()
+            pending = [
+                item
+                for item in self.approval_runtime.pending_projection()
+                if item.get("mission_id") == mission_id
+            ]
+            return {"status": "pending", "pending_approvals": pending}
+        if action == "resolve_token":
+            if self.approval_runtime is None:
+                return {"status": "not_configured"}
+            token = payload.get("approval_token")
+            if not isinstance(token, str) or not token:
+                return {"status": "error", "message": "Field 'approval_token' is required for resolve_token action."}
+            record = self.approval_runtime.resolve_token(token)
+            if record is None or record.mission_id != mission_id:
+                return {"status": "not_found"}
+            return {"status": "resolved", "token": _public_token_dict(record.to_dict())}
         if action == "decide":
             request_id = payload.get("request_id", "")
             if not request_id:
@@ -569,6 +616,12 @@ def _derive_action_from_command(command: str) -> str:
     # Take the first meaningful verb phrase, capped at 40 chars
     action = command.strip().split("，")[0].split(",")[0].strip()
     return action[:40] if action else "unknown"
+
+
+def _public_token_dict(token: dict[str, Any]) -> dict[str, Any]:
+    public = dict(token)
+    public.pop("token_hash", None)
+    return public
 
 
 def _mission_submit_status(result: dict[str, Any]) -> HTTPStatus:

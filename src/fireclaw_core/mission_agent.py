@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict, is_dataclass
 from typing import Any, Protocol
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -57,7 +58,9 @@ class MissionAgent:
         control_policy: ControlPolicy | None = None,
         operator: OperatorContext | None = None,
         mission_memory: MissionMemoryStore | None = None,
+        memory_retriever: Any | None = None,
         approval_store: JsonlApprovalStore | None = None,
+        plugin_runtime: Any | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
@@ -66,7 +69,9 @@ class MissionAgent:
         self.control_policy = control_policy
         self.operator = operator
         self.mission_memory = mission_memory
+        self.memory_retriever = memory_retriever
         self.approval_store = approval_store
+        self.plugin_runtime = plugin_runtime
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -279,16 +284,20 @@ class MissionAgent:
         corrections: list[dict[str, Any]] = []
 
         try:
-            # Search for relevant outcome records matching the command
-            outcome_records = self.mission_memory.search(
-                record_type="outcome",
-                keyword=command.strip()[:50] if command.strip() else None,
-                limit=max_memories,
-            )
-            memories = [
-                redact_dict(r.to_dict())
-                for r in outcome_records
-            ]
+            if self.memory_retriever is not None:
+                retrieved = self.memory_retriever.retrieve(command, limit=max_memories)
+                memories = [redact_dict(_memory_result_to_dict(r)) for r in retrieved]
+            else:
+                # Search for relevant outcome records matching the command
+                outcome_records = self.mission_memory.search(
+                    record_type="outcome",
+                    keyword=command.strip()[:50] if command.strip() else None,
+                    limit=max_memories,
+                )
+                memories = [
+                    redact_dict(r.to_dict())
+                    for r in outcome_records
+                ]
         except Exception:
             logger.warning("Failed to retrieve planner memories", exc_info=True)
 
@@ -331,6 +340,20 @@ class MissionAgent:
 
         # Retrieve memories and corrections for planner context
         memories, corrections = self._retrieve_planner_context(command)
+
+        # Apply provider context hooks from plugin runtime
+        if self.plugin_runtime is not None:
+            for effect in self.plugin_runtime.run_provider_hooks(
+                "enrich_context",
+                {"command": command, "retrieved_memories": memories, "operator_corrections": corrections},
+            ):
+                payload = effect.get("effect", {})
+                extra_memories = payload.get("retrieved_memories", [])
+                if isinstance(extra_memories, list):
+                    memories.extend(redact_dict(m) for m in extra_memories if isinstance(m, dict))
+                extra_corrections = payload.get("operator_corrections", [])
+                if isinstance(extra_corrections, list):
+                    corrections.extend(redact_dict(c) for c in extra_corrections if isinstance(c, dict))
 
         context = MissionPlannerContext(
             available_robots=[e for e in self.registry.enabled_entries() if e.robot_id in online_robot_ids],
@@ -605,6 +628,20 @@ def _mission_id(session_id: str | None) -> str:
     if isinstance(session_id, str) and session_id.strip():
         return session_id.strip()
     return f"mission-{uuid4().hex}"
+
+
+def _memory_result_to_dict(result: Any) -> dict[str, Any]:
+    if hasattr(result, "to_dict") and callable(result.to_dict):
+        value = result.to_dict()
+    elif is_dataclass(result):
+        value = asdict(result)
+    elif isinstance(result, dict):
+        value = dict(result)
+    else:
+        raise TypeError(f"Unsupported retrieved memory result: {type(result)!r}")
+    if not isinstance(value, dict):
+        raise TypeError("Retrieved memory result must serialize to a dict.")
+    return value
 
 
 def _status_from_robot_trace(trace: dict[str, Any]) -> str | None:
