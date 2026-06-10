@@ -9,6 +9,7 @@ from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.subagent_registry import JsonlSubagentRegistry
 from fireclaw_core.subagent_client import RobotSubagentClient
 from fireclaw_core.task_registry import JsonlTaskRegistryStore
+from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore
 
 
 class FakeSubagentClient:
@@ -1883,3 +1884,64 @@ def test_submit_subtask_projects_into_task_registry(tmp_path):
     assert rec.child_session_id == "task-robot-1"
     assert rec.owner_id == "r1"
     assert rec.scope_kind == "subtask"
+
+
+# --- TaskFlowRegistry integration tests ---
+
+def test_plan_and_submit_projects_task_flow_record(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    task_flow_store = JsonlTaskFlowRegistryStore(tmp_path / "flows.jsonl")
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼和三楼搜索受困人员",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        task_flow_store=task_flow_store,
+    )
+
+    result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    flow = task_flow_store.get("mission-1")
+    assert flow is not None
+    assert flow.mission_id == "mission-1"
+    assert flow.command == "去二楼和三楼搜索受困人员"
+    assert flow.status == "running"
+    assert len(flow.task_ids) == 2
+    assert len(flow.robot_ids) == 2
+    assert "r1" in flow.robot_ids
+    assert "r2" in flow.robot_ids
+
+
+def test_plan_and_submit_task_flow_not_written_when_store_none(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    # No task_flow_store
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    # No crash, no store to check

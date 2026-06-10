@@ -18,6 +18,7 @@ from fireclaw_core.mission_registry import TERMINAL_SUBTASK_STATUSES
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.session_lineage import JsonlSessionLineageStore, MissionSessionLineage
 from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
 
 class SubagentClient(Protocol):
@@ -65,6 +66,7 @@ class MissionAgent:
         task_registry: Any | None = None,
         subagent_registry: Any | None = None,
         session_lineage_store: JsonlSessionLineageStore | None = None,
+        task_flow_store: JsonlTaskFlowRegistryStore | None = None,
     ) -> None:
         self.registry = registry
         if subagent_client is not None:
@@ -86,6 +88,7 @@ class MissionAgent:
         self.task_registry = task_registry
         self.subagent_registry = subagent_registry
         self._session_lineage_store = session_lineage_store
+        self._task_flow_store = task_flow_store
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -486,6 +489,22 @@ class MissionAgent:
                 },
             )
 
+            # Project task-flow summary
+            if self._task_flow_store is not None:
+                try:
+                    self._task_flow_store.upsert(TaskFlowRecord(
+                        flow_id=mission_id,
+                        mission_id=mission_id,
+                        command=command,
+                        status="running",
+                        task_ids=tuple(r.get("task_id", "") for r in subtask_results if r.get("status") not in ("skipped", "error")),
+                        robot_ids=tuple(r.get("robot_id", "unknown") for r in subtask_results if r.get("status") not in ("skipped", "error")),
+                        created_at=created_at,
+                        updated_at=created_at,
+                    ))
+                except Exception:
+                    logger.warning("Failed to write task flow for %s", mission_id, exc_info=True)
+
             return {
                 "status": scheduler_result.get("status", planning_result.status),
                 "message": scheduler_result.get("message", planning_result.message),
@@ -527,6 +546,23 @@ class MissionAgent:
                 "status": planning_result.status,
             },
         )
+
+        # Project task-flow summary
+        if self._task_flow_store is not None:
+            try:
+                self._task_flow_store.upsert(TaskFlowRecord(
+                    flow_id=mission_id,
+                    mission_id=mission_id,
+                    command=command,
+                    status="running",
+                    task_ids=tuple(r.get("task_id", "") for r in subtask_results if r.get("status") not in ("skipped", "error")),
+                    robot_ids=tuple(r.get("robot_id", "unknown") for r in subtask_results if r.get("status") not in ("skipped", "error")),
+                    created_at=created_at,
+                    updated_at=created_at,
+                ))
+            except Exception:
+                logger.warning("Failed to write task flow for %s", mission_id, exc_info=True)
+
         return {
             "status": planning_result.status,
             "message": planning_result.message,

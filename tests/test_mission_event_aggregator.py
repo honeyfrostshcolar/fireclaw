@@ -8,6 +8,7 @@ from fireclaw_core.mission_registry import (
 )
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
 
 class MockSubagentClient:
@@ -325,3 +326,179 @@ def test_aggregator_skips_non_terminal_events(tmp_path):
     assert r1 is not None
     # Should remain at initial status since no terminal event was processed
     assert r1.status == "dispatched"
+
+
+# --- TaskFlowRegistry terminal status tests ---
+
+def _make_task_flow_store(tmp_path):
+    return JsonlTaskFlowRegistryStore(str(tmp_path / "flows.jsonl"))
+
+
+def test_aggregator_updates_task_flow_to_completed_when_all_tasks_terminal(tmp_path):
+    """When all projected task_ids have terminal events, flow should become 'completed'."""
+    store = _make_task_flow_store(tmp_path)
+    store.upsert(TaskFlowRecord(
+        flow_id="m1",
+        mission_id="m1",
+        command="rescue on floor 2",
+        status="running",
+        task_ids=("t1", "t2"),
+        robot_ids=("robot-1", "robot-2"),
+        created_at="2026-06-10T00:00:00+00:00",
+        updated_at="2026-06-10T00:00:00+00:00",
+    ))
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient({
+        "t1": [
+            {"event_id": "e1", "task_id": "t1", "type": "task.completed", "timestamp": "2026-06-10T00:01:00Z", "payload": {}},
+        ],
+        "t2": [
+            {"event_id": "e2", "task_id": "t2", "type": "task.completed", "timestamp": "2026-06-10T00:01:01Z", "payload": {}},
+        ],
+    })
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        task_flow_store=store,
+    )
+
+    result = agg.aggregate("m1")
+
+    assert result["event_count"] == 2
+    flow = store.get("m1")
+    assert flow is not None
+    assert flow.status == "completed"
+
+
+def test_aggregator_updates_task_flow_to_failed_when_any_task_failed(tmp_path):
+    """If any task fails, flow status should be 'failed'."""
+    store = _make_task_flow_store(tmp_path)
+    store.upsert(TaskFlowRecord(
+        flow_id="m1",
+        mission_id="m1",
+        command="rescue",
+        status="running",
+        task_ids=("t1", "t2"),
+        robot_ids=("robot-1", "robot-2"),
+        created_at="2026-06-10T00:00:00+00:00",
+        updated_at="2026-06-10T00:00:00+00:00",
+    ))
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient({
+        "t1": [
+            {"event_id": "e1", "task_id": "t1", "type": "task.completed", "timestamp": "2026-06-10T00:01:00Z", "payload": {}},
+        ],
+        "t2": [
+            {"event_id": "e2", "task_id": "t2", "type": "task.failed", "timestamp": "2026-06-10T00:01:01Z", "payload": {"error": "obstacle"}},
+        ],
+    })
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        task_flow_store=store,
+    )
+
+    agg.aggregate("m1")
+
+    flow = store.get("m1")
+    assert flow is not None
+    assert flow.status == "failed"
+
+
+def test_aggregator_does_not_update_flow_when_tasks_still_running(tmp_path):
+    """Flow should stay 'running' if not all task_ids have terminal events."""
+    store = _make_task_flow_store(tmp_path)
+    store.upsert(TaskFlowRecord(
+        flow_id="m1",
+        mission_id="m1",
+        command="rescue",
+        status="running",
+        task_ids=("t1", "t2"),
+        robot_ids=("robot-1", "robot-2"),
+        created_at="2026-06-10T00:00:00+00:00",
+        updated_at="2026-06-10T00:00:00+00:00",
+    ))
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient({
+        "t1": [
+            {"event_id": "e1", "task_id": "t1", "type": "task.completed", "timestamp": "2026-06-10T00:01:00Z", "payload": {}},
+        ],
+        "t2": [
+            {"event_id": "e2", "task_id": "t2", "type": "sensor_reading", "timestamp": "2026-06-10T00:01:01Z", "payload": {}},
+        ],
+    })
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        task_flow_store=store,
+    )
+
+    agg.aggregate("m1")
+
+    flow = store.get("m1")
+    assert flow is not None
+    assert flow.status == "running"
+
+
+def test_aggregator_skips_flow_update_when_no_flow_exists(tmp_path):
+    """No crash when there is no flow record for the mission."""
+    store = _make_task_flow_store(tmp_path)
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient({"t1": [], "t2": []})
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        task_flow_store=store,
+    )
+
+    # Should not raise
+    result = agg.aggregate("m1")
+    assert result["event_count"] == 0
+
+
+def test_aggregator_skips_flow_update_when_already_terminal(tmp_path):
+    """Flow should not be re-upserted if already in a terminal status."""
+    store = _make_task_flow_store(tmp_path)
+    store.upsert(TaskFlowRecord(
+        flow_id="m1",
+        mission_id="m1",
+        command="rescue",
+        status="completed",
+        task_ids=("t1",),
+        robot_ids=("robot-1",),
+        created_at="2026-06-10T00:00:00+00:00",
+        updated_at="2026-06-10T00:00:00+00:00",
+    ))
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient({
+        "t1": [
+            {"event_id": "e1", "task_id": "t1", "type": "task.completed", "timestamp": "2026-06-10T00:01:00Z", "payload": {}},
+        ],
+        "t2": [],
+    })
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        task_flow_store=store,
+    )
+
+    agg.aggregate("m1")
+
+    flow = store.get("m1")
+    assert flow is not None
+    # Should still be "completed" (not re-upserted)
+    assert flow.status == "completed"

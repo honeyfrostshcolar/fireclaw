@@ -6,6 +6,7 @@ from typing import Any
 from fireclaw_core.mission_agent import SubagentClient
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.robot_registry import RobotRegistry
+from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
 
 class MissionEventAggregator:
@@ -20,12 +21,14 @@ class MissionEventAggregator:
         mission_registry: JsonlMissionRegistry,
         subagent_registry: Any | None = None,
         task_registry: Any | None = None,
+        task_flow_store: JsonlTaskFlowRegistryStore | None = None,
     ) -> None:
         self.registry = registry
         self.subagent_client = subagent_client
         self.mission_registry = mission_registry
         self.subagent_registry = subagent_registry
         self.task_registry = task_registry
+        self._task_flow_store = task_flow_store
 
     def aggregate(
         self,
@@ -91,6 +94,37 @@ class MissionEventAggregator:
                             )
                         except KeyError:
                             pass  # no task record exists for this subtask
+
+        # Update task-flow terminal status when all projected subtasks are done
+        if self._task_flow_store is not None:
+            flow = self._task_flow_store.get(mission_id)
+            if flow is not None and flow.status == "running":
+                terminal_statuses = {"completed", "failed", "cancelled"}
+                task_events: dict[str, str] = {}
+                for evt in all_events:
+                    tid = evt.get("task_id") or evt.get("payload", {}).get("task_id")
+                    if tid:
+                        evt_status = _terminal_status_from_event(evt)
+                        if evt_status is not None:
+                            task_events[tid] = evt_status
+                if flow.task_ids and all(tid in task_events for tid in flow.task_ids):
+                    statuses = set(task_events.values())
+                    if "failed" in statuses:
+                        new_status = "failed"
+                    elif "cancelled" in statuses:
+                        new_status = "cancelled"
+                    else:
+                        new_status = "completed"
+                    self._task_flow_store.upsert(TaskFlowRecord(
+                        flow_id=flow.flow_id,
+                        mission_id=flow.mission_id,
+                        command=flow.command,
+                        status=new_status,
+                        task_ids=flow.task_ids,
+                        robot_ids=flow.robot_ids,
+                        created_at=flow.created_at,
+                        updated_at=datetime.now(timezone.utc).isoformat(),
+                    ))
 
         return {
             "mission_id": mission_id,
