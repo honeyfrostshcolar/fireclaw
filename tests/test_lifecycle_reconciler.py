@@ -59,6 +59,45 @@ def test_reconciler_leaves_active_subagent_with_existing_task_alone(tmp_path: Pa
     assert subagents.get_by_child_task_id("child-1").status == "dispatched"
 
 
+def test_reconciler_matches_mission_projected_subtask_by_child_session_id(tmp_path: Path) -> None:
+    """MissionAgent projects subtasks as mission_id:child_task_id in TaskRegistry.
+
+    Reconciliation must treat that projected record as a match for the
+    SubagentRegistry child_task_id instead of marking a healthy run orphaned.
+    """
+    tasks = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+    subagents = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+
+    tasks.project_task_state(
+        task_id="mission-1:child-1",
+        requester_session_id="mission-1",
+        owner_id="robot-1",
+        command="search",
+        runtime="robot_gateway",
+        scope_kind="subtask",
+        status="accepted",
+        delivery_status="delivered",
+        notify_policy="state_changes",
+        created_at="2026-06-10T00:00:00+00:00",
+        parent_task_id="mission-1",
+        child_session_id="child-1",
+    )
+    subagents.create(
+        parent_mission_id="mission-1",
+        parent_subtask_id="subtask-1",
+        robot_id="robot-1",
+        child_task_id="child-1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    report = LifecycleReconciler(
+        task_registry=tasks, subagent_registry=subagents
+    ).reconcile(now="2026-06-10T00:01:00+00:00")
+
+    assert report["orphaned_subagents"] == []
+    assert subagents.get_by_child_task_id("child-1").status == "dispatched"
+
+
 def test_reconciler_skips_already_terminal_subagent(tmp_path: Path) -> None:
     """Terminal subagent runs are skipped — no orphan marking."""
     tasks = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")

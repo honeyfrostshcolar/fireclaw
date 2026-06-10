@@ -388,7 +388,7 @@ Expected: fail because `MissionAgent` and `MissionGateway` do not yet accept `pl
 
 - [x] **Step 4: Implement minimal hook wiring**
 
-Status: provider context hooks and tool approval hooks are implemented; memory hooks are still not applied to retrieved planner memories in production code.
+Status: completed. Provider context hooks, tool approval hooks, and retrieved planner memory filter/rerank hooks are wired into the production paths. The earlier note that memory hooks were not applied is superseded by commit `c6bdef5`.
 
 In `MissionAgent.__init__`, add:
 
@@ -449,7 +449,7 @@ if approval_reasons:
 
 - [x] **Step 5: Run hook integration tests**
 
-Status: covered hook integration tests pass, but this remains unchecked until memory hook production wiring is covered.
+Status: completed. Hook integration tests cover the production memory hook wiring added after the initial plan draft; the earlier unchecked note is superseded by commit `c6bdef5`.
 
 Run:
 
@@ -709,7 +709,7 @@ Expected: fail because `MissionAgent.__init__()` does not accept `task_registry`
 
 - [x] **Step 3: Implement MissionAgent projection wiring**
 
-Status: mission and non-scheduler subtask projection are implemented; default scheduler path still does not project subtasks into `TaskRegistry`, and `MissionAgent(subagent_registry=...)` does not itself create subagent lineage.
+Status: completed. Mission and default scheduler subtask submission paths project into `TaskRegistry`, and `MissionAgent(subagent_registry=...)` auto-wires the registry into the default `RobotSubagentClient`. The earlier limitation note is superseded by commit `c6bdef5`.
 
 In `MissionAgent.__init__`, add optional parameters:
 
@@ -824,7 +824,7 @@ def _terminal_status_from_event(event: dict[str, Any]) -> str | None:
 
 - [x] **Step 6: Run projection integration tests**
 
-Status: implemented tests pass for covered paths; remains unchecked until default scheduler projection and direct `subagent_registry` lineage creation are covered.
+Status: completed. Projection integration tests cover default subtask projection and direct `subagent_registry` auto-wiring; the earlier unchecked note is superseded by commit `c6bdef5`.
 
 Run:
 

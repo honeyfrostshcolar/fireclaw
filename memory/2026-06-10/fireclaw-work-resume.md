@@ -435,3 +435,148 @@ Remaining gaps are intentionally out of scope for this phase:
 - Arbitrary third-party plugin sandboxing
 - Cross-process reconciliation (in-process reconciliation is done)
 - External operator relay adapters (relay Protocol boundary is done, specific adapters are deployment-specific)
+
+## Update 2026-06-10 — Review Fixes for Maturity Roadmap
+
+### Task Goal
+
+Fix two P1 issues found during the post-implementation review of `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`.
+
+### Root Causes
+
+1. `LifecycleReconciler` used only `TaskRecord.task_id` to decide whether a `SubagentRunRecord.child_task_id` existed. The real `MissionAgent.submit_subtask()` projection stores subtasks as `task_id=f"{mission_id}:{task_id}"` while `SubagentRegistry.child_task_id` stores the raw robot-local task id. This caused healthy subagent runs to be marked `orphaned`.
+2. `PluginRuntime.register_callable()` enforced `PluginPolicy` only when `_find_descriptor(plugin_id)` found a descriptor. Unknown `plugin_id` values were allowed to register callables and generated no audit record.
+
+### Files Modified
+
+- `src/fireclaw_core/lifecycle_reconciler.py`
+  - Reconciler now treats a subagent run as matched when any of these exist:
+    - raw `child_task_id`;
+    - mission-projected `parent_mission_id:child_task_id`;
+    - a `TaskRecord.child_session_id` equal to `child_task_id`.
+- `tests/test_lifecycle_reconciler.py`
+  - Added regression coverage for MissionAgent-style projected task ids.
+- `src/fireclaw_core/plugin_policy.py`
+  - Added `reject_unknown_plugin_registration()` to reject and audit unknown plugin callable registrations.
+- `src/fireclaw_core/plugin_runtime.py`
+  - When a policy is configured, callable registration now fails closed if the plugin descriptor is missing.
+- `tests/test_plugin_policy.py`
+  - Added regression coverage for unknown plugin rejection and audit record creation.
+- `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+  - Marked all checklist items complete and added latest verification status.
+
+### Verification
+
+- RED:
+  - `.venv/bin/python -m pytest tests/test_lifecycle_reconciler.py::test_reconciler_matches_mission_projected_subtask_by_child_session_id tests/test_plugin_policy.py::TestPluginPolicyWiring::test_register_callable_rejects_unknown_plugin_when_policy_enabled -q`
+  - Result before fixes: `2 failed`
+- GREEN:
+  - Same focused command after fixes: `2 passed`
+- Related suites:
+  - `.venv/bin/python -m pytest tests/test_lifecycle_reconciler.py tests/test_task_registry.py tests/test_subagent_registry.py tests/test_mission_agent.py::test_submit_subtask_projects_into_task_registry tests/test_plugin_policy.py tests/test_plugin_runtime.py tests/test_mission_agent.py::test_plan_and_submit_applies_provider_context_hook tests/test_mission_agent.py::test_plan_and_submit_applies_memory_filter_hook tests/test_mission_agent.py::test_plan_and_submit_applies_memory_rerank_hook tests/test_mission_gateway.py::test_approval_request_applies_tool_approval_hook -q`
+  - Result: `85 passed`
+- Full suite:
+  - `.venv/bin/python -m pytest -q`
+  - Result: `886 passed, 6 skipped in 102.17s`
+
+### Current Conclusion
+
+The two review-blocking issues are fixed at the root and the default full suite is green.
+
+## Update 2026-06-10 — Post-Maturity OpenClaw Parity Recheck and New Plan
+
+### Task Goal
+
+Re-check FireClaw after the OpenClaw parity maturity work and follow-up fixes, confirm whether the previously intended ROS1-first functionality is covered, compare against OpenClaw reference architecture, and create the next implementation plan.
+
+### Context Read
+
+- Current memory: `memory/2026-06-10/fireclaw-work-resume.md`
+- Current plans:
+  - `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`
+  - `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+- Current diff/status:
+  - uncommitted review fixes in `src/fireclaw_core/lifecycle_reconciler.py`, `src/fireclaw_core/plugin_policy.py`, `src/fireclaw_core/plugin_runtime.py`
+  - uncommitted tests in `tests/test_lifecycle_reconciler.py`, `tests/test_plugin_policy.py`
+  - untracked `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+- OpenClaw references inspected with CodeGraph:
+  - `openclaw-main/src/tasks/task-registry.store.ts`
+  - `openclaw-main/src/tasks/task-flow-registry.store.ts`
+  - `openclaw-main/src/acp/session-lineage-meta.ts`
+  - `openclaw-main/src/plugins/plugin-control-plane-context.ts`
+  - `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
+  - `openclaw-main/src/acp/translator.ts`
+  - `openclaw-main/src/agents/acp-spawn.ts`
+  - `openclaw-main/src/agents/model-fallback.ts`
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `886 passed, 6 skipped in 105.77s`
+
+### Current Capability Assessment
+
+FireClaw now covers the intended ROS1-first v1 robotics loop:
+
+```text
+operator command
+-> mission planning
+-> memory/correction context
+-> plugin provider/memory hooks
+-> approval request/token/pending projection/relay boundary
+-> mission scheduler
+-> robot subagent dispatch
+-> robot-local task/action runtime
+-> ROS1 topic/service/action transport
+-> event replay/SSE/client iterator
+-> memory and lifecycle projections
+```
+
+This is strong OpenClaw-inspired v1 parity for FireClaw's robotics path, but it is still not full OpenClaw platform parity.
+
+### Important Findings
+
+1. Production-path lifecycle wiring still has a gap:
+   - `MissionEventAggregator` supports terminal robot event -> `SubagentRegistry.mark_terminal()`.
+   - `MissionAgent.mission_events()` constructs `MissionEventAggregator` without passing `self.subagent_registry`.
+   - Result: direct aggregator tests can pass while normal `MissionAgent` event aggregation does not update subagent lineage.
+   - Terminal robot events also do not yet update projected `TaskRegistry` subtask records through that path.
+2. `TaskRegistry` schema still needs cleanup:
+   - `VALID_SCOPE_KINDS` lacks `"subtask"`, while production projection uses `scope_kind="subtask"`.
+   - Current store does not strongly validate this, so tests pass, but it is inconsistent for a future source-of-truth store.
+3. OpenClaw-like control-plane features remain partial:
+   - FireClaw lacks task-flow registry, observers, session lineage ownership/resume checks, and an explicit maintenance runner.
+4. Plugin maturity is still policy/hook-level, not full OpenClaw plugin control plane:
+   - FireClaw lacks discovery/policy/inventory/activation fingerprints and persistent audit export.
+   - Arbitrary third-party plugin sandboxing remains out of scope.
+5. Provider/model runtime remains basic:
+   - `provider_runtime.py` does not exist.
+   - `LLMMissionPlanner` still binds directly to a single `ModelProvider` + `model_id`.
+   - `ModelCatalog` exists, but no runtime fallback/control plane comparable to OpenClaw model fallback pieces exists.
+6. Memory lifecycle is implemented as retriever/status/eval helpers, but not operationalized:
+   - no doctor/CLI threshold gate;
+   - no automatic transcript indexing policy;
+   - no deployment-level retrieval health report.
+7. Approval relay is a boundary:
+   - `ApprovalRelay` Protocol and `InMemoryApprovalRelay` exist.
+   - concrete console/webhook/operator adapters are still missing.
+8. ROS2 remains intentionally out of scope.
+9. ROS1 hardware proof remains runbook/schema-complete but not executed on real firefighting robot hardware.
+
+### New Plan Created
+
+- `docs/superpowers/plans/2026-06-10-openclaw-parity-post-maturity-roadmap.md`
+
+Planned tasks:
+
+1. Fix production lifecycle projection wiring through `MissionAgent.mission_events()`.
+2. Promote task/session registries toward source of truth with maintenance runtime.
+3. Add plugin control-plane fingerprints and persistent audit.
+4. Add provider runtime and fallback boundary.
+5. Make memory lifecycle evaluatable in deployment.
+6. Add concrete approval relay adapters.
+7. Run deployment/docs truth pass.
+
+### Next Recommended Step
+
+Start with Task 1 from the new plan. It is the only clear production-path wiring bug found during this review; the rest are OpenClaw platform parity/maturity work.

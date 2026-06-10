@@ -62,6 +62,11 @@ class LifecycleReconciler:
         all_tasks = self._tasks.list_records()
         all_subagents = self._subagents.list_records()
         task_index = {t.task_id: t for t in all_tasks}
+        child_session_index = {
+            t.child_session_id: t
+            for t in all_tasks
+            if t.child_session_id
+        }
 
         orphaned: list[str] = []
         diagnostics: list[dict[str, Any]] = []
@@ -71,7 +76,17 @@ class LifecycleReconciler:
             if run.is_terminal:
                 continue
             child_task_id = run.child_task_id
-            if child_task_id not in task_index:
+            mission_projected_task_id = (
+                f"{run.parent_mission_id}:{child_task_id}"
+                if run.parent_mission_id
+                else child_task_id
+            )
+            has_task_projection = (
+                child_task_id in task_index
+                or mission_projected_task_id in task_index
+                or child_task_id in child_session_index
+            )
+            if not has_task_projection:
                 # Mark as orphaned
                 self._subagents.mark_terminal(
                     child_task_id=child_task_id,

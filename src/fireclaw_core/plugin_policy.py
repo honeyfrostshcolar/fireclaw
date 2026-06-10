@@ -111,6 +111,35 @@ class PluginPolicy:
             reason=reason,
         )
 
+    def reject_unknown_plugin_registration(
+        self,
+        *,
+        plugin_id: str,
+        hook_type: str,
+        hook_name: str,
+    ) -> PluginHookPermission:
+        """Reject and audit a hook registration for an unknown plugin id."""
+        reason = (
+            f"No descriptor registered for plugin '{plugin_id}'; "
+            f"cannot register {hook_type} hook '{hook_name}'."
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        self._audit.append(PluginHookAuditRecord(
+            timestamp=now,
+            plugin_id=plugin_id,
+            hook_type=hook_type,
+            hook_name=hook_name,
+            allowed=False,
+            reason=reason,
+        ))
+        return PluginHookPermission(
+            allowed=False,
+            plugin_id=plugin_id,
+            hook_type=hook_type,
+            hook_name=hook_name,
+            reason=reason,
+        )
+
     @property
     def audit_records(self) -> list[PluginHookAuditRecord]:
         """Return all audit records (copy)."""

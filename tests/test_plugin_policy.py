@@ -121,3 +121,24 @@ class TestPluginPolicyWiring:
             plugin_id="test.plugin",
             callback=lambda p: p,
         )
+
+    def test_register_callable_rejects_unknown_plugin_when_policy_enabled(self) -> None:
+        """A plugin policy must reject callables from plugins with no descriptor."""
+        runtime = PluginRuntime()
+        d = _make_descriptor(plugin_id="declared.plugin", provider_hooks=("enrich_context",))
+        runtime.register_descriptor(d)
+        policy = PluginPolicy(descriptors=[d])
+        runtime.plugin_policy = policy
+
+        import pytest
+        with pytest.raises(ValueError, match="No descriptor registered"):
+            runtime.register_callable(
+                hook_type="provider", hook_name="enrich_context",
+                plugin_id="unknown.plugin",
+                callback=lambda p: p,
+            )
+
+        records = policy.audit_records
+        assert len(records) == 1
+        assert records[0].plugin_id == "unknown.plugin"
+        assert records[0].allowed is False

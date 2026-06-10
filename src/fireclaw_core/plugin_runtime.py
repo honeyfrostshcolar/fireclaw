@@ -179,7 +179,14 @@ class PluginRuntime:
         self._validate_known_hook(hook_type, hook_name, plugin_id)
         if self.plugin_policy is not None:
             descriptor = self._find_descriptor(plugin_id)
-            if descriptor is not None:
+            if descriptor is None:
+                result = self.plugin_policy.reject_unknown_plugin_registration(
+                    plugin_id=plugin_id,
+                    hook_type=hook_type,
+                    hook_name=hook_name,
+                )
+                raise ValueError(result.reason)
+            else:
                 result = self.plugin_policy.evaluate_registration(
                     descriptor, hook_type, hook_name,
                 )
