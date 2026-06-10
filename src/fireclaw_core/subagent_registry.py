@@ -26,6 +26,7 @@ VALID_SUBAGENT_STATUSES = {
     "cancelled",
     "timed_out",
     "lost",
+    "orphaned",
 }
 
 VALID_SUBAGENT_DELIVERY_STATUSES = {
@@ -40,6 +41,7 @@ TERMINAL_SUBAGENT_STATUSES = {
     "cancelled",
     "timed_out",
     "lost",
+    "orphaned",
 }
 
 
