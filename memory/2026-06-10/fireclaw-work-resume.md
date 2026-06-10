@@ -610,3 +610,50 @@ Make docs, plan checkboxes, and memory records match actual code state after all
 
 - `.venv/bin/python -m pytest -q`
   - Expected: all default tests pass, ROS1 smoke skipped by default.
+
+## Update 2026-06-10 — Embodied Agent OpenClaw Minimal Parity Roadmap (6 Tasks)
+
+### Plan: `docs/superpowers/plans/2026-06-10-embodied-agent-openclaw-minimal-parity-roadmap.md`
+
+All 6 tasks completed via subagent-driven-development with two-stage review per task.
+
+### Task 1: Truth Pass and Misleading ROS1 Diagnostic Cleanup
+- `src/fireclaw_core/robot.py:581` — changed "Live ROS1 transport is not implemented yet." to "ROS1 transport is disabled by configuration."
+- Architecture doc updated: ROS1-first roadmap, platform-optional work separated
+- Commit: bd1481a
+
+### Task 2: Make Lifecycle Maintenance Operationally Visible
+- `src/fireclaw_core/fleet_doctor.py` — added `task_registry`/`subagent_registry` fields, `_check_lifecycle()`, lifecycle section in `summary()`
+- `src/fireclaw_core/mission_gateway.py` — passes registries to FleetDoctor
+- 5 new tests, type fixes (Any → concrete types), summary() contract fix
+- Commits: 1fc3004, 4a3cd00
+
+### Task 3: Add Lightweight Mission Session Lineage and Resume Guard
+- `src/fireclaw_core/session_lineage.py` — new module: MissionSessionLineage, JsonlSessionLineageStore, validate_resume_ownership()
+- MissionAgent writes lineage on mission creation (non-blocking)
+- MissionGateway guards resume ownership before plan_and_submit
+- 7 tests (4 initial + 3 added after review: list_for_operator, corrupt-line, last-write-wins)
+- Commits: 6d783ea, 64be6a3
+
+### Task 4: Add Task-Flow Summary for Robotics Experiments
+- `src/fireclaw_core/task_flow_registry.py` — new module: TaskFlowRecord, JsonlTaskFlowRegistryStore
+- MissionAgent projects flow records (extracted _project_task_flow helper)
+- MissionEventAggregator updates terminal status (failed > timed_out/lost > cancelled > completed)
+- 16+ tests, wiring fix, terminal status priority fix, empty task_id leak fix
+- Commits: 7d6139a, 6f9e43e, 9385cf6
+
+### Task 5: Make Memory Retrieval Quality a Demo Gate
+- `tests/fixtures/memory_eval/fireclaw_rescue_queries.json` — rescue-specific eval fixture
+- Doctor gate already existed (_memory_eval_check)
+- 1 new test
+- Commit: de86393
+
+### Task 6: Standardize ROS1 Hardware Proof Artifacts
+- `src/fireclaw_core/ros1_smoke_artifacts.py` — new module: Ros1SmokeArtifact, JsonlRos1SmokeArtifactStore
+- Smoke test fixture writes artifact when FIRECLAW_ROS1_SMOKE_ARTIFACTS set
+- Deployment doc updated
+- 7 tests
+- Commit: 678b1f3
+
+### Final Verification
+- `.venv/bin/python -m pytest -q` → 1008 passed, 6 skipped
