@@ -300,6 +300,7 @@ class MissionAgent:
             mission_registry=self.mission_registry,
             subagent_registry=self.subagent_registry,
             task_registry=self.task_registry,
+            task_flow_store=self._task_flow_store,
         )
         return aggregator.aggregate(mission_id, robot_id=robot_id, event_type=event_type, limit=limit)
 

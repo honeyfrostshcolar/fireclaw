@@ -502,3 +502,41 @@ def test_aggregator_skips_flow_update_when_already_terminal(tmp_path):
     assert flow is not None
     # Should still be "completed" (not re-upserted)
     assert flow.status == "completed"
+
+
+def test_aggregator_cancelled_takes_priority_over_completed_in_flow(tmp_path):
+    """When one task is cancelled and another completed, flow should become 'cancelled'."""
+    store = _make_task_flow_store(tmp_path)
+    store.upsert(TaskFlowRecord(
+        flow_id="m1",
+        mission_id="m1",
+        command="rescue on floor 2",
+        status="running",
+        task_ids=("t1", "t2"),
+        robot_ids=("robot-1", "robot-2"),
+        created_at="2026-06-10T00:00:00+00:00",
+        updated_at="2026-06-10T00:00:00+00:00",
+    ))
+
+    mission = _two_robot_mission()
+    mission_reg = _make_registry(mission, tmp_path)
+    client = MockSubagentClient({
+        "t1": [
+            {"event_id": "e1", "task_id": "t1", "type": "task.cancelled", "timestamp": "2026-06-10T00:01:00Z", "payload": {}},
+        ],
+        "t2": [
+            {"event_id": "e2", "task_id": "t2", "type": "task.completed", "timestamp": "2026-06-10T00:01:01Z", "payload": {}},
+        ],
+    })
+    agg = MissionEventAggregator(
+        registry=_robot_registry(),
+        subagent_client=client,
+        mission_registry=mission_reg,
+        task_flow_store=store,
+    )
+
+    agg.aggregate("m1")
+
+    flow = store.get("m1")
+    assert flow is not None
+    assert flow.status == "cancelled"

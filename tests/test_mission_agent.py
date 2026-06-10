@@ -1925,6 +1925,57 @@ def test_plan_and_submit_projects_task_flow_record(tmp_path):
     assert "r2" in flow.robot_ids
 
 
+def test_plan_and_submit_scheduler_path_writes_task_flow_record(tmp_path):
+    from unittest.mock import patch, MagicMock
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    task_flow_store = JsonlTaskFlowRegistryStore(tmp_path / "flows.jsonl")
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+        ],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        task_flow_store=task_flow_store,
+    )
+
+    mock_scheduler = MagicMock()
+    mock_scheduler.schedule.return_value = {
+        "status": "succeeded",
+        "mission_id": "mission-1",
+        "group_results": [
+            {
+                "group_index": 0,
+                "subtask_results": [
+                    {"robot_id": "r1", "task_id": "task-r1", "status": "accepted"},
+                ],
+            }
+        ],
+        "failure_decisions": [],
+    }
+
+    with patch('fireclaw_core.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
+        result = mission.plan_and_submit("去二楼搜索", session_id="mission-1")
+
+    assert result["status"] == "succeeded"
+    flow = task_flow_store.get("mission-1")
+    assert flow is not None
+    assert flow.mission_id == "mission-1"
+    assert flow.command == "去二楼搜索"
+    assert flow.status == "running"
+    assert "task-r1" in flow.task_ids
+    assert "r1" in flow.robot_ids
+
+
 def test_plan_and_submit_task_flow_not_written_when_store_none(tmp_path):
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
