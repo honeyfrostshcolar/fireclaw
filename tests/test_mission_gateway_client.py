@@ -350,6 +350,25 @@ class TestMissionGatewayClient:
 # ---------------------------------------------------------------------------
 
 
+def test_client_approval_pending_and_resolve_token_requests() -> None:
+    sent: list[tuple[str, dict]] = []
+
+    class FakeClient(MissionGatewayClient):
+        def _post(self, path: str, body: dict) -> dict:
+            sent.append((path, body))
+            return {"status": "ok"}
+
+    client = FakeClient("http://localhost")
+
+    client.get_pending_approvals("mission-1")
+    client.resolve_approval_token("mission-1", "raw-token-abc")
+
+    assert sent == [
+        ("/missions/mission-1/approvals", {"action": "pending"}),
+        ("/missions/mission-1/approvals", {"action": "resolve_token", "approval_token": "raw-token-abc"}),
+    ]
+
+
 class TestSSECursorReplayGateway:
     def test_sse_includes_event_id(self) -> None:
         """Verify SSE output includes id: field via cursor replay."""
@@ -489,24 +508,29 @@ class TestSSECursorReplayGateway:
 
             def read_sse():
                 conn = HTTPConnection(host, port, timeout=4)
-                conn.request("GET", "/events/stream?after_sequence=1", headers={"X-Operator-Scopes": "admin"})
-                resp = conn.getresponse()
-                raw = b""
-                while True:
-                    chunk = resp.read(1)
-                    if not chunk:
-                        break
-                    raw += chunk
-                    if raw.endswith(b"\n\n"):
-                        line = raw.decode("utf-8")
-                        all_lines.append(line)
-                        for l in line.split("\n"):
-                            if l.startswith("id: "):
-                                seq = int(l[4:])
-                                assert seq not in seen_ids, f"Duplicate sequence {seq}"
-                                seen_ids.add(seq)
-                        raw = b""
-                conn.close()
+                try:
+                    conn.request("GET", "/events/stream?after_sequence=1", headers={"X-Operator-Scopes": "admin"})
+                    resp = conn.getresponse()
+                    raw = b""
+                    while True:
+                        try:
+                            chunk = resp.read(1)
+                        except TimeoutError:
+                            break
+                        if not chunk:
+                            break
+                        raw += chunk
+                        if raw.endswith(b"\n\n"):
+                            line = raw.decode("utf-8")
+                            all_lines.append(line)
+                            for l in line.split("\n"):
+                                if l.startswith("id: "):
+                                    seq = int(l[4:])
+                                    assert seq not in seen_ids, f"Duplicate sequence {seq}"
+                                    seen_ids.add(seq)
+                            raw = b""
+                finally:
+                    conn.close()
 
             t = threading.Thread(target=read_sse, daemon=True)
             t.start()

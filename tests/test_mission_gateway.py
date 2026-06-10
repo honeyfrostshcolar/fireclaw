@@ -1441,6 +1441,34 @@ def test_resolve_token_returns_pending_result(tmp_path):
     assert resolve_result["token"]["request_id"] == request_result["request"]["request_id"]
 
 
+def test_pending_approval_projection_includes_relay_context(tmp_path):
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    approval_store = JsonlApprovalStore(str(tmp_path / "approvals.jsonl"))
+    runtime = ApprovalRuntime(approval_store, token_ttl_seconds=60)
+    agent = MissionAgent(registry=registry, subagent_client=client, approval_store=approval_store)
+    gw = MissionGateway(
+        MissionGatewayConfig(port=0),
+        mission_agent=agent,
+        registry=registry,
+        subagent_client=client,
+        approval_runtime=runtime,
+    )
+
+    request_result = gw.handle_approval("mission-1", {
+        "action": "request",
+        "semantic_action": "enter_building",
+        "risk_level": "high",
+        "command": "enter burning building",
+        "relay": {"channel": "console", "operator_id": "op-1"},
+    })
+    pending = gw.handle_approval("mission-1", {"action": "pending"})
+
+    assert request_result["status"] == "pending"
+    assert pending["pending_approvals"][0]["relay"]["channel"] == "console"
+    assert pending["pending_approvals"][0]["relay"]["operator_id"] == "op-1"
+
+
 def test_resolve_token_rejects_mismatched_mission_id(tmp_path):
     registry = _make_registry()
     client = FakeSubagentClient()

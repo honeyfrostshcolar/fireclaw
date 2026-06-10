@@ -50,6 +50,17 @@ class MissionGatewayClient:
         """POST /missions/{id}/approvals"""
         return self._post(f"/missions/{mission_id}/approvals", kwargs)
 
+    def get_pending_approvals(self, mission_id: str) -> dict[str, Any]:
+        """POST /missions/{id}/approvals with action=pending"""
+        return self._post(f"/missions/{mission_id}/approvals", {"action": "pending"})
+
+    def resolve_approval_token(self, mission_id: str, approval_token: str) -> dict[str, Any]:
+        """POST /missions/{id}/approvals with action=resolve_token"""
+        return self._post(
+            f"/missions/{mission_id}/approvals",
+            {"action": "resolve_token", "approval_token": approval_token},
+        )
+
     def get_fleet_state(self) -> dict[str, Any]:
         """GET /fleet/state"""
         return self._get("/fleet/state")

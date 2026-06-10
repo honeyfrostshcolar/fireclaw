@@ -58,6 +58,7 @@ class MissionGateway:
         self.subagent_client = subagent_client or RobotSubagentClient()
         self.approval_runtime = approval_runtime
         self.plugin_runtime = plugin_runtime
+        self._approval_relays: dict[str, dict[str, Any]] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._event_bus = EventBus()
@@ -227,6 +228,12 @@ class MissionGateway:
                 request = result.get("request")
                 request_id = request.get("request_id") if isinstance(request, dict) else None
                 if isinstance(request_id, str) and request_id:
+                    relay = payload.get("relay")
+                    if isinstance(relay, dict):
+                        self._approval_relays[request_id] = {
+                            "channel": str(relay.get("channel") or "console"),
+                            "operator_id": str(relay.get("operator_id") or "unknown"),
+                        }
                     raw_token, token = self.approval_runtime.create_token(request_id)
                     return {
                         **result,
@@ -243,6 +250,10 @@ class MissionGateway:
                 for item in self.approval_runtime.pending_projection()
                 if item.get("mission_id") == mission_id
             ]
+            for item in pending:
+                relay = self._approval_relays.get(str(item.get("request_id")))
+                if relay is not None:
+                    item["relay"] = dict(relay)
             return {"status": "pending", "pending_approvals": pending}
         if action == "resolve_token":
             if self.approval_runtime is None:
