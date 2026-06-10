@@ -4,7 +4,8 @@
 
 - OpenClaw parity v1 已实现并完成一次后续接入修正。
 - Runtime hardening 计划（`docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`）全部 7 个任务已完成。
-- 最新默认全量测试结果：`.venv/bin/python -m pytest -q` -> `823 passed, 6 skipped in 99.56s`。
+- Follow-up hardening：修复了 5 个 P1/P2 问题（memory hooks 接入、TaskRegistry scheduler 路径覆盖、subagent_registry 自动装配、_retrieve_planner_context early return bug、计划文件 checkbox 标记）。
+- 最新默认全量测试结果：`.venv/bin/python -m pytest -q` -> `829 passed, 6 skipped in 97.12s`。
 - 6.10 的工作记录已从 `memory/2026-06-09/fireclaw-work-resume.md` 迁移到本文件。
 
 ## 已完成：
@@ -16,6 +17,11 @@
 - 修掉 `tests/test_mission_gateway_client.py` 的 SSE reader thread timeout warning。
 - 把 stale unchecked OpenClaw parity plan 改成 v1 completion record。
 - 同步架构 roadmap 中 PluginRuntime / MemoryRetriever 相关过时表述。
+- **Follow-up: 接入 memory hooks** — `run_memory_hooks("filter"/"rerank")` 现在在 `_retrieve_planner_context()` 检索后执行。
+- **Follow-up: 修复 early return bug** — `mission_memory is None` 不再阻止 `memory_retriever` 调用。
+- **Follow-up: TaskRegistry 覆盖 scheduler 路径** — subtask projection 移入 `submit_subtask()` 内部，scheduler/非 scheduler 路径均覆盖。
+- **Follow-up: subagent_registry 自动装配** — 无显式 client 时自动将 registry 传入 `RobotSubagentClient`。
+- **Follow-up: 计划文件 checkbox 全部标记为 [x]**。
 
 ## 当前问题：
 

@@ -733,53 +733,6 @@ Roadmap:
 - Complete Phase 9 ROS1 action smoke proof with proper ROS message construction or transport-level message conversion; then verify marker-gated smoke tests.
 - Phase 10 remains open: stronger memory retrieval/indexing and plugin/skill descriptor runtime.
 
-## Update 2026-06-10 00:08 CST — Fixed Current Test Failures
-
-### Task Goal
-
-Fix the two failing tests from the previous reconciliation and restore the full test suite to green.
-
-### Root Causes
-
-1. `tests/test_mission_gateway.py::test_post_body_too_large`
-   - `MissionGateway._read_json()` rejected an oversized request from `Content-Length` before consuming the request body.
-   - `urllib` was still sending the 1 MB+ body when the server closed the connection, producing `BrokenPipeError` / `URLError` instead of the expected HTTP 400 path.
-
-2. `tests/test_ros1_smoke.py::test_ros1_action_timeout`
-   - The test passed a raw `dict` as a real ROS1 Fibonacci action goal, which actionlib cannot serialize.
-   - After converting to `FibonacciGoal`, the focused test exposed hidden order coupling: `rospy.init_node()` had only been called by an earlier topic smoke test.
-   - Once initialized independently, the transport returned `status="failed"` for action result timeout while the smoke test and task-state model expected a distinct `timeout` status.
-
-### Files Modified
-
-- `src/fireclaw_core/mission_gateway.py`
-  - Oversized request bodies are now consumed before raising `_BadRequestError`, so clients can receive the intended HTTP error response.
-- `tests/test_ros1_smoke.py`
-  - Added `_ensure_rospy_node()`.
-  - Smoke tests now initialize `rospy` independently instead of relying on test order.
-  - Timeout test now uses `actionlib_tutorials.msg.FibonacciGoal(order=100)`.
-- `tests/test_ros1_transport.py`
-  - Added `test_ros1_transport_reports_action_result_timeout`.
-- `src/fireclaw_core/ros1_transport.py`
-  - Action result timeout now returns `{"status": "timeout", ...}` instead of `{"status": "failed", ...}`.
-
-### Verification
-
-- `.venv/bin/python -m pytest tests/test_mission_gateway.py::test_post_body_too_large -q`
-  - GREEN: `1 passed`
-- `.venv/bin/python -m pytest tests/test_ros1_transport.py::test_ros1_transport_reports_action_result_timeout -q`
-  - RED first, then GREEN: `1 passed`
-- `.venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_timeout -q`
-  - GREEN: `1 passed, 5 warnings`
-- `.venv/bin/python -m pytest tests/test_mission_gateway.py tests/test_ros1_transport.py tests/test_ros1_smoke.py -q`
-  - GREEN: `47 passed, 6 warnings`
-- `.venv/bin/python -m pytest -q`
-  - GREEN: `582 passed, 6 warnings in 58.86s`
-
-### Current Conclusion
-
-The two current test failures are fixed and the full local test suite is green again. Warnings are from ROS/actionlib deprecations in ROS Noetic dependencies, not FireClaw test failures.
-
 ## Update 2026-06-09 Task 11: Deployment and Documentation Cleanup
 
 ### Task Goal
@@ -994,3 +947,130 @@ The hardening review findings are addressed. Default full-suite verification no 
 - ROS2 implementation remains future work; current module is a protocol boundary.
 - Memory retrieval still lacks embedding/ranking/provider lifecycle beyond SQLite FTS v1.
 - Plugin SDK runtime hooks remain future work beyond descriptor v1.
+
+## Update 2026-06-09 OpenClaw Parity Recheck and Next Roadmap
+
+### Task Goal
+
+Re-check the current FireClaw code after Phase 6-10 completion and hardening, compare it against OpenClaw's corresponding platform capabilities, and create a new plan for the next work phase.
+
+### Sources and Commands Used
+
+- Read recent memory and plans:
+  - `memory/2026-06-09/fireclaw-work-resume.md`
+  - `docs/superpowers/plans/2026-06-09-phase8-10-completion-and-deployment-cleanup.md`
+  - `docs/superpowers/plans/2026-06-09-phase8-10-hardening-fixes.md`
+- Checked git state:
+  - `git status --short --branch` -> `## master...origin/master [领先 70]`
+  - latest commit remains `ff98bf1 fix: harden phase 8-10 completion`
+- Used CodeGraph for FireClaw architecture context:
+  - `MissionAgent`, `MissionGateway`, `MissionScheduler`, `FireClawGateway`, `StreamEvent`, `SqliteMemoryIndex`, `FireClawPluginDescriptor`, `SafetyGate`, `Ros1Transport`
+- Used CodeGraph for OpenClaw reference:
+  - `openclaw-main/src/tasks/task-registry.types.ts`
+  - `openclaw-main/src/tasks/task-registry.store.ts`
+  - `openclaw-main/src/agents/subagent-registry.store.ts`
+  - gateway/method scope/plugin/memory/approval related directories
+- Ran full verification:
+  - `.venv/bin/python -m pytest -q`
+  - Result: `1 failed, 686 passed, 6 skipped in 71.88s`
+- Reproduced focused flaky failure:
+  - `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_cancel_updates_task_queue_state -q` -> passed once
+  - `for i in $(seq 1 20); do .venv/bin/python -m pytest tests/test_gateway.py::test_gateway_cancel_updates_task_queue_state -q ...; done`
+  - Result: failed at iteration 17
+
+### Important Finding
+
+The current repo is not full-suite green at this exact recheck point. The failure is intermittent but real:
+
+```text
+tests/test_gateway.py::test_gateway_cancel_updates_task_queue_state
+AssertionError: assert 'completed' == 'cancel_requested'
+```
+
+Root cause evidence: `cancel_task()` records `task.cancel_requested` and updates `JsonlTaskQueue` to `cancel_requested`, but the worker can finish quickly and `_record_result_events()` then updates the same queue record to `completed`. This is a lifecycle semantics race between cancellation observability and terminal completion.
+
+### Current Capability Conclusion
+
+FireClaw can complete the originally intended basic embodied-agent function:
+
+```text
+operator command
+-> LLM/deterministic mission planning
+-> mission scheduler
+-> mission Gateway
+-> robot subagent client
+-> robot-local Gateway/task queue
+-> local planner/safety/skill runtime
+-> dry-run/simulator/ROS1 adapter
+-> unified events/SSE/memory/replay
+```
+
+However, compared with OpenClaw it remains a robotics framework v1 rather than a full agent platform. OpenClaw parity gaps that still matter:
+
+- deterministic task lifecycle under cancellation/completion races;
+- OpenClaw-style task registry with runtime/status/delivery/notify/owner/session fields;
+- durable robot subagent run registry and parent/child session metadata;
+- plugin runtime hooks beyond descriptor validation;
+- memory embedding/ranking/provider lifecycle and transcript indexing;
+- typed Gateway client and stronger SSE replay/reconnect semantics;
+- approval runtime token/pending-work projection;
+- config/doctor migration and repair flow;
+- systematic sandbox/process/network permission model;
+- ROS2 implementation and real robot hardware proof;
+- operator web UI consuming mission Gateway SSE.
+
+### Files Created
+
+- `docs/superpowers/plans/2026-06-09-openclaw-parity-next-roadmap.md`
+
+### Next Recommended Step
+
+Execute Task 1 from the new plan first: fix `test_gateway_cancel_updates_task_queue_state` by defining cancellation precedence in the task lifecycle, run a focused stability loop, then run the full suite. Do not start broader OpenClaw parity work until full-suite verification is stable again.
+
+## Update 2026-06-09 Cancel Lifecycle Race Fixed
+
+### Task Goal
+
+Fix the Gateway cancel lifecycle race found during the OpenClaw parity recheck, restore stable full-suite verification, and update the next roadmap so this is no longer listed as future work.
+
+### Root Cause
+
+`FireClawGateway.cancel_task()` accepted cancellation and wrote `cancel_requested`, but `_record_result_events()` could concurrently write a normal `task.completed` terminal event and queue status after the cancellation request. A second interleaving also existed: the worker could decide its terminal state before the cancel event was appended, then overwrite the queue after cancel returned.
+
+### Files Modified
+
+- `src/fireclaw_core/gateway.py`
+  - `cancel_task()` now serializes accepted cancellation with terminal result recording via `_task_lock`.
+  - It rechecks terminal queue state after acquiring the lock so a task that already completed is reported as completed instead of newly cancellable.
+  - `_record_result_events()` now treats an accepted cancellation request, cancel event, or `cancel_requested` queue state as terminal lifecycle `cancelled`, even if the underlying worker result says `succeeded`.
+  - `_task_result_from_events()` now returns a `cancelled` status for `task.cancelled` lifecycle events while preserving the original worker result in the event payload for audit.
+- `tests/test_gateway.py`
+  - Added `test_gateway_result_recording_preserves_prior_cancel_request`.
+  - Relaxed the immediate queue assertion in `test_gateway_cancel_updates_task_queue_state` to allow either `cancel_requested` or already-terminal `cancelled`, but not `completed`.
+- `docs/superpowers/plans/2026-06-09-openclaw-parity-next-roadmap.md`
+  - Removed the P0 cancel lifecycle item from future work.
+  - Renumbered the remaining OpenClaw parity tasks so the plan now starts with Task Registry v1.
+- `docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`
+  - Updated full-suite count to `688 passed, 6 skipped`.
+
+### Verification
+
+- RED proof:
+  - `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_result_recording_preserves_prior_cancel_request -q`
+  - Initial result: failed with queue status `completed` instead of `cancelled`.
+- Focused GREEN:
+  - `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_result_recording_preserves_prior_cancel_request tests/test_gateway.py::test_gateway_cancel_updates_task_queue_state -q`
+  - Result: `2 passed`.
+- Stability loop:
+  - `for i in $(seq 1 50); do .venv/bin/python -m pytest tests/test_gateway.py::test_gateway_cancel_updates_task_queue_state -q ...; done`
+  - Result: `50 focused runs passed`.
+- Gateway suite:
+  - `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - Result: `28 passed in 27.11s`.
+- Full suite:
+  - `.venv/bin/python -m pytest -q`
+  - Result: `688 passed, 6 skipped in 77.15s`.
+
+### Current Conclusion
+
+The cancel lifecycle race is fixed and should not remain in the OpenClaw parity roadmap. The next roadmap now starts with the real remaining platform gaps: task/session lineage, subagent run registry, plugin runtime hooks, memory retrieval v2, typed Gateway client/SSE cursor replay, approval runtime tokens, and deployment repair/ROS2 planning.

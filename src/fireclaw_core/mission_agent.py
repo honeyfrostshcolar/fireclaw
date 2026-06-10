@@ -65,7 +65,14 @@ class MissionAgent:
         subagent_registry: Any | None = None,
     ) -> None:
         self.registry = registry
-        self.subagent_client = subagent_client or RobotSubagentClient()
+        if subagent_client is not None:
+            self.subagent_client = subagent_client
+        else:
+            from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+            client_kwargs: dict[str, Any] = {}
+            if subagent_registry is not None:
+                client_kwargs["registry"] = subagent_registry
+            self.subagent_client = RobotSubagentClient(**client_kwargs)
         self.mission_registry = mission_registry
         self.planner = planner
         self.control_policy = control_policy
@@ -194,6 +201,24 @@ class MissionAgent:
             "status": status,
             "command": command,
         }
+
+        # Project subtask lifecycle into task registry
+        if self.task_registry is not None and isinstance(task_id, str):
+            self.task_registry.project_task_state(
+                task_id=f"{mission_id}:{task_id}",
+                requester_session_id=mission_id,
+                owner_id=robot_id,
+                command=command,
+                runtime="robot_gateway",
+                scope_kind="subtask",
+                status=status,
+                delivery_status="delivered" if status == "accepted" else "pending",
+                notify_policy="state_changes",
+                created_at=created_at,
+                parent_task_id=mission_id,
+                child_session_id=task_id,
+            )
+
         self._record_mission_memory(
             mission_id,
             "outcome",
@@ -281,9 +306,6 @@ class MissionAgent:
 
         Returns (memories, corrections) with secrets redacted.
         """
-        if self.mission_memory is None:
-            return [], []
-
         memories: list[dict[str, Any]] = []
         corrections: list[dict[str, Any]] = []
 
@@ -291,7 +313,7 @@ class MissionAgent:
             if self.memory_retriever is not None:
                 retrieved = self.memory_retriever.retrieve(command, limit=max_memories)
                 memories = [redact_dict(_memory_result_to_dict(r)) for r in retrieved]
-            else:
+            elif self.mission_memory is not None:
                 # Search for relevant outcome records matching the command
                 outcome_records = self.mission_memory.search(
                     record_type="outcome",
@@ -306,18 +328,36 @@ class MissionAgent:
             logger.warning("Failed to retrieve planner memories", exc_info=True)
 
         try:
-            # Search for all recent operator corrections (not keyword-filtered,
-            # since corrections may reference different commands than the current one)
-            correction_records = self.mission_memory.search(
-                record_type="correction",
-                limit=max_corrections,
-            )
-            corrections = [
-                redact_dict(r.to_dict())
-                for r in correction_records
-            ]
+            if self.mission_memory is not None:
+                # Search for all recent operator corrections (not keyword-filtered,
+                # since corrections may reference different commands than the current one)
+                correction_records = self.mission_memory.search(
+                    record_type="correction",
+                    limit=max_corrections,
+                )
+                corrections = [
+                    redact_dict(r.to_dict())
+                    for r in correction_records
+                ]
         except Exception:
             logger.warning("Failed to retrieve operator corrections", exc_info=True)
+
+        # Apply memory hooks from plugin runtime (filter + rerank)
+        if self.plugin_runtime is not None and memories:
+            for effect in self.plugin_runtime.run_memory_hooks(
+                "filter",
+                {"command": command, "memories": memories},
+            ):
+                filtered = effect.get("effect", {}).get("memories")
+                if isinstance(filtered, list):
+                    memories = filtered
+            for effect in self.plugin_runtime.run_memory_hooks(
+                "rerank",
+                {"command": command, "memories": memories},
+            ):
+                reranked = effect.get("effect", {}).get("memories")
+                if isinstance(reranked, list):
+                    memories = reranked
 
         return memories, corrections
 
@@ -451,22 +491,6 @@ class MissionAgent:
             )
             subtask_results.append(result)
 
-            # Project subtask lifecycle into task registry
-            if self.task_registry is not None and result.get("task_id"):
-                self.task_registry.project_task_state(
-                    task_id=f"{mission_id}:{result.get('task_id')}",
-                    requester_session_id=mission_id,
-                    owner_id=str(result.get("robot_id") or subtask.robot_id),
-                    command=subtask.command,
-                    runtime="robot_gateway",
-                    scope_kind="mission",
-                    status=str(result.get("status") or "accepted"),
-                    delivery_status="delivered" if result.get("status") == "accepted" else "pending",
-                    notify_policy="state_changes",
-                    created_at=created_at,
-                    parent_task_id=mission_id,
-                    child_session_id=str(result.get("task_id")),
-                )
         robot_assignments = [
             {"robot_id": r.get("robot_id", "unknown"), "task_id": r.get("task_id", "")}
             for r in subtask_results

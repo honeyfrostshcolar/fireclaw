@@ -7,7 +7,7 @@ from urllib import request
 from urllib.error import HTTPError
 
 from fireclaw_core.robot_registry import RobotRegistryEntry
-from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.subagent_registry import JsonlSubagentRegistry, TERMINAL_SUBAGENT_STATUSES
 
 
 class RobotSubagentClient:
@@ -72,6 +72,18 @@ class RobotSubagentClient:
     def get_task_trace(self, entry: RobotRegistryEntry, task_id: str) -> dict[str, Any]:
         result = self._request_json("GET", entry.base_url, f"/tasks/{task_id}")
         result.setdefault("robot_id", entry.robot_id)
+        if self.registry is not None:
+            status = _status_from_trace(result)
+            if status in TERMINAL_SUBAGENT_STATUSES:
+                record = self.registry.get_by_child_task_id(task_id)
+                if record is not None:
+                    self.registry.update(
+                        record.run_id,
+                        status=status,
+                        delivery_status="delivered",
+                        updated_at=datetime.now(timezone.utc).isoformat(),
+                        error=_error_from_trace(result),
+                    )
         return result
 
     def cancel_task(
@@ -162,3 +174,23 @@ def _decode_json_response(raw: bytes) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Robot subagent response must be a JSON object.")
     return value
+
+
+def _status_from_trace(trace: dict[str, Any]) -> str | None:
+    result = trace.get("result")
+    if isinstance(result, dict):
+        status = result.get("status")
+        if isinstance(status, str) and status:
+            return status
+    status = trace.get("status")
+    return status if isinstance(status, str) and status else None
+
+
+def _error_from_trace(trace: dict[str, Any]) -> str | None:
+    result = trace.get("result")
+    if isinstance(result, dict):
+        error = result.get("error")
+        if isinstance(error, str) and error:
+            return error
+    error = trace.get("error")
+    return error if isinstance(error, str) and error else None

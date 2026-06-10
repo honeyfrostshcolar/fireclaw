@@ -7,6 +7,7 @@ from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.plugin_runtime import PluginRuntime
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.subagent_client import RobotSubagentClient
 from fireclaw_core.task_registry import JsonlTaskRegistryStore
 
 
@@ -1630,3 +1631,179 @@ def test_plan_and_submit_projects_subtask_lifecycle_records(tmp_path):
     assert len(mission_records) == 1
     assert mission_records[0].task_id == "mission-1"
     assert mission_records[0].status == "planned"
+
+
+# --- Memory hook wiring tests ---
+
+def test_plan_and_submit_applies_memory_filter_hook(tmp_path):
+    """Memory filter hook should be able to reduce the memory set."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    memory_store.append(MissionMemoryRecord(
+        record_id="mem-1", mission_id="old", record_type="outcome",
+        content={"command": "去二楼搜索", "status": "succeeded"}, created_at=now,
+    ))
+    memory_store.append(MissionMemoryRecord(
+        record_id="mem-2", mission_id="old", record_type="outcome",
+        content={"command": "去三楼搜索", "status": "failed"}, created_at=now,
+    ))
+
+    runtime = PluginRuntime()
+    # Filter hook: keep only the first memory
+    runtime.register_callable(
+        hook_type="memory",
+        hook_name="filter",
+        plugin_id="fire.memfilter",
+        callback=lambda payload: {"memories": [payload["memories"][0]]},
+    )
+    plan = MissionPlan(
+        intent="search", command="去二楼搜索",
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(
+        registry=registry, subagent_client=client, planner=planner,
+        mission_memory=memory_store, plugin_runtime=runtime,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="m1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    ctx = planner.calls[0][1]
+    assert len(ctx.retrieved_memories) == 1
+    assert ctx.retrieved_memories[0]["record_id"] == "mem-1"
+
+
+def test_plan_and_submit_applies_memory_rerank_hook(tmp_path):
+    """Memory rerank hook should be able to reorder the memory set."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    # Use a retriever that returns 2 memories so the rerank hook has something to reorder
+    retriever = FakeMemoryRetriever([
+        RetrievedMemory(
+            record_id="mem-a", mission_id="old", record_type="outcome",
+            content={"command": "去二楼搜索", "status": "succeeded"}, score=0.9, source="fused",
+            created_at="2026-06-10T00:00:00+00:00",
+        ),
+        RetrievedMemory(
+            record_id="mem-b", mission_id="old", record_type="outcome",
+            content={"command": "去三楼搜索", "status": "failed"}, score=0.8, source="fused",
+            created_at="2026-06-10T00:00:00+00:00",
+        ),
+    ])
+
+    runtime = PluginRuntime()
+    # Rerank hook: reverse the order
+    runtime.register_callable(
+        hook_type="memory",
+        hook_name="rerank",
+        plugin_id="fire.rerank",
+        callback=lambda payload: {"memories": list(reversed(payload["memories"]))},
+    )
+    plan = MissionPlan(
+        intent="search", command="去二楼搜索",
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(
+        registry=registry, subagent_client=client, planner=planner,
+        memory_retriever=retriever, plugin_runtime=runtime,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="m1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    ctx = planner.calls[0][1]
+    assert len(ctx.retrieved_memories) == 2
+    assert ctx.retrieved_memories[0]["record_id"] == "mem-b"
+    assert ctx.retrieved_memories[1]["record_id"] == "mem-a"
+
+
+def test_memory_hooks_not_called_when_no_memories(tmp_path):
+    """Memory hooks should not be invoked when the memory list is empty."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    called = []
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="memory",
+        hook_name="filter",
+        plugin_id="fire.memfilter",
+        callback=lambda payload: (called.append("filter"), None)[-1],
+    )
+    plan = MissionPlan(
+        intent="search", command="去二楼搜索",
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    mission = MissionAgent(
+        registry=registry, subagent_client=client, planner=planner,
+        plugin_runtime=runtime,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索", session_id="m1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    assert called == []  # hook was not called
+
+
+# --- SubagentRegistry auto-wiring tests ---
+
+def test_mission_agent_auto_wires_subagent_registry_to_client(tmp_path):
+    """When subagent_registry is provided but subagent_client is not,
+    MissionAgent should wire registry into the default RobotSubagentClient."""
+    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    subagent_registry = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+    mission = MissionAgent(registry=registry, subagent_registry=subagent_registry)
+
+    assert isinstance(mission.subagent_client, RobotSubagentClient)
+    assert mission.subagent_client.registry is subagent_registry
+
+
+def test_mission_agent_explicit_client_ignores_subagent_registry():
+    """When an explicit subagent_client is provided, subagent_registry is not used for it."""
+    registry = RobotRegistry([])
+    explicit_client = FakeSubagentClient()
+    mission = MissionAgent(registry=registry, subagent_client=explicit_client, subagent_registry="ignored")
+
+    assert mission.subagent_client is explicit_client
+
+
+def test_submit_subtask_projects_into_task_registry(tmp_path):
+    """submit_subtask() should project lifecycle into task_registry."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+    ])
+    client = FakeSubagentClient()
+    task_registry = JsonlTaskRegistryStore(tmp_path / "task_registry.jsonl")
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        task_registry=task_registry,
+        mission_registry=mission_registry,
+    )
+
+    result = mission.submit_subtask("r1", "去2楼搜索", session_id="mission-x")
+
+    assert result["status"] == "accepted"
+    records = task_registry.list_records()
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.task_id == "mission-x:task-robot-1"
+    assert rec.parent_task_id == "mission-x"
+    assert rec.child_session_id == "task-robot-1"
+    assert rec.owner_id == "r1"
+    assert rec.scope_kind == "subtask"
