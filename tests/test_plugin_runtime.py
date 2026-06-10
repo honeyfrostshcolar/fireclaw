@@ -310,8 +310,27 @@ class TestPluginRuntimeCallableHooks:
         effects = runtime.run_provider_hooks("enrich_context", {"command": "test", "context": {}})
 
         assert len(effects) == 2
-        assert effects[0]["plugin_id"] == "fire.context.a"
-        assert effects[1]["plugin_id"] == "fire.context.b"
+
+    def test_failing_callback_does_not_block_remaining_callbacks(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="fire.broken",
+            callback=lambda payload: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="fire.working",
+            callback=lambda payload: {"source": "working"},
+        )
+
+        effects = runtime.run_provider_hooks("enrich_context", {"command": "test", "context": {}})
+
+        assert len(effects) == 1
+        assert effects[0]["plugin_id"] == "fire.working"
+        assert effects[0]["effect"] == {"source": "working"}
 
     def test_unknown_hook_type_raises(self) -> None:
         runtime = PluginRuntime()

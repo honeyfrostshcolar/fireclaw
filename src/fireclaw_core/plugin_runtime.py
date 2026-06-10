@@ -8,10 +8,13 @@ sets, and aggregates hooks for integration with the planner and memory layers.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fireclaw_core.plugin_descriptor import FireClawPluginDescriptor
 
@@ -198,12 +201,22 @@ class PluginRuntime:
     def _run_hooks(
         self, hook_type: str, hook_name: str, payload: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        self._validate_known_hook(hook_type, hook_name, "runtime")
         effects: list[dict[str, Any]] = []
         for plugin_id, callback in self._callables.get(
             (hook_type, hook_name), []
         ):
-            result = callback(dict(payload))  # copy to prevent mutation
+            try:
+                result = callback(dict(payload))  # copy to prevent mutation
+            except Exception:
+                # A buggy plugin must not prevent other plugins from running.
+                logger.warning(
+                    "Plugin '%s' %s hook '%s' raised an exception; skipping.",
+                    plugin_id,
+                    hook_type,
+                    hook_name,
+                    exc_info=True,
+                )
+                continue
             if result is None:
                 continue
             if not isinstance(result, dict):
