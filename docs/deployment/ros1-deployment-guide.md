@@ -140,6 +140,12 @@ FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q
 
 # Run specific smoke test
 FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -q
+
+# Record smoke proof artifact (JSONL) for real robot validation.
+# Each run appends one artifact with check names, pass/fail, and timestamps.
+FIRECLAW_RUN_ROS1_SMOKE=1 \
+FIRECLAW_ROS1_SMOKE_ARTIFACTS=results/ros1-smoke/fireclaw-$(date +%Y%m%d-%H%M%S).jsonl \
+.venv/bin/python -m pytest tests/test_ros1_smoke.py -q
 ```
 
 ## Troubleshooting

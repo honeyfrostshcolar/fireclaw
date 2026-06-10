@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -20,6 +22,57 @@ import pytest
 # Marker – every test in this module requires a running ROS1 master.
 # ---------------------------------------------------------------------------
 pytestmark = pytest.mark.ros1_smoke
+
+
+# ---------------------------------------------------------------------------
+# Artifact collector – records check names for JSONL output
+# ---------------------------------------------------------------------------
+
+class _ArtifactCollector:
+    """Collects smoke check names and writes a JSONL artifact on teardown."""
+
+    def __init__(self) -> None:
+        self.checks: list[str] = []
+        self.started_at: str = datetime.now(timezone.utc).isoformat()
+        self._passed: bool = True
+        self._error_summary: str | None = None
+
+    def record(self, name: str, passed: bool, error: str | None = None) -> None:
+        self.checks.append(name)
+        if not passed:
+            self._passed = False
+            if error and self._error_summary is None:
+                self._error_summary = error
+
+
+@pytest.fixture(scope="session")
+def smoke_artifact_collector():
+    """Yield an artifact collector; write JSONL at teardown if env var set."""
+    artifact_path = os.environ.get("FIRECLAW_ROS1_SMOKE_ARTIFACTS")
+    collector = _ArtifactCollector()
+    yield collector
+    if artifact_path is not None:
+        from fireclaw_core.ros1_smoke_artifacts import (
+            JsonlRos1SmokeArtifactStore,
+            Ros1SmokeArtifact,
+        )
+
+        finished_at = datetime.now(timezone.utc).isoformat()
+        robot_id = os.environ.get("FIRECLAW_ROBOT_ID", "unknown")
+        environment = os.environ.get("FIRECLAW_ROS1_ENV", "sim")
+        artifact = Ros1SmokeArtifact(
+            run_id=f"smoke-{uuid.uuid4().hex[:8]}",
+            robot_id=robot_id,
+            environment=environment,
+            command="pytest tests/test_ros1_smoke.py",
+            checks=tuple(collector.checks),
+            passed=collector._passed,
+            started_at=collector.started_at,
+            finished_at=finished_at,
+            error_summary=collector._error_summary,
+        )
+        store = JsonlRos1SmokeArtifactStore(artifact_path)
+        store.append(artifact)
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +267,15 @@ def test_ros1_smoke_infrastructure_starts(
     ros_master: subprocess.Popen,
     turtlesim_node: subprocess.Popen,
     fibonacci_server: subprocess.Popen,
+    smoke_artifact_collector,
 ) -> None:
     """All three ROS1 processes should still be running."""
+    passed = (
+        ros_master.poll() is None
+        and turtlesim_node.poll() is None
+        and fibonacci_server.poll() is None
+    )
+    smoke_artifact_collector.record("infrastructure", passed)
     assert ros_master.poll() is None, "roscore exited unexpectedly"
     assert turtlesim_node.poll() is None, "turtlesim_node exited unexpectedly"
     assert fibonacci_server.poll() is None, "fibonacci_server exited unexpectedly"
@@ -225,7 +285,7 @@ def test_ros1_smoke_infrastructure_starts(
 # Topic smoke test – publish Twist to turtlesim via Ros1Transport
 # ---------------------------------------------------------------------------
 
-def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node):
+def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node, smoke_artifact_collector):
     """Publish a Twist to /turtle1/cmd_vel via transport.execute() with a dict payload."""
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
@@ -245,6 +305,7 @@ def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node):
         {"linear": {"x": 2.0, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.0}},
         config,
     )
+    smoke_artifact_collector.record("topic_publish", result["status"] == "succeeded")
     assert result["status"] == "succeeded"
 
 
@@ -252,7 +313,7 @@ def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node):
 # Service smoke test – call turtlesim /clear via Ros1Transport
 # ---------------------------------------------------------------------------
 
-def test_ros1_service_call_clear(ros_master, turtlesim_node):
+def test_ros1_service_call_clear(ros_master, turtlesim_node, smoke_artifact_collector):
     """Call turtlesim /clear service through Ros1Transport."""
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
@@ -269,6 +330,7 @@ def test_ros1_service_call_clear(ros_master, turtlesim_node):
 
     result = transport.execute(endpoint, {}, config)
 
+    smoke_artifact_collector.record("service_call", result["status"] == "succeeded")
     assert result["status"] == "succeeded"
 
 
@@ -276,7 +338,7 @@ def test_ros1_service_call_clear(ros_master, turtlesim_node):
 # Action smoke test – send Fibonacci goal via Ros1Transport
 # ---------------------------------------------------------------------------
 
-def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server):
+def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server, smoke_artifact_collector):
     """Send Fibonacci goal via transport.execute() with a dict payload."""
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
@@ -303,6 +365,13 @@ def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server):
         {"order": 5},
         config,
     )
+    goal_passed = (
+        result["status"] == "succeeded"
+        and result.get("response") is not None
+        and list(result["response"]["sequence"]) == [0, 1, 1, 2, 3, 5]
+        and len(feedback_received) > 0
+    )
+    smoke_artifact_collector.record("action_goal", goal_passed)
     assert result["status"] == "succeeded"
     result_data = result["response"]
     assert result_data is not None
@@ -314,7 +383,7 @@ def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server):
 # Action cancel smoke test – cancel Fibonacci goal after first feedback
 # ---------------------------------------------------------------------------
 
-def test_ros1_action_cancel(ros_master, fibonacci_server):
+def test_ros1_action_cancel(ros_master, fibonacci_server, smoke_artifact_collector):
     """Send Fibonacci goal and cancel it after first feedback."""
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
@@ -354,6 +423,7 @@ def test_ros1_action_cancel(ros_master, fibonacci_server):
         time.sleep(0.05)
     client.cancel_goal()
 
+    smoke_artifact_collector.record("action_cancel", cancel_count >= 1)
     assert cancel_count >= 1, "Should have received at least one feedback before cancel"
 
 
@@ -361,7 +431,7 @@ def test_ros1_action_cancel(ros_master, fibonacci_server):
 # Action timeout smoke test – verify timeout on short wait
 # ---------------------------------------------------------------------------
 
-def test_ros1_action_timeout(ros_master, fibonacci_server):
+def test_ros1_action_timeout(ros_master, fibonacci_server, smoke_artifact_collector):
     """Verify timeout produces correct status when result takes too long."""
     from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
     from fireclaw_core.ros1_transport import Ros1Transport
@@ -386,4 +456,5 @@ def test_ros1_action_timeout(ros_master, fibonacci_server):
     goal = actionlib_tutorials.msg.FibonacciGoal(order=100)
     result = transport.execute(endpoint, goal, config)
 
+    smoke_artifact_collector.record("action_timeout", result["status"] == "timeout")
     assert result["status"] == "timeout"
