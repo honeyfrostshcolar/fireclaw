@@ -40,16 +40,17 @@ ROS1 smoke 显式验证：`FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest 
 | Method scopes | 已实现 22 endpoint descriptor table、默认拒绝、admin bypass、write-implies-read | `src/fireclaw_core/method_scopes.py` |
 | Realtime event stream | 已实现 StreamEvent schema、EventBus pub/sub、SSE endpoints（robot-local + mission-level）、TelemetryTracker | `src/fireclaw_core/stream_events.py` |
 | Durable task queue | 已实现 JSONL queue、dedupe、lost reconciliation、compaction | `src/fireclaw_core/task_queue.py` |
-| Task registry | 已实现 OpenClaw 式 TaskRecord、delivery state、notify policy、JSONL store、queue-to-registry 转换 | `src/fireclaw_core/task_registry.py` |
-| Subagent run registry | 已实现 SubagentRunRecord、parent/child lineage、JSONL store、可选 client wiring | `src/fireclaw_core/subagent_registry.py` |
+| Task registry | 已实现 OpenClaw 式 TaskRecord、delivery state、notify policy、JSONL store、queue-to-registry 转换、`project_task_state()` 幂等 projection、owner/session listing helpers | `src/fireclaw_core/task_registry.py` |
+| Subagent run registry | 已实现 SubagentRunRecord、parent/child lineage、JSONL store、可选 client wiring、`mark_terminal()` 幂等 terminal update | `src/fireclaw_core/subagent_registry.py` |
+| Lifecycle reconciliation | 已实现 `LifecycleReconciler`（orphan detection、stale task detection、mission-projected subtask matching）和 `LifecycleMaintenanceRunner`（explicit maintenance invocation、report output） | `src/fireclaw_core/lifecycle_reconciler.py`, `src/fireclaw_core/lifecycle_maintenance.py` |
 | Safety gate | 已实现 planning safety、sensor/risk/dry-run/robot-state/environment-state checks | `src/fireclaw_core/safety.py` |
-| Skill runtime | 已实现 manifest、input schema、risk metadata、subprocess skill、workspace skill loading、plugin descriptor v1、plugin runtime hooks（provider/memory/tool_approval） | `src/fireclaw_core/skills.py`, `src/fireclaw_core/skill_manifest.py`, `src/fireclaw_core/plugin_descriptor.py`, `src/fireclaw_core/plugin_runtime.py` |
+| Skill runtime | 已实现 manifest、input schema、risk metadata、subprocess skill、workspace skill loading、plugin descriptor v1、plugin runtime hooks（provider/memory/tool_approval）、hook policy enforcement、unknown plugin rejection、persistent audit trail、control-plane fingerprints | `src/fireclaw_core/skills.py`, `src/fireclaw_core/skill_manifest.py`, `src/fireclaw_core/plugin_descriptor.py`, `src/fireclaw_core/plugin_runtime.py`, `src/fireclaw_core/plugin_policy.py`, `src/fireclaw_core/plugin_control_plane.py` |
 | Action runtime | 已实现 action lifecycle、feedback、cancel callback、ROS1 feedback path | `src/fireclaw_core/action_runtime.py` |
 | Robot adapters | 已实现 dry-run、simulator、ROS1 transport（含 dict-to-message 转换）、ROS2 adapter protocol boundary | `src/fireclaw_core/robot.py`, `src/fireclaw_core/ros1_transport.py`, `src/fireclaw_core/ros2_adapter.py` |
-| Authorization / approval | 已实现 role scopes、task/mission scope checks、high-risk approval stores、method-level scope enforcement、approval runtime tokens（token 创建/expiry/resolution/pending projection） | `src/fireclaw_core/control.py`, `src/fireclaw_core/approval_store.py`, `src/fireclaw_core/method_scopes.py`, `src/fireclaw_core/approval_runtime.py` |
-| Memory / replay | 已实现 robot memory、mission memory、corrections、incident replay（含 action-level events）、memory index v1（SQLite FTS）、memory retrieval v2（embedding protocol、rank fusion、transcript ingestion） | `src/fireclaw_core/memory.py`, `src/fireclaw_core/mission_memory.py`, `src/fireclaw_core/incident_replay.py`, `src/fireclaw_core/memory_index.py`, `src/fireclaw_core/memory_retrieval.py` |
-| Provider runtime | 已实现 OpenAI-compatible provider、model catalog、LLM trace store | `src/fireclaw_core/provider.py`, `src/fireclaw_core/model_catalog.py`, `src/fireclaw_core/llm_trace.py` |
-| Diagnostics | 已实现 robot doctor 和 fleet doctor 基础检查、`--fix` 模式修复 stale queue records、plugin descriptor 检测、memory index 检测 | `src/fireclaw_core/doctor.py`, `src/fireclaw_core/fleet_doctor.py` |
+| Authorization / approval | 已实现 role scopes、task/mission scope checks、high-risk approval stores、method-level scope enforcement、approval runtime tokens（token 创建/expiry/resolution/pending projection）、JSONL 持久化、`ApprovalRelay` Protocol + InMemory/Console/Webhook adapters | `src/fireclaw_core/control.py`, `src/fireclaw_core/approval_store.py`, `src/fireclaw_core/method_scopes.py`, `src/fireclaw_core/approval_runtime.py`, `src/fireclaw_core/approval_relay.py` |
+| Memory / replay | 已实现 robot memory、mission memory、corrections、incident replay（含 action-level events）、memory index v1（SQLite FTS）、memory retrieval v2（embedding protocol、rank fusion、transcript ingestion）、memory evaluation（thresholded eval、doctor integration） | `src/fireclaw_core/memory.py`, `src/fireclaw_core/mission_memory.py`, `src/fireclaw_core/incident_replay.py`, `src/fireclaw_core/memory_index.py`, `src/fireclaw_core/memory_retrieval.py`, `src/fireclaw_core/memory_eval.py` |
+| Provider runtime | 已实现 OpenAI-compatible provider、model catalog、LLM trace store、provider runtime protocol（model fallback boundary、error normalization） | `src/fireclaw_core/provider.py`, `src/fireclaw_core/model_catalog.py`, `src/fireclaw_core/llm_trace.py`, `src/fireclaw_core/provider_runtime.py` |
+| Diagnostics | 已实现 robot doctor 和 fleet doctor 基础检查、`--fix` 模式修复 stale queue records、plugin descriptor 检测、memory index 检测、fleet onboarding report（enrolled/enabled robots、stale heartbeats、missing ROS1 remaps、missing emergency stop、unresolved approval relay） | `src/fireclaw_core/doctor.py`, `src/fireclaw_core/fleet_doctor.py` |
 | Log redaction | 已实现 secret pattern redaction（sk-*, Bearer, api_key, password, token） | `src/fireclaw_core/log_redaction.py` |
 | ROS1 smoke proof | 已实现 topic/service/action/cancel/timeout smoke tests；默认跳过，需 `FIRECLAW_RUN_ROS1_SMOKE=1` 显式启用 | `tests/test_ros1_smoke.py`, `tests/conftest.py` |
 | Mission Gateway client | 已实现 typed HTTP client（7 端点），支持 Bearer auth 和 operator scopes | `src/fireclaw_core/mission_gateway_client.py` |
@@ -59,17 +60,17 @@ ROS1 smoke 显式验证：`FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest 
 
 | OpenClaw 能力 | FireClaw 对应 | 覆盖判断 |
 |---|---|---|
-| Agent/session/task runtime | `MissionAgent`, `FireClawAgent`, `JsonlMissionRegistry`, `JsonlTaskQueue`, `TaskRegistry` | 部分覆盖。已有 TaskRecord（runtime/owner/delivery/notify/scope）和 TaskRegistryStore；缺 session store 和 runtime reconciliation。 |
-| Subagent spawn/runtime | `RobotSubagentClient`, `JsonlSubagentRegistry` + robot-local Gateway | 部分覆盖。已有 SubagentRunRecord（parent/child lineage）；缺 completion routing 和 orphan recovery。 |
+| Agent/session/task runtime | `MissionAgent`, `FireClawAgent`, `JsonlMissionRegistry`, `JsonlTaskQueue`, `TaskRegistry`, `LifecycleReconciler`, `LifecycleMaintenanceRunner` | 部分覆盖。v1 implemented: TaskRecord、owner/session listing、lifecycle reconciliation（orphan detection, stale task detection）、maintenance runner。剩余缺口是跨进程 reconciliation 调度和 session store。 |
+| Subagent spawn/runtime | `RobotSubagentClient`, `JsonlSubagentRegistry` + robot-local Gateway | 部分覆盖。v1 implemented: SubagentRunRecord、completion routing（terminal robot events → `mark_terminal()`）、mission-projected subtask matching。剩余缺口是 orphan recovery 自动修复调度。 |
 | Gateway protocol/control plane | `FireClawGateway` HTTP endpoints + `MissionGateway` + method scopes | 部分覆盖。已有方法描述符和 scope 执行；缺 WebSocket/control channel 和 classified method 的动态扩展。 |
 | Method scopes / least privilege | `method_scopes.py` with 22 endpoints, default-deny | 部分覆盖。已有 descriptor table 和 scope enforcement；缺 dynamic/plugin scope 和 runtime scope resolution。 |
 | Pairing/enrollment | `JsonlEnrollmentStore` | 基础覆盖。缺 endpoint/CLI/fleet registry 自动写入和 operator approval 整合。 |
-| Provider runtime / model catalog | `OpenAICompatProvider`, `ModelCatalog` | 基础覆盖。缺 plugin hook、dynamic model、transport normalization、multi-provider adapter。 |
-| Tools / skills / plugins | `SkillRegistry`, manifests, workspace skills, `FireClawPluginDescriptor` v1, `PluginRuntime` | 部分覆盖。已有 plugin runtime hooks（provider/memory/tool_approval）；缺 plugin SDK 的 runtime loading 和 dynamic hook registration。 |
-| Memory | `MissionMemoryStore`, `SqliteMemoryIndex` (FTS), `MemoryRetriever` | 部分覆盖。已有 embedding provider protocol、rank fusion retrieval、transcript ingestion；缺 session transcript indexing 和 provider lifecycle。 |
-| Approval / permissions | `ApprovalStore`, `ControlPolicy`, method scopes, `ApprovalRuntime` | 部分覆盖。已有 approval runtime tokens（creation/expiry/resolution/pending projection）；缺 external channel relay。 |
+| Provider runtime / model catalog | `OpenAICompatProvider`, `ModelCatalog`, `ProviderRuntime` | 部分覆盖。v1 implemented: provider runtime protocol、model fallback boundary、error normalization。剩余缺口是 multi-provider catalog、health/status dashboard、transport normalization。 |
+| Tools / skills / plugins | `SkillRegistry`, manifests, workspace skills, `FireClawPluginDescriptor` v1, `PluginRuntime`, `PluginPolicy`, `PluginControlPlaneContext` | 部分覆盖。v1 implemented: callable hook 注册/执行、hook policy enforcement、unknown plugin rejection、persistent audit trail、control-plane fingerprints。剩余缺口是第三方插件 sandbox loading 和 dynamic hook registration。 |
+| Memory | `MissionMemoryStore`, `SqliteMemoryIndex` (FTS), `MemoryRetriever`, `memory_eval.py` | 部分覆盖。v1 implemented: embedding provider protocol、rank fusion retrieval、transcript ingestion、thresholded evaluation、doctor integration。剩余缺口是 embedding provider lifecycle automation、session transcript indexing policy、retrieval 质量回归阈值集成 CI。 |
+| Approval / permissions | `ApprovalStore`, `ControlPolicy`, method scopes, `ApprovalRuntime`, `ApprovalRelay`, `ConsoleApprovalRelay`, `WebhookApprovalRelay` | 部分覆盖。v1 implemented: approval runtime tokens（creation/expiry/resolution/pending projection）、JSONL 持久化、relay Protocol + InMemory/Console/Webhook adapters。剩余缺口是部署环境的实际 operator channel 适配器。 |
 | Sandbox / process permissions | subprocess skill constraints + dry-run/live gate | 不足。缺系统化 sandbox policy、filesystem/network/process permission model。 |
-| Config/doctor/migration | `doctor.py`, `fleet_doctor.py`, config skeletons | 部分覆盖。已有 `--fix` 模式修复 stale queue；缺 fleet onboarding wizard 和 config migration。 |
+| Config/doctor/migration | `doctor.py`, `fleet_doctor.py`, config skeletons, fleet onboarding report | 部分覆盖。v1 implemented: `--fix` 模式修复 stale queue、fleet doctor onboarding report（enrolled/enabled robots, stale heartbeats, missing ROS1 remaps, missing emergency stop, unresolved approval relay）。剩余缺口是 interactive fleet onboarding wizard 和 config migration flow。 |
 | Realtime streaming | `StreamEvent`, `EventBus`, SSE endpoints, `TelemetryTracker`, cursor replay | 已实现 v1。已有 SSE 实时流、统一事件 schema、cursor-based reconnect；缺 WebSocket 支持。 |
 
 ## 阶段完成状态
@@ -123,34 +124,34 @@ ROS1 smoke 显式验证：`FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest 
 
 ## 重要缺口（更新后）
 
-### P1：插件/工具生态仍需深化
+### P1：插件/工具生态
 
-FireClaw 有 skill manifest、plugin descriptor v1 和 `PluginRuntime` callable hook 注册/执行（provider/memory/tool_approval 三种 hook 类型，异常隔离，payload copy）。已接入 MissionAgent planner context 和 MissionGateway approval flow。仍缺第三方插件加载、安全沙箱、权限审计。
+v1 implemented: skill manifest, plugin descriptor v1, callable hook 注册/执行（provider/memory/tool_approval 三种 hook 类型，异常隔离，payload copy），hook policy enforcement，unknown plugin rejection，persistent audit trail，control-plane fingerprints。已接入 MissionAgent planner context 和 MissionGateway approval flow。Remaining gap is production automation: 第三方插件加载、安全沙箱、runtime activation boundaries。
 
-### P1：记忆系统仍有提升空间
+### P1：记忆系统
 
-已有 SQLite FTS、structured filters、rank-fusion `MemoryRetriever` 和 transcript ingestion API；仍缺 embedding provider lifecycle、session transcript indexing 策略和 retrieval 质量评估集。
+v1 implemented: SQLite FTS, structured filters, rank-fusion `MemoryRetriever`, transcript ingestion API, `memory_eval.py` thresholded evaluation, doctor integration for retrieval health checks。Remaining gap is deployment proof: embedding provider lifecycle automation, session transcript indexing policy 集成 CI、retrieval 质量回归阈值。
 
-### P1：TaskRegistry/SubagentRegistry lifecycle projection
+### P1：TaskRegistry/SubagentRegistry lifecycle
 
-已实现 `project_task_state()` 和 `mark_terminal()` 幂等 projection helper，MissionAgent 和 MissionEventAggregator 已接入。仍缺跨进程 reconciliation 和 orphan recovery 自动修复。
+v1 implemented: `project_task_state()`, `mark_terminal()`, `LifecycleReconciler`（mission-projected subtask matching, orphan detection, stale task detection），`LifecycleMaintenanceRunner`（explicit maintenance invocation with report），owner/session listing helpers。Remaining gap is production automation: 跨进程 reconciliation runner 和 orphan recovery 自动修复调度。
 
 ### P1：ApprovalRuntime 持久化和 relay
 
-已实现 JSONL-backed token hash 持久化（restart-resilient）和 relay-ready pending projection（channel + operator_id）。仍缺外部 operator channel 的实际发送适配器。
+v1 implemented: JSONL-backed token hash 持久化（restart-resilient），relay-ready pending projection（channel + operator_id），`ApprovalRelay` Protocol + `InMemoryApprovalRelay`，`ConsoleApprovalRelay`，`WebhookApprovalRelay`（stdlib urllib, fail-safe timeout），idempotent delivery。Remaining gap is external adapter: 部署环境的实际 operator channel 适配器（如 specific webhook URL, operator UI integration）。
 
 ### P1：真实机器人硬件验证
 
-ROS1 smoke proof 已通过本地 roscore + tutorials stack，但未在真实消防机器人硬件上验证。
+ROS1 smoke proof runbook and artifact schema complete, execution pending hardware。未在真实消防机器人硬件上验证。
 
 ### P2：部署配置和 security hardening
 
-已有 deployment checklist 和 ROS1 deployment guide，但缺 migration/repair flow、fleet onboarding wizard、完整 secret handling policy。
+v1 implemented: deployment checklist, ROS1 deployment guide, fleet doctor with onboarding report（enrolled/enabled robots, stale heartbeats, missing ROS1 remaps, missing emergency stop, unresolved approval relay）。Remaining gap is production automation: migration/repair flow、interactive fleet onboarding wizard、完整 secret handling policy。
 
 ## 推荐下一步
 
 1. 真实 ROS1 机器人硬件 smoke test（需要物理机器人或高保真仿真环境）
 2. ROS2 adapter 实现（当前仅 protocol boundary）
-3. 更强的记忆检索（embedding provider, retrieval ranking）
-4. Plugin SDK 运行时 hook（provider/memory/tool approval）
+3. Provider runtime fallback 深化（多 provider catalog, fallback chain, health/status dashboard）
+4. 跨进程 lifecycle reconciliation runner 和 orphan recovery 自动修复
 5. Operator web UI 接入 mission Gateway SSE

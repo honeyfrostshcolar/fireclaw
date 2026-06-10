@@ -1,6 +1,8 @@
 # OpenClaw Parity Post-Maturity Roadmap Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: COMPLETED** — All 7 tasks implemented and verified. Latest verification: `886 passed, 6 skipped` (2026-06-10). Task 7 (docs truth pass) completed 2026-06-10.
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Move FireClaw from ROS1-first OpenClaw parity maturity into a stronger control-plane platform by closing the remaining production-path wiring, lifecycle source-of-truth, plugin/provider/memory runtime, deployment, and real-hardware proof gaps.
 
@@ -87,7 +89,7 @@ This is strong OpenClaw-inspired v1 parity for FireClaw's robotics path. It is n
 - Test: `tests/test_mission_agent.py`
 - Test: `tests/test_mission_event_aggregator.py`
 
-- [ ] **Step 1: Write RED test for MissionAgent event aggregation updating SubagentRegistry**
+- [x] **Step 1: Write RED test for MissionAgent event aggregation updating SubagentRegistry**
 
 Add a test in `tests/test_mission_agent.py` that creates `MissionAgent(..., subagent_registry=subagents)`, records a mission subtask, returns a `task.completed` robot event from the fake subagent client, calls `mission.mission_events(mission_id)`, and asserts:
 
@@ -103,7 +105,7 @@ Run:
 
 Expected: fail because `MissionAgent.mission_events()` does not pass `subagent_registry` into `MissionEventAggregator`.
 
-- [ ] **Step 2: Pass registry into aggregator**
+- [x] **Step 2: Pass registry into aggregator**
 
 In `src/fireclaw_core/mission_agent.py`, update the aggregator construction to:
 
@@ -117,11 +119,11 @@ aggregator = MissionEventAggregator(
 )
 ```
 
-- [ ] **Step 3: Add TaskRegistry terminal projection**
+- [x] **Step 3: Add TaskRegistry terminal projection**
 
 Extend `MissionEventAggregator.__init__()` with optional `task_registry`. When `_terminal_status_from_event(event)` returns a terminal status, update the projected subtask record using `task_id=f"{mission_id}:{task_id}"` when present, preserving command/owner from the existing record.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -154,7 +156,7 @@ git commit -m "fix: wire lifecycle projections through mission events"
 - Test: `tests/test_lifecycle_reconciler.py`
 - Test: `tests/test_lifecycle_maintenance.py`
 
-- [ ] **Step 1: Normalize registry schema**
+- [x] **Step 1: Normalize registry schema**
 
 Add `"subtask"` to `VALID_SCOPE_KINDS` or stop using it in projection. Prefer adding it because the mission path already uses `scope_kind="subtask"`.
 
@@ -164,7 +166,7 @@ Run:
 .venv/bin/python -m pytest tests/test_task_registry.py -q
 ```
 
-- [ ] **Step 2: Add owner/session listing helpers**
+- [x] **Step 2: Add owner/session listing helpers**
 
 Add focused helpers to `JsonlTaskRegistryStore`:
 
@@ -176,7 +178,7 @@ def list_active(self) -> list[TaskRecord]: ...
 
 Test active ordering and corrupt-line tolerance.
 
-- [ ] **Step 3: Add explicit maintenance runner**
+- [x] **Step 3: Add explicit maintenance runner**
 
 Create `LifecycleMaintenanceRunner` that wraps `LifecycleReconciler.reconcile()` and returns a report with:
 
@@ -191,7 +193,7 @@ Create `LifecycleMaintenanceRunner` that wraps `LifecycleReconciler.reconcile()`
 
 Do not run a background thread by default. Keep invocation explicit from CLI/doctor/gateway later.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -222,7 +224,7 @@ git commit -m "feat: add lifecycle maintenance runtime"
 - Test: `tests/test_plugin_policy.py`
 - Test: `tests/test_plugin_runtime.py`
 
-- [ ] **Step 1: Add control-plane context**
+- [x] **Step 1: Add control-plane context**
 
 Create dataclasses:
 
@@ -242,15 +244,15 @@ class PluginControlPlaneContext:
 
 Use stable JSON hashing for fingerprints.
 
-- [ ] **Step 2: Persist audit records**
+- [x] **Step 2: Persist audit records**
 
 Add optional `audit_path` to `PluginPolicy`; append every `PluginHookAuditRecord.to_dict()` as JSONL. Existing in-memory `audit_records` remains.
 
-- [ ] **Step 3: Expose runtime inventory**
+- [x] **Step 3: Expose runtime inventory**
 
 Add `PluginRuntime.inventory()` returning registered descriptor ids, hook names, and whether a policy is active. Do not import arbitrary third-party Python code in this task.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -280,7 +282,7 @@ git commit -m "feat: add plugin control plane fingerprints"
 - Test: `tests/test_provider_runtime.py`
 - Test: `tests/test_llm_planner.py`
 
-- [ ] **Step 1: Add provider runtime protocol**
+- [x] **Step 1: Add provider runtime protocol**
 
 Create `ProviderRuntime` with:
 
@@ -290,15 +292,15 @@ def chat_completion(self, *, messages: list[dict], tools: list[dict], temperatur
 def status(self) -> dict[str, Any]: ...
 ```
 
-- [ ] **Step 2: Add fallback behavior**
+- [x] **Step 2: Add fallback behavior**
 
 Implement a small runtime that tries configured model candidates in order and records the first success. Normalize `ProviderTimeoutError`, `ProviderAPIError`, and `ProviderError` into structured attempts.
 
-- [ ] **Step 3: Wire planner optionally**
+- [x] **Step 3: Wire planner optionally**
 
 Let `LLMMissionPlanner` accept either the existing `(provider, model_id)` pair or a `provider_runtime`. Keep old constructor compatibility.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -329,19 +331,19 @@ git commit -m "feat: add provider runtime fallback boundary"
 - Test: `tests/test_memory_eval.py`
 - Test: `tests/test_doctor.py`
 
-- [ ] **Step 1: Add thresholded evaluation result**
+- [x] **Step 1: Add thresholded evaluation result**
 
 Extend `EvalReport` with `meets_threshold(threshold: float) -> bool`.
 
-- [ ] **Step 2: Add doctor integration**
+- [x] **Step 2: Add doctor integration**
 
 When `memory_index_path` and an eval fixture path are provided, run `evaluate_retrieval()` and report `pass` only when `hit_rate >= threshold`.
 
-- [ ] **Step 3: Add transcript indexing policy stub**
+- [x] **Step 3: Add transcript indexing policy stub**
 
 Document and expose a config field for which mission transcript records should be indexed. Do not automatically index private logs without explicit config.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -370,15 +372,15 @@ git commit -m "feat: add deployment memory retrieval evaluation"
 - Test: `tests/test_approval_relay.py`
 - Test: `tests/test_mission_gateway.py`
 
-- [ ] **Step 1: Add stdout/console relay**
+- [x] **Step 1: Add stdout/console relay**
 
 Implement `ConsoleApprovalRelay` that writes a redacted JSON line containing request id, mission id, action, risk, channel, and operator id.
 
-- [ ] **Step 2: Add webhook relay with fail-safe timeout**
+- [x] **Step 2: Add webhook relay with fail-safe timeout**
 
 Implement `WebhookApprovalRelay` using stdlib `urllib.request` with configurable timeout. Never include raw approval tokens unless explicitly configured.
 
-- [ ] **Step 3: Verify idempotency and failure behavior**
+- [x] **Step 3: Verify idempotency and failure behavior**
 
 Tests must prove duplicate delivery is suppressed and webhook errors return `RelayDeliveryRecord(success=False, error=...)` without blocking approval creation.
 
@@ -409,7 +411,7 @@ git commit -m "feat: add deployable approval relay adapters"
 - Modify: `memory/2026-06-10/fireclaw-work-resume.md`
 - Test: default full suite
 
-- [ ] **Step 1: Update architecture roadmap**
+- [x] **Step 1: Update architecture roadmap**
 
 Change stale lines that say lifecycle reconciliation, memory evaluation, or relay are missing entirely. Use precise wording:
 
@@ -417,11 +419,11 @@ Change stale lines that say lifecycle reconciliation, memory evaluation, or rela
 v1 implemented; remaining gap is production automation / external adapter / deployment proof.
 ```
 
-- [ ] **Step 2: Record real hardware status honestly**
+- [x] **Step 2: Record real hardware status honestly**
 
 Keep ROS1 hardware proof as `runbook/schema complete, execution pending hardware`.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run:
 

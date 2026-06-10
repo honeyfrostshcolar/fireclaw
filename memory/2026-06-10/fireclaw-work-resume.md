@@ -25,20 +25,21 @@
 
 ## 当前问题：
 
-- `TaskRegistry` 已实现但仍不是 mission/task lifecycle 的统一 source of truth。
-- Subagent completion routing 仍需要事件驱动地回写 parent mission/subtask 状态，并处理 orphan recovery。
-- `PluginRuntime` 仍是 descriptor hook name validation / aggregation，尚未安全加载和执行 callable hooks。
-- `ApprovalRuntime` token 仍是进程内状态，尚未持久化，也没有 external operator relay。
-- `MissionGatewayClient` 有 JSON endpoint typed client，但还没有 typed SSE iterator / reconnect abstraction。
+- `TaskRegistry` / `SubagentRegistry` lifecycle reconciliation v1 已实现（orphan detection、stale task detection、maintenance runner），但跨进程 reconciliation 自动调度和 orphan recovery 自动修复尚未实现。
+- Plugin control plane v1 已实现（callable hook 注册/执行、policy enforcement、audit trail、control-plane fingerprints），但第三方插件 sandbox loading 尚未实现。
+- `ApprovalRuntime` 持久化和 relay v1 已实现（JSONL token persistence、InMemory/Console/Webhook relay adapters），但部署环境的实际 operator channel 适配器尚未实现。
+- `ProviderRuntime` fallback boundary v1 已实现，但 multi-provider catalog、health/status dashboard 尚未实现。
+- `memory_eval.py` thresholded evaluation 和 doctor integration 已实现，但 embedding provider lifecycle automation、session transcript indexing policy、retrieval 质量回归阈值集成 CI 尚未实现。
+- `MissionGatewayClient` 有 typed HTTP client + typed approval methods，但还没有 typed SSE iterator / reconnect abstraction。
 - ROS2 仍是 protocol boundary 和实施计划，不是 native `rclpy` adapter。
-- 真实消防机器人硬件 smoke proof 仍未完成。
+- ROS1 hardware proof runbook/schema complete, execution pending hardware。
 
 ## 下一步：
 
-1. 将 `TaskRegistry` / `SubagentRegistry` 做成 mission trace 和 recovery 的 lifecycle projection。
+1. 跨进程 lifecycle reconciliation runner 和 orphan recovery 自动修复。
 2. 给 `MissionGatewayClient` 增加 client-side SSE iterator 和 reconnect/cursor handling。
-3. 设计 executable plugin hook loading，先明确 permission boundary 和 sandbox policy。
-4. 给 approval runtime token 增加持久化和外部 operator relay。
+3. Provider runtime fallback 深化（multi-provider catalog, fallback chain, health/status dashboard）。
+4. Operator web UI 接入 mission Gateway SSE。
 5. 根据硬件可用性，选择 ROS2 native adapter 或真实 ROS1 hardware smoke proof。
 
 ## 需要运行的命令：
@@ -580,3 +581,32 @@ Planned tasks:
 ### Next Recommended Step
 
 Start with Task 1 from the new plan. It is the only clear production-path wiring bug found during this review; the rest are OpenClaw platform parity/maturity work.
+
+## Update 2026-06-10 — Post-Maturity Roadmap Task 7: Documentation Truth Pass
+
+### Task Goal
+
+Make docs, plan checkboxes, and memory records match actual code state after all 7 post-maturity roadmap tasks have been implemented.
+
+### What Was Updated
+
+1. **Architecture roadmap** (`docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`):
+   - Updated "重要缺口" section: replaced stale "仍缺" wording with precise "v1 implemented; remaining gap is ..." for lifecycle reconciliation, memory evaluation, plugin control plane, approval relay, and deployment doctor.
+   - Updated "与 OpenClaw 的对应关系" table: added `LifecycleReconciler`, `LifecycleMaintenanceRunner`, `PluginPolicy`, `PluginControlPlaneContext`, `ProviderRuntime`, `ApprovalRelay`, `ConsoleApprovalRelay`, `WebhookApprovalRelay`, `memory_eval.py` to relevant rows.
+   - Updated "当前已经实现的能力" table: added lifecycle reconciliation row, updated skill runtime, memory/replay, provider runtime, authorization/approval, diagnostics rows.
+   - Updated "推荐下一步" to reflect current remaining gaps (not already-done items).
+   - ROS1 hardware proof status: kept as `runbook/schema complete, execution pending hardware`.
+
+2. **Post-maturity roadmap plan** (`docs/superpowers/plans/2026-06-10-openclaw-parity-post-maturity-roadmap.md`):
+   - Added status header: COMPLETED, all 7 tasks implemented.
+   - Marked all `[ ]` checkboxes as `[x]`.
+
+3. **Memory record** (`memory/2026-06-10/fireclaw-work-resume.md`):
+   - Updated "当前问题" to reflect current remaining gaps (not stale items already resolved by Tasks 1-6).
+   - Updated "下一步" to remove already-completed items and add current priorities.
+   - Added this update entry.
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Expected: all default tests pass, ROS1 smoke skipped by default.
