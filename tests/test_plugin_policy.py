@@ -91,6 +91,72 @@ class TestPluginPolicyAuditTrail:
         assert "enrich_context" in records[0].reason
 
 
+class TestPluginPolicyAuditPersistence:
+    def test_audit_path_writes_jsonl(self, tmp_path: Path) -> None:
+        audit_file = tmp_path / "audit.jsonl"
+        d = _make_descriptor(memory_hooks=("filter",))
+        policy = PluginPolicy(descriptors=[d], audit_path=str(audit_file))
+
+        policy.evaluate_registration(d, "memory", "filter")
+
+        assert audit_file.exists()
+        import json
+        records = [json.loads(line) for line in audit_file.read_text().splitlines() if line.strip()]
+        assert len(records) == 1
+        assert records[0]["plugin_id"] == "test.plugin"
+        assert records[0]["allowed"] is True
+
+    def test_audit_path_append_mode(self, tmp_path: Path) -> None:
+        audit_file = tmp_path / "audit.jsonl"
+        d = _make_descriptor(memory_hooks=("filter",))
+        policy = PluginPolicy(descriptors=[d], audit_path=str(audit_file))
+
+        policy.evaluate_registration(d, "memory", "filter")
+        policy.evaluate_registration(d, "memory", "filter")
+
+        import json
+        records = [json.loads(line) for line in audit_file.read_text().splitlines() if line.strip()]
+        assert len(records) == 2
+
+    def test_audit_path_rejected_registration(self, tmp_path: Path) -> None:
+        audit_file = tmp_path / "audit.jsonl"
+        d = _make_descriptor(provider_hooks=())
+        policy = PluginPolicy(descriptors=[d], audit_path=str(audit_file))
+
+        policy.evaluate_registration(d, "provider", "enrich_context")
+
+        import json
+        records = [json.loads(line) for line in audit_file.read_text().splitlines() if line.strip()]
+        assert len(records) == 1
+        assert records[0]["allowed"] is False
+        assert "enrich_context" in records[0]["reason"]
+
+    def test_audit_path_unknown_plugin(self, tmp_path: Path) -> None:
+        audit_file = tmp_path / "audit.jsonl"
+        policy = PluginPolicy(descriptors=[], audit_path=str(audit_file))
+
+        policy.reject_unknown_plugin_registration(
+            plugin_id="unknown.plugin",
+            hook_type="provider",
+            hook_name="enrich_context",
+        )
+
+        import json
+        records = [json.loads(line) for line in audit_file.read_text().splitlines() if line.strip()]
+        assert len(records) == 1
+        assert records[0]["plugin_id"] == "unknown.plugin"
+        assert records[0]["allowed"] is False
+
+    def test_audit_path_none_no_file_written(self, tmp_path: Path) -> None:
+        d = _make_descriptor(memory_hooks=("filter",))
+        policy = PluginPolicy(descriptors=[d], audit_path=None)
+
+        policy.evaluate_registration(d, "memory", "filter")
+
+        # No files should be created in tmp_path
+        assert list(tmp_path.iterdir()) == []
+
+
 class TestPluginPolicyWiring:
     def test_register_callable_rejects_undeclared_hook(self) -> None:
         """PluginRuntime.register_callable should reject hooks not declared in descriptor."""

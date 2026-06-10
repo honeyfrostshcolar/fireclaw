@@ -136,6 +136,43 @@ class TestPluginRuntimeRegister:
         assert len(runtime.descriptors) == 1
 
 
+class TestPluginRuntimeInventory:
+    """Inventory snapshot tests."""
+
+    def test_inventory_empty_runtime(self) -> None:
+        runtime = PluginRuntime()
+        inv = runtime.inventory()
+        assert inv["descriptor_ids"] == ()
+        assert inv["hook_names"] == ()
+        assert inv["policy_active"] is False
+
+    def test_inventory_with_descriptors(self) -> None:
+        runtime = PluginRuntime()
+        d1 = _make_descriptor(plugin_id="alpha", provider_hooks=("enrich_context",))
+        d2 = _make_descriptor(plugin_id="beta", memory_hooks=("rerank",))
+        runtime.register_descriptor(d1)
+        runtime.register_descriptor(d2)
+
+        inv = runtime.inventory()
+        assert "alpha" in inv["descriptor_ids"]
+        assert "beta" in inv["descriptor_ids"]
+        assert "enrich_context" in inv["hook_names"]
+        assert "rerank" in inv["hook_names"]
+        assert inv["policy_active"] is False
+
+    def test_inventory_with_policy(self) -> None:
+        from fireclaw_core.plugin_policy import PluginPolicy
+        runtime = PluginRuntime()
+        d = _make_descriptor(plugin_id="gamma", tool_approval_hooks=("add_reason",))
+        runtime.register_descriptor(d)
+        runtime.plugin_policy = PluginPolicy(descriptors=[d])
+
+        inv = runtime.inventory()
+        assert "gamma" in inv["descriptor_ids"]
+        assert "add_reason" in inv["hook_names"]
+        assert inv["policy_active"] is True
+
+
 class TestPluginRuntimeHookAggregation:
     """Hook aggregation across multiple descriptors."""
 

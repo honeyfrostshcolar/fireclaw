@@ -6,8 +6,10 @@ every hook registration/execution for incident audit.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fireclaw_core.plugin_descriptor import FireClawPluginDescriptor
@@ -58,9 +60,11 @@ class PluginPolicy:
         self,
         *,
         descriptors: list[FireClawPluginDescriptor] | None = None,
+        audit_path: str | None = None,
     ) -> None:
         self._descriptor_hooks: dict[str, set[tuple[str, str]]] = {}
         self._audit: list[PluginHookAuditRecord] = []
+        self._audit_path = audit_path
         if descriptors:
             for d in descriptors:
                 self._index_descriptor(d)
@@ -74,6 +78,20 @@ class PluginPolicy:
         for h in descriptor.tool_approval_hooks:
             hooks.add(("tool_approval", h))
         self._descriptor_hooks[descriptor.plugin_id] = hooks
+
+    def _append_audit(self, record: PluginHookAuditRecord) -> None:
+        """Append an audit record to the in-memory list and optionally to a JSONL file."""
+        self._audit.append(record)
+        if self._audit_path:
+            try:
+                with open(self._audit_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record.to_dict()) + "\n")
+            except OSError as exc:
+                # Log the error but don't crash the audit check
+                import logging
+                logging.getLogger(__name__).error(
+                    "Failed to write audit record to %s: %s", self._audit_path, exc
+                )
 
     def evaluate_registration(
         self,
@@ -94,7 +112,7 @@ class PluginPolicy:
             )
 
         now = datetime.now(timezone.utc).isoformat()
-        self._audit.append(PluginHookAuditRecord(
+        self._append_audit(PluginHookAuditRecord(
             timestamp=now,
             plugin_id=descriptor.plugin_id,
             hook_type=hook_type,
@@ -124,7 +142,7 @@ class PluginPolicy:
             f"cannot register {hook_type} hook '{hook_name}'."
         )
         now = datetime.now(timezone.utc).isoformat()
-        self._audit.append(PluginHookAuditRecord(
+        self._append_audit(PluginHookAuditRecord(
             timestamp=now,
             plugin_id=plugin_id,
             hook_type=hook_type,

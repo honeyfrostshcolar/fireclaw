@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +21,7 @@ from fireclaw_core.plugin_descriptor import FireClawPluginDescriptor
 # Callable hook types
 # ---------------------------------------------------------------------------
 
-PluginHookCallback = Callable[[dict[str, Any]], dict[str, Any] | None]
+PluginHookCallback = Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -137,6 +136,25 @@ class PluginRuntime:
     def descriptors(self) -> list[FireClawPluginDescriptor]:
         """Return all registered descriptors (copy)."""
         return list(self._descriptors)
+
+    def inventory(self) -> dict[str, Any]:
+        """Return the current runtime inventory as a plain dict.
+
+        This is a safe snapshot that can be used for auditing or
+        fingerprinting without importing any external code.
+        """
+        descriptor_ids: list[str] = []
+        hook_names: list[str] = []
+        for d in self._descriptors:
+            descriptor_ids.append(d.plugin_id)
+            hook_names.extend(d.provider_hooks)
+            hook_names.extend(d.memory_hooks)
+            hook_names.extend(d.tool_approval_hooks)
+        return {
+            "descriptor_ids": tuple(descriptor_ids),
+            "hook_names": tuple(hook_names),
+            "policy_active": self.plugin_policy is not None,
+        }
 
     def provider_hooks(self) -> list[str]:
         """Return all registered provider hook names across all descriptors."""
