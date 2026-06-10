@@ -99,7 +99,6 @@ class MissionEventAggregator:
         if self._task_flow_store is not None:
             flow = self._task_flow_store.get(mission_id)
             if flow is not None and flow.status == "running":
-                terminal_statuses = {"completed", "failed", "cancelled"}
                 task_events: dict[str, str] = {}
                 for evt in all_events:
                     tid = evt.get("task_id") or evt.get("payload", {}).get("task_id")
@@ -109,7 +108,8 @@ class MissionEventAggregator:
                             task_events[tid] = evt_status
                 if flow.task_ids and all(tid in task_events for tid in flow.task_ids):
                     statuses = set(task_events.values())
-                    if "failed" in statuses:
+                    failure_statuses = {"failed", "timed_out", "lost"}
+                    if failure_statuses & statuses:
                         new_status = "failed"
                     elif "cancelled" in statuses:
                         new_status = "cancelled"

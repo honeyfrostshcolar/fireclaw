@@ -491,20 +491,7 @@ class MissionAgent:
             )
 
             # Project task-flow summary
-            if self._task_flow_store is not None:
-                try:
-                    self._task_flow_store.upsert(TaskFlowRecord(
-                        flow_id=mission_id,
-                        mission_id=mission_id,
-                        command=command,
-                        status="running",
-                        task_ids=tuple(r.get("task_id", "") for r in subtask_results if r.get("status") not in ("skipped", "error")),
-                        robot_ids=tuple(r.get("robot_id", "unknown") for r in subtask_results if r.get("status") not in ("skipped", "error")),
-                        created_at=created_at,
-                        updated_at=created_at,
-                    ))
-                except Exception:
-                    logger.warning("Failed to write task flow for %s", mission_id, exc_info=True)
+            self._project_task_flow(mission_id, command, subtask_results, created_at)
 
             return {
                 "status": scheduler_result.get("status", planning_result.status),
@@ -549,20 +536,7 @@ class MissionAgent:
         )
 
         # Project task-flow summary
-        if self._task_flow_store is not None:
-            try:
-                self._task_flow_store.upsert(TaskFlowRecord(
-                    flow_id=mission_id,
-                    mission_id=mission_id,
-                    command=command,
-                    status="running",
-                    task_ids=tuple(r.get("task_id", "") for r in subtask_results if r.get("status") not in ("skipped", "error")),
-                    robot_ids=tuple(r.get("robot_id", "unknown") for r in subtask_results if r.get("status") not in ("skipped", "error")),
-                    created_at=created_at,
-                    updated_at=created_at,
-                ))
-            except Exception:
-                logger.warning("Failed to write task flow for %s", mission_id, exc_info=True)
+        self._project_task_flow(mission_id, command, subtask_results, created_at)
 
         return {
             "status": planning_result.status,
@@ -572,6 +546,38 @@ class MissionAgent:
             "plan": planning_result.plan.to_dict(),
             "subtask_results": subtask_results,
         }
+
+    def _project_task_flow(
+        self,
+        mission_id: str,
+        command: str,
+        subtask_results: list[dict[str, Any]],
+        created_at: str,
+    ) -> None:
+        """Upsert a TaskFlowRecord for this mission if a task-flow store is configured."""
+        if self._task_flow_store is None:
+            return
+        try:
+            self._task_flow_store.upsert(TaskFlowRecord(
+                flow_id=mission_id,
+                mission_id=mission_id,
+                command=command,
+                status="running",
+                task_ids=tuple(
+                    r.get("task_id", "")
+                    for r in subtask_results
+                    if r.get("task_id") and r.get("status") not in ("skipped", "error")
+                ),
+                robot_ids=tuple(
+                    r.get("robot_id", "unknown")
+                    for r in subtask_results
+                    if r.get("status") not in ("skipped", "error")
+                ),
+                created_at=created_at,
+                updated_at=created_at,
+            ))
+        except Exception:
+            logger.warning("Failed to write task flow for %s", mission_id, exc_info=True)
 
     def record_correction(
         self,
