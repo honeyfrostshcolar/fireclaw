@@ -45,6 +45,14 @@ class EvalReport:
     results: list[EvalResult] = field(default_factory=list)
     missing_cases: list[str] = field(default_factory=list)
 
+    def meets_threshold(self, threshold: float) -> bool:
+        """Return True when ``hit_rate >= threshold``.
+
+        Useful for operational checks: callers can gate a deployment or
+        diagnostic pass on a minimum retrieval quality bar.
+        """
+        return self.hit_rate >= threshold
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "total": self.total,

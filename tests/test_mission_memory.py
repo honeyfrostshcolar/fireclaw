@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 
 from fireclaw_core.mission_memory import (
+    DEFAULT_INDEXABLE_TYPES,
     MEMORY_RECORD_TYPES,
     MissionMemoryRecord,
     MissionMemoryStore,
+    TranscriptIndexingPolicy,
 )
 
 
@@ -343,3 +345,122 @@ def test_store_without_index_property_is_none(tmp_path):
     """Without index_path, the index property returns None."""
     store = MissionMemoryStore(tmp_path / "mem.jsonl")
     assert store.index is None
+
+
+# ---------------------------------------------------------------------------
+# TranscriptIndexingPolicy tests
+# ---------------------------------------------------------------------------
+
+
+class TestTranscriptIndexingPolicy:
+    def test_default_policy_indexes_standard_types(self) -> None:
+        policy = TranscriptIndexingPolicy()
+        for record_type in ("command", "plan", "observation", "outcome", "lesson"):
+            assert policy.should_index(record_type) is True
+
+    def test_default_policy_does_not_index_correction(self) -> None:
+        """Correction records contain operator feedback and are not in the default set."""
+        policy = TranscriptIndexingPolicy()
+        assert policy.should_index("correction") is False
+
+    def test_default_policy_does_not_index_unknown_types(self) -> None:
+        policy = TranscriptIndexingPolicy()
+        assert policy.should_index("raw_sensor_dump") is False
+        assert policy.should_index("private_log") is False
+
+    def test_custom_include_types(self) -> None:
+        policy = TranscriptIndexingPolicy(include_types=frozenset({"outcome", "lesson"}))
+        assert policy.should_index("outcome") is True
+        assert policy.should_index("lesson") is True
+        assert policy.should_index("command") is False
+
+    def test_empty_include_types_disables_indexing(self) -> None:
+        policy = TranscriptIndexingPolicy(include_types=frozenset())
+        assert policy.should_index("outcome") is False
+        assert policy.should_index("command") is False
+
+    def test_frozen(self) -> None:
+        policy = TranscriptIndexingPolicy()
+        import pytest
+        with pytest.raises(AttributeError):
+            policy.include_types = frozenset()  # type: ignore[misc]
+
+    def test_default_indexable_types_constant(self) -> None:
+        """DEFAULT_INDEXABLE_TYPES includes the standard non-private types."""
+        assert "correction" not in DEFAULT_INDEXABLE_TYPES
+        assert "command" in DEFAULT_INDEXABLE_TYPES
+        assert "outcome" in DEFAULT_INDEXABLE_TYPES
+
+
+class TestMissionMemoryStoreIndexingPolicy:
+    def test_store_with_default_policy_indexes_indexable_types(self, tmp_path: Path) -> None:
+        """Default policy indexes outcome records."""
+        store = MissionMemoryStore(
+            tmp_path / "mem.jsonl",
+            index_path=tmp_path / "mem.db",
+        )
+        store.append(_make_record(
+            record_id="mem-1", record_type="outcome",
+            content={"note": "rescued survivor"},
+        ))
+
+        results = store.search_indexed("rescued")
+        assert len(results) == 1
+        assert results[0].record_id == "mem-1"
+
+    def test_store_with_policy_excludes_non_indexable_types(self, tmp_path: Path) -> None:
+        """Default policy does not index correction records."""
+        store = MissionMemoryStore(
+            tmp_path / "mem.jsonl",
+            index_path=tmp_path / "mem.db",
+        )
+        store.append(_make_record(
+            record_id="mem-1", record_type="correction",
+            content={"note": "rescued survivor"},
+        ))
+
+        # The record is in JSONL but not in the index.
+        records = store.list_records()
+        assert len(records) == 1
+        assert records[0].record_id == "mem-1"
+
+        # search_indexed should find nothing since correction is not indexed.
+        results = store.search_indexed("rescued")
+        assert len(results) == 0
+
+    def test_store_with_custom_policy(self, tmp_path: Path) -> None:
+        """Custom policy can opt-in to correction records."""
+        policy = TranscriptIndexingPolicy(
+            include_types=frozenset({"outcome", "correction"}),
+        )
+        store = MissionMemoryStore(
+            tmp_path / "mem.jsonl",
+            index_path=tmp_path / "mem.db",
+            indexing_policy=policy,
+        )
+        store.append(_make_record(
+            record_id="mem-1", record_type="correction",
+            content={"note": "rescued survivor"},
+        ))
+
+        results = store.search_indexed("rescued")
+        assert len(results) == 1
+
+    def test_store_with_empty_policy_disables_indexing(self, tmp_path: Path) -> None:
+        """Empty policy set means nothing gets indexed."""
+        policy = TranscriptIndexingPolicy(include_types=frozenset())
+        store = MissionMemoryStore(
+            tmp_path / "mem.jsonl",
+            index_path=tmp_path / "mem.db",
+            indexing_policy=policy,
+        )
+        store.append(_make_record(
+            record_id="mem-1", record_type="outcome",
+            content={"note": "rescued survivor"},
+        ))
+
+        records = store.list_records()
+        assert len(records) == 1
+
+        results = store.search_indexed("rescued")
+        assert len(results) == 0

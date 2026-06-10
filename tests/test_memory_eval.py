@@ -80,6 +80,30 @@ class TestEvalResult:
 
 
 class TestEvalReport:
+    def test_meets_threshold_when_above(self) -> None:
+        report = EvalReport(total=10, passed=8, failed=2, hit_rate=0.8)
+        assert report.meets_threshold(0.5) is True
+        assert report.meets_threshold(0.8) is True
+
+    def test_meets_threshold_when_below(self) -> None:
+        report = EvalReport(total=10, passed=3, failed=7, hit_rate=0.3)
+        assert report.meets_threshold(0.5) is False
+
+    def test_meets_threshold_exact_boundary(self) -> None:
+        report = EvalReport(total=10, passed=5, failed=5, hit_rate=0.5)
+        assert report.meets_threshold(0.5) is True
+        assert report.meets_threshold(0.51) is False
+
+    def test_meets_threshold_zero_threshold(self) -> None:
+        report = EvalReport(total=0, passed=0, failed=0, hit_rate=0.0)
+        assert report.meets_threshold(0.0) is True
+
+    def test_meets_threshold_in_to_dict(self) -> None:
+        """meets_threshold result is not in to_dict (it's a method, not data)."""
+        report = EvalReport(total=2, passed=1, failed=1, hit_rate=0.5)
+        d = report.to_dict()
+        assert "meets_threshold" not in d
+
     def test_to_dict(self) -> None:
         report = EvalReport(
             total=2, passed=1, failed=1, hit_rate=0.5,

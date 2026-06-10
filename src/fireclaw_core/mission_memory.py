@@ -19,6 +19,41 @@ MEMORY_RECORD_TYPES = {
     "lesson",
 }
 
+# Default set of record types that are safe to index in the FTS search index.
+# Private logs (e.g. raw sensor dumps, operator PII) are NOT included.
+# Operators must explicitly configure ``include_types`` to opt-in to
+# additional record types.
+DEFAULT_INDEXABLE_TYPES: frozenset[str] = frozenset({
+    "command",
+    "plan",
+    "observation",
+    "outcome",
+    "lesson",
+})
+
+
+@dataclass(frozen=True)
+class TranscriptIndexingPolicy:
+    """Controls which mission transcript records are indexed.
+
+    By default, only non-private record types are indexed.  Callers can
+    override ``include_types`` to add or restrict what gets indexed.
+
+    Attributes
+    ----------
+    include_types:
+        Record types that should be indexed.  If ``None``, uses
+        ``DEFAULT_INDEXABLE_TYPES``.  Set to an empty set to disable
+        indexing entirely.
+    """
+
+    include_types: frozenset[str] | None = None
+
+    def should_index(self, record_type: str) -> bool:
+        """Return True if *record_type* should be indexed."""
+        allowed = self.include_types if self.include_types is not None else DEFAULT_INDEXABLE_TYPES
+        return record_type in allowed
+
 
 @dataclass(frozen=True)
 class MissionMemoryRecord:
@@ -40,10 +75,12 @@ class MissionMemoryStore:
         path: str | Path,
         *,
         index_path: str | Path | None = None,
+        indexing_policy: TranscriptIndexingPolicy | None = None,
     ) -> None:
         self.path = Path(path)
         self._index: SqliteMemoryIndex | None = None
         self._index_path: Path | None = Path(index_path) if index_path else None
+        self._indexing_policy = indexing_policy or TranscriptIndexingPolicy()
 
     @property
     def index(self) -> SqliteMemoryIndex | None:
@@ -65,7 +102,7 @@ class MissionMemoryStore:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
             handle.write("\n")
-        if self.index is not None:
+        if self.index is not None and self._indexing_policy.should_index(record.record_type):
             self.index.upsert(record.to_dict())
 
     def ingest_transcript(

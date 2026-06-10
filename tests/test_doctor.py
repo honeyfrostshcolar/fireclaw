@@ -390,3 +390,159 @@ def test_doctor_fix_returns_repair_count(tmp_path):
     assert isinstance(report["repairs"], list)
     assert isinstance(report["fixed"], int)
     assert report["fixed"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Doctor memory eval integration tests
+# ---------------------------------------------------------------------------
+
+
+def _create_test_memory_index(path: Path) -> None:
+    """Create a minimal SQLite memory index with one record for testing.
+
+    Uses the actual SqliteMemoryIndex schema so the real retriever can read it.
+    """
+    from fireclaw_core.memory_index import SqliteMemoryIndex
+
+    index = SqliteMemoryIndex(str(path))
+    index.upsert({
+        "record_id": "r1",
+        "mission_id": "m1",
+        "record_type": "outcome",
+        "robot_id": "bot1",
+        "content": {"command": "search floor 2", "status": "succeeded"},
+        "created_at": "",
+    })
+
+
+def test_doctor_memory_eval_skipped_without_fixture(tmp_path):
+    """Memory eval check passes when no fixture path is provided."""
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-eval",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+    )
+
+    eval_check = _check(report, "memory_eval")
+    assert eval_check["status"] == "pass"
+    assert "skipped" in eval_check["message"].lower()
+
+
+def test_doctor_memory_eval_skipped_without_index(tmp_path):
+    """Memory eval check passes when no index path is provided."""
+    fixture_path = tmp_path / "cases.json"
+    fixture_path.write_text(
+        json.dumps([{"query": "test", "must_match": ["test"]}]),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-eval",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        memory_eval_fixture=str(fixture_path),
+    )
+
+    eval_check = _check(report, "memory_eval")
+    assert eval_check["status"] == "pass"
+    assert "skipped" in eval_check["message"].lower()
+
+
+def test_doctor_memory_eval_warns_missing_index(tmp_path):
+    """Memory eval warns when index file does not exist."""
+    fixture_path = tmp_path / "cases.json"
+    fixture_path.write_text(
+        json.dumps([{"query": "test", "must_match": ["test"]}]),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-eval",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        memory_index_path=str(tmp_path / "missing" / "index.sqlite"),
+        memory_eval_fixture=str(fixture_path),
+    )
+
+    eval_check = _check(report, "memory_eval")
+    assert eval_check["status"] == "warn"
+
+
+def test_doctor_memory_eval_warns_missing_fixture(tmp_path):
+    """Memory eval warns when fixture file does not exist."""
+    index_path = tmp_path / "index.sqlite"
+    _create_test_memory_index(index_path)
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-eval",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        memory_index_path=str(index_path),
+        memory_eval_fixture=str(tmp_path / "missing_cases.json"),
+    )
+
+    eval_check = _check(report, "memory_eval")
+    assert eval_check["status"] == "warn"
+
+
+def test_doctor_memory_eval_passes_when_threshold_met(tmp_path):
+    """Memory eval passes when hit_rate meets threshold."""
+    index_path = tmp_path / "index.sqlite"
+    _create_test_memory_index(index_path)
+    fixture_path = tmp_path / "cases.json"
+    fixture_path.write_text(
+        json.dumps([{"query": "search floor 2", "must_match": ["search"]}]),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-eval",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        memory_index_path=str(index_path),
+        memory_eval_fixture=str(fixture_path),
+        memory_eval_threshold=0.5,
+    )
+
+    eval_check = _check(report, "memory_eval")
+    assert eval_check["status"] == "pass"
+    assert eval_check["details"]["meets_threshold"] is True
+    assert eval_check["details"]["hit_rate"] == 1.0
+
+
+def test_doctor_memory_eval_fails_when_threshold_not_met(tmp_path):
+    """Memory eval fails when hit_rate is below threshold."""
+    index_path = tmp_path / "index.sqlite"
+    _create_test_memory_index(index_path)
+    fixture_path = tmp_path / "cases.json"
+    # Query for something not in the index
+    fixture_path.write_text(
+        json.dumps([{"query": "nonexistent topic", "must_match": ["nonexistent"]}]),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(
+        adapter="dry-run",
+        robot_id="doctor-eval",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        memory_index_path=str(index_path),
+        memory_eval_fixture=str(fixture_path),
+        memory_eval_threshold=0.5,
+    )
+
+    eval_check = _check(report, "memory_eval")
+    assert eval_check["status"] == "fail"
+    assert eval_check["details"]["meets_threshold"] is False
+    assert eval_check["details"]["hit_rate"] == 0.0

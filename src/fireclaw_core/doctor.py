@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from fireclaw_core.action_runtime import RobotAdapterActionBackend
+from fireclaw_core.memory_eval import evaluate_retrieval, load_eval_cases
+from fireclaw_core.memory_index import SqliteMemoryIndex
+from fireclaw_core.memory_retrieval import MemoryRetriever
 from fireclaw_core.ros1_config import ROS1_ACTION_NAMES
 from fireclaw_core.ros1_config import load_ros1_adapter_config
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
@@ -36,6 +39,8 @@ def run_doctor(
     ros1_config_path: str | None = None,
     task_queue_path: str | None = None,
     memory_index_path: str | None = None,
+    memory_eval_fixture: str | None = None,
+    memory_eval_threshold: float = 0.5,
     plugin_dir: str | None = None,
     fix: bool = False,
 ) -> dict[str, Any]:
@@ -84,6 +89,7 @@ def run_doctor(
     # --- repair-flow checks ---
     # Memory index and plugin descriptors are always report-only.
     checks.append(_memory_index_check(memory_index_path))
+    checks.append(_memory_eval_check(memory_index_path, memory_eval_fixture, memory_eval_threshold))
     checks.append(_plugin_descriptor_check(plugin_dir))
 
     # --- repair actions (only when fix=True) ---
@@ -404,6 +410,72 @@ def _memory_index_check(memory_index_path: str | None) -> DoctorCheck:
     )
 
 
+def _memory_eval_check(
+    memory_index_path: str | None,
+    memory_eval_fixture: str | None,
+    threshold: float,
+) -> DoctorCheck:
+    """Run retrieval evaluation when both index and fixture are provided."""
+    if memory_index_path is None or memory_eval_fixture is None:
+        return DoctorCheck(
+            name="memory_eval",
+            status="pass",
+            message="Memory retrieval evaluation skipped (no index or fixture path).",
+            details={"memory_index_path": memory_index_path, "memory_eval_fixture": memory_eval_fixture},
+        )
+    index_path = Path(memory_index_path)
+    if not index_path.exists():
+        return DoctorCheck(
+            name="memory_eval",
+            status="warn",
+            message=f"Memory index not found at {index_path}; cannot run evaluation.",
+            details={"memory_index_path": str(index_path), "exists": False},
+        )
+    fixture_path = Path(memory_eval_fixture)
+    if not fixture_path.exists():
+        return DoctorCheck(
+            name="memory_eval",
+            status="warn",
+            message=f"Eval fixture not found at {fixture_path}.",
+            details={"memory_eval_fixture": str(fixture_path), "exists": False},
+        )
+    try:
+        index = SqliteMemoryIndex(str(index_path))
+        retriever = MemoryRetriever(index=index)
+        cases = load_eval_cases(fixture_path)
+        report = evaluate_retrieval(retriever, cases)
+    except Exception as exc:
+        return DoctorCheck(
+            name="memory_eval",
+            status="fail",
+            message=f"Memory retrieval evaluation failed: {exc}",
+            details={"error": str(exc)},
+        )
+    meets = report.meets_threshold(threshold)
+    details: dict[str, Any] = {
+        "total": report.total,
+        "passed": report.passed,
+        "failed": report.failed,
+        "hit_rate": round(report.hit_rate, 3),
+        "threshold": threshold,
+        "meets_threshold": meets,
+        "missing_cases": report.missing_cases,
+    }
+    if meets:
+        return DoctorCheck(
+            name="memory_eval",
+            status="pass",
+            message=f"Memory retrieval hit_rate {report.hit_rate:.1%} meets threshold {threshold:.1%}.",
+            details=details,
+        )
+    return DoctorCheck(
+        name="memory_eval",
+        status="fail",
+        message=f"Memory retrieval hit_rate {report.hit_rate:.1%} below threshold {threshold:.1%}.",
+        details=details,
+    )
+
+
 def _plugin_descriptor_check(plugin_dir: str | None) -> DoctorCheck:
     if plugin_dir is None:
         return DoctorCheck(
@@ -477,6 +549,8 @@ def main() -> int:
     parser.add_argument("--task-queue", default=None, help="Path to JSONL task queue file")
     parser.add_argument("--memory-index", default=None, help="Path to memory index SQLite file")
     parser.add_argument("--plugin-dir", default=None, help="Path to plugin descriptor directory")
+    parser.add_argument("--memory-eval-fixture", default=None, help="Path to memory retrieval eval fixture JSON")
+    parser.add_argument("--memory-eval-threshold", type=float, default=0.5, help="Minimum hit_rate to pass memory eval (default: 0.5)")
     parser.add_argument("--fix", action="store_true", help="Attempt to repair detected issues")
     args = parser.parse_args()
 
@@ -489,6 +563,8 @@ def main() -> int:
         ros1_config_path=args.ros1_config,
         task_queue_path=args.task_queue,
         memory_index_path=args.memory_index,
+        memory_eval_fixture=args.memory_eval_fixture,
+        memory_eval_threshold=args.memory_eval_threshold,
         plugin_dir=args.plugin_dir,
         fix=args.fix,
     )
