@@ -178,3 +178,157 @@ class TestPluginRuntimeHookAggregation:
         assert "add_reason" in hooks
         assert "require_scope" in hooks
         assert "auto_approve" in hooks
+
+
+# ---------------------------------------------------------------------------
+# Callable hook registration and execution
+# ---------------------------------------------------------------------------
+
+
+class TestPluginRuntimeCallableHooks:
+    """Callable hook registration, validation, and execution."""
+
+    def test_provider_hook_callable_must_be_registered_explicitly(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_descriptor(_make_descriptor(
+            plugin_id="fire.context",
+            capabilities=("context",),
+            provider_hooks=("enrich_context",),
+        ))
+
+        effects = runtime.run_provider_hooks(
+            "enrich_context",
+            {"command": "去二楼搜索", "context": {}},
+        )
+
+        assert effects == []
+
+    def test_registered_provider_hook_returns_structured_effect(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="fire.context",
+            callback=lambda payload: {"extra_context": {"evacuation_route": "east stairs"}},
+        )
+
+        effects = runtime.run_provider_hooks(
+            "enrich_context",
+            {"command": "去二楼搜索", "context": {}},
+        )
+
+        assert effects == [
+            {
+                "plugin_id": "fire.context",
+                "hook_name": "enrich_context",
+                "effect": {"extra_context": {"evacuation_route": "east stairs"}},
+            }
+        ]
+
+    def test_registered_memory_hook_returns_structured_effect(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id="fire.memory",
+            callback=lambda payload: {
+                "filtered": [r for r in payload.get("results", []) if r.get("score", 0) > 0.5]
+            },
+        )
+
+        effects = runtime.run_memory_hooks(
+            "filter",
+            {"results": [{"id": "r1", "score": 0.8}, {"id": "r2", "score": 0.2}]},
+        )
+
+        assert len(effects) == 1
+        assert effects[0]["plugin_id"] == "fire.memory"
+        assert effects[0]["effect"]["filtered"] == [{"id": "r1", "score": 0.8}]
+
+    def test_registered_tool_approval_hook_returns_structured_effect(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="tool_approval",
+            hook_name="add_reason",
+            plugin_id="fire.approval",
+            callback=lambda payload: {"reason": "High heat area requires supervisor review."},
+        )
+
+        effects = runtime.run_tool_approval_hooks(
+            "add_reason",
+            {"mission_id": "m1", "action": "enter_building", "payload": {}},
+        )
+
+        assert len(effects) == 1
+        assert effects[0]["plugin_id"] == "fire.approval"
+        assert effects[0]["effect"]["reason"] == "High heat area requires supervisor review."
+
+    def test_hook_callable_receives_independent_payload_copy(self) -> None:
+        """Verify callback gets a copy, not the caller's mutable dict."""
+        received_payloads: list[dict] = []
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="fire.context",
+            callback=lambda payload: (received_payloads.append(payload), None)[1],
+        )
+
+        original = {"command": "test", "context": {"key": "value"}}
+        runtime.run_provider_hooks("enrich_context", original)
+        original["command"] = "mutated"
+
+        assert received_payloads[0]["command"] == "test"
+
+    def test_hook_callable_returning_non_dict_raises(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="fire.bad",
+            callback=lambda payload: "not a dict",
+        )
+
+        with pytest.raises(ValueError, match="must return a dict or None"):
+            runtime.run_provider_hooks("enrich_context", {"command": "test", "context": {}})
+
+    def test_multiple_callables_for_same_hook(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="fire.context.a",
+            callback=lambda payload: {"source": "a"},
+        )
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="fire.context.b",
+            callback=lambda payload: {"source": "b"},
+        )
+
+        effects = runtime.run_provider_hooks("enrich_context", {"command": "test", "context": {}})
+
+        assert len(effects) == 2
+        assert effects[0]["plugin_id"] == "fire.context.a"
+        assert effects[1]["plugin_id"] == "fire.context.b"
+
+    def test_unknown_hook_type_raises(self) -> None:
+        runtime = PluginRuntime()
+        with pytest.raises(ValueError, match="Unknown hook type"):
+            runtime.register_callable(
+                hook_type="unknown",
+                hook_name="enrich_context",
+                plugin_id="fire.context",
+                callback=lambda payload: None,
+            )
+
+    def test_unknown_hook_name_raises(self) -> None:
+        runtime = PluginRuntime()
+        with pytest.raises(ValueError, match="declares unknown"):
+            runtime.register_callable(
+                hook_type="provider",
+                hook_name="nonexistent_hook",
+                plugin_id="fire.context",
+                callback=lambda payload: None,
+            )

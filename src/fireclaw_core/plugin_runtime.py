@@ -8,10 +8,34 @@ sets, and aggregates hooks for integration with the planner and memory layers.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from fireclaw_core.plugin_descriptor import FireClawPluginDescriptor
+
+# ---------------------------------------------------------------------------
+# Callable hook types
+# ---------------------------------------------------------------------------
+
+PluginHookCallback = Callable[[dict[str, Any]], dict[str, Any] | None]
+
+
+@dataclass(frozen=True)
+class PluginHookEffect:
+    """Structured result of a single hook callable invocation."""
+
+    plugin_id: str
+    hook_name: str
+    effect: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "plugin_id": self.plugin_id,
+            "hook_name": self.hook_name,
+            "effect": dict(self.effect),
+        }
 
 # ---------------------------------------------------------------------------
 # Known hook name sets
@@ -58,6 +82,7 @@ class PluginRuntime:
 
     def __init__(self) -> None:
         self._descriptors: list[FireClawPluginDescriptor] = []
+        self._callables: dict[tuple[str, str], list[tuple[str, PluginHookCallback]]] = {}
 
     # ------------------------------------------------------------------
     # Loading
@@ -129,6 +154,85 @@ class PluginRuntime:
         for d in self._descriptors:
             hooks.extend(d.tool_approval_hooks)
         return hooks
+
+    # ------------------------------------------------------------------
+    # Callable hook registration and execution
+    # ------------------------------------------------------------------
+
+    def register_callable(
+        self,
+        *,
+        hook_type: str,
+        hook_name: str,
+        plugin_id: str,
+        callback: PluginHookCallback,
+    ) -> None:
+        """Register a callable for a known hook.
+
+        Raises ``ValueError`` if *hook_type* or *hook_name* is not in the
+        known sets.
+        """
+        self._validate_known_hook(hook_type, hook_name, plugin_id)
+        self._callables.setdefault((hook_type, hook_name), []).append(
+            (plugin_id, callback)
+        )
+
+    def run_provider_hooks(
+        self, hook_name: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Execute all registered provider *hook_name* callables."""
+        return self._run_hooks("provider", hook_name, payload)
+
+    def run_memory_hooks(
+        self, hook_name: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Execute all registered memory *hook_name* callables."""
+        return self._run_hooks("memory", hook_name, payload)
+
+    def run_tool_approval_hooks(
+        self, hook_name: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Execute all registered tool_approval *hook_name* callables."""
+        return self._run_hooks("tool_approval", hook_name, payload)
+
+    def _run_hooks(
+        self, hook_type: str, hook_name: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        self._validate_known_hook(hook_type, hook_name, "runtime")
+        effects: list[dict[str, Any]] = []
+        for plugin_id, callback in self._callables.get(
+            (hook_type, hook_name), []
+        ):
+            result = callback(dict(payload))  # copy to prevent mutation
+            if result is None:
+                continue
+            if not isinstance(result, dict):
+                raise ValueError(
+                    f"Plugin '{plugin_id}' {hook_type} hook '{hook_name}' "
+                    f"must return a dict or None."
+                )
+            effects.append(
+                PluginHookEffect(plugin_id, hook_name, result).to_dict()
+            )
+        return effects
+
+    def _validate_known_hook(
+        self, hook_type: str, hook_name: str, plugin_id: str
+    ) -> None:
+        if hook_type == "provider":
+            _validate_hook_names(
+                (hook_name,), KNOWN_PROVIDER_HOOKS, hook_type, plugin_id
+            )
+        elif hook_type == "memory":
+            _validate_hook_names(
+                (hook_name,), KNOWN_MEMORY_HOOKS, hook_type, plugin_id
+            )
+        elif hook_type == "tool_approval":
+            _validate_hook_names(
+                (hook_name,), KNOWN_TOOL_APPROVAL_HOOKS, hook_type, plugin_id
+            )
+        else:
+            raise ValueError(f"Unknown hook type: {hook_type}")
 
 
 # ---------------------------------------------------------------------------
