@@ -310,6 +310,57 @@ class JsonlTaskRegistryStore:
         self._append(record.to_dict())
         return record
 
+    def project_task_state(
+        self,
+        *,
+        task_id: str,
+        requester_session_id: str,
+        owner_id: str,
+        command: str,
+        runtime: str,
+        scope_kind: str,
+        status: str,
+        delivery_status: str,
+        notify_policy: str,
+        created_at: str,
+        parent_task_id: str | None = None,
+        child_session_id: str | None = None,
+        started_at: str | None = None,
+        ended_at: str | None = None,
+        error: str | None = None,
+        result: dict[str, Any] | None = None,
+        terminal_outcome: str | None = None,
+    ) -> TaskRecord:
+        """Create or update a task record for mission lifecycle projection.
+
+        If the record already exists, preserves ``created_at`` and merges
+        optional fields from the existing record when the caller does not
+        provide them (i.e. passes ``None``).
+        """
+        current = self.get(task_id)
+        record = TaskRecord(
+            task_id=task_id,
+            runtime=runtime,
+            requester_session_id=requester_session_id,
+            owner_id=owner_id,
+            scope_kind=scope_kind,
+            command=command,
+            status=status,
+            delivery_status=delivery_status,
+            notify_policy=notify_policy,
+            created_at=current.created_at if current is not None and current.created_at else created_at,
+            parent_task_id=parent_task_id if parent_task_id is not None else (current.parent_task_id if current else None),
+            child_session_id=child_session_id if child_session_id is not None else (current.child_session_id if current else None),
+            started_at=started_at if started_at is not None else (current.started_at if current else None),
+            ended_at=ended_at if ended_at is not None else (current.ended_at if current else None),
+            error=error if error is not None else (current.error if current else None),
+            result=result if result is not None else (current.result if current else None),
+            terminal_outcome=terminal_outcome if terminal_outcome is not None else (current.terminal_outcome if current else None),
+            last_event_at=ended_at or started_at or created_at,
+        )
+        self._append(record.to_dict())
+        return record
+
     def get(self, task_id: str) -> TaskRecord | None:
         return self._records_by_task_id().get(task_id)
 

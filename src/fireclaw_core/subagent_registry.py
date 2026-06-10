@@ -165,6 +165,33 @@ class JsonlSubagentRegistry:
         self._append(record.to_dict())
         return record
 
+    def mark_terminal(
+        self,
+        *,
+        child_task_id: str,
+        status: str,
+        updated_at: str,
+        error: str | None = None,
+    ) -> SubagentRunRecord | None:
+        """Idempotently mark a subagent run as terminal.
+
+        Returns the record after the update, or ``None`` if no record
+        matches *child_task_id*.  If the record is already terminal,
+        returns the current record without appending a new entry.
+        """
+        current = self.get_by_child_task_id(child_task_id)
+        if current is None:
+            return None
+        if current.is_terminal:
+            return current
+        return self.update(
+            current.run_id,
+            status=status,
+            delivery_status="delivered",
+            updated_at=updated_at,
+            error=error,
+        )
+
     def get_by_run_id(self, run_id: str) -> SubagentRunRecord | None:
         return self._records_by_key("run_id").get(run_id)
 

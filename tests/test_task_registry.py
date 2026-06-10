@@ -350,6 +350,125 @@ def test_jsonl_store_snapshot(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# project_task_state tests
+# ---------------------------------------------------------------------------
+
+
+def test_task_registry_projects_mission_subtask_lifecycle(tmp_path):
+    store = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+
+    record = store.project_task_state(
+        task_id="mission-1:subtask-1",
+        requester_session_id="mission-1",
+        owner_id="robot-1",
+        command="搜索二楼",
+        runtime="robot_gateway",
+        scope_kind="mission",
+        status="queued",
+        delivery_status="pending",
+        notify_policy="state_changes",
+        created_at="2026-06-10T00:00:00+00:00",
+        parent_task_id="mission-1",
+        child_session_id="robot-1:task-1",
+    )
+
+    assert record.task_id == "mission-1:subtask-1"
+    assert store.get("mission-1:subtask-1").status == "queued"
+
+    updated = store.project_task_state(
+        task_id="mission-1:subtask-1",
+        requester_session_id="mission-1",
+        owner_id="robot-1",
+        command="搜索二楼",
+        runtime="robot_gateway",
+        scope_kind="mission",
+        status="completed",
+        delivery_status="delivered",
+        notify_policy="state_changes",
+        created_at="2026-06-10T00:00:00+00:00",
+        ended_at="2026-06-10T00:00:10+00:00",
+        terminal_outcome="succeeded",
+    )
+
+    assert updated.status == "completed"
+    assert store.get("mission-1:subtask-1").terminal_outcome == "succeeded"
+
+
+def test_task_registry_project_preserves_existing_optional_fields(tmp_path):
+    """project_task_state preserves existing optional fields when caller omits them."""
+    store = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+
+    store.project_task_state(
+        task_id="t-proj-1",
+        requester_session_id="s1",
+        owner_id="r1",
+        command="搜索",
+        runtime="robot_gateway",
+        scope_kind="mission",
+        status="queued",
+        delivery_status="pending",
+        notify_policy="state_changes",
+        created_at="2026-06-10T00:00:00+00:00",
+        parent_task_id="mission-1",
+        child_session_id="robot-1:task-1",
+    )
+
+    # Update without providing parent_task_id or child_session_id
+    updated = store.project_task_state(
+        task_id="t-proj-1",
+        requester_session_id="s1",
+        owner_id="r1",
+        command="搜索",
+        runtime="robot_gateway",
+        scope_kind="mission",
+        status="running",
+        delivery_status="delivered",
+        notify_policy="state_changes",
+        created_at="2026-06-10T00:00:00+00:00",
+        started_at="2026-06-10T00:00:01+00:00",
+    )
+
+    assert updated.parent_task_id == "mission-1"
+    assert updated.child_session_id == "robot-1:task-1"
+    assert updated.started_at == "2026-06-10T00:00:01+00:00"
+
+
+def test_task_registry_project_preserves_created_at_from_existing_record(tmp_path):
+    """project_task_state preserves created_at from existing record."""
+    store = JsonlTaskRegistryStore(tmp_path / "tasks.jsonl")
+
+    store.project_task_state(
+        task_id="t-proj-2",
+        requester_session_id="s1",
+        owner_id="r1",
+        command="搜索",
+        runtime="robot_gateway",
+        scope_kind="mission",
+        status="queued",
+        delivery_status="pending",
+        notify_policy="state_changes",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    # Call again with a different created_at -- existing one should be preserved
+    updated = store.project_task_state(
+        task_id="t-proj-2",
+        requester_session_id="s1",
+        owner_id="r1",
+        command="搜索",
+        runtime="robot_gateway",
+        scope_kind="mission",
+        status="completed",
+        delivery_status="delivered",
+        notify_policy="state_changes",
+        created_at="2026-06-10T99:99:99+00:00",
+        ended_at="2026-06-10T00:00:10+00:00",
+    )
+
+    assert updated.created_at == "2026-06-10T00:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
 # Conversion from existing queue record
 # ---------------------------------------------------------------------------
 

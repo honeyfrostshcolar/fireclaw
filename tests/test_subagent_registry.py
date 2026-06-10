@@ -323,6 +323,71 @@ def test_registry_get_missing_returns_none(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# mark_terminal tests
+# ---------------------------------------------------------------------------
+
+
+def test_subagent_registry_mark_terminal_is_idempotent(tmp_path):
+    store = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+    record = store.create(
+        parent_mission_id="mission-1",
+        parent_subtask_id="subtask-1",
+        robot_id="robot-1",
+        child_task_id="task-1",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    first = store.mark_terminal(
+        child_task_id="task-1",
+        status="completed",
+        updated_at="2026-06-10T00:00:10+00:00",
+    )
+    second = store.mark_terminal(
+        child_task_id="task-1",
+        status="failed",
+        updated_at="2026-06-10T00:00:11+00:00",
+    )
+
+    assert first.status == "completed"
+    assert second.status == "completed"  # idempotent -- does not overwrite terminal
+    assert store.get_by_run_id(record.run_id).status == "completed"
+
+
+def test_subagent_registry_mark_terminal_returns_none_for_unknown(tmp_path):
+    store = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+
+    result = store.mark_terminal(
+        child_task_id="nonexistent",
+        status="completed",
+        updated_at="2026-06-10T00:00:10+00:00",
+    )
+
+    assert result is None
+
+
+def test_subagent_registry_mark_terminal_sets_error(tmp_path):
+    store = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
+    store.create(
+        parent_mission_id="mission-1",
+        robot_id="robot-1",
+        child_task_id="task-err",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    result = store.mark_terminal(
+        child_task_id="task-err",
+        status="failed",
+        updated_at="2026-06-10T00:00:10+00:00",
+        error="Navigation blocked",
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error == "Navigation blocked"
+    assert result.delivery_status == "delivered"
+
+
+# ---------------------------------------------------------------------------
 # RobotSubagentClient integration tests
 # ---------------------------------------------------------------------------
 
@@ -390,8 +455,37 @@ def test_subagent_client_no_registry_is_noop():
         assert result["task_id"] == "remote-task-2"
 
 
-def test_subagent_client_get_trace_does_not_write_registry(tmp_path):
-    """get_task_trace is read-only -- it should not touch the registry."""
+def test_subagent_client_get_trace_updates_existing_registry_record_on_terminal_status(tmp_path):
+    """Observed terminal trace should update an existing child run mapping."""
+    from fireclaw_core.robot_registry import RobotRegistryEntry
+    from fireclaw_core.subagent_client import RobotSubagentClient
+
+    registry = JsonlSubagentRegistry(tmp_path / "subagent_registry.jsonl")
+    client = RobotSubagentClient(registry=registry)
+    entry = RobotRegistryEntry(robot_id="robot-3", base_url="http://localhost:9999")
+    record = registry.create(
+        parent_mission_id="mission-1",
+        parent_subtask_id="subtask-1",
+        robot_id="robot-3",
+        child_task_id="remote-task-3",
+        created_at="2026-06-10T00:00:00+00:00",
+    )
+
+    with patch.object(client, "_request_json", return_value={
+        "task_id": "remote-task-3",
+        "status": "completed",
+    }):
+        client.get_task_trace(entry, "remote-task-3")
+
+    updated = registry.get_by_run_id(record.run_id)
+    assert updated is not None
+    assert updated.status == "completed"
+    assert updated.delivery_status == "delivered"
+    assert updated.updated_at is not None
+
+
+def test_subagent_client_get_trace_without_existing_mapping_does_not_create_registry_record(tmp_path):
+    """Trace observation should not invent lineage when no child mapping exists."""
     from fireclaw_core.robot_registry import RobotRegistryEntry
     from fireclaw_core.subagent_client import RobotSubagentClient
 
@@ -401,9 +495,8 @@ def test_subagent_client_get_trace_does_not_write_registry(tmp_path):
 
     with patch.object(client, "_request_json", return_value={
         "task_id": "remote-task-3",
-        "status": "running",
+        "status": "completed",
     }):
         client.get_task_trace(entry, "remote-task-3")
 
-    # Registry should remain empty
     assert registry.list_records() == []
