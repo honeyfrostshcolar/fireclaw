@@ -22,7 +22,7 @@ operator command
 
 Phase 6-10 全部已实现（v1 级别）。FireClaw 现在具备：scheduler 默认路径、mission Gateway、method scopes 默认拒绝、SSE 实时事件流、ROS1 smoke proof、SQLite FTS memory index、plugin descriptor v1。
 
-当前默认全量测试结果：`.venv/bin/python -m pytest -q`，`791 passed, 6 skipped`。
+当前默认全量测试结果：`.venv/bin/python -m pytest -q`，`823 passed, 6 skipped`。
 ROS1 smoke 显式验证：`FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`，`6 passed`。
 
 ## 当前已经实现的能力
@@ -119,17 +119,25 @@ ROS1 smoke 显式验证：`FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest 
 - `FireClawPluginDescriptor` v1: capability, preconditions, risk_level, required_sensors, adapter_bindings, approval_scope, provider_hooks, memory_hooks
 - `descriptor_from_skill_manifest()` 从现有 skill manifest 转换
 
-**剩余未来工作：** 更强的 embedding/ranking、provider lifecycle、session transcript indexing
+**剩余未来工作：** embedding provider lifecycle、session transcript indexing 策略、retrieval 质量评估集
 
 ## 重要缺口（更新后）
 
 ### P1：插件/工具生态仍需深化
 
-FireClaw 有 skill manifest 和 plugin descriptor v1，但缺 OpenClaw plugin SDK 的 provider hook、memory hook、tool approval hook 实际运行时集成。
+FireClaw 有 skill manifest、plugin descriptor v1 和 `PluginRuntime` callable hook 注册/执行（provider/memory/tool_approval 三种 hook 类型，异常隔离，payload copy）。已接入 MissionAgent planner context 和 MissionGateway approval flow。仍缺第三方插件加载、安全沙箱、权限审计。
 
 ### P1：记忆系统仍有提升空间
 
-已有 SQLite FTS 和 structured filters，但缺 embedding provider lifecycle、session transcript ingestion、retrieval ranking quality。
+已有 SQLite FTS、structured filters、rank-fusion `MemoryRetriever` 和 transcript ingestion API；仍缺 embedding provider lifecycle、session transcript indexing 策略和 retrieval 质量评估集。
+
+### P1：TaskRegistry/SubagentRegistry lifecycle projection
+
+已实现 `project_task_state()` 和 `mark_terminal()` 幂等 projection helper，MissionAgent 和 MissionEventAggregator 已接入。仍缺跨进程 reconciliation 和 orphan recovery 自动修复。
+
+### P1：ApprovalRuntime 持久化和 relay
+
+已实现 JSONL-backed token hash 持久化（restart-resilient）和 relay-ready pending projection（channel + operator_id）。仍缺外部 operator channel 的实际发送适配器。
 
 ### P1：真实机器人硬件验证
 
