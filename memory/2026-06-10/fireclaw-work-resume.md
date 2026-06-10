@@ -285,3 +285,153 @@ Execute `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`
 - Arbitrary third-party plugin loading not implemented (explicit callable registration only)
 - Cross-process TaskRegistry/SubagentRegistry reconciliation and orphan recovery
 - Client-side SSE iterator/reconnect abstraction
+
+## Update 2026-06-10 12:53 CST — OpenClaw Parity Maturity Recheck and New Roadmap
+
+### Task Goal
+
+Re-check current FireClaw after runtime hardening completion, compare against OpenClaw reference architecture, confirm whether the previously intended v1 functionality is now covered, and create a new next-phase roadmap.
+
+### Context Read
+
+- Recent memory:
+  - `memory/2026-06-10/fireclaw-work-resume.md`
+  - `memory/2026-06-09/fireclaw-work-resume.md`
+- Current plans:
+  - `docs/superpowers/plans/2026-06-09-openclaw-parity-next-roadmap.md`
+  - `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`
+- OpenClaw reference inspected with CodeGraph:
+  - `openclaw-main/src/tasks/task-registry.store.ts`
+  - `openclaw-main/src/acp/session-lineage-meta.ts`
+  - `openclaw-main/src/plugins/plugin-control-plane-context.ts`
+  - `openclaw-main/extensions/memory-core/src/memory/manager.ts`
+  - `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
+
+### Current Conclusion
+
+FireClaw now covers the original OpenClaw-inspired v1 robotics loop:
+
+```text
+operator command
+-> mission planning
+-> scheduler/failure policy
+-> MissionGateway
+-> robot subagent client
+-> robot-local Gateway/task queue
+-> local safety/skill/action runtime
+-> dry-run/simulator/ROS1 transport
+-> SSE events, memory, replay, approval projection
+```
+
+The latest runtime-hardening fixes also closed the three previously identified main-path gaps:
+
+- memory hooks now run on retrieved planner memories;
+- default scheduler/subtask path projects into `TaskRegistry`;
+- `MissionAgent(subagent_registry=...)` auto-wires that registry into the default `RobotSubagentClient`.
+
+### OpenClaw Parity Assessment
+
+This is strong FireClaw/OpenClaw parity v1, but not full OpenClaw platform parity. Important remaining differences:
+
+- OpenClaw task/session/subagent state is closer to a full control-plane source of truth with observers and session lineage. FireClaw has durable projections and lineage records, but still lacks reconciliation/orphan recovery as a first-class runtime.
+- OpenClaw memory has provider lifecycle, search bootstrap, fallback, and quality/debug paths. FireClaw has FTS/rank-fusion retrieval wired into planner context, but still lacks provider lifecycle status and retrieval evaluation fixtures.
+- OpenClaw plugin control plane includes discovery/policy/inventory fingerprints. FireClaw has explicit callable hook registration/execution, but lacks install/load policy and audit enforcement for third-party plugin hooks.
+- FireClaw server-side SSE replay exists, but the typed client still lacks live SSE iterator/reconnect abstraction.
+- FireClaw approval runtime persists token hashes and exposes pending projection, but external operator relay delivery is still only a boundary, not an adapter.
+- ROS1 integration proof is local tutorial-stack smoke, not real robot or high-fidelity robot-stack proof. ROS2 remains intentionally out of scope.
+
+### New Plan Created
+
+- `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+
+Planned next tasks:
+
+1. Lifecycle reconciler and orphan recovery for `TaskRegistry` / `SubagentRegistry`.
+2. Typed mission SSE client iterator and reconnect/cursor handling.
+3. Plugin policy and hook audit trail.
+4. Memory provider lifecycle status and retrieval evaluation harness.
+5. External approval relay adapter boundary.
+6. Deployment doctor cleanup and fleet onboarding readiness report.
+7. ROS1 hardware smoke proof runbook and artifact schema.
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `829 passed, 6 skipped in 105.55s`
+
+### Notes
+
+- Current working tree includes documentation-only changes:
+  - updated stale status lines in `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`;
+  - added the new maturity roadmap plan.
+- A small stale diagnostic was found: `src/fireclaw_core/doctor.py` still says the `ros1` adapter is a configuration skeleton and live ROS1 transport is not implemented, even though `Ros1Transport` now supports topic/service/action with message/request/goal construction. This is included in the new deployment-doctor cleanup task.
+
+## Update 2026-06-10 17:00 CST — OpenClaw Parity Maturity Roadmap Completed
+
+### Task Goal
+
+Execute `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md` — all 7 tasks.
+
+### Tasks Completed
+
+**Task 5: External Approval Relay Adapter** (commit `980e1e3`)
+- Created `src/fireclaw_core/approval_relay.py` with `ApprovalRelay` Protocol, `InMemoryApprovalRelay`, `RelayDeliveryRecord`
+- Wired into `MissionGateway` with fail-safe: relay errors recorded but never block approval
+- 11 new tests in `tests/test_approval_relay.py`
+- Code review: approved, fixed doctor.py false-positive feedback/cancel warnings for non-action endpoints
+
+**Task 6: Deployment Doctor Cleanup and Fleet Onboarding** (commit `5739d2d`)
+- Fixed stale ROS1 doctor wording: replaced "not implemented yet" with readiness check for config/emergency_stop/feedback/cancel
+- Added `_check_onboarding` to `FleetDoctor` with 6 findings: enrolled robots, enabled robots, stale heartbeats, missing ROS1 remaps, missing emergency stop, unresolved approval relay
+- 6 new tests, 25 total in doctor/fleet_doctor suites
+- Code review: approved with one fix (false-positive action endpoint warnings when no action endpoints exist)
+
+**Task 7: ROS1 Hardware Smoke Proof Runbook** (commit `e85eed4`)
+- Created `docs/deployment/ros1-hardware-smoke-proof.md` (~350 lines, 11 sections)
+- Created `docs/deployment/ros1-hardware-smoke-artifact.schema.json` (JSON Schema 2020-12)
+- Covers prerequisites, preflight, estop, topic/service/action proof, artifact collection, security
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `882 passed, 6 skipped in 106.04s`
+
+### Test Growth
+
+- Session start: 829 passed
+- Session end: 882 passed (+53 tests across all 7 tasks)
+
+### Files Modified/Created
+
+- `src/fireclaw_core/lifecycle_reconciler.py` — Task 1
+- `src/fireclaw_core/mission_event_aggregator.py` — Task 1
+- `src/fireclaw_core/mission_gateway_client.py` — Task 2
+- `src/fireclaw_core/plugin_policy.py` — Task 3
+- `src/fireclaw_core/plugin_runtime.py` — Task 3
+- `src/fireclaw_core/memory_eval.py` — Task 4
+- `src/fireclaw_core/memory_retrieval.py` — Task 4
+- `src/fireclaw_core/approval_relay.py` — Task 5
+- `src/fireclaw_core/mission_gateway.py` — Task 5
+- `src/fireclaw_core/doctor.py` — Task 6
+- `src/fireclaw_core/fleet_doctor.py` — Task 6
+- `docs/deployment/ros1-hardware-smoke-proof.md` — Task 7
+- `docs/deployment/ros1-hardware-smoke-artifact.schema.json` — Task 7
+- 8 new test files + updates to existing test files
+
+### Current Conclusion
+
+The OpenClaw Parity Maturity Roadmap is fully complete. FireClaw now has:
+- Lifecycle reconciliation for TaskRegistry/SubagentRegistry
+- Typed SSE client iterator with cursor replay
+- Plugin policy enforcement and hook audit trail
+- Memory retrieval lifecycle status and evaluation harness
+- External approval relay boundary (Protocol + InMemory + fail-safe)
+- Deployment doctor aligned with ROS1 transport maturity + fleet onboarding report
+- ROS1 hardware smoke proof runbook and artifact schema
+
+Remaining gaps are intentionally out of scope for this phase:
+- Native ROS2 adapter
+- Real robot hardware proof (runbook created, execution depends on hardware availability)
+- Arbitrary third-party plugin sandboxing
+- Cross-process reconciliation (in-process reconciliation is done)
+- External operator relay adapters (relay Protocol boundary is done, specific adapters are deployment-specific)
