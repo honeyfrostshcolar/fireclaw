@@ -10,7 +10,7 @@ from fireclaw_core.subagent_client import RobotSubagentClient
 @dataclass(frozen=True)
 class FleetDoctorFinding:
     severity: str  # "error", "warning", "info"
-    category: str  # "registry", "reachability", "capabilities", "config"
+    category: str  # "registry", "reachability", "capabilities", "onboarding"
     robot_id: str | None = None
     message: str = ""
     details: dict[str, Any] = field(default_factory=dict)
@@ -31,6 +31,8 @@ class FleetDoctor:
 
     registry: RobotRegistry
     subagent_client: RobotSubagentClient = field(default_factory=RobotSubagentClient)
+    ros1_skill_remapping: dict[str, str] = field(default_factory=dict)
+    approval_relay_config: dict[str, Any] | None = None
 
     def diagnose(self) -> list[FleetDoctorFinding]:
         """Run all fleet checks and return findings."""
@@ -38,6 +40,7 @@ class FleetDoctor:
         findings.extend(self._check_registry())
         findings.extend(self._check_reachability())
         findings.extend(self._check_capabilities())
+        findings.extend(self._check_onboarding())
         return findings
 
     def _check_registry(self) -> list[FleetDoctorFinding]:
@@ -121,6 +124,72 @@ class FleetDoctor:
                     robot_id=entry.robot_id,
                     message=f"Robot {entry.robot_id} has no declared capabilities.",
                 ))
+        return findings
+
+    def _check_onboarding(self) -> list[FleetDoctorFinding]:
+        """Produce an onboarding readiness report for the fleet."""
+        findings: list[FleetDoctorFinding] = []
+        all_entries = self.registry.list_entries()
+        enabled_entries = [e for e in all_entries if e.enabled]
+
+        # 1. Enrolled robots count
+        findings.append(FleetDoctorFinding(
+            severity="info",
+            category="onboarding",
+            message=f"{len(all_entries)} enrolled robot(s) in registry.",
+            details={"total": len(all_entries)},
+        ))
+
+        # 2. Enabled robots count
+        findings.append(FleetDoctorFinding(
+            severity="info",
+            category="onboarding",
+            message=f"{len(enabled_entries)} enabled robot(s).",
+            details={"count": len(enabled_entries)},
+        ))
+
+        # 3. Stale heartbeats
+        stale_entries = self.registry.stale_entries()
+        if stale_entries:
+            stale_ids = [e.robot_id for e in stale_entries]
+            findings.append(FleetDoctorFinding(
+                severity="warning",
+                category="onboarding",
+                message=f"{len(stale_entries)} robot(s) have stale or missing heartbeats: {', '.join(stale_ids)}.",
+                details={"stale_robot_ids": stale_ids},
+            ))
+
+        # 4. Missing ROS1 remaps (only when explicitly configured)
+        if self.ros1_skill_remapping:
+            all_capabilities: set[str] = set()
+            for entry in enabled_entries:
+                all_capabilities.update(entry.capabilities)
+            missing_remaps = sorted(cap for cap in all_capabilities if cap not in self.ros1_skill_remapping)
+            if missing_remaps:
+                findings.append(FleetDoctorFinding(
+                    severity="warning",
+                    category="onboarding",
+                    message=f"Capabilities missing ROS1 remaps: {', '.join(missing_remaps)}.",
+                    details={"missing_remaps": missing_remaps},
+                ))
+
+        # 5. Missing emergency stop capability (fleet-level: warn if no robot has it)
+        if enabled_entries and not any("emergency_stop" in e.capabilities for e in enabled_entries):
+            findings.append(FleetDoctorFinding(
+                severity="warning",
+                category="onboarding",
+                message="No enabled robot declares emergency_stop capability.",
+            ))
+
+        # 6. Unresolved approval relay channel
+        if self.approval_relay_config is not None:
+            if self.approval_relay_config.get("enabled") and not self.approval_relay_config.get("channel"):
+                findings.append(FleetDoctorFinding(
+                    severity="warning",
+                    category="onboarding",
+                    message="Approval relay is enabled but no channel metadata is configured.",
+                ))
+
         return findings
 
     def summary(self, findings: list[FleetDoctorFinding]) -> dict[str, Any]:

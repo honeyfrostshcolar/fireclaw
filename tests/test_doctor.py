@@ -28,6 +28,52 @@ def test_run_doctor_warns_for_mock_ros1_but_passes_control_boundaries(tmp_path):
     assert _check(report, "action_feedback_boundary")["status"] == "pass"
 
 
+def test_run_doctor_ros1_adapter_reports_readiness(tmp_path):
+    """ROS1 adapter check should report transport readiness, not 'not implemented'."""
+    config_path = tmp_path / "ros1.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "robot_id": "doctor-ros1-ready",
+                "endpoints": {
+                    "navigate_to_floor": {
+                        "interface": "action",
+                        "name": "/fireclaw/nav",
+                        "type": "fireclaw_msgs/NavigateFloorAction",
+                        "cancel_supported": True,
+                        "feedback_supported": True,
+                    }
+                },
+                "emergency_stop": {
+                    "interface": "service",
+                    "name": "/fireclaw/estop",
+                    "type": "std_srvs/Trigger",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(
+        adapter="ros1",
+        robot_id="doctor-ros1-ready",
+        memory_path=str(tmp_path / "mem.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=str(tmp_path / "missing-skills"),
+        ros1_config_path=str(config_path),
+    )
+
+    adapter_check = _check(report, "adapter")
+    assert adapter_check["status"] == "pass"
+    assert "not implemented" not in adapter_check["message"].lower()
+    assert "readiness" in adapter_check["message"].lower() or "ready" in adapter_check["message"].lower()
+    details = adapter_check["details"]
+    assert details["ros1_config_loaded"] is True
+    assert details["emergency_stop_configured"] is True
+    assert details["action_feedback_supported"] is True
+    assert details["action_cancel_supported"] is True
+
+
 def test_run_doctor_fails_invalid_workspace_skill_manifest(tmp_path):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()

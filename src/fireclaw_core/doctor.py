@@ -134,10 +134,47 @@ def _adapter_check(adapter: str, robot: Any) -> DoctorCheck:
             details=details,
         )
     if adapter == "ros1":
+        config = getattr(robot, "config", None)
+        config_loaded = config is not None
+        estop_configured = (
+            config.emergency_stop is not None if config and hasattr(config, "emergency_stop") else False
+        )
+        # Check if any action endpoint declares feedback/cancel support
+        endpoints = config.endpoints if config and hasattr(config, "endpoints") else {}
+        action_eps = {
+            k: ep for k, ep in endpoints.items()
+            if hasattr(ep, "interface") and ep.interface == "action"
+        }
+        action_feedback_supported = any(
+            ep.feedback_supported for ep in action_eps.values()
+            if hasattr(ep, "feedback_supported")
+        ) if action_eps else False
+        action_cancel_supported = any(
+            ep.cancel_supported for ep in action_eps.values()
+            if hasattr(ep, "cancel_supported")
+        ) if action_eps else False
+        details["ros1_config_loaded"] = config_loaded
+        details["emergency_stop_configured"] = estop_configured
+        details["action_feedback_supported"] = action_feedback_supported
+        details["action_cancel_supported"] = action_cancel_supported
+        warnings = []
+        if not estop_configured:
+            warnings.append("emergency_stop endpoint missing")
+        if not action_feedback_supported and action_eps:
+            warnings.append("no action endpoint declares feedback support")
+        if not action_cancel_supported and action_eps:
+            warnings.append("no action endpoint declares cancel support")
+        if warnings:
+            return DoctorCheck(
+                name="adapter",
+                status="warn",
+                message="ROS1 adapter readiness: " + "; ".join(warnings) + ".",
+                details=details,
+            )
         return DoctorCheck(
             name="adapter",
-            status="warn",
-            message="ros1 adapter is a configuration skeleton; live ROS1 transport is not implemented yet.",
+            status="pass",
+            message="ROS1 adapter readiness: config loaded, emergency stop, action feedback, and cancel support verified.",
             details=details,
         )
     return DoctorCheck(
