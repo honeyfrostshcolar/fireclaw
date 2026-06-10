@@ -10,6 +10,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from fireclaw_core.approval_relay import ApprovalRelay
 from fireclaw_core.approval_runtime import ApprovalRuntime
 from fireclaw_core.method_scopes import authorize_method
 
@@ -50,6 +51,7 @@ class MissionGateway:
         registry: RobotRegistry,
         subagent_client: RobotSubagentClient | None = None,
         approval_runtime: ApprovalRuntime | None = None,
+        approval_relay: ApprovalRelay | None = None,
         plugin_runtime: Any | None = None,
     ) -> None:
         self.config = config
@@ -57,6 +59,7 @@ class MissionGateway:
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
         self.approval_runtime = approval_runtime
+        self.approval_relay = approval_relay
         self.plugin_runtime = plugin_runtime
         self._approval_relays: dict[str, dict[str, Any]] = {}
         self._server: ThreadingHTTPServer | None = None
@@ -235,11 +238,29 @@ class MissionGateway:
                             "operator_id": str(relay.get("operator_id") or "unknown"),
                         }
                     raw_token, token = self.approval_runtime.create_token(request_id)
-                    return {
+                    result = {
                         **result,
                         "approval_token": raw_token,
                         "token": _public_token_dict(token.to_dict()),
                     }
+                    # Deliver to external relay if configured and relay metadata present
+                    if self.approval_relay is not None and isinstance(relay, dict):
+                        relay_meta = self._approval_relays.get(request_id, {})
+                        try:
+                            self.approval_relay.deliver_pending_approval(
+                                request_id=request_id,
+                                mission_id=mission_id,
+                                action=semantic_action,
+                                risk_level=payload.get("risk_level", "low"),
+                                channel=relay_meta.get("channel", "console"),
+                                operator_id=relay_meta.get("operator_id", "unknown"),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Approval relay delivery failed for %s: %s",
+                                request_id, exc,
+                            )
+                            result = {**result, "relay_error": str(exc)}
             return result
         if action == "pending":
             if self.approval_runtime is None:
