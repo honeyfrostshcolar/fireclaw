@@ -184,9 +184,58 @@ def test_mission_agent_aggregates_robot_subagent_traces(tmp_path):
     assert trace["mission_id"] == "mission-1"
     assert trace["status"] == "succeeded"
     assert trace["completed_subtask_count"] == 1
-    assert trace["subtasks"][0]["status"] == "succeeded"
+    assert trace["subtasks"][0]["status"] == "completed"
     assert trace["subtasks"][0]["robot_trace"]["events"] == [{"type": "task.completed"}]
-    assert mission_registry.get_mission("mission-1").subtasks[0].status == "succeeded"
+    assert mission_registry.get_mission("mission-1").subtasks[0].status == "completed"
+
+
+def test_mission_trace_normalizes_robot_completed_retrieval_to_completed(tmp_path):
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(
+                robot_id="robot-1",
+                base_url="http://robot.local",
+                capabilities=("monitor_environment",),
+            )
+        ]
+    )
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission_registry.create_mission(
+        mission_id="mission-1",
+        session_id="session-1",
+        command="检查一楼烟雾",
+        created_at="2026-06-11T00:00:00+00:00",
+    )
+    mission_registry.record_subtask(
+        mission_id="mission-1",
+        robot_id="robot-1",
+        task_id="task-1",
+        command="检查一楼烟雾",
+        status="accepted",
+        created_at="2026-06-11T00:00:00+00:00",
+    )
+
+    class TraceClient:
+        def get_task_trace(self, entry, task_id):
+            return {
+                "task_id": task_id,
+                "status": "retrieved",
+                "result": {"status": "retrieved", "message": "没有找到匹配的记忆记录。"},
+                "queue_record": {"status": "completed"},
+                "events": [{"type": "task.completed", "payload": {"status": "retrieved"}}],
+            }
+
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=TraceClient(),
+        mission_registry=mission_registry,
+    )
+
+    trace = agent.mission_trace("mission-1")
+
+    assert trace["status"] == "succeeded"
+    assert trace["completed_subtask_count"] == 1
+    assert trace["subtasks"][0]["status"] == "completed"
 
 
 def test_mission_agent_cancels_recorded_non_terminal_subtasks(tmp_path):

@@ -768,13 +768,53 @@ def _memory_result_to_dict(result: Any) -> dict[str, Any]:
     return value
 
 
+_NON_TERMINAL_TOP_STATUSES = {"unknown", "running", "cancel_requested"}
+
+_TERMINAL_EVENT_TYPES = {"task.completed", "task.cancelled", "task.failed"}
+
+_EVENT_TO_MISSION_STATUS = {
+    "task.completed": "completed",
+    "task.cancelled": "cancelled",
+    "task.failed": "failed",
+}
+
+
 def _status_from_robot_trace(trace: dict[str, Any]) -> str | None:
+    """Extract a mission-level terminal status from a robot trace.
+
+    Priority order (highest first):
+    1. queue_record.status
+    2. events — scan reversed for task.completed / task.cancelled / task.failed
+    3. trace["status"] — top-level (filter out non-terminal values)
+    4. result.status — inner agent result status
+    """
+    # 1. queue_record.status (robot-local terminal wrapper)
+    queue_record = trace.get("queue_record")
+    if isinstance(queue_record, dict):
+        qr_status = queue_record.get("status")
+        if isinstance(qr_status, str) and qr_status in TERMINAL_SUBTASK_STATUSES:
+            return qr_status
+
+    # 2. Events — scan reversed for terminal lifecycle events
+    events = trace.get("events")
+    if isinstance(events, list):
+        for event in reversed(events):
+            if isinstance(event, dict):
+                event_type = event.get("type")
+                if isinstance(event_type, str) and event_type in _TERMINAL_EVENT_TYPES:
+                    return _EVENT_TO_MISSION_STATUS[event_type]
+
+    # 3. Top-level trace status (filter non-terminal values)
+    status = trace.get("status")
+    if isinstance(status, str) and status not in _NON_TERMINAL_TOP_STATUSES:
+        if status in TERMINAL_SUBTASK_STATUSES:
+            return status
+
+    # 4. result.status (inner agent result — lowest priority)
     result = trace.get("result")
     if isinstance(result, dict):
-        status = result.get("status")
-        if isinstance(status, str) and status:
-            return status
-    status = trace.get("status")
-    if isinstance(status, str) and status not in {"unknown", "running", "cancel_requested"}:
-        return status
+        result_status = result.get("status")
+        if isinstance(result_status, str) and result_status in TERMINAL_SUBTASK_STATUSES:
+            return result_status
+
     return None

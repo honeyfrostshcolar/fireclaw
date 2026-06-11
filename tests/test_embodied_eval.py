@@ -42,12 +42,12 @@ def test_run_embodied_eval_produces_summary_and_metrics(tmp_path: Path):
         adapter="simulator",
     )
 
-    assert result["status"] in {"pass", "warn"}
+    assert result["status"] == "pass"
     assert result["scenario_count"] == 2
-    assert result["metrics"]["plan_success_rate"] >= 0.5
-    assert result["metrics"]["dispatch_success_rate"] >= 0.0
-    assert result["metrics"]["terminal_event_rate"] >= 0.0
-    assert result["metrics"]["memory_record_rate"] >= 0.0
+    assert result["metrics"]["plan_success_rate"] == 1.0
+    assert result["metrics"]["dispatch_success_rate"] == 1.0
+    assert result["metrics"]["terminal_event_rate"] == 1.0
+    assert result["metrics"]["memory_record_rate"] == 1.0
     assert result["metrics"]["average_latency_ms"] >= 0.0
 
     assert (output_dir / "summary.json").exists()
@@ -82,7 +82,7 @@ def test_run_embodied_eval_returns_exit_code(tmp_path: Path):
         "--output-dir", str(tmp_path / "results"),
         "--adapter", "simulator",
     ])
-    assert exit_code in {0, 2}
+    assert exit_code == 0
 
 
 def test_run_embodied_eval_rejects_missing_fixture(tmp_path: Path):
