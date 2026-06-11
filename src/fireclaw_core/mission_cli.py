@@ -13,6 +13,7 @@ from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlanner
 from fireclaw_core.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
 from fireclaw_core.provider import OpenAICompatProvider
+from fireclaw_core.provider_runtime import SimpleProviderRuntime
 
 
 SUCCESS_STATUSES = {"accepted", "duplicate", "running", "succeeded"}
@@ -312,8 +313,9 @@ def _build_planner(args: argparse.Namespace) -> Any:
         if not args.provider_base_url or not args.provider_api_key or not args.model:
             raise SystemExit("--provider-base-url, --provider-api-key, and --model are required when --planner=llm")
         provider = OpenAICompatProvider(base_url=args.provider_base_url, api_key=args.provider_api_key)
+        runtime = SimpleProviderRuntime(provider=provider, model_id=args.model)
         trace_store = LLMTraceStore(args.llm_trace_path) if args.llm_trace_path else None
-        return LLMMissionPlanner(provider=provider, model_id=args.model, trace_store=trace_store)
+        return LLMMissionPlanner(provider_runtime=runtime, trace_store=trace_store)
     return MissionPlanner()
 
 
