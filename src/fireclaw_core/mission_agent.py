@@ -90,6 +90,10 @@ class MissionAgent:
         self._session_lineage_store = session_lineage_store
         self._task_flow_store = task_flow_store
 
+    @property
+    def session_lineage_store(self) -> JsonlSessionLineageStore | None:
+        return self._session_lineage_store
+
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
         if self.control_policy is None or self.operator is None:

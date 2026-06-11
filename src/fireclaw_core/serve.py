@@ -113,7 +113,7 @@ def start_server(
         subagent_client=RobotSubagentClient(),
         task_registry=agent.task_registry,
         subagent_registry=agent.subagent_registry,
-        session_lineage_store=agent._session_lineage_store,
+        session_lineage_store=agent.session_lineage_store,
     )
     gw.start()
     logger.info("FireClaw MissionGateway started at %s", gw.base_url)
