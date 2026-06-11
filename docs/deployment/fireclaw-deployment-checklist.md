@@ -152,7 +152,48 @@ Expected output: `{"status": "indexed", "record_count": N, "index_path": "..."}`
 - [ ] Run `memory_cli eval` with a fixture covering key queries
 - [ ] Verify hit_rate meets operational threshold before deploying memory-dependent features
 
-## 10. Emergency Stop Verification
+## 10. Embodied Scenario Evaluation
+
+Run the scenario-level evaluation harness to verify the full mission/gateway
+chain before deploying to a real robot or presenting demo results.
+
+### Run eval harness
+
+```bash
+.venv/bin/python -m fireclaw_core.embodied_eval \
+  --scenarios tests/fixtures/embodied_eval/rescue_scenarios.json \
+  --output-dir results/embodied-eval/local-sim \
+  --adapter simulator
+```
+
+- `--adapter`: `dry-run`, `simulator`, or `ros1` (default: `simulator`)
+- `--poll-timeout`: seconds per scenario to wait for terminal status (default: 15)
+
+Exit codes: 0 = all pass, 2 = warnings, 1 = error.
+
+### Output files
+
+- `summary.json`: overall status, scenario count, aggregated metrics
+- `scenarios.jsonl`: one JSON object per scenario with per-scenario metrics
+
+### Metrics reported
+
+| Metric | Meaning |
+|--------|---------|
+| `plan_success_rate` | Fraction of scenarios that produced a plan |
+| `dispatch_success_rate` | Fraction that dispatched subtasks to robots |
+| `terminal_event_rate` | Fraction that reached a terminal mission status |
+| `memory_record_rate` | Fraction that produced at least one memory record |
+| `average_latency_ms` | Mean end-to-end mission completion time |
+
+### Deployment gate
+
+- [ ] Run eval harness with simulator adapter before demo/paper experiments
+- [ ] Verify `plan_success_rate >= 0.5` (planner resolves commands correctly)
+- [ ] Verify `terminal_event_rate` matches expectations for scenario set
+- [ ] Run with `--adapter ros1` on target robot for real-hardware validation
+
+## 11. Emergency Stop Verification
 
 - [ ] Test emergency stop endpoint: `POST /tasks/{id}/emergency-stop`
 - [ ] Verify emergency stop propagates to ROS layer (if using ros1 adapter)
@@ -170,7 +211,7 @@ curl -X POST http://localhost:18080/tasks/{task_id}/emergency-stop \
   -d '{"reason": "pre-deployment safety test"}'
 ```
 
-## 11. Pre-Deployment Verification
+## 12. Pre-Deployment Verification
 
 - [ ] Full test suite passes: `.venv/bin/python -m pytest -q` (ROS1 smoke skipped by default)
 - [ ] ROS smoke tests pass (if deploying with ROS): `FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`
