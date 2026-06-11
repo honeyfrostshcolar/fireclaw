@@ -305,13 +305,16 @@ def _build_mission_agent(args: argparse.Namespace, *, planner: Any = None) -> Mi
 
 def _build_planner(args: argparse.Namespace) -> Any:
     """Build the appropriate planner based on CLI flags."""
-    return _build_planner_shared(
-        planner_type=args.planner,
-        provider_base_url=args.provider_base_url,
-        provider_api_key=args.provider_api_key,
-        model=args.model,
-        llm_trace_path=args.llm_trace_path,
-    )
+    try:
+        return _build_planner_shared(
+            planner_type=args.planner,
+            provider_base_url=args.provider_base_url,
+            provider_api_key=args.provider_api_key,
+            model=args.model,
+            llm_trace_path=args.llm_trace_path,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _mission_operator() -> dict[str, Any]:

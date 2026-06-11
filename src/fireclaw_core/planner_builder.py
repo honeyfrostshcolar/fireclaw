@@ -15,7 +15,7 @@ def build_planner(
     planner_type: str = "deterministic",
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
-    model: str = "gpt-4o",
+    model: str | None = None,
     llm_trace_path: str | None = None,
 ) -> Any:
     if planner_type == "llm":
