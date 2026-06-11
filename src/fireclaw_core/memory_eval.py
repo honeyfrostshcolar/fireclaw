@@ -20,6 +20,8 @@ class EvalCase:
 
     query: str
     must_match: list[str]
+    expected_record_ids: list[str] = field(default_factory=list)
+    min_score: float = 0.0
     record_type: str | None = None
 
 
@@ -83,7 +85,9 @@ def evaluate_retrieval(
 
     Each case has:
     - query: the search query
-    - must_match: list of patterns that must appear in returned content
+    - expected_record_ids: optional list of record IDs that must be returned
+    - min_score: optional minimum score for expected record IDs
+    - must_match: backward-compatible list of patterns that must appear in returned content
     - record_type: optional expected record type (matched against returned records)
 
     Returns an ``EvalReport`` with hit rate, per-case results, and missing cases.
@@ -96,6 +100,8 @@ def evaluate_retrieval(
             case = EvalCase(
                 query=case_data["query"],
                 must_match=case_data.get("must_match", []),
+                expected_record_ids=list(case_data.get("expected_record_ids", [])),
+                min_score=float(case_data.get("min_score", 0.0)),
                 record_type=case_data.get("record_type"),
             )
         except (KeyError, TypeError) as exc:
@@ -103,10 +109,21 @@ def evaluate_retrieval(
             continue
 
         retrieved = retriever.retrieve(case.query, limit=limit)
+        if case.record_type is not None:
+            retrieved = [mem for mem in retrieved if mem.record_type == case.record_type]
 
         # Check which patterns match.
         matched_ids: list[str] = []
         missing_patterns: list[str] = []
+
+        if case.expected_record_ids:
+            by_id = {mem.record_id: mem for mem in retrieved}
+            for expected_id in case.expected_record_ids:
+                match = by_id.get(expected_id)
+                if match is None or match.score < case.min_score:
+                    missing_patterns.append(expected_id)
+                else:
+                    matched_ids.append(expected_id)
 
         for pattern in case.must_match:
             found = False

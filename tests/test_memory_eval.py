@@ -228,6 +228,45 @@ class TestEvaluateRetrieval:
         assert report.failed == 1
         assert report.hit_rate == 0.5
 
+    def test_expected_record_ids_and_min_score_are_enforced(self) -> None:
+        records = [
+            {"record_id": "successful-rescue-floor-2", "mission_id": "m1", "record_type": "mission_outcome",
+             "content": {"command": "去二楼救人", "status": "succeeded"}, "created_at": ""},
+            {"record_id": "wrong-record", "mission_id": "m2", "record_type": "mission_outcome",
+             "content": {"command": "去二楼救人", "status": "failed"}, "created_at": ""},
+        ]
+        retriever = _make_retriever(records)
+        cases = [{
+            "query": "去二楼救人",
+            "expected_record_ids": ["successful-rescue-floor-2"],
+            "min_score": 0.4,
+            "record_type": "mission_outcome",
+        }]
+
+        report = evaluate_retrieval(retriever, cases)
+
+        assert report.total == 1
+        assert report.passed == 1
+        assert report.results[0].matched_ids == ["successful-rescue-floor-2"]
+
+    def test_record_type_mismatch_fails_expected_record_case(self) -> None:
+        records = [
+            {"record_id": "successful-rescue-floor-2", "mission_id": "m1", "record_type": "operator_correction",
+             "content": {"command": "去二楼救人", "status": "succeeded"}, "created_at": ""},
+        ]
+        retriever = _make_retriever(records)
+        cases = [{
+            "query": "去二楼救人",
+            "expected_record_ids": ["successful-rescue-floor-2"],
+            "record_type": "mission_outcome",
+        }]
+
+        report = evaluate_retrieval(retriever, cases)
+
+        assert report.total == 1
+        assert report.passed == 0
+        assert "successful-rescue-floor-2" in report.results[0].missing_patterns
+
 
 # ---------------------------------------------------------------------------
 # load_eval_cases tests
@@ -267,11 +306,11 @@ class TestLoadEvalCases:
         cases = load_eval_cases(fixture_path)
         assert len(cases) == 2
         assert cases[0]["query"] == "去二楼救人"
-        assert "rescue" in cases[0]["must_match"]
-        assert cases[0]["record_type"] == "mission_outcome"
+        assert cases[0]["expected_record_ids"] == ["successful-rescue-floor-2"]
+        assert cases[0]["min_score"] == 0.4
         assert cases[1]["query"] == "热成像误报"
-        assert "thermal" in cases[1]["must_match"]
-        assert cases[1]["record_type"] == "operator_correction"
+        assert cases[1]["expected_record_ids"] == ["thermal-false-positive-correction"]
+        assert cases[1]["min_score"] == 0.35
 
 
 # ---------------------------------------------------------------------------

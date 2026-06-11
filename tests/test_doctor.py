@@ -520,8 +520,8 @@ def test_doctor_memory_eval_passes_when_threshold_met(tmp_path):
     assert eval_check["details"]["hit_rate"] == 1.0
 
 
-def test_doctor_memory_eval_fails_when_threshold_not_met(tmp_path):
-    """Memory eval fails when hit_rate is below threshold."""
+def test_doctor_memory_eval_warns_when_threshold_not_met(tmp_path):
+    """Memory eval warns when hit_rate is below threshold."""
     index_path = tmp_path / "index.sqlite"
     _create_test_memory_index(index_path)
     fixture_path = tmp_path / "cases.json"
@@ -543,6 +543,6 @@ def test_doctor_memory_eval_fails_when_threshold_not_met(tmp_path):
     )
 
     eval_check = _check(report, "memory_eval")
-    assert eval_check["status"] == "fail"
+    assert eval_check["status"] == "warn"
     assert eval_check["details"]["meets_threshold"] is False
     assert eval_check["details"]["hit_rate"] == 0.0

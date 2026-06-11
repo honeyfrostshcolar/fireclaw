@@ -3,6 +3,7 @@ from fireclaw_core.task_registry import (
     TaskDeliveryState,
     TaskRecord,
     TaskRegistrySnapshot,
+    VALID_SCOPE_KINDS,
 )
 from fireclaw_core.task_queue import TaskQueueRecord, queue_record_to_task_record
 
@@ -30,6 +31,10 @@ def test_task_record_tracks_runtime_owner_and_delivery_state():
     assert record.owner_id == "robot-a"
     assert record.delivery_status == "pending"
     assert record.scope_kind == "mission"
+
+
+def test_valid_scope_kinds_include_subtask_projection_scope():
+    assert "subtask" in VALID_SCOPE_KINDS
 
 
 def test_task_record_is_terminal_property():

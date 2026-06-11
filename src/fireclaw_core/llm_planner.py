@@ -19,6 +19,7 @@ from fireclaw_core.provider import (
     ProviderTimeoutError,
     TokenUsage,
 )
+from fireclaw_core.provider_runtime import FallbackSummaryError, ProviderRuntime
 from fireclaw_core.robot_registry import RobotRegistryEntry
 
 
@@ -117,13 +118,17 @@ class LLMMissionPlanner:
 
     def __init__(
         self,
-        provider: ModelProvider,
-        model_id: str,
+        provider: ModelProvider | None = None,
+        model_id: str | None = None,
         trace_store: LLMTraceStore | None = None,
+        provider_runtime: ProviderRuntime | None = None,
     ) -> None:
+        if provider_runtime is None and (provider is None or model_id is None):
+            raise ValueError("LLMMissionPlanner requires either provider_runtime or provider plus model_id.")
         self._provider = provider
-        self._model_id = model_id
+        self._model_id = model_id or str(provider_runtime.status().get("model") or "unknown")
         self._trace_store = trace_store
+        self._provider_runtime = provider_runtime
 
     def plan(
         self,
@@ -142,13 +147,22 @@ class LLMMissionPlanner:
 
         start_time = time.monotonic()
         try:
-            response = self._provider.chat_completion(
-                messages=messages,
-                model=self._model_id,
-                tools=[MISSION_PLAN_TOOL],
-                temperature=0.0,
-                max_tokens=4096,
-            )
+            if self._provider_runtime is not None:
+                response = self._provider_runtime.chat_completion(
+                    messages=messages,
+                    tools=[MISSION_PLAN_TOOL],
+                    temperature=0.0,
+                    max_tokens=4096,
+                )
+            else:
+                assert self._provider is not None
+                response = self._provider.chat_completion(
+                    messages=messages,
+                    model=self._model_id,
+                    tools=[MISSION_PLAN_TOOL],
+                    temperature=0.0,
+                    max_tokens=4096,
+                )
         except ProviderTimeoutError:
             return self._record_and_return(
                 messages=messages,
@@ -174,6 +188,15 @@ class LLMMissionPlanner:
                 start_time=start_time,
                 status="error",
                 error_message=f"LLM 调用错误：{exc}",
+                token_usage=None,
+            )
+        except FallbackSummaryError as exc:
+            return self._record_and_return(
+                messages=messages,
+                response=None,
+                start_time=start_time,
+                status="error",
+                error_message=f"LLM fallback exhausted：{exc}",
                 token_usage=None,
             )
 

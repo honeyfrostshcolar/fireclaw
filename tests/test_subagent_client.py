@@ -8,11 +8,15 @@ from fireclaw_core.robot_registry import RobotRegistryEntry
 from fireclaw_core.subagent_client import RobotSubagentClient
 
 
-def _write_slow_policy_skill(skills_dir: Path) -> None:
+def _write_slow_policy_skill(skills_dir: Path, release_path: Path | None = None) -> None:
     skills_dir.mkdir()
+    release_literal = str(release_path or (skills_dir / "release")).replace("\\", "\\\\").replace("'", "\\'")
     (skills_dir / "slow_policy.py").write_text(
-        "import json, time\n"
-        "time.sleep(1)\n"
+        "import json, pathlib, time\n"
+        f"release = pathlib.Path('{release_literal}')\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not release.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.02)\n"
         "print(json.dumps({'ok': True, 'data': {'policy': 'slow'}}))\n",
         encoding="utf-8",
     )
@@ -87,7 +91,8 @@ def test_robot_subagent_client_submits_task_and_reads_trace(tmp_path):
 
 def test_robot_subagent_client_cancels_task(tmp_path):
     skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    release_path = tmp_path / "release-slow-policy"
+    _write_slow_policy_skill(skills_dir, release_path)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -107,7 +112,9 @@ def test_robot_subagent_client_cancels_task(tmp_path):
         submitted = client.submit_task(entry, command="slow_policy", session_id="mission-1")
 
         cancelled = client.cancel_task(entry, submitted["task_id"], operator={"scopes": ["task.cancel"]})
+        release_path.write_text("release", encoding="utf-8")
     finally:
+        release_path.write_text("release", encoding="utf-8")
         gateway.stop()
 
     assert cancelled["status"] == "cancel_requested"

@@ -21,6 +21,7 @@ from fireclaw_core.provider import (
     TokenUsage,
     ToolCall,
 )
+from fireclaw_core.provider_runtime import SimpleProviderRuntime
 from fireclaw_core.robot_registry import RobotRegistryEntry
 
 
@@ -170,6 +171,42 @@ def test_llm_planner_returns_plan_from_tool_call():
     assert result.plan.subtasks[0].robot_id == "r1"
     assert result.plan.subtasks[0].floor == 2
     assert result.plan.subtasks[0].capability_required == "search_for_victims"
+
+
+def test_llm_planner_uses_provider_runtime_when_configured():
+    """ProviderRuntime should be the planner's main completion path when provided."""
+    robots = _make_context(
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    )
+    legacy_provider = _make_provider(_make_text_only_response())
+    runtime_provider = _make_provider(_make_tool_call_response())
+    runtime = SimpleProviderRuntime(runtime_provider, "gpt-runtime")
+    planner = LLMMissionPlanner(
+        provider=legacy_provider,
+        model_id="gpt-legacy",
+        provider_runtime=runtime,
+    )
+
+    result = planner.plan("去二楼搜索受困人员", context=robots)
+
+    assert result.status == "planned"
+    legacy_provider.chat_completion.assert_not_called()
+    runtime_provider.chat_completion.assert_called_once()
+    assert runtime_provider.chat_completion.call_args.kwargs["model"] == "gpt-runtime"
+
+
+def test_llm_planner_can_be_constructed_with_provider_runtime_only():
+    robots = _make_context(
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    )
+    runtime_provider = _make_provider(_make_tool_call_response())
+    planner = LLMMissionPlanner(
+        provider_runtime=SimpleProviderRuntime(runtime_provider, "gpt-runtime"),
+    )
+
+    result = planner.plan("去二楼搜索受困人员", context=robots)
+
+    assert result.status == "planned"
 
 
 # --- Test: no tool call returns error ---

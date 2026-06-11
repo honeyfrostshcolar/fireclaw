@@ -44,7 +44,7 @@ VALID_DELIVERY_STATUSES = {
     "not_applicable",
 }
 VALID_NOTIFY_POLICIES = {"done_only", "state_changes", "silent"}
-VALID_SCOPE_KINDS = {"session", "mission", "system"}
+VALID_SCOPE_KINDS = {"session", "mission", "subtask", "system"}
 
 TERMINAL_TASK_STATUSES = {
     "completed",

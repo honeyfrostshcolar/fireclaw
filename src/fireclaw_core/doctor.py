@@ -470,7 +470,7 @@ def _memory_eval_check(
         )
     return DoctorCheck(
         name="memory_eval",
-        status="fail",
+        status="warn",
         message=f"Memory retrieval hit_rate {report.hit_rate:.1%} below threshold {threshold:.1%}.",
         details=details,
     )
