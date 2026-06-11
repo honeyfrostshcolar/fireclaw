@@ -1010,7 +1010,7 @@ def test_mission_cli_plan_mission_llm_missing_required_flags(tmp_path):
         capture_output=True,
     )
     assert completed.returncode != 0
-    assert "required when --planner=llm" in completed.stderr
+    assert "provider_base_url is required" in completed.stderr
 
 
 def test_mission_cli_plan_mission_deterministic_default(tmp_path):

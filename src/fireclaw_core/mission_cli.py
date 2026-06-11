@@ -6,14 +6,10 @@ import sys
 from typing import Any
 
 from fireclaw_core.approval_store import JsonlApprovalStore
-from fireclaw_core.llm_planner import LLMMissionPlanner
-from fireclaw_core.llm_trace import LLMTraceStore
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
-from fireclaw_core.mission_planner import MissionPlanner
 from fireclaw_core.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
-from fireclaw_core.provider import OpenAICompatProvider
-from fireclaw_core.provider_runtime import SimpleProviderRuntime
+from fireclaw_core.planner_builder import build_planner as _build_planner_shared
 
 
 SUCCESS_STATUSES = {"accepted", "duplicate", "running", "succeeded"}
@@ -309,14 +305,13 @@ def _build_mission_agent(args: argparse.Namespace, *, planner: Any = None) -> Mi
 
 def _build_planner(args: argparse.Namespace) -> Any:
     """Build the appropriate planner based on CLI flags."""
-    if args.planner == "llm":
-        if not args.provider_base_url or not args.provider_api_key or not args.model:
-            raise SystemExit("--provider-base-url, --provider-api-key, and --model are required when --planner=llm")
-        provider = OpenAICompatProvider(base_url=args.provider_base_url, api_key=args.provider_api_key)
-        runtime = SimpleProviderRuntime(provider=provider, model_id=args.model)
-        trace_store = LLMTraceStore(args.llm_trace_path) if args.llm_trace_path else None
-        return LLMMissionPlanner(provider_runtime=runtime, trace_store=trace_store)
-    return MissionPlanner()
+    return _build_planner_shared(
+        planner_type=args.planner,
+        provider_base_url=args.provider_base_url,
+        provider_api_key=args.provider_api_key,
+        model=args.model,
+        llm_trace_path=args.llm_trace_path,
+    )
 
 
 def _mission_operator() -> dict[str, Any]:
