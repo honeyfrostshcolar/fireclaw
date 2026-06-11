@@ -211,7 +211,50 @@ curl -X POST http://localhost:18080/tasks/{task_id}/emergency-stop \
   -d '{"reason": "pre-deployment safety test"}'
 ```
 
-## 12. Pre-Deployment Verification
+## 12. Embodied Experiment Proof Bundle
+
+Package mission artifacts into a single auditable bundle for experiments, demos, or paper submissions.
+
+### Create proof bundle
+
+```bash
+.venv/bin/python -m fireclaw_core.embodied_proof_bundle \
+  --output-dir results/proof-bundles/local-sim-001 \
+  --run-id local-sim-001 \
+  --mission-trace results/mission-trace.json \
+  --mission-events results/mission-events.json \
+  --task-flow results/task-flow.json \
+  --session-lineage results/session-lineage.json \
+  --memory-eval results/memory-eval.json \
+  --doctor-report results/doctor-report.json \
+  --notes "Simulated rescue scenario, 3 robots"
+```
+
+All flags except `--output-dir` and `--run-id` are optional. Each takes a path to a JSON file.
+
+### Bundle contents
+
+| File | Always present | Description |
+|------|---------------|-------------|
+| `summary.json` | yes | Redacted bundle metadata, run_id, presence flags |
+| `mission-trace.json` | if provided | Mission trace (mission_id, status, subtasks) |
+| `mission-events.json` | if provided | Mission event replay |
+| `task-flow.json` | if provided | Task-flow graph |
+| `session-lineage.json` | if provided | Session lineage |
+| `memory-eval.json` | if provided | Memory retrieval evaluation results |
+| `doctor-report.json` | if provided | Fleet doctor check results |
+| `README.md` | yes | Human-readable bundle manifest |
+
+All dict payloads are redacted via `redact_dict()` before writing (sk-*, Bearer, api_key, password, token patterns).
+
+### Deployment gate
+
+- [ ] Create proof bundle after each successful experiment run
+- [ ] Include `--doctor-report` to capture fleet health at experiment time
+- [ ] Include `--memory-eval` to document retrieval quality baseline
+- [ ] Archive bundle with paper submission or demo artifacts
+
+## 13. Pre-Deployment Verification
 
 - [ ] Full test suite passes: `.venv/bin/python -m pytest -q` (ROS1 smoke skipped by default)
 - [ ] ROS smoke tests pass (if deploying with ROS): `FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`
