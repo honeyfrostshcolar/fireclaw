@@ -52,6 +52,7 @@ class TaskControl:
     session_id: str
     command: str
     started_at: str
+    structured_task: dict[str, Any] | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
@@ -140,6 +141,7 @@ class FireClawGateway:
         session_id: str | None = None,
         operator: OperatorContext | None = None,
         dedupe_key: str | None = None,
+        structured_task: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
@@ -167,6 +169,7 @@ class FireClawGateway:
             session_id=resolved_session_id,
             command=command,
             started_at=started_at,
+            structured_task=structured_task,
         )
         with self._task_lock:
             if len(self._task_controls) >= self.config.max_active_execution_tasks:
@@ -239,6 +242,7 @@ class FireClawGateway:
                     record_received=False,
                     cancellation_requested=control.cancel_event.is_set,
                     operator=resolved_operator,
+                    structured_task=control.structured_task,
                 )
             except Exception as exc:
                 failed_result = {
@@ -463,6 +467,7 @@ class FireClawGateway:
         record_received: bool,
         cancellation_requested=None,
         operator: OperatorContext | None = None,
+        structured_task: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if record_received:
             self._append_event(
@@ -476,7 +481,13 @@ class FireClawGateway:
             session_id=session_id,
             cancellation_requested=cancellation_requested,
         )
-        result = agent.run(command)
+        if structured_task is not None:
+            from fireclaw_core.task_contract import StructuredRobotTask
+
+            task_object = StructuredRobotTask.from_dict(structured_task)
+            result = agent.run_structured_task(task_object)
+        else:
+            result = agent.run(command)
         result["task_id"] = task_id
         self._record_result_events(task_id, session_id, result)
         self._record_authorization_request_if_needed(
@@ -621,6 +632,13 @@ class FireClawGateway:
         events = self.events.events_for_task(task_id)
         result = self._task_result_from_events(events)
         queue_record = self.task_queue.get(task_id)
+        structured_task = None
+        with self._task_lock:
+            control = self._task_controls.get(task_id)
+            if control is not None:
+                structured_task = control.structured_task
+        if structured_task is None and result is not None:
+            structured_task = result.get("structured_task")
         return {
             "task_id": task_id,
             "events": events,
@@ -628,6 +646,7 @@ class FireClawGateway:
             "status": self._task_status(task_id, events, result),
             "state": project_task_state(events),
             "queue_record": queue_record.to_dict() if queue_record is not None else None,
+            "structured_task": structured_task,
         }
 
     def state(self) -> dict[str, Any]:
@@ -1106,11 +1125,15 @@ class FireClawGateway:
                 if not isinstance(command, str) or not command.strip():
                     self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'command' is required.")
                     return
+                structured_task = payload.get("structured_task")
+                if not isinstance(structured_task, dict):
+                    structured_task = None
                 result = self.submit_agent(
                     command,
                     session_id=_payload_session(payload, self.config.default_session_id),
                     operator=operator_from_payload(payload.get("operator")),
                     dedupe_key=_optional_payload_string(payload, "dedupe_key"),
+                    structured_task=structured_task,
                 )
                 status = _submission_status(result)
                 self._write_json(handler, status, result)
