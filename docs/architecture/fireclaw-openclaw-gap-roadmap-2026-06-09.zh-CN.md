@@ -22,7 +22,7 @@ operator command
 
 Phase 6-10 全部已实现（v1 级别）。FireClaw 现在具备：scheduler 默认路径、mission Gateway、method scopes 默认拒绝、SSE 实时事件流、ROS1 smoke proof、SQLite FTS memory index、plugin descriptor v1。
 
-当前默认全量测试结果：`.venv/bin/python -m pytest -q`，`823 passed, 6 skipped`。
+当前默认全量测试结果：`.venv/bin/python -m pytest -q`，`1020 passed, 6 skipped`。
 ROS1 smoke 显式验证：`FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`，`6 passed`。
 
 ## 当前已经实现的能力

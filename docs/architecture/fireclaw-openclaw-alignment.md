@@ -44,7 +44,7 @@ The main agent owns mission reasoning. Each robot subagent owns local embodied e
 | Permissions/scopes | Mission-level authorization scopes | Robot-local operator authorization | Both exist at baseline level. |
 | Safety/sandbox | Mission call policy and subagent boundary | Safety gate, emergency stop, ROS transport gating | Robot-local safety exists; mission failure policy incomplete. |
 | Memory | Mission memory and fleet lessons | Robot-local task/environment memory | Robot-local memory exists; mission memory is not fully designed. |
-| Provider runtime | Mission-level model selection | Robot-local/edge model fallback | Not yet implemented. |
+| Provider runtime | Mission-level model selection | Robot-local/edge model fallback | `ProviderRuntime` implemented and wired into `LLMMissionPlanner` as the main path. Supports model fallback boundary and error normalization. |
 | Tools/skills/plugins | Mission tools: plan, assign, cancel, query, aggregate | Robot skills: navigate, search, assess, report, stop | Robot skill runtime exists; mission tools are still Python/CLI methods. |
 | Config/doctor/onboarding | Fleet and mission config checks | Robot ROS/skill/config checks | Robot doctor exists; fleet doctor missing. |
 
@@ -291,11 +291,11 @@ operator cancel mission
 
 ## Current Build Status
 
-Latest verified state recorded on 2026-06-09:
+Latest verified state recorded on 2026-06-11:
 
-- branch: `master`, ahead of `origin/master` by ~60 commits;
-- latest commit: Phase 9 ROS1 integration proof complete;
-- verification: `.venv/bin/python -m pytest -q --ignore=tests/test_ros1_smoke.py` -> `575 passed`.
+- branch: `master`, ahead of `origin/master` by ~120 commits;
+- latest commit: embodied-agent field readiness roadmap tasks complete;
+- verification: `.venv/bin/python -m pytest -q` -> `1020 passed, 6 skipped`.
 
 Untracked planning/config artifacts existed at that point:
 
@@ -387,20 +387,13 @@ Remaining:
 
 ## Near-Term Engineering Priority
 
-The next engineering step should be `Mission Scheduler v1`.
+`Mission Scheduler v1` is **already implemented**. `MissionAgent.plan_and_submit()` delegates to `MissionScheduler` by default, supporting execution group ordering, failure policy (retry/reassign/skip/escalate/abort), and multi-robot parallel/sequential scheduling.
 
-Reason:
+The next engineering priorities are:
 
-- the planner already produces `execution_group`;
-- the mission agent can already submit, cancel, authorize, check presence, and aggregate traces;
-- without a scheduler, multi-robot plans are only partially realized;
-- scheduler behavior is the natural place to define failure policy, retry, reassign, and escalation.
+1. Real ROS1 robot hardware smoke test (requires physical robot or high-fidelity simulation).
+2. Deployable mission runtime factory wiring (CLI paths for memory retriever, provider runtime, plugin runtime, approval stores).
+3. End-to-end embodied mission scenario gate (operator command -> mission -> robot gateway -> events -> memory in one workflow).
 
-Minimum acceptance criteria:
-
-- same execution group subtasks can be submitted as one scheduling batch;
-- later groups do not start until earlier groups reach acceptable states;
-- denied/offline/failed/cancelled subtasks produce explicit mission-level decisions;
-- mission registry records scheduling decisions;
-- tests cover multi-robot parallel and single-robot sequential plans.
+ROS2 native adapter, full ACP/IDE platform parity, and full Web UI remain out of scope for the current embodied-agent roadmap.
 

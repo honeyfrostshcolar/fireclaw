@@ -161,3 +161,145 @@ The local working tree is now full-suite green. Remaining state is VCS hygiene, 
 - `tests/test_provider_runtime.py`
 
 These files are still untracked because this turn did not create a commit. They must be included in the next commit, otherwise a clean checkout of the current committed `HEAD` will still be broken by `fleet_doctor.py` importing `fireclaw_core.lifecycle_maintenance`.
+
+## Update 2026-06-11 — OpenClaw Comparison and Field-Readiness Replan
+
+### Task Goal
+
+Re-check FireClaw after commit `9033a92`, compare it against OpenClaw only for embodied-agent-relevant capabilities, decide whether the intended ROS1-first firefighting robot agent loop is covered, and create the next focused implementation plan.
+
+### Context Read
+
+- Current git head: `9033a92 fix: stabilize embodied roadmap runtime checks`
+- Current git status at start:
+  - `master...origin/master [ahead 120]`
+  - clean before creating the new plan/memory updates
+- Recent memory:
+  - `memory/2026-06-11/fireclaw-embodied-roadmap-review.md`
+  - `memory/2026-06-10/fireclaw-work-resume.md`
+- Current roadmap:
+  - `docs/superpowers/plans/2026-06-10-embodied-agent-openclaw-minimal-parity-roadmap.md`
+- Architecture docs:
+  - `docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`
+  - `docs/architecture/fireclaw-openclaw-alignment.md`
+
+### OpenClaw References Inspected
+
+Used CodeGraph against `/home/nankai/fireclaw/openclaw-main`.
+
+Relevant OpenClaw patterns:
+
+- `src/tasks/task-registry.store.ts`
+- `src/tasks/task-flow-registry.store.ts`
+- `src/acp/session-lineage-meta.ts`
+- `src/agents/acp-spawn.ts`
+- `src/plugins/plugin-control-plane-context.ts`
+- `src/agents/model-fallback.ts`
+- `src/agents/bash-tools.exec-approval-followup-state.ts`
+- `extensions/memory-core/src/memory/search-manager.ts`
+- `extensions/memory-core/src/memory/qmd-manager.ts`
+- `src/acp/translator.ts`
+
+### Current Assessment
+
+FireClaw now covers the intended ROS1-first embodied-agent v1 loop:
+
+```text
+operator command
+-> planner with retrieved memories and operator corrections
+-> provider/runtime fallback boundary
+-> plugin provider/memory/tool-approval hooks
+-> safety and approval gate
+-> mission scheduler
+-> robot subagent dispatch
+-> robot-local task/action runtime
+-> ROS1 topic/service/action transport
+-> unified event replay/SSE
+-> lifecycle projection, task-flow summary, session lineage, memory recording
+```
+
+This is enough for a code-level embodied-agent v1. It is not yet enough for a strong field/simulation experiment claim, because several capabilities exist as library/test wiring but are not fully exposed as repeatable operator/deployment workflows.
+
+### Key Findings
+
+1. **Deployment runtime assembly gap**
+   - `MissionAgent` supports memory retriever, task registry, subagent registry, session lineage, task-flow store, approval store, plugin runtime, and provider runtime.
+   - `mission_cli.py` still builds mostly bare agents and does not expose paths for all these runtime stores.
+   - Result: tests can exercise the rich runtime, but a real operator CLI run cannot yet reproduce the same stateful behavior without custom Python construction.
+
+2. **Lifecycle automation gap**
+   - `LifecycleMaintenanceRunner` is visible through fleet doctor.
+   - There is no explicit CLI/daemon-style command for pre/post-run lifecycle reconciliation and cross-process recovery reporting.
+
+3. **End-to-end embodied scenario gate gap**
+   - Unit/integration tests cover individual pieces.
+   - There is no single scenario gate proving `operator command -> mission -> robot gateway -> events -> task-flow -> lineage -> memory` in one workflow.
+
+4. **Memory indexing automation gap**
+   - `MemoryRetriever`, `SqliteMemoryIndex`, and `memory_eval.py` exist and are wired into doctor.
+   - There is no operator-facing indexing/eval CLI that can be used as a demo/CI gate.
+
+5. **ROS1 proof packaging gap**
+   - ROS1 smoke artifacts and runbooks exist.
+   - There is no single proof bundle command that collects doctor output, smoke artifacts, and redacted evidence for a hardware/high-fidelity sim run.
+
+6. **Documentation truth gap**
+   - Some docs still contain stale next-step wording, such as treating session lineage/resume guard as remaining work even though it is implemented.
+
+### New Plan Created
+
+- `docs/superpowers/plans/2026-06-11-embodied-agent-field-readiness-roadmap.md`
+
+Plan tasks:
+
+1. Add a deployable mission runtime factory and CLI path wiring.
+2. Add lifecycle maintenance CLI and explicit recovery report.
+3. Add an end-to-end embodied mission scenario gate.
+4. Add memory indexing and eval CLI gate.
+5. Add ROS1 proof bundle command.
+6. Run documentation truth pass and scope cleanup.
+
+### Scope Decision
+
+Required for embodied-agent field readiness:
+
+- deployable runtime assembly;
+- explicit lifecycle maintenance command;
+- end-to-end embodied mission gate;
+- memory index/eval CLI gate;
+- ROS1 proof bundle;
+- real robot/high-fidelity simulation execution.
+
+Not required now:
+
+- ROS2 native adapter;
+- full OpenClaw ACP/IDE platform;
+- third-party plugin marketplace;
+- arbitrary untrusted plugin loading;
+- full WebSocket/operator Web UI;
+- generic coding-agent task-flow UX.
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `1013 passed, 6 skipped in 113.63s`
+
+### Next Recommended Step
+
+Start with Task 1 in `docs/superpowers/plans/2026-06-11-embodied-agent-field-readiness-roadmap.md`. It closes the biggest practical gap: making the rich MissionAgent runtime available through deployable CLI paths instead of only direct Python construction and tests.
+
+## Required For Embodied-Agent Field Readiness
+
+- deployment runtime assembly (Task 1 ✅)
+- lifecycle maintenance command (Task 2 ✅)
+- e2e embodied scenario gate (Task 3 ✅)
+- memory index/eval CLI gate (Task 4 ✅)
+- ROS1 proof bundle (Task 5 ✅)
+- real robot/high-fidelity simulation execution
+
+## Optional Platform Work
+
+- ROS2 native adapter
+- WebSocket/full Web UI
+- full OpenClaw ACP/IDE parity
+- marketplace/dynamic plugin sandboxing
