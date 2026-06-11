@@ -1,0 +1,75 @@
+# Gazebo TurtleBot3 move_base config for FireClaw simulation
+robot_id: "gazebo_turtlebot3"
+namespace: ""
+transport:
+  enabled: true
+  wait_for_server_seconds: 10.0
+  wait_for_result_seconds: 120.0
+endpoints:
+  navigate_to_floor:
+    profile: move_base
+    name: "/move_base"
+    goal_template:
+      target_pose:
+        header:
+          frame_id: "map"
+        pose:
+          position: "${targets.floor_${floor}.position}"
+          orientation: "${targets.floor_${floor}.orientation}"
+  search_for_victims:
+    interface: topic
+    name: "/fireclaw/search_request"
+    type: "std_msgs/String"
+    request_template:
+      data: "search_floor_${floor}"
+  report_status:
+    interface: topic
+    name: "/fireclaw/operator_report"
+    type: "std_msgs/String"
+    request_template:
+      data: "status_report_floor_${floor}"
+  return_to_safe_zone:
+    profile: move_base
+    name: "/move_base"
+    goal_template:
+      target_pose:
+        header:
+          frame_id: "map"
+        pose:
+          position: "${targets.safe_zone.position}"
+          orientation: "${targets.safe_zone.orientation}"
+emergency_stop:
+  interface: service
+  name: "/fireclaw/emergency_stop"
+  type: "std_srvs/Trigger"
+targets:
+  floor_1:
+    position:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  floor_2:
+    position:
+      x: 2.0
+      y: 0.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  safe_zone:
+    position:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0

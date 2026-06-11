@@ -1,0 +1,203 @@
+# ROS1 Gazebo Debugging Guide
+
+## Overview
+
+This guide walks through using FireClaw with ROS1 Noetic + Gazebo Classic 11 for high-fidelity robot simulation debugging. Gazebo provides a physics-based environment where FireClaw's ROS1 adapter can drive a simulated robot through real ROS topics, services, and actions.
+
+**Important:** Gazebo validation proves FireClaw's ROS1 config works against a simulated robot. It does NOT validate real hardware. See `ros1-hardware-smoke-proof.md` for real robot validation.
+
+## Prerequisites
+
+- Ubuntu 20.04 (native, VM, or Docker with GUI/X11)
+- ROS1 Noetic (`ros-noetic-desktop-full`)
+- Gazebo Classic 11 (`ros-noetic-gazebo-ros-pkgs`)
+- Navigation stack (`ros-noetic-navigation`)
+- FireClaw installed (`pip install -e .`)
+
+### Install Dependencies
+
+```bash
+sudo apt-get install -y \
+  ros-noetic-navigation \
+  ros-noetic-gazebo-ros-pkgs \
+  ros-noetic-gazebo-ros-control
+```
+
+### Verify Installation
+
+```bash
+source /opt/ros/noetic/setup.bash
+roscore --help
+gazebo --version
+rospack find gazebo_ros
+rospack find move_base_msgs
+rospack find actionlib
+```
+
+All commands should succeed without errors.
+
+## Quick Start (TurtleBot3 + move_base)
+
+### Step 1: Start ROS Core
+
+```bash
+source /opt/ros/noetic/setup.bash
+roscore &
+```
+
+### Step 2: Launch TurtleBot3 in Gazebo
+
+```bash
+export TURTLEBOT3_MODEL=burger
+roslaunch turtlebot3_gazebo turtlebot3_world.launch
+```
+
+The robot should spawn in Gazebo. Verify:
+
+```bash
+rostopic list | grep move_base
+```
+
+Expected output includes `/move_base/goal`, `/move_base/result`, `/move_base/status`, `/move_base/feedback`.
+
+### Step 3: Launch Navigation Stack
+
+```bash
+roslaunch turtlebot3_navigation turtlebot3_navigation.launch map_file:=$HOME/map.yaml
+```
+
+Or use the default empty map for testing:
+
+```bash
+roslaunch turtlebot3_navigation turtlebo3_navigation.launch
+```
+
+### Step 4: Verify Robot Can Navigate
+
+Before involving FireClaw, confirm the robot responds to manual navigation goals:
+
+```bash
+rostopic echo /odom -n 1
+rostopic echo /scan -n 1
+```
+
+### Step 5: Run FireClaw Doctor
+
+```bash
+source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://localhost:11311
+export ROS_IP=127.0.0.1
+
+.venv/bin/python -m fireclaw_core.doctor \
+  --adapter ros1 \
+  --ros1-config examples/ros1_configs/gazebo_turtlebot3_move_base.yaml
+```
+
+### Step 6: Run FireClaw Direct Subtask
+
+```bash
+.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
+  --robot-id gazebo_turtlebot3 \
+  --command "去二楼" \
+  --adapter-config examples/ros1_configs/gazebo_turtlebot3_move_base.yaml
+```
+
+The Gazebo robot should move toward the target position.
+
+### Step 7: Run Full Embodied Eval
+
+```bash
+.venv/bin/python -m fireclaw_core.embodied_eval \
+  --scenarios tests/fixtures/embodied_eval/gazebo_rescue_scenarios.json \
+  --output-dir results/embodied-eval/gazebo-local \
+  --adapter ros1 \
+  --ros1-config examples/ros1_configs/gazebo_turtlebot3_move_base.yaml
+```
+
+### Step 8: Generate Proof Bundle
+
+```bash
+.venv/bin/python -m fireclaw_core.embodied_proof_bundle \
+  --output-dir results/embodied-proof/gazebo-local \
+  --run-id gazebo-local \
+  --mission-trace results/embodied-eval/gazebo-local/mission-trace.json \
+  --mission-events results/embodied-eval/gazebo-local/mission-events.json \
+  --task-flow results/embodied-eval/gazebo-local/task-flow.json \
+  --session-lineage results/embodied-eval/gazebo-local/session-lineage.json \
+  --memory-eval results/embodied-eval/gazebo-local/memory-eval.json \
+  --doctor-report results/embodied-eval/gazebo-local/doctor-report.json
+```
+
+## FireClaw ROS1 Config
+
+The Gazebo config is at `examples/ros1_configs/gazebo_turtlebot3_move_base.yaml`.
+
+Key endpoints:
+
+| FireClaw Action | ROS Interface | ROS Name | Purpose |
+|---|---|---|---|
+| `navigate_to_floor` | action (move_base) | `/move_base` | Navigate to floor waypoint |
+| `search_for_victims` | topic | `/fireclaw/search_request` | Trigger victim search |
+| `report_status` | topic | `/fireclaw/operator_report` | Report status to operator |
+| `return_to_safe_zone` | action (move_base) | `/move_base` | Return to safe zone |
+| `emergency_stop` | service | `/fireclaw/emergency_stop` | Emergency stop |
+
+### Customizing for Your Robot
+
+Edit the YAML config to match your ROS graph:
+
+1. Change `robot_id` to identify your robot
+2. Update endpoint `name` values to match your ROS topic/service/action names
+3. Adjust `goal_template` to match your robot's frame and coordinate system
+4. Update `targets` with actual waypoint positions from your map
+
+## Architecture
+
+```text
+MissionGateway
+  → MissionAgent (task decomposition)
+    → RobotSubagentClient (dispatch)
+      → FireClawGateway (adapter=ros1)
+        → Ros1RobotAdapter (supports_real_execution=True)
+          → Ros1Transport (topic/service/action)
+            → Gazebo ROS nodes (move_base, sensors, etc.)
+```
+
+Gazebo is treated as a ROS1 robot endpoint provider. FireClaw does not know or care whether the ROS nodes are running on real hardware or in Gazebo — the ROS1 transport layer is identical.
+
+## Troubleshooting
+
+### "Connection refused" when running FireClaw
+
+- Verify `roscore` is running: `rostopic list`
+- Verify `ROS_MASTER_URI` is set: `echo $ROS_MASTER_URI`
+- Verify `ROS_IP` matches your machine: `echo $ROS_IP`
+
+### "move_base action server not found"
+
+- Launch the navigation stack: `roslaunch turtlebot3_navigation turtlebot3_navigation.launch`
+- Verify action topics exist: `rostopic list | grep move_base`
+
+### Robot doesn't move
+
+- Check Gazebo is running and robot is spawned
+- Check `/odom` publishes: `rostopic echo /odom -n 1`
+- Check move_base is active: `rostopic echo /move_base/status -n 1`
+
+### "No online robots available"
+
+- FireClaw's robot registry must list the robot with correct `base_url`
+- For embodied_eval, this is handled automatically
+- For manual usage, register via `mission_cli register-robot`
+
+## What This Proves
+
+When all commands exit 0 and the Gazebo robot moves:
+
+- FireClaw's ROS1 adapter config loads correctly
+- ROS1 transport connects to Gazebo's ROS nodes
+- Navigation goals are sent and received via move_base
+- Mission trace reaches terminal status
+- Proof bundle contains all required artifacts
+
+This validates the full chain from operator command to simulated robot execution. For real robot validation, see `ros1-hardware-smoke-proof.md`.

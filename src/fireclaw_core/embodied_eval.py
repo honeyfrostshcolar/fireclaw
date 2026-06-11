@@ -115,6 +115,7 @@ def _run_scenario(
     tmp_dir: Path,
     output_dir: Path,
     poll_timeout: float = 15.0,
+    ros1_config_path: str | None = None,
 ) -> dict[str, Any]:
     """Run a single rescue scenario and return collected metrics."""
     scenario_id = scenario["scenario_id"]
@@ -131,6 +132,7 @@ def _run_scenario(
             port=0,
             adapter=adapter,
             robot_id=f"eval-{scenario_id}",
+            ros1_config_path=ros1_config_path,
             memory_path=str(tmp_dir / "robot_memory.jsonl"),
             event_path=str(tmp_dir / "robot_events.jsonl"),
             task_queue_path=str(tmp_dir / "robot_tasks.jsonl"),
@@ -365,6 +367,7 @@ def run_embodied_eval(
     output_dir: Path,
     adapter: str = "simulator",
     poll_timeout: float = 15.0,
+    ros1_config_path: str | None = None,
 ) -> dict[str, Any]:
     """Run all scenarios from a JSON fixture and produce summary metrics.
 
@@ -389,6 +392,7 @@ def run_embodied_eval(
                 tmp_dir=tmp_dir,
                 output_dir=output_dir,
                 poll_timeout=poll_timeout,
+                ros1_config_path=ros1_config_path,
             )
             scenario_results.append(result)
         except Exception as exc:
@@ -446,6 +450,8 @@ def run_embodied_eval(
             }
         ],
     }
+    if ros1_config_path:
+        doctor_report["ros1_config_path"] = ros1_config_path
     _write_artifact(output_dir / "doctor-report.json", redact_dict(doctor_report))
 
     return summary
@@ -477,6 +483,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Robot adapter to use (default: simulator).",
     )
     parser.add_argument(
+        "--ros1-config",
+        default=None,
+        help="Path to ROS1 adapter YAML config (used when --adapter=ros1).",
+    )
+    parser.add_argument(
         "--poll-timeout",
         type=float,
         default=15.0,
@@ -495,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         adapter=args.adapter,
         poll_timeout=args.poll_timeout,
+        ros1_config_path=args.ros1_config,
     )
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
