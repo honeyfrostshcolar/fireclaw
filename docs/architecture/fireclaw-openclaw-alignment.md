@@ -397,3 +397,9 @@ The next engineering priorities are:
 
 ROS2 native adapter, full ACP/IDE platform parity, and full Web UI remain out of scope for the current embodied-agent roadmap.
 
+## Experiment Readiness Claims
+
+FireClaw can claim code-level and simulator-level embodied-agent readiness when the gateway-to-gateway e2e test, scenario eval, memory learning loop, and proof bundle all pass.
+
+FireClaw cannot claim real firefighting robot validation until a ROS1 hardware or high-fidelity simulation run produces a proof bundle with doctor output, smoke artifacts, mission trace, event replay, and operator notes.
+

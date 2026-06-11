@@ -1431,3 +1431,14 @@ curl -X POST http://127.0.0.1:8765/confirm \
 If an `operator` without `safety.override` tries to approve a high-risk task, Gateway returns HTTP 403 and records `authorization.denied`. If the pending authorization expires, Gateway returns HTTP 403 with `status="expired"` and records `authorization.expired`.
 
 Task cancellation also checks authorization. A caller without `task.cancel` receives HTTP 403 and the task records `task.cancel_denied`; the active task is not cancelled.
+
+## Embodied-Agent Experiment Readiness
+
+FireClaw can claim **code-level and simulator-level embodied-agent readiness** when the following all pass:
+
+- Real gateway-to-gateway e2e test (`tests/test_embodied_gateway_e2e.py`)
+- Scenario eval harness (`tests/test_embodied_eval.py` + `python -m fireclaw_core.embodied_eval`)
+- Memory learning closed-loop proof (`tests/test_memory_learning_loop.py`)
+- Embodied proof bundle (`tests/test_embodied_proof_bundle.py` + `python -m fireclaw_core.embodied_proof_bundle`)
+
+FireClaw **cannot claim real firefighting robot validation** until a ROS1 hardware or high-fidelity simulation run produces a proof bundle with doctor output, smoke artifacts, mission trace, event replay, and operator notes.
