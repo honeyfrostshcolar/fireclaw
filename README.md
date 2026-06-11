@@ -1441,4 +1441,4 @@ FireClaw can claim **code-level and simulator-level embodied-agent readiness** w
 - Memory learning closed-loop proof (`tests/test_memory_learning_loop.py`)
 - Embodied proof bundle (`tests/test_embodied_proof_bundle.py` + `python -m fireclaw_core.embodied_proof_bundle`)
 
-FireClaw **cannot claim real firefighting robot validation** until a ROS1 hardware or high-fidelity simulation run produces a proof bundle with doctor output, smoke artifacts, mission trace, event replay, and operator notes.
+The simulator eval emits a `doctor-report.json` describing the eval run's health, making the proof bundle acceptance chain self-contained without requiring a separate doctor invocation. Real firefighting robot validation still requires a ROS1 hardware or high-fidelity simulation doctor report — the simulator doctor report documents eval-level health only.

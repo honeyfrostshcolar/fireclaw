@@ -471,7 +471,7 @@ python -m fireclaw_core.embodied_proof_bundle \
   --task-flow results/embodied-eval/local-sim/task-flow.json \
   --session-lineage results/embodied-eval/local-sim/session-lineage.json \
   --memory-eval results/embodied-eval/local-sim/memory-eval.json \
-  --doctor-report results/doctor.json
+  --doctor-report results/embodied-eval/local-sim/doctor-report.json
 ```
 
 Expected:

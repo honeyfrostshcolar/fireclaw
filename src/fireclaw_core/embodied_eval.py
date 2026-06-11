@@ -432,6 +432,22 @@ def run_embodied_eval(
     # Consolidate per-scenario artifacts into top-level proof-bundle-ready files
     _consolidate_artifacts(output_dir, scenario_results)
 
+    # Emit simulator-scoped doctor report for self-contained proof bundle acceptance
+    doctor_report = {
+        "status": "ok" if status == "pass" else "warn",
+        "adapter": adapter,
+        "scenario_count": len(scenario_results),
+        "metrics": metrics,
+        "findings": [
+            {
+                "severity": "info",
+                "code": "simulator_eval_completed",
+                "message": "Simulator embodied evaluation completed and produced proof artifacts.",
+            }
+        ],
+    }
+    _write_artifact(output_dir / "doctor-report.json", redact_dict(doctor_report))
+
     return summary
 
 

@@ -85,6 +85,31 @@ def test_run_embodied_eval_returns_exit_code(tmp_path: Path):
     assert exit_code == 0
 
 
+def test_run_embodied_eval_writes_doctor_report_for_bundle(tmp_path: Path):
+    """Eval harness emits doctor-report.json for proof bundle acceptance chain."""
+    fixture_path = tmp_path / "scenarios.json"
+    fixture_path.write_text(
+        json.dumps([
+            {
+                "scenario_id": "rescue-floor-2",
+                "command": "去二楼救人",
+                "expected_floor": 2,
+                "expected_capability": "search_for_victims",
+                "min_memory_records": 1,
+                "requires_terminal_status": True,
+            }
+        ]),
+        encoding="utf-8",
+    )
+
+    output_dir = tmp_path / "results"
+    run_embodied_eval(scenarios_path=fixture_path, output_dir=output_dir, adapter="simulator")
+
+    doctor = json.loads((output_dir / "doctor-report.json").read_text(encoding="utf-8"))
+    assert doctor["status"] in {"ok", "warn", "fail"}
+    assert "findings" in doctor
+
+
 def test_run_embodied_eval_rejects_missing_fixture(tmp_path: Path):
     """Returns exit code 1 for missing fixture."""
     from fireclaw_core.embodied_eval import main as embodied_eval_main
