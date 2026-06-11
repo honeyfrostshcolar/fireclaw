@@ -310,7 +310,29 @@ must continue to skip these tests so CI never requires a live robot.
 
 ## 8. Artifact Collection
 
-After a successful smoke run, collect these artifacts for the deployment record:
+After a successful smoke run, create a proof bundle that collects all artifacts
+with automatic secret redaction:
+
+```bash
+python -m fireclaw_core.ros1_proof_bundle \
+  --output-dir results/ros1-proof-$(date +%Y%m%d) \
+  --robot-id <robot_id> \
+  --environment sim \
+  --doctor-report <doctor-output.json> \
+  --smoke-artifacts <smoke-artifacts.jsonl> \
+  --notes "optional operator notes"
+```
+
+The bundle writes:
+- `summary.json` — Redacted bundle summary (robot_id, environment, timestamps, pass/fail counts)
+- `doctor-report.json` — Full doctor check results (redacted)
+- `ros1-smoke-artifacts.json` — All smoke test artifacts (redacted)
+- `README.md` — Human-readable bundle overview
+
+All string values are recursively redacted of secrets (API keys, tokens, passwords)
+before writing. The bundle directory is safe to commit or share.
+
+Collect these additional artifacts for the deployment record:
 
 | Artifact | Source | Keep? |
 |----------|--------|-------|
@@ -434,4 +456,12 @@ FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -v
 
 # Post-run cleanup
 python -m fireclaw_core.doctor --adapter ros1 --ros1-config <config.yaml> --fix
+
+# Create proof bundle (redacted artifacts)
+python -m fireclaw_core.ros1_proof_bundle \
+  --output-dir results/ros1-proof-$(date +%Y%m%d) \
+  --robot-id <robot_id> \
+  --environment sim \
+  --doctor-report <doctor-output.json> \
+  --smoke-artifacts <smoke-artifacts.jsonl>
 ```
