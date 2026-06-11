@@ -49,7 +49,9 @@ OpenClaw features explicitly not required now:
 - Third-party plugin marketplace and arbitrary untrusted dynamic loading.
 - Full WebSocket/operator Web UI while SSE + REST remains enough.
 
-## Remaining Embodied-Agent Gaps
+## Original Embodied-Agent Gaps Addressed By This Plan
+
+The list below is the historical pre-implementation assessment. The tasks in this plan are now complete; current remaining work is tracked in `2026-06-11-embodied-agent-experiment-readiness-roadmap.md`.
 
 1. **Deployment runtime assembly:** `MissionAgent` can accept memory retriever, task registry, subagent registry, session lineage, task-flow store, plugin runtime, approval runtime, and provider runtime, but `mission_cli.py` still builds mostly bare agents. The CLI path cannot yet run the same rich lifecycle/memory/provider setup used by tests.
 2. **Lifecycle automation:** `LifecycleMaintenanceRunner` is visible through fleet doctor, but there is no repeatable CLI/daemon-style maintenance command for cross-process stale/orphan recovery before or after experiments.

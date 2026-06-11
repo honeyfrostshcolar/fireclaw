@@ -153,7 +153,6 @@ v1 implemented: deployment checklist, ROS1 deployment guide, fleet doctor with o
 1. 真实 ROS1 机器人硬件 smoke test（需要物理机器人或高保真仿真环境）
 2. 跨进程 lifecycle reconciliation runner（当前仅 in-process reconciliation；需要独立进程/容器级 orphan recovery 自动修复）
 3. Memory retrieval 质量回归验证（embedding provider lifecycle、session transcript indexing policy、retrieval 质量回归阈值集成 CI）
-4. Session lineage 和 resume ownership guard（task/session registry 作为 source of truth，防止多客户端 resume 竞争）
 
 ### 以下为**平台可选工作**
 
