@@ -1434,11 +1434,8 @@ Task cancellation also checks authorization. A caller without `task.cancel` rece
 
 ## Embodied-Agent Experiment Readiness
 
-FireClaw can claim **code-level and simulator-level embodied-agent readiness** when the following all pass:
+FireClaw can claim **simulator-level embodied-agent experiment readiness** when the focused validation tests, simulator eval CLI, and proof bundle CLI all pass.
 
-- Real gateway-to-gateway e2e test (`tests/test_embodied_gateway_e2e.py`)
-- Scenario eval harness (`tests/test_embodied_eval.py` + `python -m fireclaw_core.embodied_eval`)
-- Memory learning closed-loop proof (`tests/test_memory_learning_loop.py`)
-- Embodied proof bundle (`tests/test_embodied_proof_bundle.py` + `python -m fireclaw_core.embodied_proof_bundle`)
+FireClaw cannot claim real firefighting robot validation until a ROS1 high-fidelity or hardware proof run produces the required deployment artifacts.
 
 The simulator eval emits a `doctor-report.json` describing the eval run's health, making the proof bundle acceptance chain self-contained without requiring a separate doctor invocation. Real firefighting robot validation still requires a ROS1 hardware or high-fidelity simulation doctor report — the simulator doctor report documents eval-level health only.

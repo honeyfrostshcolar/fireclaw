@@ -778,3 +778,240 @@ The Python test suite is green, and the major modules exist. However, the roadma
 3. Add a real lineage assertion to `tests/test_embodied_gateway_e2e.py`.
 4. Track and mark the experiment-readiness roadmap document accurately.
 5. Remove stale near-term priority text from `docs/architecture/fireclaw-openclaw-alignment.md`.
+
+## Update 2026-06-11 — Post-Fix Recheck of Experiment-Readiness Roadmap
+
+### Task Goal
+
+Review the user's follow-up fixes after commit `1401533` and verify whether the previous findings are resolved.
+
+### Commands Run
+
+- `git status --short --branch`
+- `git log --oneline -8`
+- CodeGraph context for `embodied_eval` / proof-bundle changes
+- `.venv/bin/python -m pytest tests/test_embodied_gateway_e2e.py tests/test_embodied_eval.py tests/test_memory_learning_loop.py tests/test_embodied_proof_bundle.py -q`
+- `.venv/bin/python -m fireclaw_core.embodied_eval --scenarios tests/fixtures/embodied_eval/rescue_scenarios.json --output-dir <tmp>/eval --adapter simulator`
+- `.venv/bin/python -m fireclaw_core.embodied_proof_bundle --output-dir <tmp>/bundle --run-id local-sim --mission-trace <tmp>/eval/mission-trace.json --mission-events <tmp>/eval/mission-events.json --task-flow <tmp>/eval/task-flow.json --session-lineage <tmp>/eval/session-lineage.json --memory-eval <tmp>/eval/memory-eval.json`
+- `.venv/bin/python -m fireclaw_core.embodied_proof_bundle ... --doctor-report results/doctor.json`
+- `.venv/bin/python -m pytest -q`
+
+### Verification Results
+
+- Focused experiment-readiness tests: `12 passed in 20.38s`.
+- Full suite: `1033 passed, 6 skipped in 142.08s`.
+- `embodied_eval` now writes top-level proof-bundle-ready files:
+  - `mission-trace.json`
+  - `mission-events.json`
+  - `task-flow.json`
+  - `session-lineage.json`
+  - `memory-eval.json`
+- Proof bundle succeeds when fed the generated eval artifacts without a doctor report:
+  - exit code `0`
+  - writes `README.md`, `summary.json`, and redacted artifact files.
+- Exact plan command with `--doctor-report results/doctor.json` still fails because `results/doctor.json` does not exist.
+
+### Remaining Findings
+
+1. **Committed scenario eval still returns warn**
+   - CLI output:
+     - `status`: `warn`
+     - `plan_success_rate`: `1.0`
+     - `dispatch_success_rate`: `0.5`
+     - `terminal_event_rate`: `0.5`
+     - `memory_record_rate`: `1.0`
+   - Exit code remains `2`.
+
+2. **Second committed fixture scenario still does not terminate at mission level**
+   - `inspect-floor-1-smoke` trace:
+     - mission status: `running`
+     - subtask status: `retrieved`
+     - robot queue record status: `completed`
+     - robot event includes `task.completed`
+   - Root cause appears to be status mapping:
+     - `FireClawGateway._task_status()` returns `result.status` first, so the robot trace status is `retrieved`.
+     - `MissionAgent._status_from_robot_trace()` accepts `result.status` as the subtask status.
+     - `JsonlMissionRegistry.TERMINAL_SUBTASK_STATUSES` does not include `retrieved`, so the mission stays `running`.
+   - This is not just an eval metric issue; it is a lifecycle status normalization issue for memory-only / retrieval-only robot tasks.
+
+3. **Final acceptance still references a missing doctor artifact**
+   - `docs/superpowers/plans/2026-06-11-embodied-agent-experiment-readiness-roadmap.md` final acceptance passes `--doctor-report results/doctor.json`.
+   - No preceding step creates `results/doctor.json`.
+   - Running the command fails with `Error: file not found: results/doctor.json`.
+
+4. **Tests are still too permissive for the CLI gate**
+   - `tests/test_embodied_eval.py` accepts `status in {"pass", "warn"}` and exit code in `{0, 2}`.
+   - This is fine for a metrics-producing harness, but not sufficient if the intended roadmap claim is "scenario eval passes as an experiment gate."
+
+### Current Conclusion
+
+The user fixed the artifact-chain and lineage/doc hygiene issues from the previous review. The proof-bundle path is now functional when optional doctor input is omitted. The remaining important gap is that the default embodied eval fixture still does not pass: the smoke-inspection scenario ends in a robot-local completed task with result status `retrieved`, which mission lifecycle does not consider terminal. Either normalize this status to `completed`/`succeeded` at the mission boundary, change the scenario to use an executable skill path, or explicitly document that warn is an acceptable non-gating eval outcome. The final acceptance command also needs a real doctor-report generation step or should omit the optional doctor argument for simulator-only proof bundles.
+
+## Update 2026-06-11 — OpenClaw Comparison and New Validation Hardening Plan
+
+### Task Goal
+
+Reassess FireClaw after the recent embodied-agent milestone, compare only the OpenClaw functionality needed for a firefighting embodied agent, and create the next roadmap.
+
+### Context Read
+
+- Recent memory records from `memory/2026-06-10/` and `memory/2026-06-11/`.
+- Current git status:
+  - branch ahead of origin by 139 commits;
+  - modified memory record from the prior review.
+- Recent commits:
+  - `1401533 fix: dispatch metric key, proof-bundle artifact output, lineage assertion, docs cleanup`
+  - `bfcc072 docs: define embodied-agent experiment readiness claims`
+  - `6a03e8f feat: package embodied mission proof artifacts`
+  - `296ca59 test: prove memory learning reaches planner context`
+  - `f861a3d feat: add embodied rescue scenario evaluation harness`
+  - `c1d5571 test: prove real mission-to-robot gateway embodied chain`
+- OpenClaw scoped guides read:
+  - `openclaw-main/AGENTS.md`
+  - `openclaw-main/src/agents/AGENTS.md`
+  - `openclaw-main/src/gateway/AGENTS.md`
+  - `openclaw-main/src/plugin-sdk/AGENTS.md`
+- CodeGraph used for OpenClaw context:
+  - `codegraph_status` on `/home/nankai/fireclaw/openclaw-main`
+  - `codegraph_context` / `codegraph_explore` for agent/session, gateway, plugin control-plane, hook runner, doctor/startup sidecar, provider/memory startup, and session cancel/background task context.
+
+### Commands Run
+
+- `.venv/bin/python -m pytest tests/test_embodied_gateway_e2e.py tests/test_embodied_eval.py tests/test_memory_learning_loop.py tests/test_embodied_proof_bundle.py -q`
+- `.venv/bin/python -m fireclaw_core.embodied_eval --scenarios tests/fixtures/embodied_eval/rescue_scenarios.json --output-dir <tmp>/eval --adapter simulator`
+- `.venv/bin/python -m fireclaw_core.embodied_proof_bundle --output-dir <tmp>/bundle --run-id local-sim --mission-trace <tmp>/eval/mission-trace.json --mission-events <tmp>/eval/mission-events.json --task-flow <tmp>/eval/task-flow.json --session-lineage <tmp>/eval/session-lineage.json --memory-eval <tmp>/eval/memory-eval.json`
+- `.venv/bin/python -m fireclaw_core.embodied_proof_bundle ... --doctor-report results/doctor.json`
+- `rg` self-review checks on the new plan file
+- `git diff --check -- docs/superpowers/plans/2026-06-11-embodied-agent-validation-hardening-roadmap.md`
+
+### Verification Results
+
+- Focused embodied tests: `12 passed in 32.77s`.
+- Simulator eval still returns:
+  - `status="warn"`
+  - exit code `2`
+  - `plan_success_rate=1.0`
+  - `dispatch_success_rate=0.5`
+  - `terminal_event_rate=0.5`
+  - `memory_record_rate=1.0`
+- Proof bundle succeeds when fed generated eval artifacts and no doctor report:
+  - exit code `0`
+- Strict proof bundle command with `--doctor-report results/doctor.json` still fails:
+  - `DOCTOR_MISSING`
+  - `Error: file not found: results/doctor.json`
+- Plan self-review:
+  - no placeholder patterns found;
+  - `git diff --check` clean for the new plan.
+
+### OpenClaw Comparison Conclusion
+
+FireClaw already has the OpenClaw-derived pieces needed for the current embodied-agent target:
+
+- task/session lifecycle ledgers and task-flow projection;
+- session lineage / ownership style tracking;
+- provider runtime and fallback boundary;
+- plugin control-plane fingerprinting and hook execution boundaries;
+- approval handoff/idempotency concepts;
+- gateway control plane and doctor-style diagnostics;
+- memory retrieval/evaluation.
+
+Do not pursue these OpenClaw platform features now:
+
+- full ACP session platform;
+- IDE/TUI/Web dashboard parity;
+- generic coding-agent UX;
+- third-party plugin marketplace;
+- native ROS2 adapter while ROS1 remains the active target;
+- multi-channel chat/voice surfaces that do not affect robot command execution.
+
+Remaining useful OpenClaw patterns to adapt:
+
+- post-ready sidecar shape for non-blocking validation/proof artifact generation;
+- explicit doctor/repair flow that produces proof-bundle inputs;
+- lifecycle status normalization so worker-local terminal events cannot leave parent missions running;
+- stable experiment gate outputs suitable for paper/demo reporting.
+
+### New Plan Created
+
+- `docs/superpowers/plans/2026-06-11-embodied-agent-validation-hardening-roadmap.md`
+
+Plan tasks:
+
+1. Normalize robot task lifecycle into mission terminal state.
+2. Make simulator proof bundle acceptance self-contained by emitting `doctor-report.json`.
+3. Add an explicit OpenClaw-style validation sidecar for proof artifacts.
+4. Define a ROS1 high-fidelity proof gate without implementing ROS2.
+5. Run final verification and update research-readiness notes.
+
+### Current Conclusion
+
+FireClaw is close to the intended embodied-agent functionality, but the next milestone should harden validation rather than add broad platform features. The current blockers to a clean simulator-level readiness claim are the `retrieved` status lifecycle normalization problem and the missing doctor artifact in the final acceptance command. Real robot validation remains an external ROS1 high-fidelity/hardware proof run, not a missing OpenClaw parity feature.
+
+## Update 2026-06-11 — Task 5: Final Verification and Research-Readiness Notes
+
+### Timestamp
+
+2026-06-11 (post-validation-hardening-roadmap implementation)
+
+### Task Goal
+
+Run the full validation chain, update README and memory with exact claims.
+
+### Commands Run
+
+```bash
+.venv/bin/python -m pytest tests/test_mission_agent.py tests/test_embodied_gateway_e2e.py tests/test_embodied_eval.py tests/test_memory_learning_loop.py tests/test_embodied_proof_bundle.py tests/test_validation_sidecar.py -q
+
+rm -rf results/embodied-eval/local-sim results/embodied-proof/local-sim
+.venv/bin/python -m fireclaw_core.embodied_eval \
+  --scenarios tests/fixtures/embodied_eval/rescue_scenarios.json \
+  --output-dir results/embodied-eval/local-sim \
+  --adapter simulator
+
+.venv/bin/python -m fireclaw_core.embodied_proof_bundle \
+  --output-dir results/embodied-proof/local-sim \
+  --run-id local-sim \
+  --mission-trace results/embodied-eval/local-sim/mission-trace.json \
+  --mission-events results/embodied-eval/local-sim/mission-events.json \
+  --task-flow results/embodied-eval/local-sim/task-flow.json \
+  --session-lineage results/embodied-eval/local-sim/session-lineage.json \
+  --memory-eval results/embodied-eval/local-sim/memory-eval.json \
+  --doctor-report results/embodied-eval/local-sim/doctor-report.json
+
+.venv/bin/python -m pytest -q
+```
+
+### Verification Results
+
+- **Focused validation tests:** 80 passed in 6.01s
+  - `test_mission_agent.py`, `test_embodied_gateway_e2e.py`, `test_embodied_eval.py`, `test_memory_learning_loop.py`, `test_embodied_proof_bundle.py`, `test_validation_sidecar.py`
+- **Simulator eval CLI:** exit code 0, status `pass`
+  - `plan_success_rate`: 1.0
+  - `dispatch_success_rate`: 1.0
+  - `terminal_event_rate`: 1.0
+  - `memory_record_rate`: 1.0
+  - `average_latency_ms`: 384.01
+- **Proof bundle CLI:** exit code 0, status `created`
+  - Output directory: `results/embodied-proof/local-sim`
+- **Full test suite:** 1038 passed, 6 skipped in 123.42s
+  - ROS1 smoke skipped (expected without `FIRECLAW_RUN_ROS1_SMOKE=1`)
+
+### What Changed Since Previous Verification (1033 passed)
+
+- New module: `src/fireclaw_core/validation_sidecar.py` (OpenClaw-style post-ready validation sidecar)
+- New test file: `tests/test_validation_sidecar.py`
+- Lifecycle normalization fix: `retrieved` status now maps to terminal for memory-only robot tasks, so the `inspect-floor-1-smoke` scenario correctly reaches `mission_status=succeeded`
+- Simulator doctor report: `embodied_eval` now emits `doctor-report.json` alongside other proof artifacts, making the proof bundle acceptance chain self-contained
+- Full suite grew from 1033 to 1038 passed (+5 new validation sidecar tests)
+
+### README Updated
+
+Replaced "code-level and simulator-level embodied-agent readiness" claim with the more precise wording:
+
+> FireClaw can claim simulator-level embodied-agent experiment readiness when the focused validation tests, simulator eval CLI, and proof bundle CLI all pass.
+>
+> FireClaw cannot claim real firefighting robot validation until a ROS1 high-fidelity or hardware proof run produces the required deployment artifacts.
+
+### Remaining External Gap
+
+**ROS1 high-fidelity or hardware proof run.** The code-level and simulator-level validation chain is closed. A real firefighting robot or high-fidelity ROS1 simulation must produce a proof bundle with doctor output, smoke artifacts, mission trace, event replay, and operator notes before FireClaw can claim field validation.
