@@ -115,6 +115,8 @@ Current implementation:
 - `RobotSubagentClient`
 - basic HTTP calls for state, submit, trace, cancel, and presence.
 
+`RobotSubagentClient` 保留 OpenClaw 对齐命名，但在 FireClaw 中它调用的是已经注册并在线的物理/仿真 `RobotAgent`。上位机不会生成机器人；它只选择和调用机器人本地常驻 Agent。
+
 Missing:
 
 - fleet config validation/doctor;

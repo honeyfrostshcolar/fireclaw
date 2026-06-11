@@ -222,6 +222,20 @@ def _run_scenario(
                 for s in subtasks_list
             ) if isinstance(subtasks_list, list) else False
 
+            # Extract structured task metadata from trace
+            structured_task = None
+            for subtask in subtasks_list:
+                if not isinstance(subtask, dict):
+                    continue
+                # structured_task may be at top level or nested in robot_trace
+                if isinstance(subtask.get("structured_task"), dict):
+                    structured_task = subtask["structured_task"]
+                    break
+                robot_trace = subtask.get("robot_trace")
+                if isinstance(robot_trace, dict) and isinstance(robot_trace.get("structured_task"), dict):
+                    structured_task = robot_trace["structured_task"]
+                    break
+
             # Check memory records
             memory_store = agent.mission_memory
             memory_records = memory_store.list_records(mission_id=mission_id) if memory_store else []
@@ -276,6 +290,7 @@ def _run_scenario(
                 "memory_record_count": memory_record_count,
                 "latency_ms": round(elapsed_ms, 2),
                 "mission_status": trace.get("status") if trace else "unknown",
+                "structured_task": structured_task,
             }
 
             # Evaluate pass/fail

@@ -119,3 +119,22 @@ def test_run_embodied_eval_rejects_missing_fixture(tmp_path: Path):
         "--adapter", "simulator",
     ])
     assert exit_code == 1
+
+
+def test_embodied_eval_records_structured_task_metadata(tmp_path: Path):
+    """Eval harness records structured_task metadata from trace subtasks."""
+    from fireclaw_core.embodied_eval import run_embodied_eval
+
+    output_dir = tmp_path / "eval"
+    result = run_embodied_eval(
+        scenarios_path=Path("tests/fixtures/embodied_eval/rescue_scenarios.json"),
+        output_dir=output_dir,
+        adapter="simulator",
+    )
+
+    assert result["status"] == "pass"
+    scenario_lines = (output_dir / "scenarios.jsonl").read_text(encoding="utf-8").splitlines()
+    assert scenario_lines
+    first = json.loads(scenario_lines[0])
+    assert "structured_task" in first
+    assert first["structured_task"]["required_skills"]

@@ -947,6 +947,72 @@ Plan tasks:
 
 FireClaw is close to the intended embodied-agent functionality, but the next milestone should harden validation rather than add broad platform features. The current blockers to a clean simulator-level readiness claim are the `retrieved` status lifecycle normalization problem and the missing doctor artifact in the final acceptance command. Real robot validation remains an external ROS1 high-fidelity/hardware proof run, not a missing OpenClaw parity feature.
 
+## Update 2026-06-11 — Current Usability and ROS1 Gazebo Debugging Plan
+
+### Task Goal
+
+Answer how far FireClaw is from being usable for the user's intended workflow: local computer simulation/debugging, ROS1 alignment checks, then Gazebo high-fidelity simulation before real robot work.
+
+### Commands Run
+
+- `rg -n "gazebo|Gazebo|ros1|ROS1|adapter=ros1|FIRECLAW_RUN_ROS1_SMOKE|roscore|rospy|actionlib" src tests docs examples README.md pyproject.toml`
+- CodeGraph context for ROS1 adapter, simulator adapter, FireClawGateway adapter modes, embodied eval, ROS1 smoke, and proof bundle.
+- `.venv/bin/python -m pytest tests/test_embodied_gateway_e2e.py tests/test_embodied_eval.py tests/test_ros1_transport.py tests/test_ros1_config.py -q`
+- `.venv/bin/python -m fireclaw_core.embodied_eval --scenarios tests/fixtures/embodied_eval/rescue_scenarios.json --output-dir <tmp>/eval --adapter simulator`
+- `.venv/bin/python -m fireclaw_core.embodied_proof_bundle --output-dir <tmp>/bundle --run-id local-sim --mission-trace <tmp>/eval/mission-trace.json --mission-events <tmp>/eval/mission-events.json --task-flow <tmp>/eval/task-flow.json --session-lineage <tmp>/eval/session-lineage.json --memory-eval <tmp>/eval/memory-eval.json --doctor-report <tmp>/eval/doctor-report.json`
+- `rg` placeholder scan on the new Gazebo plan.
+- `git diff --check -- docs/superpowers/plans/2026-06-11-ros1-gazebo-simulation-debugging-roadmap.md`
+
+### Verification Results
+
+- Focused tests: `25 passed in 5.02s`.
+- Simulator eval:
+  - `status="pass"`
+  - exit code `0`
+  - `plan_success_rate=1.0`
+  - `dispatch_success_rate=1.0`
+  - `terminal_event_rate=1.0`
+  - `memory_record_rate=1.0`
+  - generated `doctor-report.json`, `mission-trace.json`, `mission-events.json`, `task-flow.json`, `session-lineage.json`, `memory-eval.json`, `scenarios.jsonl`, `summary.json`.
+- Proof bundle with generated `doctor-report.json`: exit code `0`.
+- New plan self-check: no placeholder patterns; `git diff --check` clean.
+
+### Current Usability Assessment
+
+FireClaw is currently usable for **simulator-level embodied-agent debugging**:
+
+- agent/gateway/mission/memory/lifecycle/proof-bundle loop is green;
+- ROS1 transport unit coverage exists for topic, service, action, feedback, cancellation, timeout, and dict-to-ROS-message conversion;
+- ROS1 smoke tests are properly opt-in through `FIRECLAW_RUN_ROS1_SMOKE=1`;
+- real robot/hardware validation remains intentionally separate.
+
+FireClaw is **not yet one-command usable with Gazebo** because the repo still needs:
+
+- a Gazebo-specific ROS1 adapter config;
+- a Gazebo launch/debugging runbook;
+- a Gazebo scenario fixture;
+- a Gazebo proof gate that proves `MissionGateway -> RobotSubagentClient -> FireClawGateway(adapter=ros1) -> Ros1Transport -> Gazebo ROS nodes`;
+- Gazebo environment metadata in proof artifacts.
+
+### New Plan Created
+
+- `docs/superpowers/plans/2026-06-11-ros1-gazebo-simulation-debugging-roadmap.md`
+
+Plan phases:
+
+1. Freeze current FireClaw baseline.
+2. Prepare ROS1 + Gazebo environment.
+3. Start with a known Gazebo robot stack, preferably TurtleBot3 or another standard `move_base` robot.
+4. Add a Gazebo ROS1 adapter config.
+5. Prove direct FireClaw -> ROS1 -> Gazebo subtask execution.
+6. Prove full MissionGateway path with Gazebo.
+7. Package Gazebo proof bundle.
+8. Only after Gazebo is stable, add firefighting-specific simulation details.
+
+### Current Conclusion
+
+The next milestone should not add more agent framework features. FireClaw is ready enough to begin local simulator debugging today. To make it usable for the user's intended Gazebo workflow, the missing work is primarily deployment/integration scaffolding: standard ROS1+Gazebo environment, one Gazebo robot/action target, FireClaw ROS1 config, and a proof-producing evaluation gate.
+
 ## Update 2026-06-11 — Task 5: Final Verification and Research-Readiness Notes
 
 ### Timestamp
@@ -1012,6 +1078,111 @@ Replaced "code-level and simulator-level embodied-agent readiness" claim with th
 >
 > FireClaw cannot claim real firefighting robot validation until a ROS1 high-fidelity or hardware proof run produces the required deployment artifacts.
 
+## Update 2026-06-11 — External RobotAgent Architecture Review Synthesized
+
+### Task Goal
+
+Review the external industry-agent engineer's architecture feedback in `docs/architecture/fireclaw-robotagent-refactor-plan-2026-06-11.zh-CN.md`, keep the useful parts, reject parts that do not fit the current FireClaw codebase, and generate a new architecture spec plus implementation plan for future work.
+
+### Context Read
+
+- Recent memory:
+  - `memory/2026-06-11/fireclaw-embodied-roadmap-review.md`
+  - `memory/2026-06-10/fireclaw-work-resume.md`
+- External review:
+  - `docs/architecture/fireclaw-robotagent-refactor-plan-2026-06-11.zh-CN.md`
+- Current code boundaries inspected:
+  - `src/fireclaw_core/mission_agent.py`
+  - `src/fireclaw_core/gateway.py`
+  - `src/fireclaw_core/agent.py`
+  - `src/fireclaw_core/mission_planner.py`
+  - `src/fireclaw_core/planner.py`
+  - `src/fireclaw_core/robot.py`
+  - `src/fireclaw_core/safety.py`
+  - `src/fireclaw_core/subagent_client.py`
+- CodeGraph context:
+  - current main/coordinator to robot agent/gateway boundary
+  - natural-language subtask dispatch path
+  - structured robot task insertion point
+
+### Assessment
+
+Useful external suggestions:
+
+- FireClaw's research narrative should center on the persistent robot-local `RobotAgent`, not a generic multi-robot platform.
+- The upper layer should be framed as `MissionCoordinator`: it understands operator intent, selects online robots, and dispatches tasks, but does not directly control ROS topics/actions or hardware.
+- The current `MissionAgent -> RobotSubagentClient -> FireClawGateway` path still mainly sends a natural-language `command`, so the robot side can re-interpret language. A structured task protocol is the right next boundary.
+- `FireClawAgent.run(command)` should remain for local debugging/fallback, but a new `run_structured_task()` path should become the formal upper-to-robot execution path.
+- ROS1 unknown state must be represented explicitly. Placeholder values like `battery_percent=0.0` or `reachable_floors=[]` can incorrectly trigger safety blocks.
+
+Suggestions rejected or narrowed:
+
+- Do not rename `MissionAgent`, `FireClawGateway`, or `RobotSubagentClient` across the codebase now. Existing tests, docs, and OpenClaw alignment already depend on these names. Use documentation terminology mapping instead.
+- Do not rebuild memory, skill, approval, operator console, or proof-bundle systems from scratch. These already exist and should be connected to the structured task path incrementally.
+- Do not expand this milestone into ROS2 native adapter, Web dashboard, marketplace plugins, or a broad platform rewrite.
+
+### New Documents Created
+
+- `docs/superpowers/specs/2026-06-11-fireclaw-robotagent-architecture-refinement-design.md`
+  - Defines the refined architecture: `MissionCoordinator` plus persistent robot-local `RobotAgent`.
+  - Documents which external suggestions are adopted or rejected.
+  - Defines `StructuredRobotTask`, structured execution flow, unknown-state safety semantics, and the ROS1/Gazebo proof direction.
+- `docs/superpowers/plans/2026-06-11-fireclaw-robotagent-architecture-refinement-plan.md`
+  - TDD implementation plan with concrete tasks:
+    1. add `task_contract.py`;
+    2. thread `structured_task` through `RobotSubagentClient`;
+    3. add `FireClawAgent.run_structured_task()`;
+    4. accept structured tasks in `FireClawGateway`;
+    5. generate structured tasks from `MissionAgent`;
+    6. add `MissionPlanValidator`;
+    7. add unknown-state safety semantics;
+    8. update embodied eval, docs, and memory.
+
+### Self-Review
+
+- Placeholder scan on the new spec and plan: no `TBD`, `TODO`, or equivalent placeholders found.
+- `git diff --check` on both new docs: clean.
+- No code was modified in this update besides documentation and memory.
+
+### Current Conclusion
+
+The external review was directionally useful but too broad. The best next architecture step is not a full rewrite; it is a narrow refinement that makes FireClaw's real boundary explicit:
+
+```text
+MissionCoordinator dispatches StructuredRobotTask
+-> persistent robot-local RobotAgent owns safety, skills, ROS/Gazebo execution, events, and memory
+```
+
+This supports both engineering correctness and research clarity. It also provides a cleaner path to Gazebo validation because the proof gate can now validate structured task dispatch rather than a second natural-language interpretation on the robot side.
+
 ### Remaining External Gap
 
 **ROS1 high-fidelity or hardware proof run.** The code-level and simulator-level validation chain is closed. A real firefighting robot or high-fidelity ROS1 simulation must produce a proof bundle with doctor output, smoke artifacts, mission trace, event replay, and operator notes before FireClaw can claim field validation.
+
+## Update 2026-06-11 — RobotAgent Architecture Refinement Implemented
+
+### Task Goal
+
+Implement the architecture refinement based on external review: structured robot task protocol, robot-local structured execution path, unknown-state safety semantics, and documentation alignment.
+
+### Files Modified
+
+- `src/fireclaw_core/task_contract.py`
+- `src/fireclaw_core/subagent_client.py`
+- `src/fireclaw_core/gateway.py`
+- `src/fireclaw_core/agent.py`
+- `src/fireclaw_core/mission_agent.py`
+- `src/fireclaw_core/mission_plan_validator.py`
+- `src/fireclaw_core/robot.py`
+- `src/fireclaw_core/safety.py`
+- `src/fireclaw_core/embodied_eval.py`
+- tests and docs listed in the implementation plan
+
+### Verification
+
+- Focused structured-task and safety tests passed.
+- Full suite passed.
+
+### Current Conclusion
+
+FireClaw now preserves the old natural-language command path while adding a formal structured task path from MissionCoordinator to robot-local RobotAgent.

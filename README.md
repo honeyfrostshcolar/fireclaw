@@ -2,6 +2,8 @@
 
 FireClaw is a Python-first embodied agent framework for firefighting robots, inspired by OpenClaw's agent, skill, and memory architecture.
 
+FireClaw 的核心研究对象是机器人本地 `RobotAgent`：每台机器人运行一个常驻 `FireClawGateway + FireClawAgent`，负责本机安全门控、技能执行、ROS/仿真适配、事件流和任务记忆。上位机 `MissionAgent/MissionGateway` 是 `MissionCoordinator`，负责理解消防员命令、选择在线机器人并下发 `StructuredRobotTask`，但不直接控制 ROS topic、service、action 或硬件执行器。
+
 The first version is intentionally a pure dry-run core. It does not control real hardware, ROS, CUDA workloads, or robot SDKs. Its purpose is to validate the main agent loop:
 
 ```text
