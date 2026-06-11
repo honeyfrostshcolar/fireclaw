@@ -30,7 +30,7 @@ class RobotState:
     mode: str
     dry_run: bool
     online: bool
-    battery_percent: float
+    battery_percent: float | None
     current_floor: int | None
     available_sensors: list[str]
     supports_real_execution: bool
@@ -38,7 +38,7 @@ class RobotState:
 
 @dataclass
 class EnvironmentState:
-    reachable_floors: list[int]
+    reachable_floors: list[int] | None
     hazards: list[str] = field(default_factory=list)
     victims_by_floor: dict[int, int] = field(default_factory=dict)
 

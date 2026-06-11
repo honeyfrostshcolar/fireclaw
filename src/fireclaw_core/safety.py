@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fireclaw_core.planner import PlanningResult
 from fireclaw_core.robot import EnvironmentState, RobotState
@@ -11,6 +11,7 @@ from fireclaw_core.skills import SkillRegistry
 class SafetyDecision:
     status: str
     reasons: list[str]
+    warnings: list[str] = field(default_factory=list)
 
 
 class SafetyGate:
@@ -34,9 +35,14 @@ class SafetyGate:
         if planning_result.intent == "rescue_victim" and planning_result.target_floor is None:
             return SafetyDecision(status="block", reasons=["Target floor is missing."])
 
-        state_blocks = self._evaluate_state_blocks(planning_result, robot_state, environment_state)
+        state_blocks, state_warnings, state_confirmations = self._evaluate_state(
+            planning_result,
+            robot_state,
+            environment_state,
+            dry_run=dry_run,
+        )
         if state_blocks:
-            return SafetyDecision(status="block", reasons=state_blocks)
+            return SafetyDecision(status="block", reasons=state_blocks, warnings=state_warnings)
 
         missing = [
             f"Missing skill: {step.skill_name}"
@@ -97,7 +103,7 @@ class SafetyGate:
             if real_robot_blocks:
                 return SafetyDecision(status="block", reasons=real_robot_blocks)
 
-        confirmation_reasons: list[str] = []
+        confirmation_reasons: list[str] = list(state_confirmations)
         for step in planning_result.plan.steps:
             skill = registry.get(step.skill_name)
             if skill is None:
@@ -111,29 +117,41 @@ class SafetyGate:
                     f"Skill {step.skill_name} has high risk level: {skill.risk_level}"
                 )
         if confirmation_reasons and not operator_confirmed:
-            return SafetyDecision(status="require_confirmation", reasons=confirmation_reasons)
+            return SafetyDecision(status="require_confirmation", reasons=confirmation_reasons, warnings=state_warnings)
 
-        return SafetyDecision(status="allow", reasons=[])
+        return SafetyDecision(status="allow", reasons=[], warnings=state_warnings)
 
-    def _evaluate_state_blocks(
+    def _evaluate_state(
         self,
         planning_result: PlanningResult,
         robot_state: RobotState | None,
         environment_state: EnvironmentState | None,
-    ) -> list[str]:
+        *,
+        dry_run: bool,
+    ) -> tuple[list[str], list[str], list[str]]:
         blocks: list[str] = []
+        warnings: list[str] = []
+        confirmations: list[str] = []
         if robot_state is not None:
             if not robot_state.online:
                 blocks.append(f"Robot {robot_state.robot_id} is offline.")
-            if robot_state.battery_percent < 10.0:
+            if robot_state.battery_percent is None:
+                message = f"Robot {robot_state.robot_id} battery state is unknown."
+                if dry_run:
+                    warnings.append(message)
+                else:
+                    confirmations.append(message)
+            elif robot_state.battery_percent < 10.0:
                 blocks.append(
                     f"Robot {robot_state.robot_id} battery is too low: {robot_state.battery_percent}%."
                 )
-
-        if (
-            environment_state is not None
-            and planning_result.target_floor is not None
-            and planning_result.target_floor not in environment_state.reachable_floors
-        ):
-            blocks.append(f"Target floor is not reachable: {planning_result.target_floor}")
-        return blocks
+        if environment_state is not None and planning_result.target_floor is not None:
+            if environment_state.reachable_floors is None:
+                message = "Reachable floors are unknown."
+                if dry_run:
+                    warnings.append(message)
+                else:
+                    confirmations.append(message)
+            elif planning_result.target_floor not in environment_state.reachable_floors:
+                blocks.append(f"Target floor is not reachable: {planning_result.target_floor}")
+        return blocks, warnings, confirmations
