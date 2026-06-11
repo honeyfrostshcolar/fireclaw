@@ -118,7 +118,41 @@ from fireclaw_core.memory_index import SqliteMemoryIndex
 index = SqliteMemoryIndex("/var/lib/fireclaw/memory_index.db")
 ```
 
-## 9. Emergency Stop Verification
+## 9. Memory Indexing and Evaluation CLI
+
+Use the memory CLI to index mission memory JSONL into SQLite FTS5 and evaluate retrieval quality.
+
+### Index memory records
+
+```bash
+.venv/bin/python -m fireclaw_core.memory_cli index \
+  --memory-path /var/lib/fireclaw/mission_memory.jsonl \
+  --index-path /var/lib/fireclaw/memory_index.sqlite
+```
+
+Expected output: `{"status": "indexed", "record_count": N, "index_path": "..."}`
+
+### Evaluate retrieval quality
+
+```bash
+.venv/bin/python -m fireclaw_core.memory_cli eval \
+  --index-path /var/lib/fireclaw/memory_index.sqlite \
+  --fixture tests/fixtures/memory_eval_cases.json \
+  --threshold 0.8 \
+  --limit 5
+```
+
+- `--threshold`: minimum hit_rate to pass (default: 1.0)
+- `--limit`: max results per query (default: 5)
+- Exit code 0: threshold met; exit code 2: below threshold
+
+### Deployment gate
+
+- [ ] Run `memory_cli index` after initial memory data import
+- [ ] Run `memory_cli eval` with a fixture covering key queries
+- [ ] Verify hit_rate meets operational threshold before deploying memory-dependent features
+
+## 10. Emergency Stop Verification
 
 - [ ] Test emergency stop endpoint: `POST /tasks/{id}/emergency-stop`
 - [ ] Verify emergency stop propagates to ROS layer (if using ros1 adapter)
@@ -136,7 +170,7 @@ curl -X POST http://localhost:18080/tasks/{task_id}/emergency-stop \
   -d '{"reason": "pre-deployment safety test"}'
 ```
 
-## 10. Pre-Deployment Verification
+## 11. Pre-Deployment Verification
 
 - [ ] Full test suite passes: `.venv/bin/python -m pytest -q` (ROS1 smoke skipped by default)
 - [ ] ROS smoke tests pass (if deploying with ROS): `FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`
