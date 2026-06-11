@@ -455,7 +455,7 @@ class Ros1RobotAdapter:
             battery_percent=0.0,
             current_floor=self.current_floor,
             available_sensors=list(self.available_sensors),
-            supports_real_execution=False,
+            supports_real_execution=True,
         )
 
     def emergency_stop(self, reason: str | None = None) -> RobotActionResult:

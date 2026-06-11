@@ -214,6 +214,25 @@ def test_runtime_config_creates_ros1_adapter_from_config_without_ros_dependency(
     assert robot.dry_run is False
 
 
+def test_ros1_robot_adapter_get_robot_state_supports_real_execution(tmp_path):
+    """Ros1RobotAdapter.get_robot_state() should report supports_real_execution=True."""
+    config_path = tmp_path / "ros1.yaml"
+    config_path.write_text(
+        """
+robot_id: robot-ros1-real
+endpoints:
+  navigate_to_floor:
+    interface: action
+    name: /move_base
+    type: move_base_msgs/MoveBaseAction
+""",
+        encoding="utf-8",
+    )
+    robot = create_robot_adapter("ros1", "robot-ros1-real", config_path=str(config_path))
+    state = robot.get_robot_state()
+    assert state.supports_real_execution is True
+
+
 def test_ros1_robot_adapter_records_configured_endpoint_but_refuses_live_execution(tmp_path):
     config_path = tmp_path / "ros1.json"
     config_path.write_text(
