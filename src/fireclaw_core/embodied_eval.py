@@ -100,6 +100,11 @@ def _json_request(
 # Single scenario runner
 # ---------------------------------------------------------------------------
 
+
+def _write_artifact(path: Path, data: Any) -> None:
+    """Write a JSON artifact file for proof-bundle consumption."""
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
 _TERMINAL_MISSION_STATUSES = {"succeeded", "completed", "failed"}
 
 
@@ -108,6 +113,7 @@ def _run_scenario(
     *,
     adapter: str,
     tmp_dir: Path,
+    output_dir: Path,
     poll_timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Run a single rescue scenario and return collected metrics."""
@@ -206,16 +212,58 @@ def _run_scenario(
 
             terminal_event = trace is not None and trace.get("status") in _TERMINAL_MISSION_STATUSES
 
-            # Check dispatch success via subtask results
-            subtask_results = trace.get("subtask_results", []) if trace else []
+            # Check dispatch success via subtask results (trace uses "subtasks" key)
+            _TERMINAL_SUBTASK = {"succeeded", "completed", "cancelled", "failed", "block", "denied", "lost"}
+            subtasks_list = trace.get("subtasks", []) if trace else []
             dispatch_success = any(
-                r.get("status") == "accepted" for r in subtask_results
-            ) if isinstance(subtask_results, list) else False
+                isinstance(s, dict) and s.get("status") in _TERMINAL_SUBTASK
+                for s in subtasks_list
+            ) if isinstance(subtasks_list, list) else False
 
             # Check memory records
             memory_store = agent.mission_memory
             memory_records = memory_store.list_records(mission_id=mission_id) if memory_store else []
             memory_record_count = len(memory_records)
+
+            # --- Collect proof-bundle-ready artifacts ---
+            scenario_prefix = output_dir / scenario_id
+            scenario_prefix.mkdir(parents=True, exist_ok=True)
+
+            # mission-trace.json (from the HTTP endpoint, already fetched)
+            if trace is not None:
+                _write_artifact(scenario_prefix / "mission-trace.json", redact_dict(trace))
+
+            # mission-events.json (from the HTTP endpoint)
+            try:
+                _, events_body = _json_request(base, "GET", f"/missions/{mission_id}/events")
+                _write_artifact(scenario_prefix / "mission-events.json", redact_dict(events_body))
+            except Exception:
+                pass
+
+            # task-flow.json (from agent store)
+            if agent._task_flow_store is not None:
+                try:
+                    flows = agent._task_flow_store.list_recent(limit=50)
+                    mission_flows = [f.to_dict() for f in flows if f.mission_id == mission_id]
+                    _write_artifact(scenario_prefix / "task-flow.json", redact_dict({"flows": mission_flows}))
+                except Exception:
+                    pass
+
+            # session-lineage.json (from agent store)
+            if agent._session_lineage_store is not None:
+                try:
+                    lineage = agent._session_lineage_store.get(mission_id)
+                    if lineage is not None:
+                        _write_artifact(scenario_prefix / "session-lineage.json", redact_dict(lineage.to_dict()))
+                except Exception:
+                    pass
+
+            # memory-eval.json (from memory store)
+            if memory_records:
+                _write_artifact(
+                    scenario_prefix / "memory-eval.json",
+                    redact_dict({"mission_id": mission_id, "record_count": memory_record_count, "records": [r.to_dict() for r in memory_records]}),
+                )
 
             result: dict[str, Any] = {
                 "scenario_id": scenario_id,
@@ -273,6 +321,39 @@ def _aggregate_metrics(scenario_results: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+_ARTIFACT_NAMES = [
+    "mission-trace.json",
+    "mission-events.json",
+    "task-flow.json",
+    "session-lineage.json",
+    "memory-eval.json",
+]
+
+
+def _consolidate_artifacts(output_dir: Path, scenario_results: list[dict[str, Any]]) -> None:
+    """Merge per-scenario artifacts into top-level proof-bundle-ready files.
+
+    Each scenario writes artifacts under ``output_dir / {scenario_id}/``.
+    This function collects them and writes consolidated files at ``output_dir/``
+    so the proof-bundle CLI can consume them directly.
+    """
+    for artifact_name in _ARTIFACT_NAMES:
+        merged: list[dict[str, Any]] = []
+        for r in scenario_results:
+            sid = r.get("scenario_id", "")
+            artifact_path = output_dir / sid / artifact_name
+            if artifact_path.is_file():
+                try:
+                    data = json.loads(artifact_path.read_text(encoding="utf-8"))
+                    merged.append(data)
+                except Exception:
+                    pass
+        if merged:
+            # Wrap in dict so redact_dict always receives a dict
+            payload: dict[str, Any] = {"scenarios": merged} if len(merged) > 1 else merged[0]
+            _write_artifact(output_dir / artifact_name, redact_dict(payload))
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -306,6 +387,7 @@ def run_embodied_eval(
                 scenario,
                 adapter=adapter,
                 tmp_dir=tmp_dir,
+                output_dir=output_dir,
                 poll_timeout=poll_timeout,
             )
             scenario_results.append(result)
@@ -346,6 +428,9 @@ def run_embodied_eval(
     with jsonl_path.open("w", encoding="utf-8") as f:
         for r in scenario_results:
             f.write(json.dumps(redact_dict(r), ensure_ascii=False) + "\n")
+
+    # Consolidate per-scenario artifacts into top-level proof-bundle-ready files
+    _consolidate_artifacts(output_dir, scenario_results)
 
     return summary
 

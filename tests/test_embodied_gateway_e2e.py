@@ -179,11 +179,11 @@ def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
             subagent_records = subagent_registry.list_by_parent_mission(mission_id)
             assert len(subagent_records) > 0, f"Expected subagent registry entries for {mission_id}"
 
-            # 11. Verify session lineage
+            # 11. Verify session lineage exists for this mission
             lineage_store = agent._session_lineage_store
             assert lineage_store is not None
             lineage = lineage_store.get(mission_id)
-            # Lineage may or may not be populated depending on wiring - check if available
+            assert lineage is not None, f"Expected session lineage for {mission_id}"
 
             # 12. Verify task-flow
             task_flow_store = agent._task_flow_store

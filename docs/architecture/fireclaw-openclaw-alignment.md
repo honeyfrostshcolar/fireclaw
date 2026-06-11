@@ -294,8 +294,8 @@ operator cancel mission
 Latest verified state recorded on 2026-06-11:
 
 - branch: `master`, ahead of `origin/master` by ~120 commits;
-- latest commit: embodied-agent field readiness roadmap tasks complete;
-- verification: `.venv/bin/python -m pytest -q` -> `1020 passed, 6 skipped`.
+- latest commit: experiment-readiness roadmap tasks complete;
+- verification: `.venv/bin/python -m pytest -q` -> `1033 passed, 6 skipped`.
 
 Untracked planning/config artifacts existed at that point:
 
@@ -392,8 +392,15 @@ Remaining:
 The next engineering priorities are:
 
 1. Real ROS1 robot hardware smoke test (requires physical robot or high-fidelity simulation).
-2. Deployable mission runtime factory wiring (CLI paths for memory retriever, provider runtime, plugin runtime, approval stores).
-3. End-to-end embodied mission scenario gate (operator command -> mission -> robot gateway -> events -> memory in one workflow).
+
+Already implemented (2026-06-11):
+
+- ✅ Real gateway-to-gateway embodied e2e proof (`test_embodied_gateway_e2e.py`).
+- ✅ Scenario-level experiment harness (`embodied_eval.py`).
+- ✅ Memory learning closed-loop proof (`test_memory_learning_loop.py`).
+- ✅ Embodied experiment proof bundle (`embodied_proof_bundle.py`).
+- ✅ Deployable mission runtime factory wiring (`build_mission_agent_from_paths`).
+- ✅ End-to-end embodied mission scenario gate.
 
 ROS2 native adapter, full ACP/IDE platform parity, and full Web UI remain out of scope for the current embodied-agent roadmap.
 
