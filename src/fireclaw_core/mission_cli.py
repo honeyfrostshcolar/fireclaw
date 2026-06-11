@@ -11,9 +11,8 @@ from fireclaw_core.llm_trace import LLMTraceStore
 from fireclaw_core.mission_agent import MissionAgent
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission_planner import MissionPlanner
-from fireclaw_core.mission_registry import JsonlMissionRegistry
+from fireclaw_core.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
 from fireclaw_core.provider import OpenAICompatProvider
-from fireclaw_core.robot_registry import load_robot_registry
 
 
 SUCCESS_STATUSES = {"accepted", "duplicate", "running", "succeeded"}
@@ -32,12 +31,15 @@ def main() -> int:
     _add_shared_paths(submit)
 
     trace = subparsers.add_parser("trace", help="Read and aggregate a mission trace.")
+
     trace.add_argument("mission_id", help="Mission id to inspect.")
     _add_shared_paths(trace)
+    _add_runtime_paths(trace)
 
     cancel = subparsers.add_parser("cancel", help="Cancel all active subtasks for a mission.")
     cancel.add_argument("mission_id", help="Mission id to cancel.")
     _add_shared_paths(cancel)
+    _add_runtime_paths(cancel)
 
     plan = subparsers.add_parser("plan-mission", help="Plan and submit mission subtasks from a natural-language command.")
     plan.add_argument("--command", required=True, help="Natural-language mission command.")
@@ -54,6 +56,7 @@ def main() -> int:
     plan.add_argument("--no-use-scheduler", dest="use_scheduler", action="store_false",
                        help="Disable MissionScheduler, submit subtasks directly.")
     _add_shared_paths(plan)
+    _add_runtime_paths(plan)
 
     events = subparsers.add_parser("events", help="Aggregate and list mission events from robot subagents.")
     events.add_argument("mission_id", help="Mission id to collect events for.")
@@ -61,6 +64,7 @@ def main() -> int:
     events.add_argument("--type", dest="event_type", default=None, help="Filter events by event type.")
     events.add_argument("--limit", type=int, default=200, help="Maximum number of events to return.")
     _add_shared_paths(events)
+    _add_runtime_paths(events)
 
     corrections = subparsers.add_parser("corrections", help="List operator correction records for a mission.")
     corrections.add_argument("mission_id", help="Mission id to list corrections for.")
@@ -88,8 +92,8 @@ def main() -> int:
 
     replay = subparsers.add_parser("replay", help="Reconstruct a mission timeline from persistent data.")
     replay.add_argument("mission_id", help="Mission id to replay.")
-    replay.add_argument("--memory-path", default=None, help="Path to mission memory JSONL file (optional).")
     _add_shared_paths(replay)
+    _add_runtime_paths(replay)
 
     approval = subparsers.add_parser("approval", help="Manage approval requests.")
     approval.add_argument("--approval-path", default="mission_approvals.jsonl", help="Path to approval store JSONL file.")
@@ -130,7 +134,7 @@ def main() -> int:
         _print_json(result)
         return 0 if result.get("status") in CANCEL_SUCCESS_STATUSES else 1
     if args.command_name == "plan-mission":
-        agent = _build_mission_agent_with_planner(args)
+        agent = _build_mission_agent(args, planner=_build_planner(args))
         result = agent.plan_and_submit(args.command, session_id=args.session_id, operator=_mission_operator(), use_scheduler=args.use_scheduler)
         _print_json(result)
         return 0 if result.get("status") == "planned" else 1
@@ -144,7 +148,7 @@ def main() -> int:
         _print_json(result)
         return 0
     if args.command_name == "replay":
-        result = _build_mission_agent_with_memory(args).replay_incident(args.mission_id)
+        result = _build_mission_agent(args).replay_incident(args.mission_id)
         _print_json(result)
         return 0 if result.get("status") not in ("not_found", "not_configured") else 1
     if args.command_name == "corrections":
@@ -251,20 +255,38 @@ def _add_shared_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scopes", nargs="*", default=None, help="Explicit operator scopes (overrides role defaults).")
 
 
-def _build_mission_agent(args: argparse.Namespace) -> MissionAgent:
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
-    scopes = set(args.scopes) if args.scopes else scopes_for_role(args.role)
-    operator = OperatorContext(
+def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--memory-path", default=None, help="Path to mission memory JSONL.")
+    parser.add_argument("--memory-index", default=None, help="Path to SQLite memory index.")
+    parser.add_argument("--task-registry", default=None, help="Path to task registry JSONL.")
+    parser.add_argument("--subagent-registry", default=None, help="Path to subagent registry JSONL.")
+    parser.add_argument("--session-lineage", default=None, help="Path to session lineage JSONL.")
+    parser.add_argument("--task-flow", default=None, help="Path to task-flow registry JSONL.")
+    parser.add_argument("--approval-path", default=None, help="Path to approval store JSONL.")
+
+
+def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePaths:
+    return MissionRuntimePaths(
+        robot_registry=args.robot_registry,
+        mission_registry=args.mission_registry,
+        mission_memory=getattr(args, "memory_path", None),
+        memory_index=getattr(args, "memory_index", None),
+        task_registry=getattr(args, "task_registry", None),
+        subagent_registry=getattr(args, "subagent_registry", None),
+        session_lineage=getattr(args, "session_lineage", None),
+        task_flow=getattr(args, "task_flow", None),
+        approvals=getattr(args, "approval_path", None),
+    )
+
+
+def _build_mission_agent(args: argparse.Namespace, *, planner: Any = None) -> MissionAgent:
+    paths = _build_mission_runtime_paths(args)
+    return build_mission_agent_from_paths(
+        paths,
         operator_id=args.operator_id,
         role=args.role,
-        control_scopes=scopes,
-        source="mission_cli",
-    )
-    return MissionAgent(
-        registry=load_robot_registry(args.robot_registry),
-        mission_registry=JsonlMissionRegistry(args.mission_registry),
-        control_policy=ControlPolicy(),
-        operator=operator,
+        scopes=args.scopes,
+        planner=planner,
     )
 
 
@@ -277,43 +299,6 @@ def _build_planner(args: argparse.Namespace) -> Any:
         trace_store = LLMTraceStore(args.llm_trace_path) if args.llm_trace_path else None
         return LLMMissionPlanner(provider=provider, model_id=args.model, trace_store=trace_store)
     return MissionPlanner()
-
-
-def _build_mission_agent_with_planner(args: argparse.Namespace) -> MissionAgent:
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
-    scopes = set(args.scopes) if args.scopes else scopes_for_role(args.role)
-    operator = OperatorContext(
-        operator_id=args.operator_id,
-        role=args.role,
-        control_scopes=scopes,
-        source="mission_cli",
-    )
-    return MissionAgent(
-        registry=load_robot_registry(args.robot_registry),
-        mission_registry=JsonlMissionRegistry(args.mission_registry),
-        planner=_build_planner(args),
-        control_policy=ControlPolicy(),
-        operator=operator,
-    )
-
-
-def _build_mission_agent_with_memory(args: argparse.Namespace) -> MissionAgent:
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
-    scopes = set(args.scopes) if args.scopes else scopes_for_role(args.role)
-    operator = OperatorContext(
-        operator_id=args.operator_id,
-        role=args.role,
-        control_scopes=scopes,
-        source="mission_cli",
-    )
-    memory_store = MissionMemoryStore(args.memory_path) if args.memory_path else None
-    return MissionAgent(
-        registry=load_robot_registry(args.robot_registry),
-        mission_registry=JsonlMissionRegistry(args.mission_registry),
-        control_policy=ControlPolicy(),
-        operator=operator,
-        mission_memory=memory_store,
-    )
 
 
 def _mission_operator() -> dict[str, Any]:
