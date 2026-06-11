@@ -34,6 +34,7 @@ class RobotSubagentClient:
         dedupe_key: str | None = None,
         operator: dict[str, Any] | None = None,
         mission: dict[str, Any] | None = None,
+        structured_task: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"command": command}
         if session_id is not None:
@@ -44,6 +45,8 @@ class RobotSubagentClient:
             payload["operator"] = operator
         if mission is not None:
             payload["mission"] = mission
+        if structured_task is not None:
+            payload["structured_task"] = structured_task
         result = self._request_json("POST", entry.base_url, "/tasks", payload)
         result.setdefault("robot_id", entry.robot_id)
 

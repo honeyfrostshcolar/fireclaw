@@ -160,6 +160,44 @@ def test_robot_subagent_client_check_presence_offline():
     assert "error" in result
 
 
+def test_robot_subagent_client_sends_structured_task_payload(tmp_path):
+    from fireclaw_core.task_contract import StructuredRobotTask
+
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        entry = RobotRegistryEntry(
+            robot_id="robot-1",
+            base_url=gateway.base_url,
+            capabilities=["search_for_victims"],
+        )
+        client = RobotSubagentClient()
+        task = StructuredRobotTask(
+            task_id="structured-1",
+            task_type="search",
+            target={"floor": 2},
+            required_skills=["navigate_to_floor", "search_for_victims", "report_status"],
+        )
+
+        result = client.submit_task(entry, command="去2楼搜索受困人员", structured_task=task.to_dict())
+
+        assert result["status"] in {"accepted", "completed", "require_confirmation"}
+        trace = client.get_task_trace(entry, result["task_id"])
+        assert trace["structured_task"]["task_id"] == "structured-1"
+    finally:
+        gateway.stop()
+
+
 def test_robot_subagent_client_get_events(tmp_path):
     gateway = FireClawGateway(
         GatewayConfig(
