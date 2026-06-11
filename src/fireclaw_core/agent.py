@@ -20,6 +20,7 @@ from fireclaw_core.planner import (
 from fireclaw_core.robot import DryRunRobotAdapter, RobotAdapter
 from fireclaw_core.safety import SafetyDecision, SafetyGate
 from fireclaw_core.skills import create_default_skill_registry
+from fireclaw_core.task_contract import StructuredRobotTask, planning_result_from_structured_task
 from fireclaw_core.workspace_skills import WorkspaceSkillLoadError, load_workspace_skills
 
 
@@ -149,6 +150,47 @@ class FireClawAgent:
             "memory_error": None,
         }
 
+        self._append_memory_result(result)
+        return result
+
+    def run_structured_task(self, task: StructuredRobotTask) -> dict[str, Any]:
+        planning_result = planning_result_from_structured_task(task)
+        robot_state_object = self._get_robot_state()
+        environment_state_object = self._get_environment_state()
+        robot_state = self._state_snapshot(robot_state_object)
+        environment_state = self._state_snapshot(environment_state_object)
+        safety_decision = self.safety.evaluate(
+            planning_result,
+            self.registry,
+            dry_run=self.dry_run,
+            available_sensors=self.available_sensors,
+            robot_state=robot_state_object,
+            environment_state=environment_state_object,
+        )
+        self._emit_event("task.structured_received", task.to_dict())
+        self._emit_event("task.planned", self._planning_to_dict(planning_result))
+        self._emit_event("safety.decided", asdict(safety_decision))
+
+        execution_result: ExecutionResult | None = None
+        if safety_decision.status == "allow" and planning_result.plan is not None:
+            execution_result = self.executor.execute(planning_result.plan)
+
+        status = self._resolve_status(safety_decision, execution_result)
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "command": task.command or task.task_type,
+            "structured_task": task.to_dict(),
+            "status": status,
+            "message": self._resolve_message(planning_result, safety_decision, execution_result),
+            "dry_run": self.dry_run,
+            "planning": self._planning_to_dict(planning_result),
+            "safety": asdict(safety_decision),
+            "execution": self._execution_to_dict(execution_result),
+            "confirmation": self._confirmation_to_dict(safety_decision),
+            "robot_state": robot_state,
+            "environment_state": environment_state,
+            "memory_error": None,
+        }
         self._append_memory_result(result)
         return result
 
