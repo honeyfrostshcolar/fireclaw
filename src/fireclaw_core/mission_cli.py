@@ -114,6 +114,11 @@ def main() -> int:
     app_decide.add_argument("--decision", required=True, choices=["approve", "deny"], help="Decision: approve or deny.")
     app_decide.add_argument("--reason", default=None, help="Reason for the decision.")
 
+    lifecycle = subparsers.add_parser("lifecycle-check", help="Check task/subagent lifecycle consistency.")
+    lifecycle.add_argument("--task-registry", required=True, help="Path to task registry JSONL.")
+    lifecycle.add_argument("--subagent-registry", required=True, help="Path to subagent registry JSONL.")
+    lifecycle.add_argument("--stale-threshold-seconds", type=float, default=300.0, help="Seconds before a task is considered stale.")
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -157,6 +162,16 @@ def main() -> int:
         return _handle_memory(args)
     if args.command_name == "approval":
         return _handle_approval(args)
+    if args.command_name == "lifecycle-check":
+        from fireclaw_core.lifecycle_maintenance import LifecycleMaintenanceRunner
+        from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+        from fireclaw_core.task_registry import JsonlTaskRegistryStore
+        report = LifecycleMaintenanceRunner(
+            task_registry=JsonlTaskRegistryStore(args.task_registry),
+            subagent_registry=JsonlSubagentRegistry(args.subagent_registry),
+        ).run(stale_threshold_seconds=args.stale_threshold_seconds)
+        _print_json(report)
+        return 0 if report["status"] == "ok" else 2
     parser.error(f"Unknown command: {args.command_name}")
     return 1
 

@@ -897,6 +897,40 @@ def test_mission_cli_replay_not_found(tmp_path):
     assert result["timeline"] == []
 
 
+def test_lifecycle_check_cli_outputs_report(tmp_path: Path):
+    from fireclaw_core.task_registry import JsonlTaskRegistryStore
+    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+
+    task_path = tmp_path / "tasks.jsonl"
+    subagent_path = tmp_path / "subagents.jsonl"
+    # Create empty stores so the files exist
+    JsonlTaskRegistryStore(task_path)
+    JsonlSubagentRegistry(subagent_path)
+
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core.mission_cli",
+            "lifecycle-check",
+            "--task-registry",
+            str(task_path),
+            "--subagent-registry",
+            str(subagent_path),
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, f"stderr: {completed.stderr}"
+    body = json.loads(completed.stdout)
+    assert body["status"] in {"ok", "warn"}
+    assert "stale_tasks" in body
+    assert "orphaned_subagents" in body
+    assert "checked_at" in body
+
+
 def test_mission_cli_plan_mission_with_llm_flag():
     """Verify --planner llm creates an LLMMissionPlanner via _build_planner."""
     import argparse

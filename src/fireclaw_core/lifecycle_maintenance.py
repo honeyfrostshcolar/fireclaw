@@ -75,6 +75,12 @@ class LifecycleMaintenanceRunner:
                     "diagnostics": list[dict],
                     "checked_at": str,
                 }
+
+        .. note::
+            This runner marks orphaned subagent records as terminal via
+            ``LifecycleReconciler``.  It does **not** replay or resume
+            physical robot work.  Operators **must** inspect actual robot
+            state before issuing new commands after a ``"warn"`` report.
         """
         checked_at = now or datetime.now(timezone.utc).isoformat()
 
