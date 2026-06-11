@@ -61,8 +61,19 @@ def start_server(
     Creates all persistent stores under *data_dir*, builds a MissionAgent
     with the configured planner, and starts the gateway.
 
+    Args:
+        adapter: Robot adapter type (e.g. ``"simulator"``, ``"ros1"``).
+            Forwarded to the CLI entry point; adapter selection happens at
+            the robot-local gateway level, not at MissionGateway.
+        ros1_config: Path to ROS1 adapter configuration.  Like *adapter*,
+            this is a CLI-level parameter kept here for forward-compatibility.
+
     Returns the running MissionGateway instance. Call ``gw.stop()`` to shut down.
     """
+    # Note: adapter and ros1_config are forwarded to the CLI entry point.
+    # MissionGateway dispatches to robot gateways; adapter selection happens
+    # at the robot-local gateway level, not here.
+
     _ensure_data_dir(data_dir)
 
     planner = build_planner(
@@ -100,6 +111,9 @@ def start_server(
         mission_agent=agent,
         registry=registry,
         subagent_client=RobotSubagentClient(),
+        task_registry=agent.task_registry,
+        subagent_registry=agent.subagent_registry,
+        session_lineage_store=agent._session_lineage_store,
     )
     gw.start()
     logger.info("FireClaw MissionGateway started at %s", gw.base_url)
