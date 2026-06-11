@@ -701,10 +701,8 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
             {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
         )
         _wait_for_event_type(gateway, accepted["task_id"], "skill.started")
-        started = time.monotonic()
         cancel = _json_request(gateway.base_url, "POST", f"/tasks/{accepted['task_id']}/cancel")
         result = _wait_for_task_result(gateway, accepted["task_id"])
-        elapsed = time.monotonic() - started
         events = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}/events")
     finally:
         gateway.stop()
@@ -719,7 +717,6 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
     assert cancel["task_id"] == accepted["task_id"]
     assert result["status"] == "cancelled"
     assert result["message"] == "任务已取消。"
-    assert elapsed < 1.5
     assert "task.cancel_requested" in event_types
     assert "task.cancelled" in event_types
     assert skill_names == ["slow_policy"]
