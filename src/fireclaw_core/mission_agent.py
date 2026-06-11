@@ -19,6 +19,7 @@ from fireclaw_core.planner import RuleBasedPlanner
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.session_lineage import JsonlSessionLineageStore, MissionSessionLineage
 from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.mission_plan_validator import MissionPlanValidator
 from fireclaw_core.task_contract import structured_task_from_mission_subtask
 from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
@@ -446,6 +447,14 @@ class MissionAgent:
             return {
                 "status": planning_result.status,
                 "message": planning_result.message,
+                "subtask_results": [],
+            }
+        validation_errors = MissionPlanValidator().validate(planning_result.plan, self.registry)
+        if validation_errors:
+            return {
+                "status": "blocked",
+                "message": "Mission plan failed deterministic validation.",
+                "errors": validation_errors,
                 "subtask_results": [],
             }
         mission_id = _mission_id(session_id)
