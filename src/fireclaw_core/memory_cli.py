@@ -41,11 +41,8 @@ def _cmd_index(args: argparse.Namespace) -> int:
     store = MissionMemoryStore(memory_path)
     index = SqliteMemoryIndex(args.index_path)
 
-    records = store.list_records()
-    count = 0
-    for record in records:
-        index.upsert(record.to_dict())
-        count += 1
+    records = [record.to_dict() for record in store.list_records()]
+    count = index.rebuild(records)
 
     print(json.dumps({"status": "indexed", "record_count": count, "index_path": str(args.index_path)}))
     return 0
