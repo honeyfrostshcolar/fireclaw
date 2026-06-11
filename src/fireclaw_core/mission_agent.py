@@ -12,12 +12,14 @@ from fireclaw_core.approval_store import JsonlApprovalStore
 from fireclaw_core.control import ControlPolicy, OperatorContext
 from fireclaw_core.log_redaction import redact_dict
 from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
-from fireclaw_core.mission_planner import MissionPlannerContext, MissionPlanningResult
+from fireclaw_core.mission_planner import MissionPlannerContext, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission_registry import JsonlMissionRegistry
 from fireclaw_core.mission_registry import TERMINAL_SUBTASK_STATUSES
+from fireclaw_core.planner import RuleBasedPlanner
 from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.session_lineage import JsonlSessionLineageStore, MissionSessionLineage
 from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.task_contract import structured_task_from_mission_subtask
 from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
 
@@ -186,6 +188,27 @@ class MissionAgent:
                 command=command,
                 created_at=created_at,
             )
+        # Generate structured task from command if floor can be extracted
+        # and the entry has a known capability (skip when capabilities are
+        # empty to avoid producing required_skills=["unknown"] which the
+        # gateway safety gate would block).
+        floor = RuleBasedPlanner()._extract_floor(command)
+        capability = _capability_from_entry(entry)
+        structured_task = None
+        if floor is not None and capability != "unknown":
+            mission_subtask = MissionSubtask(
+                robot_id=robot_id,
+                command=command,
+                floor=floor,
+                capability_required=capability,
+                execution_group=0,
+            )
+            structured_task = structured_task_from_mission_subtask(
+                mission_id=mission_id,
+                subtask=mission_subtask,
+                operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
+            ).to_dict()
+
         subagent_result = self.subagent_client.submit_task(
             entry,
             command=command,
@@ -193,6 +216,7 @@ class MissionAgent:
             dedupe_key=dedupe_key,
             operator=operator,
             mission=mission or {"mission_id": mission_id},
+            structured_task=structured_task,
         )
         task_id = subagent_result.get("task_id")
         status = str(subagent_result.get("status") or "unknown")
@@ -750,6 +774,12 @@ class MissionAgent:
         if result is None:
             return {"status": "not_found", "request_id": request_id}
         return {"status": "decided", "request": result.to_dict()}
+
+
+def _capability_from_entry(entry: RobotRegistryEntry) -> str:
+    if "search_for_victims" in entry.capabilities:
+        return "search_for_victims"
+    return entry.capabilities[0] if entry.capabilities else "unknown"
 
 
 def _mission_id(session_id: str | None) -> str:
