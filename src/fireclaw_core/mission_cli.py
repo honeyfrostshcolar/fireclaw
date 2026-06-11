@@ -287,6 +287,7 @@ def _build_mission_agent(args: argparse.Namespace, *, planner: Any = None) -> Mi
         role=args.role,
         scopes=args.scopes,
         planner=planner,
+        source="mission_cli",
     )
 
 

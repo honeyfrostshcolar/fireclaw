@@ -36,7 +36,7 @@ def build_operator_context(
     operator_id: str,
     role: str,
     scopes: Iterable[str] | None = None,
-    source: str = "mission_cli",
+    source: str = "runtime",
 ) -> OperatorContext:
     return OperatorContext(
         operator_id=operator_id,
@@ -54,6 +54,7 @@ def build_mission_agent_from_paths(
     scopes: Iterable[str] | None = None,
     planner=None,
     plugin_runtime=None,
+    source: str = "runtime",
 ) -> MissionAgent:
     memory_store = MissionMemoryStore(paths.mission_memory) if paths.mission_memory else None
     memory_retriever = None
@@ -66,7 +67,7 @@ def build_mission_agent_from_paths(
         mission_registry=JsonlMissionRegistry(paths.mission_registry),
         planner=planner,
         control_policy=ControlPolicy(),
-        operator=build_operator_context(operator_id=operator_id, role=role, scopes=scopes),
+        operator=build_operator_context(operator_id=operator_id, role=role, scopes=scopes, source=source),
         mission_memory=memory_store,
         memory_retriever=memory_retriever,
         approval_store=JsonlApprovalStore(paths.approvals) if paths.approvals else None,
