@@ -82,6 +82,8 @@ FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q
 FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -q
 ```
 
+For the full ROS1 high-fidelity proof gate criteria and required artifacts, see `docs/superpowers/plans/2026-06-11-ros1-high-fidelity-proof-runbook.md`.
+
 Expected: all 6 tests pass (infrastructure, topic, service, action, cancel, timeout).
 
 ## 6. Log Redaction

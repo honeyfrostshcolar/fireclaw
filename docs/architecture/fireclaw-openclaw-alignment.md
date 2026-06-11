@@ -404,6 +404,10 @@ Already implemented (2026-06-11):
 
 ROS2 native adapter, full ACP/IDE platform parity, and full Web UI remain out of scope for the current embodied-agent roadmap.
 
+## Next External Validation
+
+The next external validation step is a ROS1 high-fidelity or hardware proof run. This is not additional OpenClaw platform parity; it is robotics validation for FireClaw's embodied-agent claims.
+
 ## Experiment Readiness Claims
 
 FireClaw can claim code-level and simulator-level embodied-agent readiness when the gateway-to-gateway e2e test, scenario eval, memory learning loop, and proof bundle all pass.
