@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # type: ignore[no-redef]
+
+
+@dataclass(frozen=True)
+class RobotCapabilityProfile:
+    robot_id: str
+    base_url: str
+    adapter: str
+    ros1_config: str | None
+    data_dir: Path
+    capabilities: tuple[str, ...]
+    enabled_skills: tuple[str, ...]
+    llm_exposed_skills: tuple[str, ...]
+    enabled: bool = True
+
+    @property
+    def memory_path(self) -> Path:
+        return self.data_dir / "memory.jsonl"
+
+    @property
+    def event_path(self) -> Path:
+        return self.data_dir / "events.jsonl"
+
+    @property
+    def task_queue_path(self) -> Path:
+        return self.data_dir / "tasks.jsonl"
+
+    def to_robot_registry_entry(self) -> dict[str, Any]:
+        return {
+            "robot_id": self.robot_id,
+            "base_url": self.base_url,
+            "capabilities": list(self.capabilities),
+            "enabled": self.enabled,
+        }
+
+
+def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
+    target = Path(path)
+    with target.open("rb") as handle:
+        raw = tomllib.load(handle)
+    robot = raw.get("robot")
+    if not isinstance(robot, dict):
+        raise ValueError("robot profile requires a [robot] table.")
+    robot_id = _required_string(robot, "id")
+    base_url = _required_string(robot, "base_url")
+    adapter = _required_string(robot, "adapter")
+    data_dir = Path(_required_string(robot, "data_dir"))
+    capabilities = _string_tuple(robot, "capabilities")
+    enabled_skills = _string_tuple(robot, "enabled_skills")
+    llm_exposed_skills = _string_tuple(robot, "llm_exposed_skills")
+    return RobotCapabilityProfile(
+        robot_id=robot_id,
+        base_url=base_url.rstrip("/"),
+        adapter=adapter,
+        ros1_config=_optional_string(robot, "ros1_config"),
+        data_dir=data_dir,
+        capabilities=capabilities,
+        enabled_skills=enabled_skills,
+        llm_exposed_skills=llm_exposed_skills,
+        enabled=bool(robot.get("enabled", True)),
+    )
+
+
+def _required_string(raw: dict[str, Any], key: str) -> str:
+    value = raw.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"robot.{key} must be a non-empty string.")
+    return value.strip()
+
+
+def _optional_string(raw: dict[str, Any], key: str) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"robot.{key} must be a non-empty string when provided.")
+    return value.strip()
+
+
+def _string_tuple(raw: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = raw.get(key)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"robot.{key} must be a non-empty list of strings.")
+    items = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
+    if len(items) != len(value):
+        raise ValueError(f"robot.{key} must contain only non-empty strings.")
+    return items
