@@ -258,18 +258,27 @@ FireClaw Gateway v1 is a local HTTP control plane around the same agent core. It
 HTTP in -> FireClawAgent -> SkillExecutor -> RobotAdapter -> simulator / mock ROS2 / future real ROS2
 ```
 
-Start a local simulator gateway:
+Start the robot-local gateway from a profile-backed config:
 
 ```bash
-.venv/bin/python -m fireclaw_core.gateway \
-  --host 127.0.0.1 \
-  --port 8765 \
+.venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
+```
+
+Export the profile into the mission registry:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-profile export \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/mission/robots.json
+```
+
+For one-off runs, CLI flags still override the config file:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-gateway \
+  --config fireclaw.toml \
   --adapter simulator \
-  --robot-id robot-01 \
-  --max-active-execution-tasks 1 \
-  --memory-path /tmp/fireclaw-gateway-memory.jsonl \
-  --event-path /tmp/fireclaw-gateway-events.jsonl \
-  --task-queue-path /tmp/fireclaw-gateway-tasks.jsonl
+  --robot-id robot-01
 ```
 
 Check health and state:
@@ -504,16 +513,12 @@ trace = mission.mission_trace("mission-001")
 
 The aggregated trace keeps robot-local traces under each subtask. Robot-local Gateway traces remain the source of truth for embodied execution and incident review.
 
-The same v1 contract is available from the mission CLI:
+The same v1 contract is available from the CLI. Export the robot profile and submit tasks through the gateway:
 
 ```bash
-.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
-  --robot robot-1 \
-  --command "去二楼搜索受困人员" \
-  --session-id mission-001 \
-  --dedupe-key mission-001-robot-1-floor-2 \
-  --robot-registry robots.json \
-  --mission-registry memory/fireclaw-missions.jsonl
+.venv/bin/python -m fireclaw_core robot-profile export \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/mission/robots.json
 
 .venv/bin/python -m fireclaw_core.mission_cli trace mission-001 \
   --robot-registry robots.json \
@@ -652,30 +657,15 @@ result = mission_observer.submit_subtask("robot-1", "去二楼搜索", session_i
 **CLI:**
 
 ```bash
-# Default operator (has all mission scopes)
-.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
-  --robot robot-1 \
-  --command "去二楼搜索" \
-  --robot-registry robots.json \
-  --mission-registry memory/fireclaw-missions.jsonl
+# Export robot profile for mission registry
+.venv/bin/python -m fireclaw_core robot-profile export \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/mission/robots.json
 
-# Observer (lacks mission.submit, will be denied)
-.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
-  --robot robot-1 \
-  --command "去二楼搜索" \
-  --robot-registry robots.json \
-  --mission-registry memory/fireclaw-missions.jsonl \
-  --operator-id observer-1 \
-  --role observer
-
-# Explicit scopes
-.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
-  --robot robot-1 \
-  --command "去二楼搜索" \
-  --robot-registry robots.json \
-  --mission-registry memory/fireclaw-missions.jsonl \
-  --operator-id custom-operator \
-  --scopes mission.submit mission.read
+# Submit task via gateway (default operator has all mission scopes)
+curl -X POST http://127.0.0.1:8765/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"command": "去二楼搜索", "session_id": "mission-001"}'
 ```
 
 ### Fleet Presence v1

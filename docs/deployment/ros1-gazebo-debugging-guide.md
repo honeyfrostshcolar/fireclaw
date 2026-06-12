@@ -69,7 +69,7 @@ roslaunch turtlebot3_navigation turtlebot3_navigation.launch map_file:=$HOME/map
 Or use the default empty map for testing:
 
 ```bash
-roslaunch turtlebot3_navigation turtlebo3_navigation.launch
+roslaunch turtlebot3_navigation turtlebot3_navigation.launch
 ```
 
 ### Step 4: Verify Robot Can Navigate
@@ -95,30 +95,36 @@ export ROS_IP=127.0.0.1
 
 ### Step 6: Run FireClaw Direct Subtask
 
+Start the robot-local gateway and submit a task through the profile-backed workflow:
+
 ```bash
-.venv/bin/python -m fireclaw_core.mission_cli submit-subtask \
-  --robot-id gazebo_turtlebot3 \
-  --command "去二楼" \
-  --adapter-config examples/ros1_configs/gazebo_turtlebot3_move_base.yaml
+.venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
+```
+
+In a separate terminal, export the profile and submit a task:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-profile export \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/mission/robots.json
 ```
 
 The Gazebo robot should move toward the target position.
 
 ### Robot-Local Agent Mode
 
-Start the robot-local gateway with constrained robot-agent planning:
+Start the robot-local gateway from a profile-backed config:
 
 ```bash
-.venv/bin/python -m fireclaw_core.gateway \
-  --adapter ros1 \
-  --real-run \
-  --robot-id gazebo_turtlebot3 \
-  --ros1-config examples/ros1_configs/gazebo_turtlebot3_move_base.yaml \
-  --robot-agent \
-  --robot-agent-planner llm \
-  --robot-agent-provider-base-url "$OPENAI_BASE_URL" \
-  --robot-agent-provider-api-key "$OPENAI_API_KEY" \
-  --robot-agent-model "$MODEL"
+.venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
+```
+
+Export the profile into the mission registry:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-profile export \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/mission/robots.json
 ```
 
 Then start mission control and submit commands through `fireclaw_core mission`.
@@ -207,7 +213,13 @@ Gazebo is treated as a ROS1 robot endpoint provider. FireClaw does not know or c
 
 - FireClaw's robot registry must list the robot with correct `base_url`
 - For embodied_eval, this is handled automatically
-- For manual usage, register via `mission_cli register-robot`
+- For manual usage, export the robot profile into the mission registry:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-profile export \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/mission/robots.json
+```
 
 ## What This Proves
 
