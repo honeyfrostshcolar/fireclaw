@@ -32,7 +32,7 @@ class RobotState:
     online: bool
     battery_percent: float | None
     current_floor: int | None
-    available_sensors: list[str]
+    available_sensors: list[str] | None
     supports_real_execution: bool
 
 
@@ -452,9 +452,9 @@ class Ros1RobotAdapter:
             mode=self.mode,
             dry_run=self.dry_run,
             online=not self.emergency_stopped,
-            battery_percent=0.0,
+            battery_percent=None,
             current_floor=self.current_floor,
-            available_sensors=list(self.available_sensors),
+            available_sensors=None,
             supports_real_execution=True,
         )
 
@@ -471,7 +471,7 @@ class Ros1RobotAdapter:
         return self._record_configured_action("emergency_stop", {"reason": reason}, endpoint=endpoint)
 
     def get_environment_state(self) -> EnvironmentState:
-        return EnvironmentState(reachable_floors=[], hazards=[], victims_by_floor={})
+        return EnvironmentState(reachable_floors=None)
 
     def capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(

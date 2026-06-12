@@ -53,24 +53,39 @@ class SafetyGate:
             return SafetyDecision(status="block", reasons=missing)
 
         # Infer sensors from robot_state when not explicitly provided
+        sensors_unknown = False
         if available_sensors is not None:
             sensors = available_sensors
+        elif robot_state is not None and robot_state.available_sensors is None:
+            sensors = set()
+            sensors_unknown = True
         elif robot_state is not None:
             sensors = set(robot_state.available_sensors)
         else:
             sensors = set()
         missing_sensors: list[str] = []
+        sensor_confirmations: list[str] = []
+        sensor_warnings: list[str] = []
         for step in planning_result.plan.steps:
             skill = registry.get(step.skill_name)
             if skill is None:
                 continue
             for sensor in skill.required_sensors:
+                if sensors_unknown:
+                    message = f"Robot {robot_state.robot_id if robot_state else 'unknown'} available sensors are unknown."
+                    if dry_run:
+                        sensor_warnings.append(message)
+                    else:
+                        sensor_confirmations.append(message)
+                    break
                 if sensor not in sensors:
                     missing_sensors.append(
                         f"Skill {step.skill_name} requires unavailable sensor: {sensor}"
                     )
+        state_warnings.extend(sensor_warnings)
+        state_confirmations.extend(sensor_confirmations)
         if missing_sensors:
-            return SafetyDecision(status="block", reasons=missing_sensors)
+            return SafetyDecision(status="block", reasons=missing_sensors, warnings=state_warnings)
 
         unsafe_retries: list[str] = []
         for step in planning_result.plan.steps:
