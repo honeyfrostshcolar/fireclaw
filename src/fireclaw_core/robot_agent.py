@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from fireclaw_core.planner import Plan, PlanningResult, PlanStep
+from fireclaw_core.provider import ProviderError
+from fireclaw_core.provider_runtime import FallbackSummaryError, ProviderRuntime
 from fireclaw_core.task_contract import StructuredRobotTask
 
 SAFE_SUPPLEMENTAL_SKILLS = ("report_status", "return_to_safe_zone")
@@ -148,6 +151,134 @@ class RobotAgentPolicy:
             )
 
         return RobotAgentPolicyDecision(status="allow", reasons=[])
+
+
+class RobotAgentPlannerError(Exception):
+    pass
+
+
+ROBOT_LOCAL_PLAN_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_robot_local_plan",
+        "description": "Create a bounded local execution plan for a firefighting robot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "intent": {"type": "string"},
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "skill_name": {"type": "string"},
+                            "inputs": {"type": "object"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["skill_name", "inputs"],
+                    },
+                },
+                "rationale": {"type": "string"},
+                "confidence": {"type": "number"},
+            },
+            "required": ["intent", "steps"],
+        },
+    },
+}
+
+
+def build_robot_agent_messages(
+    envelope: RobotAgentTaskEnvelope,
+    *,
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    system = (
+        "你是消防机器人本地子 agent。"
+        "你只能在 allowed_skills 内规划，不能改变 target，不能扩大任务权限。"
+        "请调用 create_robot_local_plan 工具返回结构化局部执行计划。"
+    )
+    payload = {
+        "task": {
+            "task_id": envelope.task_id,
+            "mission_id": envelope.mission_id,
+            "robot_id": envelope.robot_id,
+            "command": envelope.command,
+            "task_type": envelope.task_type,
+            "target": envelope.target,
+            "allowed_skills": envelope.allowed_skills,
+            "required_skills": envelope.required_skills,
+            "constraints": envelope.constraints,
+            "risk_level": envelope.risk_level,
+        },
+        "context": context,
+    }
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+class LLMRobotAgentPlanner:
+    def __init__(self, provider_runtime: ProviderRuntime) -> None:
+        self._provider_runtime = provider_runtime
+
+    def plan(
+        self,
+        envelope: RobotAgentTaskEnvelope,
+        *,
+        context: dict[str, Any],
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> RobotLocalPlan:
+        if cancellation_requested is not None and cancellation_requested():
+            raise RobotAgentPlannerError("planning cancelled before provider call")
+        try:
+            response = self._provider_runtime.chat_completion(
+                messages=build_robot_agent_messages(envelope, context=context),
+                tools=[ROBOT_LOCAL_PLAN_TOOL],
+                temperature=0.0,
+                max_tokens=2048,
+            )
+        except (ProviderError, FallbackSummaryError) as exc:
+            raise RobotAgentPlannerError(str(exc)) from exc
+        if cancellation_requested is not None and cancellation_requested():
+            raise RobotAgentPlannerError("planning cancelled after provider call")
+        if not response.tool_calls:
+            raise RobotAgentPlannerError("LLM did not return a robot-local plan tool call")
+        tool_call = response.tool_calls[0]
+        if tool_call.name != "create_robot_local_plan":
+            raise RobotAgentPlannerError(f"unexpected tool call {tool_call.name!r}")
+        return _local_plan_from_arguments(tool_call.arguments)
+
+
+def _local_plan_from_arguments(arguments: dict[str, Any]) -> RobotLocalPlan:
+    raw_steps = arguments.get("steps")
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise RobotAgentPlannerError("robot-local plan must contain at least one step")
+    steps = []
+    for item in raw_steps:
+        if not isinstance(item, dict):
+            raise RobotAgentPlannerError("robot-local plan step must be an object")
+        skill_name = str(item.get("skill_name") or "")
+        if not skill_name:
+            raise RobotAgentPlannerError("robot-local plan step missing skill_name")
+        inputs = item.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            raise RobotAgentPlannerError("robot-local plan step inputs must be an object")
+        reason = item.get("reason")
+        steps.append(
+            RobotLocalPlanStep(
+                skill_name=skill_name,
+                inputs=dict(inputs),
+                reason=str(reason) if reason is not None else None,
+            )
+        )
+    confidence = arguments.get("confidence")
+    return RobotLocalPlan(
+        intent=str(arguments.get("intent") or ""),
+        steps=steps,
+        rationale=str(arguments["rationale"]) if arguments.get("rationale") is not None else None,
+        confidence=float(confidence) if isinstance(confidence, int | float) else None,
+    )
 
 
 class RobotAgentPlanner(Protocol):
