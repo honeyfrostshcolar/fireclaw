@@ -1125,12 +1125,16 @@ class FireClawGateway:
                     self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'command' is required.")
                     return
                 structured_task = payload.get("structured_task")
-                if not isinstance(structured_task, dict):
-                    structured_task = None
                 if structured_task is not None:
-                    structured_task_errors = validate_structured_robot_task(
-                        StructuredRobotTask.from_dict(structured_task)
-                    )
+                    if not isinstance(structured_task, dict):
+                        self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'structured_task' must be an object when provided.")
+                        return
+                    raw_skills = structured_task.get("required_skills")
+                    if raw_skills is not None and not isinstance(raw_skills, list):
+                        self._write_error(handler, HTTPStatus.BAD_REQUEST, "required_skills must be a list")
+                        return
+                    task_object = StructuredRobotTask.from_dict(structured_task)
+                    structured_task_errors = validate_structured_robot_task(task_object)
                     if structured_task_errors:
                         self._write_error(
                             handler,
