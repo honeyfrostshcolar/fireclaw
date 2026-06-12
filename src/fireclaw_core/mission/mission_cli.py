@@ -18,6 +18,10 @@ CANCEL_SUCCESS_STATUSES = {"cancel_requested", "already_terminal", "empty"}
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "robot-gateway":
+        from fireclaw_core.gateway.gateway import main as gateway_main
+        return gateway_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser(description="Run FireClaw mission-control commands.")
     subparsers = parser.add_subparsers(dest="command_name", required=True)
 
@@ -139,6 +143,15 @@ def main() -> int:
     mission.add_argument("--server", default="http://127.0.0.1:8766", help="MissionGateway base URL.")
     mission.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds.")
 
+    robot_gateway = subparsers.add_parser("robot-gateway", help="Start a robot-local FireClawGateway.")
+    robot_gateway.add_argument("robot_gateway_args", nargs=argparse.REMAINDER)
+
+    robot_profile = subparsers.add_parser("robot-profile", help="Manage robot capability profiles.")
+    robot_profile_sub = robot_profile.add_subparsers(dest="robot_profile_command", required=True)
+    profile_export = robot_profile_sub.add_parser("export", help="Export a profile to robots.json.")
+    profile_export.add_argument("--profile", required=True, help="Path to robot profile TOML.")
+    profile_export.add_argument("--output", required=True, help="Path to robots.json output.")
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -238,6 +251,11 @@ def main() -> int:
         from fireclaw_core.mission.interactive import run_interactive
         run_interactive(server_url=args.server, timeout=args.timeout)
         return 0
+    if args.command_name == "robot-gateway":
+        from fireclaw_core.gateway.gateway import main as gateway_main
+        return gateway_main(args.robot_gateway_args)
+    if args.command_name == "robot-profile":
+        return _handle_robot_profile(args)
     parser.error(f"Unknown command: {args.command_name}")
     return 1
 
@@ -325,6 +343,21 @@ def _handle_approval(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Error: unknown approval subcommand: {args.approval_command}", file=sys.stderr)
+    return 1
+
+
+def _handle_robot_profile(args: argparse.Namespace) -> int:
+    from fireclaw_core.agent.robot_profile import load_robot_capability_profile
+
+    if args.robot_profile_command == "export":
+        profile = load_robot_capability_profile(args.profile)
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"robots": [profile.to_robot_registry_entry()]}
+        output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _print_json({"status": "written", "output": str(output), "robot_id": profile.robot_id})
+        return 0
+    print(f"Error: unknown robot-profile subcommand: {args.robot_profile_command}", file=sys.stderr)
     return 1
 
 

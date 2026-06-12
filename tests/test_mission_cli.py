@@ -1104,3 +1104,45 @@ def test_main_module_routes_to_mission_cli():
     assert completed.returncode == 0, f"stderr: {completed.stderr}"
     # The mission_cli parser description should appear
     assert "mission-control" in completed.stdout.lower() or "mission" in completed.stdout.lower()
+
+
+def test_mission_cli_robot_profile_export_writes_robot_registry(tmp_path):
+    profile_path = tmp_path / "robot.toml"
+    output_path = tmp_path / "robots.json"
+    profile_path.write_text(
+        """
+[robot]
+id = "debug-robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "data/robots/debug-robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core",
+            "robot-profile",
+            "export",
+            "--profile",
+            str(profile_path),
+            "--output",
+            str(output_path),
+        ],
+        check=True,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    body = json.loads(completed.stdout)
+    registry = json.loads(output_path.read_text(encoding="utf-8"))
+    assert body["status"] == "written"
+    assert registry["robots"][0]["robot_id"] == "debug-robot-1"
+    assert registry["robots"][0]["capabilities"] == ["search_for_victims"]
