@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from urllib import request
 from urllib.error import HTTPError
 
@@ -250,3 +251,71 @@ def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
         assert any(event.get("type") == "robot_agent.policy_rejected" for event in events)
     finally:
         gateway.stop()
+
+
+def test_gateway_robot_agent_respects_profile_exposed_skills(tmp_path):
+    """When a profile is loaded, only profile's llm_exposed_skills are exposed to LLM."""
+    captured_context = {}
+
+    class CapturingPlanner:
+        def plan(self, envelope, *, context, cancellation_requested=None):
+            captured_context.update(context)
+            from fireclaw_core.agent.robot_agent import RobotLocalPlan, RobotLocalPlanStep
+            return RobotLocalPlan(
+                intent="search",
+                steps=[RobotLocalPlanStep("navigate_to_floor", {"floor": 2})],
+            )
+
+    from fireclaw_core.agent.robot_agent import RobotAgentRuntime
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile
+
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="debug-robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+            robot_agent_enabled=True,
+            robot_agent_planner="deterministic",
+        )
+    )
+    # Set a profile that only exposes navigate_to_floor
+    gateway.robot_profile = RobotCapabilityProfile(
+        robot_id="debug-robot-1",
+        base_url="http://127.0.0.1:8765",
+        adapter="simulator",
+        ros1_config=None,
+        data_dir=Path("data/robots/debug-robot-1"),
+        capabilities=("search_for_victims",),
+        enabled_skills=("navigate_to_floor", "search_for_victims", "report_status"),
+        llm_exposed_skills=("navigate_to_floor",),  # Only navigate_to_floor exposed
+    )
+    gateway.robot_agent_runtime = RobotAgentRuntime(planner=CapturingPlanner())
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {
+                "command": "去二楼救人",
+                "structured_task": {
+                    "task_id": "task-1",
+                    "task_type": "search",
+                    "target": {"floor": 2},
+                    "required_skills": ["navigate_to_floor", "report_status"],
+                },
+            },
+        )
+        _wait_for_task_done(gateway.base_url, accepted["task_id"])
+    finally:
+        gateway.stop()
+
+    # report_status is not in profile's llm_exposed_skills, so it should not appear
+    names = [tool["function"]["name"] for tool in captured_context["skill_tools"]]
+    assert "navigate_to_floor" in names
+    assert "report_status" not in names  # Constrained by profile

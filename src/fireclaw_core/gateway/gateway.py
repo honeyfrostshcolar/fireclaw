@@ -98,6 +98,10 @@ class FireClawGateway:
         self._event_bus = EventBus()
         self._telemetry = TelemetryTracker()
         self._reconcile_stale_task_queue_records()
+        self.robot_profile = None
+        if config.robot_profile_path:
+            from fireclaw_core.agent.robot_profile import load_robot_capability_profile
+            self.robot_profile = load_robot_capability_profile(config.robot_profile_path)
         self.robot_agent_runtime = self._build_robot_agent_runtime()
 
     @property
@@ -506,10 +510,18 @@ class FireClawGateway:
                 payload=payload,
             )
 
+        # Start with task-required skills plus always-exposed skills
+        candidate_skills = set(task_object.required_skills) | {"report_status", "return_to_safe_zone"}
+
+        # If profile is loaded, constrain to profile's llm_exposed_skills
+        if self.robot_profile is not None:
+            profile_exposed = set(self.robot_profile.llm_exposed_skills)
+            candidate_skills = candidate_skills & profile_exposed
+
         exposed_skill_names = tuple(
             skill_name
             for skill_name in agent.registry.names()
-            if skill_name in set(task_object.required_skills) | {"report_status", "return_to_safe_zone"}
+            if skill_name in candidate_skills
         )
         skill_tools = build_robot_skill_tools(
             agent.registry,
