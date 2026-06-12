@@ -231,10 +231,14 @@ class LLMRobotAgentPlanner:
     ) -> RobotLocalPlan:
         if cancellation_requested is not None and cancellation_requested():
             raise RobotAgentPlannerError("planning cancelled before provider call")
+        skill_tools = context.get("skill_tools") if isinstance(context, dict) else None
+        tools = [ROBOT_LOCAL_PLAN_TOOL]
+        if isinstance(skill_tools, list):
+            tools.extend(tool for tool in skill_tools if isinstance(tool, dict))
         try:
             response = self._provider_runtime.chat_completion(
                 messages=build_robot_agent_messages(envelope, context=context),
-                tools=[ROBOT_LOCAL_PLAN_TOOL],
+                tools=tools,
                 temperature=0.0,
                 max_tokens=2048,
             )
@@ -245,9 +249,21 @@ class LLMRobotAgentPlanner:
         if not response.tool_calls:
             raise RobotAgentPlannerError("LLM did not return a robot-local plan tool call")
         tool_call = response.tool_calls[0]
-        if tool_call.name != "create_robot_local_plan":
-            raise RobotAgentPlannerError(f"unexpected tool call {tool_call.name!r}")
-        return _local_plan_from_arguments(tool_call.arguments)
+        if tool_call.name == "create_robot_local_plan":
+            return _local_plan_from_arguments(tool_call.arguments)
+        allowed_direct = {
+            tool["function"]["name"]
+            for tool in tools[1:]
+            if isinstance(tool.get("function"), dict) and isinstance(tool["function"].get("name"), str)
+        }
+        direct_calls = [
+            {"name": call.name, "arguments": call.arguments}
+            for call in response.tool_calls
+        ]
+        if direct_calls and all(call["name"] in allowed_direct for call in direct_calls):
+            from fireclaw_core.agent.robot_tools import local_plan_from_direct_tool_calls
+            return local_plan_from_direct_tool_calls(direct_calls, intent=envelope.task_type)
+        raise RobotAgentPlannerError(f"unexpected tool call {tool_call.name!r}")
 
 
 def _local_plan_from_arguments(arguments: dict[str, Any]) -> RobotLocalPlan:

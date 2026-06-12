@@ -19,8 +19,10 @@ class FakeRuntime:
         self.response = response
         self.error = error
         self.calls = []
+        self.last_tools = None
 
     def chat_completion(self, *, messages, tools, temperature=0.0, max_tokens=4096):
+        self.last_tools = tools
         self.calls.append(
             {
                 "messages": messages,
@@ -164,3 +166,44 @@ def test_build_robot_agent_messages_contains_envelope_fields():
     assert payload["task"]["allowed_skills"] == ["navigate_to_floor", "report_status"]
     assert payload["task"]["task_id"] == "task-1"
     assert payload["context"] == {"robot_state": {}}
+
+
+def test_llm_robot_agent_planner_accepts_direct_skill_tool_calls():
+    runtime = FakeRuntime(
+        response=ChatCompletion(
+            content=None,
+            tool_calls=[
+                ToolCall(id="call-1", name="navigate_to_floor", arguments={"floor": 2}),
+                ToolCall(id="call-2", name="report_status", arguments={"floor": 2}),
+            ],
+            usage=TokenUsage(1, 1, 2),
+            model="fake-model",
+            finish_reason="tool_calls",
+        )
+    )
+    envelope = _envelope()
+    skill_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "navigate_to_floor",
+                "description": "Navigate robot to a target floor.",
+                "parameters": {"type": "object", "properties": {"floor": {"type": "integer"}}, "required": ["floor"]},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "report_status",
+                "description": "Report status to operator.",
+                "parameters": {"type": "object", "properties": {"floor": {"type": "integer"}}, "required": ["floor"]},
+            },
+        },
+    ]
+
+    plan = LLMRobotAgentPlanner(runtime).plan(envelope, context={"skill_tools": skill_tools})
+
+    assert [step.skill_name for step in plan.steps] == ["navigate_to_floor", "report_status"]
+    assert plan.steps[0].inputs == {"floor": 2}
+    assert runtime.last_tools[0]["function"]["name"] == "create_robot_local_plan"
+    assert runtime.last_tools[1]["function"]["name"] == "navigate_to_floor"
