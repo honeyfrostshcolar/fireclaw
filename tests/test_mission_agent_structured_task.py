@@ -50,3 +50,38 @@ def test_mission_agent_submit_subtask_sends_structured_task():
     assert structured_task["robot_id"] == "robot-1"
     assert structured_task["target"] == {"floor": 2}
     assert structured_task["required_skills"] == ["navigate_to_floor", "search_for_victims", "report_status"]
+
+
+def test_mission_agent_structured_task_uses_mission_subtask_floor_not_command_text():
+    from fireclaw_core.mission_planner import MissionSubtask
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(
+            robot_id="robot-1",
+            base_url="http://robot-1",
+            capabilities=["search_for_victims"],
+        )
+    ])
+    client = RecordingClient()
+    agent = MissionAgent(registry=registry, subagent_client=client)
+
+    planned_subtask = MissionSubtask(
+        robot_id="robot-1",
+        command="search target zone alpha",
+        floor=2,
+        capability_required="search_for_victims",
+        execution_group=0,
+    )
+
+    result = agent.submit_subtask(
+        "robot-1",
+        planned_subtask.command,
+        session_id="mission-structured",
+        operator={"operator_id": "operator-1"},
+        mission_subtask=planned_subtask,
+    )
+
+    assert result["status"] == "accepted"
+    structured_task = client.calls[0][1]["structured_task"]
+    assert structured_task["target"] == {"floor": 2}
+    assert structured_task["command"] == "search target zone alpha"

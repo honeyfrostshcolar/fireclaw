@@ -86,6 +86,7 @@ class MissionScheduler:
                     dedupe_key=f"{mission_id}-{subtask.robot_id}-{subtask.floor}",
                     operator=operator,
                     mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
+                    mission_subtask=subtask,
                 )
                 subtask_results.append(result)
 
@@ -110,11 +111,19 @@ class MissionScheduler:
                             dedupe_key=f"{mission_id}-{subtask.robot_id}-{subtask.floor}-retry{retry_counts[subtask.robot_id]}",
                             operator=operator,
                             mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
+                            mission_subtask=subtask,
                         )
                         subtask_results.append(result)
                     elif action["action"] == "reassign":
                         subtask = action["subtask"]
                         new_robot = action["new_robot"]
+                        reassigned_subtask = MissionSubtask(
+                            robot_id=new_robot,
+                            command=subtask.command,
+                            floor=subtask.floor,
+                            capability_required=subtask.capability_required,
+                            execution_group=subtask.execution_group,
+                        )
                         result = self.mission_agent.submit_subtask(
                             new_robot,
                             subtask.command,
@@ -122,6 +131,7 @@ class MissionScheduler:
                             dedupe_key=f"{mission_id}-{new_robot}-{subtask.floor}-reassign{reassign_counts[subtask.robot_id]}",
                             operator=operator,
                             mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
+                            mission_subtask=reassigned_subtask,
                         )
                         subtask_results.append(result)
 

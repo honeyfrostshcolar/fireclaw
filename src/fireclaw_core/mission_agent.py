@@ -161,6 +161,7 @@ class MissionAgent:
         dedupe_key: str | None = None,
         operator: dict[str, Any] | None = None,
         mission: dict[str, Any] | None = None,
+        mission_subtask: MissionSubtask | None = None,
     ) -> dict[str, Any]:
         deny = self._authorize("mission.submit")
         if deny is not None:
@@ -189,26 +190,31 @@ class MissionAgent:
                 command=command,
                 created_at=created_at,
             )
-        # Generate structured task from command if floor can be extracted
-        # and the entry has a known capability (skip when capabilities are
-        # empty to avoid producing required_skills=["unknown"] which the
-        # gateway safety gate would block).
-        floor = RuleBasedPlanner()._extract_floor(command)
-        capability = _capability_from_entry(entry)
+        # Generate structured task from MissionSubtask if provided,
+        # otherwise fall back to command text re-parsing.
         structured_task = None
-        if floor is not None and capability != "unknown":
-            mission_subtask = MissionSubtask(
-                robot_id=robot_id,
-                command=command,
-                floor=floor,
-                capability_required=capability,
-                execution_group=0,
-            )
+        if mission_subtask is not None:
             structured_task = structured_task_from_mission_subtask(
                 mission_id=mission_id,
                 subtask=mission_subtask,
                 operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
             ).to_dict()
+        else:
+            floor = RuleBasedPlanner()._extract_floor(command)
+            capability = _capability_from_entry(entry)
+            if floor is not None and capability != "unknown":
+                generated_subtask = MissionSubtask(
+                    robot_id=robot_id,
+                    command=command,
+                    floor=floor,
+                    capability_required=capability,
+                    execution_group=0,
+                )
+                structured_task = structured_task_from_mission_subtask(
+                    mission_id=mission_id,
+                    subtask=generated_subtask,
+                    operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
+                ).to_dict()
 
         subagent_result = self.subagent_client.submit_task(
             entry,
@@ -553,6 +559,7 @@ class MissionAgent:
                 dedupe_key=f"{mission_id}-{subtask.robot_id}-{subtask.floor}",
                 operator=operator,
                 mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
+                mission_subtask=subtask,
             )
             subtask_results.append(result)
 
