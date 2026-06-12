@@ -104,6 +104,25 @@ export ROS_IP=127.0.0.1
 
 The Gazebo robot should move toward the target position.
 
+### Robot-Local Agent Mode
+
+Start the robot-local gateway with constrained robot-agent planning:
+
+```bash
+.venv/bin/python -m fireclaw_core.gateway \
+  --adapter ros1 \
+  --real-run \
+  --robot-id gazebo_turtlebot3 \
+  --ros1-config examples/ros1_configs/gazebo_turtlebot3_move_base.yaml \
+  --robot-agent \
+  --robot-agent-planner llm \
+  --robot-agent-provider-base-url "$OPENAI_BASE_URL" \
+  --robot-agent-provider-api-key "$OPENAI_API_KEY" \
+  --robot-agent-model "$MODEL"
+```
+
+Then start mission control and submit commands through `fireclaw_core mission`.
+
 ### Step 7: Run Full Embodied Eval
 
 ```bash
