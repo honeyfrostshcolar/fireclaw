@@ -7,14 +7,14 @@ from typing import Any
 
 import pytest
 
-from fireclaw_core.memory_eval import (
+from fireclaw_core.memory.memory_eval import (
     EvalCase,
     EvalReport,
     EvalResult,
     evaluate_retrieval,
     load_eval_cases,
 )
-from fireclaw_core.memory_retrieval import MemoryRetriever, RetrievedMemory
+from fireclaw_core.memory.memory_retrieval import MemoryRetriever, RetrievedMemory
 
 
 # ---------------------------------------------------------------------------

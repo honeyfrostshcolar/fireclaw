@@ -8,9 +8,9 @@ import time
 from urllib import request
 from urllib.error import HTTPError
 
-from fireclaw_core.gateway import FireClawGateway, GatewayConfig
-from fireclaw_core.stream_events import StreamEvent
-from fireclaw_core.task_queue import JsonlTaskQueue
+from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.monitoring.stream_events import StreamEvent
+from fireclaw_core.task.task_queue import JsonlTaskQueue
 
 
 def _json_request_with_headers(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> tuple[int, dict]:

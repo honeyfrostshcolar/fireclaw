@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fireclaw_core.robot import Ros1RobotAdapter
-from fireclaw_core.ros1_config import load_ros1_adapter_config
+from fireclaw_core.agent.robot import Ros1RobotAdapter
+from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
 
 
 def _write_config(path: Path) -> None:

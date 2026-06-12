@@ -1,4 +1,4 @@
-from fireclaw_core.planner import PlannerContext, RuleBasedPlanner
+from fireclaw_core.planner.planner import PlannerContext, RuleBasedPlanner
 
 
 def test_rescue_command_with_chinese_floor_generates_five_step_plan():

@@ -1,7 +1,7 @@
 from io import StringIO
 
-from fireclaw_core.gateway import FireClawGateway, GatewayConfig
-from fireclaw_core.operator_console import run_operator_command
+from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.infra.operator_console import run_operator_command
 
 
 def test_operator_console_prints_human_readable_progress(tmp_path):

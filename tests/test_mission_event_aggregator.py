@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from fireclaw_core.mission_event_aggregator import MissionEventAggregator
-from fireclaw_core.mission_registry import (
+from fireclaw_core.mission.mission_event_aggregator import MissionEventAggregator
+from fireclaw_core.mission.mission_registry import (
     JsonlMissionRegistry,
     MissionRecord,
     MissionSubtaskRecord,
 )
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
-from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
 
 class MockSubagentClient:

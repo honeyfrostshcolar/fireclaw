@@ -1,9 +1,9 @@
 # tests/test_robot_agent_structured_task.py
 from __future__ import annotations
 
-from fireclaw_core.agent import FireClawAgent
-from fireclaw_core.robot import DryRunRobotAdapter
-from fireclaw_core.task_contract import StructuredRobotTask
+from fireclaw_core.agent.agent import FireClawAgent
+from fireclaw_core.agent.robot import DryRunRobotAdapter
+from fireclaw_core.task.task_contract import StructuredRobotTask
 
 
 def test_robot_agent_runs_structured_task_without_natural_language_planner():

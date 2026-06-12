@@ -1,9 +1,9 @@
 # tests/test_mission_plan_validator.py
 from __future__ import annotations
 
-from fireclaw_core.mission_plan_validator import MissionPlanValidator
-from fireclaw_core.mission_planner import MissionPlan, MissionSubtask
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.mission.mission_plan_validator import MissionPlanValidator
+from fireclaw_core.mission.mission_planner import MissionPlan, MissionSubtask
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
 def test_validator_allows_valid_plan():

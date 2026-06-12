@@ -11,16 +11,16 @@ import time
 from pathlib import Path
 from urllib import request
 
-from fireclaw_core.gateway import FireClawGateway, GatewayConfig
-from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
-from fireclaw_core.mission_planner import (
+from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.mission_planner import (
     MissionPlan,
     MissionPlannerContext,
     MissionPlanningResult,
     MissionSubtask,
 )
-from fireclaw_core.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
-from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
+from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
 
 class DeterministicPlanner:

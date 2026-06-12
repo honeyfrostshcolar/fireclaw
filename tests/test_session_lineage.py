@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from fireclaw_core.session_lineage import (
+from fireclaw_core.infra.session_lineage import (
     JsonlSessionLineageStore,
     MissionSessionLineage,
     validate_resume_ownership,

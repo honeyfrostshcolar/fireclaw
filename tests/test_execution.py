@@ -1,8 +1,8 @@
-from fireclaw_core.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
-from fireclaw_core.executor import PlanExecutor
-from fireclaw_core.planner import Plan, PlanStep, RuleBasedPlanner
-from fireclaw_core.robot import DryRunRobotAdapter, RobotActionResult
-from fireclaw_core.skills import Skill, SkillRegistry, create_default_skill_registry
+from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
+from fireclaw_core.execution.executor import PlanExecutor
+from fireclaw_core.planner.planner import Plan, PlanStep, RuleBasedPlanner
+from fireclaw_core.agent.robot import DryRunRobotAdapter, RobotActionResult
+from fireclaw_core.execution.skills import Skill, SkillRegistry, create_default_skill_registry
 
 
 class CancellationCapturingRobot(DryRunRobotAdapter):

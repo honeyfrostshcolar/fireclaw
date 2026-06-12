@@ -1,4 +1,4 @@
-from fireclaw_core.memory import JsonlMemoryStore
+from fireclaw_core.memory.memory import JsonlMemoryStore
 
 
 def test_jsonl_memory_store_appends_and_reads_records(tmp_path):

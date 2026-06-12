@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fireclaw_core.robot_agent import (
+from fireclaw_core.agent.robot_agent import (
     RobotAgentPolicy,
     RobotAgentTaskEnvelope,
     RobotLocalPlan,

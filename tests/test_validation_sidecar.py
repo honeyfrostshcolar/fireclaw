@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fireclaw_core.validation_sidecar import ValidationSidecar
+from fireclaw_core.safety.validation_sidecar import ValidationSidecar
 
 
 def test_validation_sidecar_runs_once_and_writes_report(tmp_path: Path):

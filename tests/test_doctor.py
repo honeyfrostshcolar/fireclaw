@@ -2,7 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from fireclaw_core.doctor import run_doctor
+from fireclaw_core.devtools.doctor import run_doctor
 
 
 def _check(report, name):
@@ -217,7 +217,7 @@ def test_doctor_module_cli_outputs_json_report(tmp_path):
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.doctor",
+            "fireclaw_core.devtools.doctor",
             "--adapter",
             "mock-ros1",
             "--robot-id",
@@ -402,7 +402,7 @@ def _create_test_memory_index(path: Path) -> None:
 
     Uses the actual SqliteMemoryIndex schema so the real retriever can read it.
     """
-    from fireclaw_core.memory_index import SqliteMemoryIndex
+    from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 
     index = SqliteMemoryIndex(str(path))
     index.upsert({

@@ -1,15 +1,15 @@
-from fireclaw_core.approval_store import JsonlApprovalStore
-from fireclaw_core.memory_retrieval import RetrievedMemory
-from fireclaw_core.mission_agent import MissionAgent
-from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
-from fireclaw_core.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
-from fireclaw_core.mission_registry import JsonlMissionRegistry
-from fireclaw_core.plugin_runtime import PluginRuntime
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
-from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-from fireclaw_core.subagent_client import RobotSubagentClient
-from fireclaw_core.task_registry import JsonlTaskRegistryStore
-from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore
+from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.memory.memory_retrieval import RetrievedMemory
+from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
+from fireclaw_core.mission.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
+from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
+from fireclaw_core.plugin.plugin_runtime import PluginRuntime
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.subagent.subagent_client import RobotSubagentClient
+from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
+from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore
 
 
 class FakeSubagentClient:
@@ -390,7 +390,7 @@ def test_mission_agent_plan_and_submit_returns_clarify_from_planner():
 # --- Authorization tests ---
 
 def test_mission_agent_denies_submit_without_mission_scope():
-    from fireclaw_core.control import ControlPolicy, OperatorContext
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -416,7 +416,7 @@ def test_mission_agent_denies_submit_without_mission_scope():
 
 
 def test_mission_agent_allows_submit_with_mission_scope():
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -441,7 +441,7 @@ def test_mission_agent_allows_submit_with_mission_scope():
 
 
 def test_mission_agent_denies_cancel_without_mission_scope(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -483,7 +483,7 @@ def test_mission_agent_denies_cancel_without_mission_scope(tmp_path):
 
 
 def test_mission_agent_denies_plan_without_mission_scope():
-    from fireclaw_core.control import ControlPolicy, OperatorContext
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -514,7 +514,7 @@ def test_mission_agent_denies_plan_without_mission_scope():
 
 
 def test_mission_agent_admin_bypasses_mission_scopes():
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -762,7 +762,7 @@ def test_mission_agent_mission_events_returns_aggregated_events(tmp_path):
 
 
 def test_mission_agent_mission_events_denied_without_scope(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -885,7 +885,7 @@ def test_mission_events_updates_task_registry_on_terminal_robot_event(tmp_path):
 # --- Operator correction tests ---
 
 def test_mission_agent_records_correction(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -921,7 +921,7 @@ def test_mission_agent_records_correction(tmp_path):
 
 
 def test_mission_agent_records_correction_with_context(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -960,7 +960,7 @@ def test_mission_agent_records_correction_with_context(tmp_path):
 
 
 def test_mission_agent_correction_denied_without_scope():
-    from fireclaw_core.control import ControlPolicy, OperatorContext
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="robot-1", base_url="http://robot-1.local:8765"),
     ])
@@ -1012,7 +1012,7 @@ def test_mission_agent_request_approval(tmp_path):
 
 
 def test_mission_agent_request_approval_with_operator(tmp_path):
-    from fireclaw_core.control import OperatorContext
+    from fireclaw_core.gateway.control import OperatorContext
     registry = RobotRegistry([])
     store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
     operator = OperatorContext(operator_id="op-1", role="operator")
@@ -1034,7 +1034,7 @@ def test_mission_agent_request_approval_with_operator(tmp_path):
 
 
 def test_mission_agent_decide_approval_approve(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([])
     store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
     policy = ControlPolicy()
@@ -1059,7 +1059,7 @@ def test_mission_agent_decide_approval_approve(tmp_path):
 
 
 def test_mission_agent_decide_approval_deny(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([])
     store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
     policy = ControlPolicy()
@@ -1085,7 +1085,7 @@ def test_mission_agent_decide_approval_deny(tmp_path):
 
 
 def test_mission_agent_decide_approval_denied_without_scope(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
     registry = RobotRegistry([])
     store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
     policy = ControlPolicy()
@@ -1109,7 +1109,7 @@ def test_mission_agent_decide_approval_denied_without_scope(tmp_path):
 
 
 def test_mission_agent_decide_approval_invalid_decision(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([])
     store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
     policy = ControlPolicy()
@@ -1133,7 +1133,7 @@ def test_mission_agent_decide_approval_invalid_decision(tmp_path):
 
 
 def test_mission_agent_decide_approval_not_found(tmp_path):
-    from fireclaw_core.control import ControlPolicy, OperatorContext, scopes_for_role
+    from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
     registry = RobotRegistry([])
     store = JsonlApprovalStore(tmp_path / "approvals.jsonl")
     policy = ControlPolicy()
@@ -1353,7 +1353,7 @@ def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
         "failure_decisions": [],
     }
 
-    with patch('fireclaw_core.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
+    with patch('fireclaw_core.mission.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
         result = mission.plan_and_submit("去二楼搜索", session_id="mission-1")
 
     assert result["status"] == "succeeded"
@@ -1430,7 +1430,7 @@ def test_plan_and_submit_scheduler_result_includes_failure_decisions():
         ],
     }
 
-    with patch('fireclaw_core.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
+    with patch('fireclaw_core.mission.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
         result = mission.plan_and_submit("去二楼搜索", session_id="mission-1")
 
     assert result["status"] == "succeeded"
@@ -1454,7 +1454,7 @@ def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_pat
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
 
     # Pre-populate memory with an outcome and a correction
-    from fireclaw_core.mission_memory import MissionMemoryRecord
+    from fireclaw_core.mission.mission_memory import MissionMemoryRecord
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1603,7 +1603,7 @@ def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
 
-    from fireclaw_core.mission_memory import MissionMemoryRecord
+    from fireclaw_core.mission.mission_memory import MissionMemoryRecord
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1887,7 +1887,7 @@ def test_memory_hooks_not_called_when_no_memories(tmp_path):
 def test_mission_agent_auto_wires_subagent_registry_to_client(tmp_path):
     """When subagent_registry is provided but subagent_client is not,
     MissionAgent should wire registry into the default RobotSubagentClient."""
-    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
     ])
@@ -2012,7 +2012,7 @@ def test_plan_and_submit_scheduler_path_writes_task_flow_record(tmp_path):
         "failure_decisions": [],
     }
 
-    with patch('fireclaw_core.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
+    with patch('fireclaw_core.mission.mission_scheduler.MissionScheduler', return_value=mock_scheduler):
         result = mission.plan_and_submit("去二楼搜索", session_id="mission-1")
 
     assert result["status"] == "succeeded"

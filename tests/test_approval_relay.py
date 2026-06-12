@@ -2,24 +2,24 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fireclaw_core.approval_relay import (
+from fireclaw_core.approval.approval_relay import (
     ApprovalRelay,
     InMemoryApprovalRelay,
     RelayDeliveryRecord,
 )
-from fireclaw_core.approval_store import JsonlApprovalStore
-from fireclaw_core.approval_runtime import ApprovalRuntime
-from fireclaw_core.control import OperatorContext
-from fireclaw_core.mission_agent import MissionAgent
-from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
-from fireclaw_core.mission_planner import (
+from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.approval.approval_runtime import ApprovalRuntime
+from fireclaw_core.gateway.control import OperatorContext
+from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.mission_planner import (
     MissionPlan,
     MissionPlannerContext,
     MissionPlanningResult,
     MissionSubtask,
 )
-from fireclaw_core.mission_registry import JsonlMissionRegistry
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
 # ---------------------------------------------------------------------------

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fireclaw_core.plugin_descriptor import FireClawPluginDescriptor
-from fireclaw_core.plugin_policy import PluginPolicy, PluginHookAuditRecord
-from fireclaw_core.plugin_runtime import PluginRuntime
+from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
+from fireclaw_core.plugin.plugin_policy import PluginPolicy, PluginHookAuditRecord
+from fireclaw_core.plugin.plugin_runtime import PluginRuntime
 
 
 def _make_descriptor(plugin_id: str = "test.plugin", **kwargs) -> FireClawPluginDescriptor:

@@ -1,4 +1,4 @@
-from fireclaw_core.mission_registry import JsonlMissionRegistry, MissionRecord, MissionSubtaskRecord
+from fireclaw_core.mission.mission_registry import JsonlMissionRegistry, MissionRecord, MissionSubtaskRecord
 
 
 def test_mission_registry_creates_mission_and_records_subtask(tmp_path):

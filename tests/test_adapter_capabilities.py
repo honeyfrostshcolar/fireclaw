@@ -1,7 +1,7 @@
 """Phase 2 tests: adapter capability declarations and simulator/real-robot separation."""
 from __future__ import annotations
 
-from fireclaw_core.robot import (
+from fireclaw_core.agent.robot import (
     ALL_ROBOT_ACTIONS,
     AdapterCapabilities,
     DryRunRobotAdapter,

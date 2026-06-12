@@ -5,7 +5,7 @@ import subprocess
 
 def test_gateway_cli_exposes_robot_agent_flags():
     completed = subprocess.run(
-        [".venv/bin/python", "-m", "fireclaw_core.gateway", "--help"],
+        [".venv/bin/python", "-m", "fireclaw_core", "serve", "--help"],
         check=True,
         text=True,
         capture_output=True,

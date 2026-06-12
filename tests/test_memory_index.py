@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from fireclaw_core.memory_index import SqliteMemoryIndex
+from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 
 
 def _make_record(

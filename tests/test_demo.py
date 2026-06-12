@@ -1,4 +1,4 @@
-from fireclaw_core.demo import run_rescue_demo
+from fireclaw_core.devtools.demo import run_rescue_demo
 
 
 def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_state(tmp_path):

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fireclaw_core.lifecycle_maintenance import LifecycleMaintenanceRunner
-from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-from fireclaw_core.task_registry import JsonlTaskRegistryStore
+from fireclaw_core.lifecycle import LifecycleMaintenanceRunner
+from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
 
 # ---------------------------------------------------------------------------

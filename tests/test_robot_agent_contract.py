@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from fireclaw_core.robot_agent import (
+from fireclaw_core.agent.robot_agent import (
     RobotAgentTaskEnvelope,
     RobotLocalPlan,
     RobotLocalPlanStep,
     envelope_from_structured_task,
     planning_result_from_local_plan,
 )
-from fireclaw_core.task_contract import StructuredRobotTask
+from fireclaw_core.task.task_contract import StructuredRobotTask
 
 
 def test_envelope_from_structured_task_adds_safe_allowed_skills():

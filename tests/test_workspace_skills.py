@@ -1,7 +1,7 @@
 import json
 import sys
 
-from fireclaw_core.workspace_skills import load_workspace_skills
+from fireclaw_core.infra.workspace_skills import load_workspace_skills
 
 
 def _write_manifest(path, *, name="external_skill", command=None, runtime="subprocess"):

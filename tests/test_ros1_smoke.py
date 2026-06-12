@@ -52,7 +52,7 @@ def smoke_artifact_collector():
     collector = _ArtifactCollector()
     yield collector
     if artifact_path is not None:
-        from fireclaw_core.ros1_smoke_artifacts import (
+        from fireclaw_core.ros.ros1_smoke_artifacts import (
             JsonlRos1SmokeArtifactStore,
             Ros1SmokeArtifact,
         )
@@ -176,7 +176,7 @@ def wait_for_action_server(action_name: str, timeout: float = 10.0) -> None:
 
 def _make_real_ros_module():
     """Create a Ros1RuntimeModule backed by real rospy/actionlib."""
-    from fireclaw_core.ros1_transport import Ros1RuntimeModule
+    from fireclaw_core.ros.ros1_transport import Ros1RuntimeModule
     return Ros1RuntimeModule.load()
 
 
@@ -287,8 +287,8 @@ def test_ros1_smoke_infrastructure_starts(
 
 def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node, smoke_artifact_collector):
     """Publish a Twist to /turtle1/cmd_vel via transport.execute() with a dict payload."""
-    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
-    from fireclaw_core.ros1_transport import Ros1Transport
+    from fireclaw_core.ros.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros.ros1_transport import Ros1Transport
 
     _ensure_rospy_node("fireclaw_smoke_topic")
     module = _make_real_ros_module()
@@ -315,8 +315,8 @@ def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node, smoke_artif
 
 def test_ros1_service_call_clear(ros_master, turtlesim_node, smoke_artifact_collector):
     """Call turtlesim /clear service through Ros1Transport."""
-    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
-    from fireclaw_core.ros1_transport import Ros1Transport
+    from fireclaw_core.ros.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros.ros1_transport import Ros1Transport
 
     _ensure_rospy_node("fireclaw_smoke_service")
     module = _make_real_ros_module()
@@ -340,8 +340,8 @@ def test_ros1_service_call_clear(ros_master, turtlesim_node, smoke_artifact_coll
 
 def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server, smoke_artifact_collector):
     """Send Fibonacci goal via transport.execute() with a dict payload."""
-    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
-    from fireclaw_core.ros1_transport import Ros1Transport
+    from fireclaw_core.ros.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros.ros1_transport import Ros1Transport
 
     _ensure_rospy_node("fireclaw_smoke_action")
     module = _make_real_ros_module()
@@ -385,8 +385,8 @@ def test_ros1_action_fibonacci_goal(ros_master, fibonacci_server, smoke_artifact
 
 def test_ros1_action_cancel(ros_master, fibonacci_server, smoke_artifact_collector):
     """Send Fibonacci goal and cancel it after first feedback."""
-    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
-    from fireclaw_core.ros1_transport import Ros1Transport
+    from fireclaw_core.ros.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros.ros1_transport import Ros1Transport
 
     _ensure_rospy_node("fireclaw_smoke_cancel")
     module = _make_real_ros_module()
@@ -433,8 +433,8 @@ def test_ros1_action_cancel(ros_master, fibonacci_server, smoke_artifact_collect
 
 def test_ros1_action_timeout(ros_master, fibonacci_server, smoke_artifact_collector):
     """Verify timeout produces correct status when result takes too long."""
-    from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
-    from fireclaw_core.ros1_transport import Ros1Transport
+    from fireclaw_core.ros.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+    from fireclaw_core.ros.ros1_transport import Ros1Transport
 
     _ensure_rospy_node("fireclaw_smoke_timeout")
     module = _make_real_ros_module()

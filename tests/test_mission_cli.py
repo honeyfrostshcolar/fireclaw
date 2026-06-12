@@ -4,9 +4,9 @@ import sys
 import time
 from pathlib import Path
 
-from fireclaw_core.approval_store import JsonlApprovalStore
-from fireclaw_core.gateway import FireClawGateway, GatewayConfig
-from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
+from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
 
 
 def _write_slow_policy_skill(skills_dir: Path) -> None:
@@ -44,7 +44,7 @@ def _wait_for_cli_trace(mission_registry_path, robot_registry_path, mission_id):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "trace",
                 mission_id,
                 "--robot-registry",
@@ -99,7 +99,7 @@ def test_mission_cli_submit_subtask_records_mission(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
                 "--robot",
                 "robot-1",
@@ -155,7 +155,7 @@ def test_mission_cli_trace_aggregates_robot_subagent_trace(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
                 "--robot",
                 "robot-1",
@@ -211,7 +211,7 @@ def test_mission_cli_cancel_requests_robot_subagent_cancellation(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
                 "--robot",
                 "robot-1",
@@ -234,7 +234,7 @@ def test_mission_cli_cancel_requests_robot_subagent_cancellation(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "cancel",
                 "mission-cli-cancel",
                 "--robot-registry",
@@ -303,7 +303,7 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "plan-mission",
                 "--command",
                 "去二楼和三楼搜索受困人员",
@@ -355,7 +355,7 @@ def test_mission_cli_rejects_submit_without_mission_scope(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
                 "--robot",
                 "robot-1",
@@ -388,7 +388,7 @@ def _run_memory_cli(tmp_path, *extra_args):
     argv = [
         ".venv/bin/python",
         "-m",
-        "fireclaw_core.mission_cli",
+        "fireclaw_core.mission.mission_cli",
         "memory",
         "--memory-path",
         str(memory_path),
@@ -561,7 +561,7 @@ def test_mission_cli_corrections(tmp_path):
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.mission_cli",
+            "fireclaw_core.mission.mission_cli",
             "corrections",
             "m-1",
             "--memory-path",
@@ -608,7 +608,7 @@ def test_mission_cli_events(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
                 "--robot",
                 "robot-1",
@@ -631,7 +631,7 @@ def test_mission_cli_events(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "events",
                 "mission-events-test",
                 "--robot-registry",
@@ -659,7 +659,7 @@ def _run_approval_cli(tmp_path, *extra_args):
     argv = [
         ".venv/bin/python",
         "-m",
-        "fireclaw_core.mission_cli",
+        "fireclaw_core.mission.mission_cli",
         "approval",
         "--approval-path",
         str(approval_path),
@@ -811,7 +811,7 @@ def test_mission_cli_replay(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
                 "--robot",
                 "robot-1",
@@ -834,7 +834,7 @@ def test_mission_cli_replay(tmp_path):
             [
                 ".venv/bin/python",
                 "-m",
-                "fireclaw_core.mission_cli",
+                "fireclaw_core.mission.mission_cli",
                 "replay",
                 "mission-replay-test",
                 "--robot-registry",
@@ -875,7 +875,7 @@ def test_mission_cli_replay_not_found(tmp_path):
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.mission_cli",
+            "fireclaw_core.mission.mission_cli",
             "replay",
             "nonexistent-mission",
             "--robot-registry",
@@ -898,8 +898,8 @@ def test_mission_cli_replay_not_found(tmp_path):
 
 
 def test_lifecycle_check_cli_outputs_report(tmp_path: Path):
-    from fireclaw_core.task_registry import JsonlTaskRegistryStore
-    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
+    from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
 
     task_path = tmp_path / "tasks.jsonl"
     subagent_path = tmp_path / "subagents.jsonl"
@@ -911,7 +911,7 @@ def test_lifecycle_check_cli_outputs_report(tmp_path: Path):
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.mission_cli",
+            "fireclaw_core.mission.mission_cli",
             "lifecycle-check",
             "--task-registry",
             str(task_path),
@@ -934,9 +934,9 @@ def test_lifecycle_check_cli_outputs_report(tmp_path: Path):
 def test_mission_cli_plan_mission_with_llm_flag():
     """Verify --planner llm creates an LLMMissionPlanner via _build_planner."""
     import argparse
-    from fireclaw_core.llm_planner import LLMMissionPlanner
-    from fireclaw_core.mission_planner import MissionPlanner
-    from fireclaw_core.mission_cli import _build_planner
+    from fireclaw_core.planner.llm_planner import LLMMissionPlanner
+    from fireclaw_core.mission.mission_planner import MissionPlanner
+    from fireclaw_core.mission.mission_cli import _build_planner
 
     # Test LLM planner creation
     args = argparse.Namespace(
@@ -993,7 +993,7 @@ def test_mission_cli_plan_mission_llm_missing_required_flags(tmp_path):
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.mission_cli",
+            "fireclaw_core.mission.mission_cli",
             "plan-mission",
             "--command",
             "去二楼搜索",
@@ -1027,7 +1027,7 @@ def test_mission_cli_plan_mission_deterministic_default(tmp_path):
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.mission_cli",
+            "fireclaw_core.mission.mission_cli",
             "plan-mission",
             "--command",
             "去二楼搜索",
@@ -1051,7 +1051,7 @@ def test_serve_subcommand_help():
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.mission_cli",
+            "fireclaw_core.mission.mission_cli",
             "serve",
             "--help",
         ],
@@ -1073,7 +1073,7 @@ def test_mission_subcommand_help():
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.mission_cli",
+            "fireclaw_core.mission.mission_cli",
             "mission",
             "--help",
         ],

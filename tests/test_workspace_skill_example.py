@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fireclaw_core.workspace_skills import load_workspace_skills
+from fireclaw_core.infra.workspace_skills import load_workspace_skills
 
 
 def test_example_echo_policy_loads_and_runs_from_workspace_manifest():

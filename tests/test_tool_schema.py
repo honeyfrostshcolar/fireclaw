@@ -1,5 +1,5 @@
-from fireclaw_core.planner import PlannerContext
-from fireclaw_core.tool_schema import (
+from fireclaw_core.planner.planner import PlannerContext
+from fireclaw_core.devtools.tool_schema import (
     build_planner_request,
     build_tool_schemas,
     planner_response_schema,

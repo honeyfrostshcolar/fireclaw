@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fireclaw_core.lifecycle_reconciler import LifecycleReconciler
-from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-from fireclaw_core.task_registry import JsonlTaskRegistryStore
+from fireclaw_core.lifecycle import LifecycleReconciler
+from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
 
 def test_reconciler_marks_subtask_orphan_when_child_task_missing(tmp_path: Path) -> None:

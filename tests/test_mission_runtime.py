@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fireclaw_core.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
+from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
 
 
 def _write_robot_registry(path: Path, entries: list[dict]) -> None:

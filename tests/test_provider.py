@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from fireclaw_core.provider import (
+from fireclaw_core.provider.provider import (
     ChatCompletion,
     ModelProvider,
     OpenAICompatProvider,
@@ -115,7 +115,7 @@ def _sample_openai_response(
     }
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_returns_chat_completion(mock_post: MagicMock):
     mock_post.return_value = _make_mock_response(200, _sample_openai_response())
 
@@ -135,7 +135,7 @@ def test_openai_compat_provider_returns_chat_completion(mock_post: MagicMock):
     assert result.usage.total_tokens == 15
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_sends_tools(mock_post: MagicMock):
     mock_post.return_value = _make_mock_response(200, _sample_openai_response())
 
@@ -166,7 +166,7 @@ def test_openai_compat_provider_sends_tools(mock_post: MagicMock):
     assert body["tools"] == tools
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_raises_auth_error(mock_post: MagicMock):
     mock_post.return_value = _make_mock_response(401, {"error": {"message": "Unauthorized"}})
 
@@ -179,7 +179,7 @@ def test_openai_compat_provider_raises_auth_error(mock_post: MagicMock):
     assert exc_info.value.status_code == 401
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_raises_api_error(mock_post: MagicMock):
     mock_post.return_value = _make_mock_response(500, {"error": {"message": "Internal Server Error"}})
 
@@ -192,7 +192,7 @@ def test_openai_compat_provider_raises_api_error(mock_post: MagicMock):
     assert exc_info.value.status_code == 500
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_raises_timeout_error(mock_post: MagicMock):
     mock_post.side_effect = httpx.TimeoutException("Connection timed out")
 
@@ -204,7 +204,7 @@ def test_openai_compat_provider_raises_timeout_error(mock_post: MagicMock):
         )
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_raises_on_malformed_response(mock_post: MagicMock):
     """Response with missing 'choices' key should raise ProviderAPIError."""
     resp = MagicMock()
@@ -221,7 +221,7 @@ def test_openai_compat_provider_raises_on_malformed_response(mock_post: MagicMoc
         )
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_raises_on_invalid_json_response(mock_post: MagicMock):
     """Response with non-JSON body should raise ProviderAPIError."""
     resp = MagicMock()
@@ -238,7 +238,7 @@ def test_openai_compat_provider_raises_on_invalid_json_response(mock_post: Magic
         )
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_raises_on_connection_error(mock_post: MagicMock):
     mock_post.side_effect = httpx.ConnectError("Connection refused")
 
@@ -250,7 +250,7 @@ def test_openai_compat_provider_raises_on_connection_error(mock_post: MagicMock)
         )
 
 
-@patch("fireclaw_core.provider.httpx.post")
+@patch("fireclaw_core.provider.provider.httpx.post")
 def test_openai_compat_provider_raises_on_invalid_json_error_body(mock_post: MagicMock):
     """Error response with non-JSON body should fall back to response.text."""
     resp = MagicMock()

@@ -1,4 +1,4 @@
-from fireclaw_core.approval_store import ApprovalRequest, JsonlApprovalStore
+from fireclaw_core.approval.approval_store import ApprovalRequest, JsonlApprovalStore
 
 
 def test_approval_store_create_and_get(tmp_path):

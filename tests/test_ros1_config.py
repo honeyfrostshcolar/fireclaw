@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.ros1_config import load_ros1_adapter_config
+from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
 
 
 def test_load_ros1_adapter_config_parses_action_and_service_endpoints(tmp_path):

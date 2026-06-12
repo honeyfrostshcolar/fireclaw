@@ -11,17 +11,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fireclaw_core.memory_index import SqliteMemoryIndex
-from fireclaw_core.memory_retrieval import MemoryRetriever
-from fireclaw_core.mission_agent import MissionAgent
-from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
-from fireclaw_core.mission_planner import (
+from fireclaw_core.memory.memory_index import SqliteMemoryIndex
+from fireclaw_core.memory.memory_retrieval import MemoryRetriever
+from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
+from fireclaw_core.mission.mission_planner import (
     MissionPlan,
     MissionPlannerContext,
     MissionPlanningResult,
     MissionSubtask,
 )
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
 class SpyPlanner:
@@ -254,7 +254,7 @@ def test_plan_and_submit_without_memory_returns_empty_context(tmp_path: Path):
 
 def test_memory_retriever_wired_from_paths(tmp_path: Path):
     """build_mission_agent_from_paths wires MemoryRetriever when memory_index is set."""
-    from fireclaw_core.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
+    from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
 
     memory_path = tmp_path / "memory.jsonl"
     index_path = tmp_path / "memory.sqlite"

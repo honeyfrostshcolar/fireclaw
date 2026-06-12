@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from fireclaw_core.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
-from fireclaw_core.ros1_transport import Ros1Transport
+from fireclaw_core.ros.ros1_config import Ros1EndpointConfig, Ros1TransportConfig
+from fireclaw_core.ros.ros1_transport import Ros1Transport
 
 
 class FakePublisher:
@@ -207,7 +207,7 @@ def test_ros1_transport_reports_action_result_timeout():
 
 def test_resolve_ros_type_gives_clear_error_on_missing_package():
     import pytest
-    from fireclaw_core.ros1_transport import Ros1RuntimeModule
+    from fireclaw_core.ros.ros1_transport import Ros1RuntimeModule
 
     module = Ros1RuntimeModule(rospy=SimpleNamespace(), actionlib=SimpleNamespace())
     with pytest.raises(RuntimeError, match="not installed"):
@@ -217,17 +217,17 @@ def test_resolve_ros_type_gives_clear_error_on_missing_package():
 def test_resolve_ros_type_gives_clear_error_on_missing_class():
     import pytest
     from unittest.mock import patch
-    from fireclaw_core.ros1_transport import Ros1RuntimeModule
+    from fireclaw_core.ros.ros1_transport import Ros1RuntimeModule
 
     module = Ros1RuntimeModule(rospy=SimpleNamespace(), actionlib=SimpleNamespace())
     fake_module = SimpleNamespace(String=type("String", (), {}))
-    with patch("fireclaw_core.ros1_transport.import_module", return_value=fake_module):
+    with patch("fireclaw_core.ros.ros1_transport.import_module", return_value=fake_module):
         with pytest.raises(RuntimeError, match="not found"):
             module._resolve_ros_type("std_msgs/NonexistentType", preferred_module="msg")
 
 
 def test_response_to_data_handles_slots():
-    from fireclaw_core.ros1_transport import _response_to_data
+    from fireclaw_core.ros.ros1_transport import _response_to_data
 
     class SlottedMsg:
         __slots__ = ("x", "y")
@@ -240,7 +240,7 @@ def test_response_to_data_handles_slots():
 
 
 def test_response_to_data_handles_nested_slots():
-    from fireclaw_core.ros1_transport import _response_to_data
+    from fireclaw_core.ros.ros1_transport import _response_to_data
 
     class Inner:
         __slots__ = ("value",)
@@ -258,7 +258,7 @@ def test_response_to_data_handles_nested_slots():
 
 
 def test_validate_payload_against_type():
-    from fireclaw_core.ros1_transport import validate_payload_against_type
+    from fireclaw_core.ros.ros1_transport import validate_payload_against_type
 
     class Twist:
         __slots__ = ("linear", "angular")
@@ -272,7 +272,7 @@ def test_validate_payload_against_type():
 
 
 def test_validate_payload_skips_when_no_slots():
-    from fireclaw_core.ros1_transport import validate_payload_against_type
+    from fireclaw_core.ros.ros1_transport import validate_payload_against_type
 
     class NoSlots:
         pass

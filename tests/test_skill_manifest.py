@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from fireclaw_core.skill_manifest import load_subprocess_skill_from_manifest
+from fireclaw_core.infra.skill_manifest import load_subprocess_skill_from_manifest
 
 
 def test_load_subprocess_skill_from_manifest(tmp_path):
@@ -260,11 +260,11 @@ def test_manifest_rejects_invalid_risk_level(tmp_path):
 # descriptor_from_skill_manifest conversion tests
 # ---------------------------------------------------------------------------
 
-from fireclaw_core.plugin_descriptor import (
+from fireclaw_core.plugin.plugin_descriptor import (
     FireClawPluginDescriptor,
     descriptor_from_skill_manifest,
 )
-from fireclaw_core.skills import Skill
+from fireclaw_core.execution.skills import Skill
 
 
 def _make_skill(**overrides):
@@ -379,7 +379,7 @@ class TestDescriptorFromSkillManifest:
         """Smoke-test conversion against every default skill in the registry."""
         from unittest.mock import MagicMock
 
-        from fireclaw_core.skills import create_default_skill_registry
+        from fireclaw_core.execution.skills import create_default_skill_registry
 
         robot = MagicMock()
         robot.dry_run = True

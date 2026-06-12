@@ -1,4 +1,4 @@
-from fireclaw_core.method_scopes import (
+from fireclaw_core.gateway.method_scopes import (
     ADMIN_SCOPE,
     APPROVALS_SCOPE,
     EMERGENCY_SCOPE,
@@ -197,7 +197,7 @@ class TestGatewayScopeEnforcement:
     """Test that gateways enforce method scopes end-to-end."""
 
     def _make_gateway(self):
-        from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+        from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
         gateway = FireClawGateway(GatewayConfig(adapter="dry-run", port=0))
         gateway.start()
         return gateway

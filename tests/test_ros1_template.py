@@ -1,6 +1,6 @@
 import pytest
 
-from fireclaw_core.ros1_template import render_ros1_template
+from fireclaw_core.ros.ros1_template import render_ros1_template
 
 
 def test_render_ros1_template_resolves_inputs_and_targets():

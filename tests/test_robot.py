@@ -1,14 +1,14 @@
 import json
 
-from fireclaw_core.robot import (
+from fireclaw_core.agent.robot import (
     DryRunRobotAdapter,
     MockRos1RobotAdapter,
     MockRos2RobotAdapter,
     Ros1RobotAdapter,
     SimulatorRobotAdapter,
 )
-from fireclaw_core.runtime_config import create_robot_adapter
-from fireclaw_core.ros1_transport import Ros1Transport
+from fireclaw_core.execution.runtime_config import create_robot_adapter
+from fireclaw_core.ros.ros1_transport import Ros1Transport
 
 
 def test_dry_run_robot_adapter_returns_structured_success_result():

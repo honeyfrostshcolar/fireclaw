@@ -3,9 +3,9 @@ import sys
 import time
 from pathlib import Path
 
-from fireclaw_core.gateway import FireClawGateway, GatewayConfig
-from fireclaw_core.robot_registry import RobotRegistryEntry
-from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
 
 def _write_slow_policy_skill(skills_dir: Path, release_path: Path | None = None) -> None:
@@ -161,7 +161,7 @@ def test_robot_subagent_client_check_presence_offline():
 
 
 def test_robot_subagent_client_sends_structured_task_payload(tmp_path):
-    from fireclaw_core.task_contract import StructuredRobotTask
+    from fireclaw_core.task.task_contract import StructuredRobotTask
 
     gateway = FireClawGateway(
         GatewayConfig(

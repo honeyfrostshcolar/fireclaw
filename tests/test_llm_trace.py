@@ -4,8 +4,8 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from fireclaw_core.llm_trace import LLMTraceRecord, LLMTraceStore
-from fireclaw_core.provider import TokenUsage
+from fireclaw_core.planner.llm_trace import LLMTraceRecord, LLMTraceStore
+from fireclaw_core.provider.provider import TokenUsage
 
 @pytest.fixture
 def trace_store(tmp_path):

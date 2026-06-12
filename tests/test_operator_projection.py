@@ -1,4 +1,4 @@
-from fireclaw_core.operator_projection import OperatorEventProjector
+from fireclaw_core.infra.operator_projection import OperatorEventProjector
 
 
 def test_projector_translates_rescue_progress_events():

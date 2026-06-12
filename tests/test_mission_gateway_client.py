@@ -19,8 +19,8 @@ from urllib.error import HTTPError
 
 import pytest
 
-from fireclaw_core.mission_gateway_client import MissionGatewayClient
-from fireclaw_core.stream_events import EventBus, StreamEvent
+from fireclaw_core.mission.mission_gateway_client import MissionGatewayClient
+from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +372,7 @@ def test_client_approval_pending_and_resolve_token_requests() -> None:
 class TestSSECursorReplayGateway:
     def test_sse_includes_event_id(self) -> None:
         """Verify SSE output includes id: field via cursor replay."""
-        from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+        from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
         import tempfile
         import socket as _socket
         from http.client import HTTPConnection
@@ -424,7 +424,7 @@ class TestSSECursorReplayGateway:
 
     def test_sse_cursor_replay(self) -> None:
         """Verify after_sequence replays missed events."""
-        from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+        from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
         import tempfile
         import socket as _socket
         from http.client import HTTPConnection
@@ -480,7 +480,7 @@ class TestSSECursorReplayGateway:
 
     def test_sse_cursor_no_duplicate_live(self) -> None:
         """Verify no duplicate events after replay + live stream."""
-        from fireclaw_core.gateway import FireClawGateway, GatewayConfig
+        from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
         import tempfile
         from http.client import HTTPConnection
 
@@ -558,15 +558,15 @@ class TestSSECursorReplayGateway:
 class TestMissionGatewayClientIntegration:
     def test_client_submit_mission_real(self, tmp_path) -> None:
         """Test submit_mission against a real MissionGateway."""
-        from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
-        from fireclaw_core.mission_agent import MissionAgent
-        from fireclaw_core.mission_planner import (
+        from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+        from fireclaw_core.mission.mission_agent import MissionAgent
+        from fireclaw_core.mission.mission_planner import (
             MissionPlan,
             MissionPlannerContext,
             MissionPlanningResult,
             MissionSubtask,
         )
-        from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+        from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
         registry = RobotRegistry([
             RobotRegistryEntry(
@@ -633,9 +633,9 @@ class TestMissionGatewayClientIntegration:
 
     def test_client_get_fleet_state_real(self) -> None:
         """Test get_fleet_state against a real MissionGateway."""
-        from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
-        from fireclaw_core.mission_agent import MissionAgent
-        from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+        from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+        from fireclaw_core.mission.mission_agent import MissionAgent
+        from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
         registry = RobotRegistry([
             RobotRegistryEntry(
@@ -742,9 +742,9 @@ class TestMissionGatewayClientIntegration:
 
     def test_client_auth_real(self) -> None:
         """Test client sends auth headers to real gateway."""
-        from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
-        from fireclaw_core.mission_agent import MissionAgent
-        from fireclaw_core.robot_registry import RobotRegistry
+        from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+        from fireclaw_core.mission.mission_agent import MissionAgent
+        from fireclaw_core.agent.robot_registry import RobotRegistry
 
         agent = MissionAgent(
             registry=RobotRegistry([]),

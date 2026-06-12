@@ -1,7 +1,7 @@
 """Tests for FireClawPluginDescriptor and its validation."""
 import pytest
 
-from fireclaw_core.plugin_descriptor import FireClawPluginDescriptor
+from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
 
 
 # ---------------------------------------------------------------------------

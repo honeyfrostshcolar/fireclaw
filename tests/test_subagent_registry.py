@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from fireclaw_core.subagent_registry import (
+from fireclaw_core.subagent.subagent_registry import (
     JsonlSubagentRegistry,
     SubagentRunRecord,
 )
@@ -394,8 +394,8 @@ def test_subagent_registry_mark_terminal_sets_error(tmp_path):
 
 def test_subagent_client_records_to_registry_when_configured(tmp_path):
     """When registry is wired in, submit_task creates a record and cancel_task updates it."""
-    from fireclaw_core.robot_registry import RobotRegistryEntry
-    from fireclaw_core.subagent_client import RobotSubagentClient
+    from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+    from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
     registry_path = tmp_path / "subagent_registry.jsonl"
     registry = JsonlSubagentRegistry(registry_path)
@@ -441,8 +441,8 @@ def test_subagent_client_records_to_registry_when_configured(tmp_path):
 
 def test_subagent_client_no_registry_is_noop():
     """Without a registry, client methods still work normally."""
-    from fireclaw_core.robot_registry import RobotRegistryEntry
-    from fireclaw_core.subagent_client import RobotSubagentClient
+    from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+    from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
     client = RobotSubagentClient()  # No registry
     entry = RobotRegistryEntry(robot_id="robot-2", base_url="http://localhost:9999")
@@ -457,8 +457,8 @@ def test_subagent_client_no_registry_is_noop():
 
 def test_subagent_client_get_trace_updates_existing_registry_record_on_terminal_status(tmp_path):
     """Observed terminal trace should update an existing child run mapping."""
-    from fireclaw_core.robot_registry import RobotRegistryEntry
-    from fireclaw_core.subagent_client import RobotSubagentClient
+    from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+    from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
     registry = JsonlSubagentRegistry(tmp_path / "subagent_registry.jsonl")
     client = RobotSubagentClient(registry=registry)
@@ -486,8 +486,8 @@ def test_subagent_client_get_trace_updates_existing_registry_record_on_terminal_
 
 def test_subagent_client_get_trace_without_existing_mapping_does_not_create_registry_record(tmp_path):
     """Trace observation should not invent lineage when no child mapping exists."""
-    from fireclaw_core.robot_registry import RobotRegistryEntry
-    from fireclaw_core.subagent_client import RobotSubagentClient
+    from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+    from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
     registry = JsonlSubagentRegistry(tmp_path / "subagent_registry.jsonl")
     client = RobotSubagentClient(registry=registry)

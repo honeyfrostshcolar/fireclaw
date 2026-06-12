@@ -1,7 +1,7 @@
-from fireclaw_core.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
-from fireclaw_core.robot import DryRunRobotAdapter, Ros1RobotAdapter, RobotActionResult
-from fireclaw_core.ros1_config import parse_ros1_adapter_config
-from fireclaw_core.ros1_transport import Ros1Transport
+from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
+from fireclaw_core.agent.robot import DryRunRobotAdapter, Ros1RobotAdapter, RobotActionResult
+from fireclaw_core.ros.ros1_config import parse_ros1_adapter_config
+from fireclaw_core.ros.ros1_transport import Ros1Transport
 
 
 def test_robot_action_runtime_emits_lifecycle_events_for_adapter_action():

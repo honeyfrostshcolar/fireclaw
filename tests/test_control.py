@@ -1,4 +1,4 @@
-from fireclaw_core.control import (
+from fireclaw_core.gateway.control import (
     AuthorizationRequest,
     DEFAULT_LOCAL_OPERATOR,
     ControlPolicy,

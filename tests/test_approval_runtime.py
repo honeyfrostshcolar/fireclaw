@@ -4,8 +4,8 @@ import hashlib
 import time
 from datetime import datetime, timezone
 
-from fireclaw_core.approval_store import JsonlApprovalStore
-from fireclaw_core.approval_runtime import ApprovalRuntime, ApprovalRuntimeToken
+from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.approval.approval_runtime import ApprovalRuntime, ApprovalRuntimeToken
 
 
 def _create_request(store: JsonlApprovalStore, *, mission_id: str = "mission-1") -> str:

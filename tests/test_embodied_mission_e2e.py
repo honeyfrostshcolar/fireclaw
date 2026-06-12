@@ -11,21 +11,21 @@ import json
 from pathlib import Path
 from urllib import request
 
-from fireclaw_core.mission_agent import MissionAgent
-from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
-from fireclaw_core.mission_memory import MissionMemoryStore
-from fireclaw_core.mission_planner import (
+from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.mission_memory import MissionMemoryStore
+from fireclaw_core.mission.mission_planner import (
     MissionPlan,
     MissionPlannerContext,
     MissionPlanningResult,
     MissionSubtask,
 )
-from fireclaw_core.mission_registry import JsonlMissionRegistry
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
-from fireclaw_core.session_lineage import JsonlSessionLineageStore
-from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-from fireclaw_core.task_flow_registry import JsonlTaskFlowRegistryStore
-from fireclaw_core.task_registry import JsonlTaskRegistryStore
+from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore
+from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore
+from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
 
 # ---------------------------------------------------------------------------

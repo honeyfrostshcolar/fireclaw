@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fireclaw_core.embodied_proof_bundle import create_embodied_proof_bundle
+from fireclaw_core.devtools.embodied_proof_bundle import create_embodied_proof_bundle
 
 
 def test_embodied_proof_bundle_writes_redacted_summary(tmp_path: Path):

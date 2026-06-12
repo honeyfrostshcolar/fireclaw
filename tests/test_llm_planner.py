@@ -7,22 +7,22 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from fireclaw_core.llm_planner import (
+from fireclaw_core.planner.llm_planner import (
     LLMMissionPlanner,
     MISSION_PLAN_TOOL,
     VALID_INTENTS,
     build_system_prompt,
 )
-from fireclaw_core.mission_planner import MissionPlannerContext
-from fireclaw_core.provider import (
+from fireclaw_core.mission.mission_planner import MissionPlannerContext
+from fireclaw_core.provider.provider import (
     ChatCompletion,
     ProviderAPIError,
     ProviderTimeoutError,
     TokenUsage,
     ToolCall,
 )
-from fireclaw_core.provider_runtime import SimpleProviderRuntime
-from fireclaw_core.robot_registry import RobotRegistryEntry
+from fireclaw_core.provider.provider_runtime import SimpleProviderRuntime
+from fireclaw_core.agent.robot_registry import RobotRegistryEntry
 
 
 # --- Helpers ---

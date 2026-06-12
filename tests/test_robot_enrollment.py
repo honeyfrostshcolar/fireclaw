@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.robot_enrollment import (
+from fireclaw_core.agent.robot_enrollment import (
     ENROLLMENT_TERMINAL_STATUSES,
     EnrollmentRequest,
     JsonlEnrollmentStore,
@@ -231,7 +231,7 @@ class TestCleanupExpired:
 
 class TestPairingCodeGeneration:
     def test_generate_pairing_code_format(self) -> None:
-        from fireclaw_core.robot_enrollment import generate_pairing_code
+        from fireclaw_core.agent.robot_enrollment import generate_pairing_code
 
         code = generate_pairing_code()
         assert len(code) == 6
@@ -239,7 +239,7 @@ class TestPairingCodeGeneration:
         assert code.isupper()
 
     def test_generate_pairing_code_uniqueness(self) -> None:
-        from fireclaw_core.robot_enrollment import generate_pairing_code
+        from fireclaw_core.agent.robot_enrollment import generate_pairing_code
 
         codes = {generate_pairing_code() for _ in range(100)}
         # With 36^6 = 2.1B possible codes, 100 should all be unique

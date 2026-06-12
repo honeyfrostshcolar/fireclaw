@@ -1,7 +1,7 @@
 """Tests for log_redaction module."""
 from __future__ import annotations
 
-from fireclaw_core.log_redaction import redact_dict, redact_secrets
+from fireclaw_core.infra.log_redaction import redact_dict, redact_secrets
 
 
 class TestRedactSecrets:

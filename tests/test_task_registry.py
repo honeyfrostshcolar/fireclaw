@@ -1,11 +1,11 @@
-from fireclaw_core.task_registry import (
+from fireclaw_core.task.task_registry import (
     JsonlTaskRegistryStore,
     TaskDeliveryState,
     TaskRecord,
     TaskRegistrySnapshot,
     VALID_SCOPE_KINDS,
 )
-from fireclaw_core.task_queue import TaskQueueRecord, queue_record_to_task_record
+from fireclaw_core.task.task_queue import TaskQueueRecord, queue_record_to_task_record
 
 
 # ---------------------------------------------------------------------------

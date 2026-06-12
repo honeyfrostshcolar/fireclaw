@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from fireclaw_core.mission_cli import main as _mission_main
+from fireclaw_core.mission.mission_cli import main as _mission_main
 
 KNOWN_SUBCOMMANDS = {
     "submit-subtask", "trace", "cancel", "plan-mission", "events",
@@ -17,11 +17,11 @@ def main() -> int:
         return _mission_main()
     # --demo is an agent_cli flag, not a mission_cli subcommand
     if "--demo" in args:
-        from fireclaw_core.agent_cli import main as _agent_main
+        from fireclaw_core.agent.agent_cli import main as _agent_main
         return _agent_main()
     if args[0].lstrip("-") in KNOWN_SUBCOMMANDS or args[0].startswith("-"):
         return _mission_main()
-    from fireclaw_core.agent_cli import main as _agent_main
+    from fireclaw_core.agent.agent_cli import main as _agent_main
     return _agent_main()
 
 

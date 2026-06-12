@@ -1,5 +1,5 @@
-from fireclaw_core.mission_planner import MissionPlanner, MissionPlannerContext
-from fireclaw_core.robot_registry import RobotRegistryEntry
+from fireclaw_core.mission.mission_planner import MissionPlanner, MissionPlannerContext
+from fireclaw_core.agent.robot_registry import RobotRegistryEntry
 
 
 def _robots(entries):

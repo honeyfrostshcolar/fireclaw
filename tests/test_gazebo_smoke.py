@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fireclaw_core.gazebo_smoke import build_parser, build_robot_registry_payload
+from fireclaw_core.ros.gazebo_smoke import build_parser, build_robot_registry_payload
 
 
 def test_gazebo_smoke_parser_accepts_robot_agent_args():

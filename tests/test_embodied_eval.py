@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.embodied_eval import run_embodied_eval
+from fireclaw_core.devtools.embodied_eval import run_embodied_eval
 
 
 def test_run_embodied_eval_produces_summary_and_metrics(tmp_path: Path):
@@ -76,7 +76,7 @@ def test_run_embodied_eval_returns_exit_code(tmp_path: Path):
         encoding="utf-8",
     )
 
-    from fireclaw_core.embodied_eval import main as embodied_eval_main
+    from fireclaw_core.devtools.embodied_eval import main as embodied_eval_main
     exit_code = embodied_eval_main([
         "--scenarios", str(fixture_path),
         "--output-dir", str(tmp_path / "results"),
@@ -112,7 +112,7 @@ def test_run_embodied_eval_writes_doctor_report_for_bundle(tmp_path: Path):
 
 def test_run_embodied_eval_rejects_missing_fixture(tmp_path: Path):
     """Returns exit code 1 for missing fixture."""
-    from fireclaw_core.embodied_eval import main as embodied_eval_main
+    from fireclaw_core.devtools.embodied_eval import main as embodied_eval_main
     exit_code = embodied_eval_main([
         "--scenarios", str(tmp_path / "nonexistent.json"),
         "--output-dir", str(tmp_path / "results"),
@@ -123,7 +123,7 @@ def test_run_embodied_eval_rejects_missing_fixture(tmp_path: Path):
 
 def test_embodied_eval_records_structured_task_metadata(tmp_path: Path):
     """Eval harness records structured_task metadata from trace subtasks."""
-    from fireclaw_core.embodied_eval import run_embodied_eval
+    from fireclaw_core.devtools.embodied_eval import run_embodied_eval
 
     output_dir = tmp_path / "eval"
     result = run_embodied_eval(

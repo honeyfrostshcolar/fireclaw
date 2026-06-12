@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from fireclaw_core.model_catalog import ModelCatalog, ModelDescriptor
-from fireclaw_core.provider import (
+from fireclaw_core.provider.model_catalog import ModelCatalog, ModelDescriptor
+from fireclaw_core.provider.provider import (
     ChatCompletion,
     ProviderAPIError,
     ProviderError,
@@ -16,7 +16,7 @@ from fireclaw_core.provider import (
     TokenUsage,
     ToolCall,
 )
-from fireclaw_core.provider_runtime import (
+from fireclaw_core.provider.provider_runtime import (
     FallbackAttempt,
     FallbackProviderRuntime,
     FallbackSummaryError,

@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.event_ledger import EventLedger
-from fireclaw_core.incident_replay import IncidentReplay
-from fireclaw_core.mission_memory import MissionMemoryRecord, MissionMemoryStore
-from fireclaw_core.mission_registry import (
+from fireclaw_core.monitoring.event_ledger import EventLedger
+from fireclaw_core.monitoring.incident_replay import IncidentReplay
+from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
+from fireclaw_core.mission.mission_registry import (
     JsonlMissionRegistry,
     MissionRecord,
     MissionSubtaskRecord,

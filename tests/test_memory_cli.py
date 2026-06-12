@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fireclaw_core.memory_cli import main as memory_cli_main
+from fireclaw_core.memory.memory_cli import main as memory_cli_main
 
 
 def test_memory_cli_indexes_jsonl_and_runs_eval(tmp_path: Path):

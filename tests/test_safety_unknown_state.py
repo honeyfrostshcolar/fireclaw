@@ -1,10 +1,10 @@
 # tests/test_safety_unknown_state.py
 from __future__ import annotations
 
-from fireclaw_core.planner import Plan, PlanningResult, PlanStep
-from fireclaw_core.robot import EnvironmentState, RobotState
-from fireclaw_core.safety import SafetyGate
-from fireclaw_core.skills import Skill, SkillRegistry
+from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
+from fireclaw_core.agent.robot import EnvironmentState, RobotState
+from fireclaw_core.safety.safety import SafetyGate
+from fireclaw_core.execution.skills import Skill, SkillRegistry
 
 
 def _dry_run_registry() -> SkillRegistry:

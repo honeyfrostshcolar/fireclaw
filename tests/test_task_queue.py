@@ -1,4 +1,4 @@
-from fireclaw_core.task_queue import JsonlTaskQueue, TaskQueueRecord
+from fireclaw_core.task.task_queue import JsonlTaskQueue, TaskQueueRecord
 
 
 def test_task_queue_appends_and_updates_records(tmp_path):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from fireclaw_core.mission_memory import (
+from fireclaw_core.mission.mission_memory import (
     DEFAULT_INDEXABLE_TYPES,
     MEMORY_RECORD_TYPES,
     MissionMemoryRecord,

@@ -7,7 +7,7 @@ from queue import Queue
 
 import pytest
 
-from fireclaw_core.stream_events import (
+from fireclaw_core.monitoring.stream_events import (
     EventBus,
     StreamEvent,
     TelemetryTracker,

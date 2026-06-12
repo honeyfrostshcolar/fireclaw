@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from fireclaw_core.model_catalog import (
+from fireclaw_core.provider.model_catalog import (
     ModelCatalog,
     ModelDescriptor,
     ModelNotFoundError,

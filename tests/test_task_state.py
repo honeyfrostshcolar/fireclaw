@@ -1,4 +1,4 @@
-from fireclaw_core.task_state import project_task_state
+from fireclaw_core.task.task_state import project_task_state
 
 
 def _event(event_type, payload=None, *, task_id="task-1", session_id="session-1", timestamp="2026-06-03T00:00:00+00:00"):

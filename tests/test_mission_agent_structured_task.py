@@ -1,8 +1,8 @@
 # tests/test_mission_agent_structured_task.py
 from __future__ import annotations
 
-from fireclaw_core.mission_agent import MissionAgent
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
 class RecordingClient:
@@ -53,7 +53,7 @@ def test_mission_agent_submit_subtask_sends_structured_task():
 
 
 def test_mission_agent_structured_task_uses_mission_subtask_floor_not_command_text():
-    from fireclaw_core.mission_planner import MissionSubtask
+    from fireclaw_core.mission.mission_planner import MissionSubtask
 
     registry = RobotRegistry([
         RobotRegistryEntry(

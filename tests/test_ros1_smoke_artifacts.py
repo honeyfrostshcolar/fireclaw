@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.ros1_smoke_artifacts import (
+from fireclaw_core.ros.ros1_smoke_artifacts import (
     JsonlRos1SmokeArtifactStore,
     Ros1SmokeArtifact,
 )

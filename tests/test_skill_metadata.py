@@ -1,8 +1,8 @@
 """Phase 2 tests: richer skill metadata and typed output contracts."""
 from __future__ import annotations
 
-from fireclaw_core.robot import DryRunRobotAdapter
-from fireclaw_core.skills import (
+from fireclaw_core.agent.robot import DryRunRobotAdapter
+from fireclaw_core.execution.skills import (
     ASSESS_OUTPUT_SCHEMA,
     NAVIGATE_OUTPUT_SCHEMA,
     REPORT_OUTPUT_SCHEMA,

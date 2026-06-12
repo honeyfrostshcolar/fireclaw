@@ -1,5 +1,5 @@
-from fireclaw_core.fleet_doctor import FleetDoctor, FleetDoctorFinding
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.devtools.fleet_doctor import FleetDoctor, FleetDoctorFinding
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
 class FakeSubagentClient:
@@ -242,8 +242,8 @@ def test_onboarding_clean_fleet_has_no_warnings():
 
 def test_fleet_doctor_reports_lifecycle_maintenance_warnings(tmp_path):
     """Fleet doctor should include lifecycle section when stale tasks and orphaned subagents exist."""
-    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-    from fireclaw_core.task_registry import JsonlTaskRegistryStore
+    from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
@@ -291,8 +291,8 @@ def test_fleet_doctor_reports_lifecycle_maintenance_warnings(tmp_path):
 
 def test_fleet_doctor_lifecycle_ok_when_registries_healthy(tmp_path):
     """Fleet doctor lifecycle section should be 'ok' when no stale tasks or orphans exist."""
-    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-    from fireclaw_core.task_registry import JsonlTaskRegistryStore
+    from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),

@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from fireclaw_core.provider import ChatCompletion, TokenUsage, ToolCall, ProviderTimeoutError
-from fireclaw_core.robot_agent import (
+from fireclaw_core.provider.provider import ChatCompletion, TokenUsage, ToolCall, ProviderTimeoutError
+from fireclaw_core.agent.robot_agent import (
     LLMRobotAgentPlanner,
     RobotAgentPlannerError,
     RobotAgentTaskEnvelope,

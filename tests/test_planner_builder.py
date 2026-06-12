@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from fireclaw_core.planner_builder import build_planner
+from fireclaw_core.planner.planner_builder import build_planner
 
 
 def test_build_planner_deterministic():

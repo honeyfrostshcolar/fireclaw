@@ -1,8 +1,8 @@
 # tests/test_task_contract.py
 from __future__ import annotations
 
-from fireclaw_core.mission_planner import MissionSubtask
-from fireclaw_core.task_contract import (
+from fireclaw_core.mission.mission_planner import MissionSubtask
+from fireclaw_core.task.task_contract import (
     StructuredRobotTask,
     planning_result_from_structured_task,
     structured_task_from_mission_subtask,

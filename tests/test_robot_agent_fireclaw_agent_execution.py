@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from fireclaw_core.agent import FireClawAgent
-from fireclaw_core.planner import Plan, PlanningResult, PlanStep
-from fireclaw_core.task_contract import StructuredRobotTask
+from fireclaw_core.agent.agent import FireClawAgent
+from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
+from fireclaw_core.task.task_contract import StructuredRobotTask
 
 
 def test_fireclaw_agent_can_execute_precomputed_structured_planning_result(tmp_path):

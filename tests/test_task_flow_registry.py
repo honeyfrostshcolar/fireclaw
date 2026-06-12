@@ -1,4 +1,4 @@
-from fireclaw_core.task_flow_registry import (
+from fireclaw_core.task.task_flow_registry import (
     JsonlTaskFlowRegistryStore,
     TaskFlowRecord,
 )

@@ -6,13 +6,13 @@ from typing import Any
 
 import pytest
 
-from fireclaw_core.memory_index import SqliteMemoryIndex
-from fireclaw_core.memory_retrieval import (
+from fireclaw_core.memory.memory_index import SqliteMemoryIndex
+from fireclaw_core.memory.memory_retrieval import (
     EmbeddingProvider,
     MemoryRetriever,
     RetrievedMemory,
 )
-from fireclaw_core.mission_memory import MissionMemoryStore
+from fireclaw_core.mission.mission_memory import MissionMemoryStore
 
 
 # ---------------------------------------------------------------------------
@@ -442,8 +442,8 @@ class TestTranscriptIngestion:
 
 def test_memory_retriever_status_reports_last_indexing_timestamp(tmp_path):
     """status() includes last_indexing_timestamp when index exists."""
-    from fireclaw_core.memory_index import SqliteMemoryIndex
-    from fireclaw_core.memory_retrieval import MemoryRetriever
+    from fireclaw_core.memory.memory_index import SqliteMemoryIndex
+    from fireclaw_core.memory.memory_retrieval import MemoryRetriever
 
     index = SqliteMemoryIndex(tmp_path / "mem.db")
     # Ingest a record so the index file has content.
@@ -469,7 +469,7 @@ def test_memory_retriever_status_reports_last_indexing_timestamp(tmp_path):
 
 def test_memory_retriever_status_no_index(tmp_path):
     """status() returns None for last_indexing_timestamp when no index."""
-    from fireclaw_core.memory_retrieval import MemoryRetriever
+    from fireclaw_core.memory.memory_retrieval import MemoryRetriever
 
     retriever = MemoryRetriever(index=None)
 

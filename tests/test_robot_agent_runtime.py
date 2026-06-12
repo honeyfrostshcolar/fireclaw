@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fireclaw_core.robot_agent import (
+from fireclaw_core.agent.robot_agent import (
     DeterministicRobotAgentPlanner,
     RobotAgentPlannerError,
     RobotAgentRuntime,
@@ -8,7 +8,7 @@ from fireclaw_core.robot_agent import (
     RobotLocalPlan,
     RobotLocalPlanStep,
 )
-from fireclaw_core.task_contract import StructuredRobotTask
+from fireclaw_core.task.task_contract import StructuredRobotTask
 
 
 class FakePlanner:

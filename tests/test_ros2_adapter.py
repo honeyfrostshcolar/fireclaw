@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fireclaw_core.ros2_adapter import Ros2AdapterProtocol
+from fireclaw_core.ros.ros2_adapter import Ros2AdapterProtocol
 
 
 class MinimalRos2Adapter:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fireclaw_core.interactive import display_event, parse_builtin_command
+from fireclaw_core.mission.interactive import display_event, parse_builtin_command
 
 
 def test_parse_builtin_command_help():

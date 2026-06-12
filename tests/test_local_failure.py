@@ -1,7 +1,7 @@
 """Phase 2 tests: local failure taxonomy."""
 from __future__ import annotations
 
-from fireclaw_core.local_failure import (
+from fireclaw_core.safety.local_failure import (
     FailureCategory,
     LocalFailureReason,
     NON_RETRYABLE_CATEGORIES,

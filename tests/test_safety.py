@@ -1,8 +1,8 @@
-from fireclaw_core.planner import RuleBasedPlanner
-from fireclaw_core.robot import DryRunRobotAdapter, EnvironmentState, RobotState
-from fireclaw_core.safety import SafetyGate
-from fireclaw_core.robot import RobotActionResult
-from fireclaw_core.skills import Skill, SkillRegistry, create_default_skill_registry
+from fireclaw_core.planner.planner import RuleBasedPlanner
+from fireclaw_core.agent.robot import DryRunRobotAdapter, EnvironmentState, RobotState
+from fireclaw_core.safety.safety import SafetyGate
+from fireclaw_core.agent.robot import RobotActionResult
+from fireclaw_core.execution.skills import Skill, SkillRegistry, create_default_skill_registry
 
 
 def _successful_result():

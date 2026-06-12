@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.plugin_descriptor import FireClawPluginDescriptor
-from fireclaw_core.plugin_runtime import PluginRuntime
+from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
+from fireclaw_core.plugin.plugin_runtime import PluginRuntime
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ class TestPluginRuntimeInventory:
         assert inv["policy_active"] is False
 
     def test_inventory_with_policy(self) -> None:
-        from fireclaw_core.plugin_policy import PluginPolicy
+        from fireclaw_core.plugin.plugin_policy import PluginPolicy
         runtime = PluginRuntime()
         d = _make_descriptor(plugin_id="gamma", tool_approval_hooks=("add_reason",))
         runtime.register_descriptor(d)

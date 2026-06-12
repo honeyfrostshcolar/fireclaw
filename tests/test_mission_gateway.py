@@ -4,22 +4,22 @@ import json
 from urllib import request
 from urllib.error import HTTPError
 
-from fireclaw_core.stream_events import StreamEvent
+from fireclaw_core.monitoring.stream_events import StreamEvent
 
-from fireclaw_core.approval_store import JsonlApprovalStore
-from fireclaw_core.control import OperatorContext
-from fireclaw_core.mission_agent import MissionAgent
-from fireclaw_core.mission_gateway import MissionGateway, MissionGatewayConfig
-from fireclaw_core.approval_runtime import ApprovalRuntime
-from fireclaw_core.mission_planner import (
+from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.gateway.control import OperatorContext
+from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.approval.approval_runtime import ApprovalRuntime
+from fireclaw_core.mission.mission_planner import (
     MissionPlan,
     MissionPlannerContext,
     MissionPlanningResult,
     MissionSubtask,
 )
-from fireclaw_core.mission_registry import JsonlMissionRegistry
-from fireclaw_core.plugin_runtime import PluginRuntime
-from fireclaw_core.robot_registry import RobotRegistry, RobotRegistryEntry
+from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
+from fireclaw_core.plugin.plugin_runtime import PluginRuntime
+from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
 
 # ---------------------------------------------------------------------------
@@ -783,8 +783,8 @@ def test_fleet_doctor_empty_registry():
 def test_fleet_doctor_exposes_lifecycle(tmp_path):
     """Gateway should expose lifecycle maintenance in fleet doctor when registries are provided."""
     from datetime import datetime, timezone
-    from fireclaw_core.subagent_registry import JsonlSubagentRegistry
-    from fireclaw_core.task_registry import JsonlTaskRegistryStore
+    from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
+    from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
     registry = _make_registry()
     client = FakeSubagentClient()
@@ -1366,7 +1366,7 @@ def test_approval_decide_emits_event(tmp_path):
 
 def test_sse_stream_uses_stream_event_schema():
     """GET /missions/{id}/events/stream uses StreamEvent schema for published events."""
-    from fireclaw_core.stream_events import StreamEvent
+    from fireclaw_core.monitoring.stream_events import StreamEvent
 
     # Verify StreamEvent.to_sse_format() produces correct SSE format
     event = StreamEvent(

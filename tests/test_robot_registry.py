@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from fireclaw_core.robot_registry import RobotRegistryEntry, load_robot_registry
+from fireclaw_core.agent.robot_registry import RobotRegistryEntry, load_robot_registry
 
 
 def test_load_robot_registry_parses_entries(tmp_path):
@@ -68,7 +68,7 @@ def test_load_robot_registry_rejects_duplicate_robot_ids(tmp_path):
 
 
 def test_robot_registry_presence_tracking():
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
         RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765"),
@@ -85,7 +85,7 @@ def test_robot_registry_presence_tracking():
 
 
 def test_robot_registry_online_entries():
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
         RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765"),
@@ -102,7 +102,7 @@ def test_robot_registry_online_entries():
 # --- Heartbeat expiration / stale detection tests ---
 
 def test_is_stale_returns_true_when_never_seen():
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry(
         [RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765")],
         heartbeat_timeout_seconds=30.0,
@@ -112,7 +112,7 @@ def test_is_stale_returns_true_when_never_seen():
 
 def test_is_stale_returns_false_when_recently_seen():
     from datetime import datetime, timezone
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry(
         [RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765")],
         heartbeat_timeout_seconds=30.0,
@@ -123,7 +123,7 @@ def test_is_stale_returns_false_when_recently_seen():
 
 
 def test_is_stale_returns_true_when_heartbeat_expired():
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry(
         [RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765")],
         heartbeat_timeout_seconds=30.0,
@@ -134,7 +134,7 @@ def test_is_stale_returns_true_when_heartbeat_expired():
 
 def test_is_stale_uses_custom_timeout():
     from datetime import datetime, timezone, timedelta
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry(
         [RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765")],
         heartbeat_timeout_seconds=5.0,
@@ -146,7 +146,7 @@ def test_is_stale_uses_custom_timeout():
 
 
 def test_enabled_entries_excludes_stale_by_default():
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry(
         [
             RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
@@ -162,7 +162,7 @@ def test_enabled_entries_excludes_stale_by_default():
 
 
 def test_enabled_entries_includes_stale_when_requested():
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry(
         [
             RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
@@ -177,7 +177,7 @@ def test_enabled_entries_includes_stale_when_requested():
 
 
 def test_stale_entries_returns_only_enabled_stale():
-    from fireclaw_core.robot_registry import RobotRegistry
+    from fireclaw_core.agent.robot_registry import RobotRegistry
     registry = RobotRegistry(
         [
             RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),

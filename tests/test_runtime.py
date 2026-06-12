@@ -2,8 +2,8 @@ import json
 import sys
 import time
 
-from fireclaw_core.runtime import SubprocessSkillRunner
-from fireclaw_core.skills import create_subprocess_skill
+from fireclaw_core.execution.runtime import SubprocessSkillRunner
+from fireclaw_core.execution.skills import create_subprocess_skill
 
 
 def test_subprocess_skill_runner_passes_json_inputs_and_reads_json_result():

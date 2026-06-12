@@ -1,4 +1,4 @@
-from fireclaw_core.event_ledger import EventLedger
+from fireclaw_core.monitoring.event_ledger import EventLedger
 
 
 def test_event_ledger_appends_and_lists_events(tmp_path):

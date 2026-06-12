@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fireclaw_core.ros1_proof_bundle import create_ros1_proof_bundle
+from fireclaw_core.ros.ros1_proof_bundle import create_ros1_proof_bundle
 
 
 def test_ros1_proof_bundle_writes_redacted_summary(tmp_path: Path):
@@ -59,7 +59,7 @@ def test_ros1_proof_bundle_cli(tmp_path: Path):
         [
             ".venv/bin/python",
             "-m",
-            "fireclaw_core.ros1_proof_bundle",
+            "fireclaw_core.ros.ros1_proof_bundle",
             "--output-dir", str(output_dir),
             "--robot-id", "fireclaw-01",
             "--environment", "sim",

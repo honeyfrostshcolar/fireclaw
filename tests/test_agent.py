@@ -2,10 +2,10 @@ from pathlib import Path
 import json
 import sys
 
-from fireclaw_core.agent import FireClawAgent
-from fireclaw_core.memory import JsonlMemoryStore
-from fireclaw_core.planner import Plan, PlanningResult, PlanStep
-from fireclaw_core.robot import DryRunRobotAdapter, MockRos2RobotAdapter, SimulatorRobotAdapter
+from fireclaw_core.agent.agent import FireClawAgent
+from fireclaw_core.memory.memory import JsonlMemoryStore
+from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
+from fireclaw_core.agent.robot import DryRunRobotAdapter, MockRos2RobotAdapter, SimulatorRobotAdapter
 
 
 class FailingMemoryStore:

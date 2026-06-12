@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from fireclaw_core.plugin_control_plane import (
+from fireclaw_core.plugin.plugin_control_plane import (
     PluginControlPlaneContext,
     PluginDiscoveryContext,
     fingerprint_plugin_control_plane_context,

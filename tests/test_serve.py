@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from urllib import request
 
-from fireclaw_core.serve import start_server
-from fireclaw_core.subagent_client import RobotSubagentClient
+from fireclaw_core.gateway.serve import start_server
+from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
 
 def _fake_check_presence(self, entry):
