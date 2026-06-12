@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from fireclaw_core.approval_store import JsonlApprovalStore
@@ -116,6 +117,22 @@ def main() -> int:
     lifecycle.add_argument("--subagent-registry", required=True, help="Path to subagent registry JSONL.")
     lifecycle.add_argument("--stale-threshold-seconds", type=float, default=300.0, help="Seconds before a task is considered stale.")
 
+    serve = subparsers.add_parser("serve", help="Start a persistent MissionGateway server.")
+    serve.add_argument("--adapter", default="simulator", help="Robot adapter label for deployment metadata.")
+    serve.add_argument("--ros1-config", default=None, help="Path to ROS1 adapter config for robot gateways.")
+    serve.add_argument("--host", default="127.0.0.1", help="Host to bind.")
+    serve.add_argument("--port", type=int, default=8766, help="Port to bind.")
+    serve.add_argument("--data-dir", type=Path, default=Path("data"), help="Persistent data directory.")
+    serve.add_argument("--planner", choices=["deterministic", "llm"], default="deterministic", help="Planner backend.")
+    serve.add_argument("--provider-base-url", default=None, help="LLM provider base URL.")
+    serve.add_argument("--provider-api-key", default=None, help="LLM provider API key.")
+    serve.add_argument("--model", default=None, help="LLM model id.")
+    serve.add_argument("--llm-trace-path", default=None, help="Path to LLM trace JSONL file.")
+
+    mission = subparsers.add_parser("mission", help="Open the interactive mission console.")
+    mission.add_argument("--server", default="http://127.0.0.1:8766", help="MissionGateway base URL.")
+    mission.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds.")
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -169,6 +186,25 @@ def main() -> int:
         ).run(stale_threshold_seconds=args.stale_threshold_seconds)
         _print_json(report)
         return 0 if report["status"] == "ok" else 2
+    if args.command_name == "serve":
+        from fireclaw_core.serve import run_server_blocking
+        run_server_blocking(
+            adapter=args.adapter,
+            ros1_config=args.ros1_config,
+            host=args.host,
+            port=args.port,
+            planner_type=args.planner,
+            provider_base_url=args.provider_base_url,
+            provider_api_key=args.provider_api_key,
+            model=args.model,
+            llm_trace_path=args.llm_trace_path,
+            data_dir=args.data_dir,
+        )
+        return 0
+    if args.command_name == "mission":
+        from fireclaw_core.interactive import run_interactive
+        run_interactive(server_url=args.server, timeout=args.timeout)
+        return 0
     parser.error(f"Unknown command: {args.command_name}")
     return 1
 

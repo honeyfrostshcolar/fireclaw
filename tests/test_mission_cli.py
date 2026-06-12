@@ -1044,3 +1044,63 @@ def test_mission_cli_plan_mission_deterministic_default(tmp_path):
     # Will fail at runtime since robot-1 isn't reachable, but should not fail at CLI parsing
     # The key is it doesn't error about --planner flags
     assert "required when --planner=llm" not in completed.stderr
+
+
+def test_serve_subcommand_help():
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core.mission_cli",
+            "serve",
+            "--help",
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, f"stderr: {completed.stderr}"
+    assert "--data-dir" in completed.stdout
+    assert "--planner" in completed.stdout
+    assert "--host" in completed.stdout
+    assert "--port" in completed.stdout
+    assert "--adapter" in completed.stdout
+
+
+def test_mission_subcommand_help():
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core.mission_cli",
+            "mission",
+            "--help",
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, f"stderr: {completed.stderr}"
+    assert "--server" in completed.stdout
+    assert "--timeout" in completed.stdout
+
+
+def test_main_module_routes_to_mission_cli():
+    """Verify `python -m fireclaw_core` dispatches to mission_cli.main()."""
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-m",
+            "fireclaw_core",
+            "--help",
+        ],
+        check=False,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, f"stderr: {completed.stderr}"
+    # The mission_cli parser description should appear
+    assert "mission-control" in completed.stdout.lower() or "mission" in completed.stdout.lower()
