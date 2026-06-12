@@ -28,6 +28,7 @@ from fireclaw_core.agent.robot_agent import (
     LLMRobotAgentPlanner,
     RobotAgentRuntime,
 )
+from fireclaw_core.agent.robot_tools import build_robot_skill_tools
 from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot_adapter
 from fireclaw_core.task.task_queue import JsonlTaskQueue
 from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
@@ -56,6 +57,7 @@ class GatewayConfig:
     robot_agent_provider_base_url: str | None = None
     robot_agent_provider_api_key: str | None = None
     robot_agent_model: str | None = None
+    robot_profile_path: str | None = None
 
 
 @dataclass
@@ -504,10 +506,27 @@ class FireClawGateway:
                 payload=payload,
             )
 
+        exposed_skill_names = tuple(
+            skill_name
+            for skill_name in agent.registry.names()
+            if skill_name in set(task_object.required_skills) | {"report_status", "return_to_safe_zone"}
+        )
+        skill_tools = build_robot_skill_tools(
+            agent.registry,
+            exposed_skill_names=exposed_skill_names,
+        )
+        skill_metadata = [
+            metadata
+            for metadata in agent.registry.list_metadata()
+            if metadata["name"] in exposed_skill_names
+        ]
+
         context = {
             "robot_state": agent._state_snapshot(agent._get_robot_state()),
             "environment_state": agent._state_snapshot(agent._get_environment_state()),
             "available_sensors": sorted(agent.available_sensors),
+            "skill_tools": skill_tools,
+            "skill_metadata": skill_metadata,
         }
         planning_result = self.robot_agent_runtime.plan_structured_task(
             task_object,
@@ -1389,58 +1408,98 @@ def _extract_scopes_from_header(handler: BaseHTTPRequestHandler) -> set[str]:
         return {s.strip() for s in scopes_header.split(",") if s.strip()}
     return {"state.read"}
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw local HTTP gateway.")
-    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host.")
-    parser.add_argument("--port", type=int, default=8765, help="HTTP bind port.")
-    parser.add_argument("--adapter", choices=ADAPTER_CHOICES, default="dry-run")
-    parser.add_argument("--robot-id", default="fireclaw-gateway")
+    parser.add_argument("--config", type=Path, default=None, help="Path to fireclaw.toml config file.")
+    parser.add_argument("--host", default=None, help="HTTP bind host.")
+    parser.add_argument("--port", type=int, default=None, help="HTTP bind port.")
+    parser.add_argument("--adapter", choices=ADAPTER_CHOICES, default=None)
+    parser.add_argument("--robot-id", default=None)
     parser.add_argument("--ros1-config", default=None)
-    parser.add_argument("--memory-path", default="memory/fireclaw-gateway.jsonl")
-    parser.add_argument("--event-path", default="memory/fireclaw-gateway-events.jsonl")
-    parser.add_argument("--task-queue-path", default="memory/fireclaw-gateway-tasks.jsonl")
-    parser.add_argument("--skills-dir", default="skills")
-    parser.add_argument("--no-workspace-skills", action="store_true")
-    parser.add_argument("--session-id", default="default")
-    parser.add_argument("--max-active-execution-tasks", type=int, default=1)
-    parser.add_argument("--available-sensor", action="append", default=[])
-    parser.add_argument("--real-run", action="store_true")
-    parser.add_argument("--robot-agent", action="store_true", help="Enable robot-local agent planning for structured tasks.")
-    parser.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default="deterministic")
+    parser.add_argument("--memory-path", default=None)
+    parser.add_argument("--event-path", default=None)
+    parser.add_argument("--task-queue-path", default=None)
+    parser.add_argument("--skills-dir", default=None)
+    parser.add_argument("--no-workspace-skills", action="store_true", default=None)
+    parser.add_argument("--session-id", default=None)
+    parser.add_argument("--max-active-execution-tasks", type=int, default=None)
+    parser.add_argument("--available-sensor", action="append", default=None)
+    parser.add_argument("--real-run", action="store_true", default=None)
+    parser.add_argument("--robot-agent", action="store_true", default=None, help="Enable robot-local agent planning for structured tasks.")
+    parser.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default=None)
     parser.add_argument("--robot-agent-provider-base-url", default=None)
     parser.add_argument("--robot-agent-provider-api-key", default=None)
     parser.add_argument("--robot-agent-model", default=None)
-    args = parser.parse_args()
+    parser.add_argument("--robot-profile", default=None, help="Path to robot capability profile TOML.")
+    args = parser.parse_args(argv)
+
+    from fireclaw_core.gateway.config import find_config, load_config, merge_config
+
+    cfg: dict[str, Any] = {}
+    config_path = find_config(args.config)
+    if config_path is not None:
+        cfg = load_config(config_path)
+    merged = merge_config(
+        cfg,
+        {
+            "robot_gateway_host": args.host,
+            "robot_gateway_port": args.port,
+            "robot_gateway_adapter": args.adapter,
+            "robot_gateway_robot_id": args.robot_id,
+            "robot_gateway_ros1_config": args.ros1_config,
+            "robot_gateway_memory_path": args.memory_path,
+            "robot_gateway_event_path": args.event_path,
+            "robot_gateway_task_queue_path": args.task_queue_path,
+            "robot_gateway_workspace_skills_dir": args.skills_dir,
+            "robot_gateway_dry_run": False if args.real_run else None,
+            "robot_gateway_available_sensors": args.available_sensor,
+            "robot_gateway_default_session_id": args.session_id,
+            "robot_gateway_max_active_execution_tasks": args.max_active_execution_tasks,
+            "robot_agent_enabled": args.robot_agent if args.robot_agent else None,
+            "robot_agent_planner": args.robot_agent_planner,
+            "robot_agent_provider_base_url": args.robot_agent_provider_base_url,
+            "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
+            "robot_agent_model": args.robot_agent_model,
+            "robot_gateway_profile_path": args.robot_profile,
+        },
+    )
+
+    workspace_skills_dir = merged.get("robot_gateway_workspace_skills_dir", "skills")
+    if args.no_workspace_skills:
+        workspace_skills_dir = None
+    sensors = merged.get("robot_gateway_available_sensors") or ()
 
     gateway = FireClawGateway(
         GatewayConfig(
-            host=args.host,
-            port=args.port,
-            adapter=args.adapter,
-            robot_id=args.robot_id,
-            ros1_config_path=args.ros1_config,
-            memory_path=args.memory_path,
-            event_path=args.event_path,
-            task_queue_path=args.task_queue_path,
-            workspace_skills_dir=None if args.no_workspace_skills else args.skills_dir,
-            dry_run=not args.real_run,
-            available_sensors=tuple(args.available_sensor),
-            default_session_id=args.session_id,
-            max_active_execution_tasks=max(1, args.max_active_execution_tasks),
-            robot_agent_enabled=args.robot_agent,
-            robot_agent_planner=args.robot_agent_planner,
-            robot_agent_provider_base_url=args.robot_agent_provider_base_url,
-            robot_agent_provider_api_key=args.robot_agent_provider_api_key,
-            robot_agent_model=args.robot_agent_model,
+            host=str(merged.get("robot_gateway_host", "127.0.0.1")),
+            port=int(merged.get("robot_gateway_port", 8765)),
+            adapter=str(merged.get("robot_gateway_adapter", "dry-run")),
+            robot_id=str(merged.get("robot_gateway_robot_id", "fireclaw-gateway")),
+            ros1_config_path=merged.get("robot_gateway_ros1_config"),
+            memory_path=str(merged.get("robot_gateway_memory_path", "memory/fireclaw-gateway.jsonl")),
+            event_path=str(merged.get("robot_gateway_event_path", "memory/fireclaw-gateway-events.jsonl")),
+            task_queue_path=str(merged.get("robot_gateway_task_queue_path", "memory/fireclaw-gateway-tasks.jsonl")),
+            workspace_skills_dir=None if workspace_skills_dir is None else str(workspace_skills_dir),
+            dry_run=bool(merged.get("robot_gateway_dry_run", True)),
+            available_sensors=tuple(str(sensor) for sensor in sensors),
+            default_session_id=str(merged.get("robot_gateway_default_session_id", "default")),
+            max_active_execution_tasks=max(1, int(merged.get("robot_gateway_max_active_execution_tasks", 1))),
+            api_token=merged.get("robot_gateway_api_token"),
+            robot_agent_enabled=bool(merged.get("robot_agent_enabled", False)),
+            robot_agent_planner=str(merged.get("robot_agent_planner", "deterministic")),
+            robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
+            robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
+            robot_agent_model=merged.get("robot_agent_model"),
+            robot_profile_path=merged.get("robot_gateway_profile_path"),
         )
     )
     print(
         json.dumps(
             {
                 "status": "starting",
-                "base_url": f"http://{args.host}:{args.port}",
-                "adapter": args.adapter,
-                "robot_id": args.robot_id,
+                "base_url": f"http://{gateway.config.host}:{gateway.config.port}",
+                "adapter": gateway.config.adapter,
+                "robot_id": gateway.config.robot_id,
             },
             ensure_ascii=False,
         ),

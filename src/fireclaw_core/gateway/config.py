@@ -28,6 +28,15 @@ Config file structure::
     base_url = "https://api.deepseek.com/v1"
     api_key = "sk-..."
     model = "deepseek-chat"
+
+    [robot_gateway]
+    host = "127.0.0.1"
+    port = 8765
+    adapter = "simulator"
+    robot_id = "debug-robot-1"
+    memory_path = "data/debug-sim/robot-memory.jsonl"
+    event_path = "data/debug-sim/robot-events.jsonl"
+    task_queue_path = "data/debug-sim/robot-tasks.jsonl"
 """
 from __future__ import annotations
 
@@ -98,6 +107,24 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_agent_provider_base_url"] = ra_provider.get("base_url") or cfg.get("provider_base_url")
     cfg["robot_agent_provider_api_key"] = ra_provider.get("api_key") or cfg.get("provider_api_key")
     cfg["robot_agent_model"] = ra_provider.get("model") or cfg.get("model")
+
+    # [robot_gateway]
+    rg = raw.get("robot_gateway", {})
+    cfg["robot_gateway_host"] = rg.get("host")
+    cfg["robot_gateway_port"] = rg.get("port")
+    cfg["robot_gateway_adapter"] = rg.get("adapter")
+    cfg["robot_gateway_robot_id"] = rg.get("robot_id")
+    cfg["robot_gateway_ros1_config"] = rg.get("ros1_config")
+    cfg["robot_gateway_memory_path"] = rg.get("memory_path")
+    cfg["robot_gateway_event_path"] = rg.get("event_path")
+    cfg["robot_gateway_task_queue_path"] = rg.get("task_queue_path")
+    cfg["robot_gateway_workspace_skills_dir"] = rg.get("workspace_skills_dir")
+    cfg["robot_gateway_dry_run"] = rg.get("dry_run")
+    cfg["robot_gateway_available_sensors"] = rg.get("available_sensors")
+    cfg["robot_gateway_default_session_id"] = rg.get("default_session_id")
+    cfg["robot_gateway_max_active_execution_tasks"] = rg.get("max_active_execution_tasks")
+    cfg["robot_gateway_api_token"] = rg.get("api_token")
+    cfg["robot_gateway_profile_path"] = rg.get("profile_path")
 
     return cfg
 

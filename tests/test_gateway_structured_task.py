@@ -152,6 +152,66 @@ def test_gateway_robot_agent_mode_emits_robot_agent_events(tmp_path):
         gateway.stop()
 
 
+def test_gateway_robot_agent_context_includes_skill_tools(tmp_path):
+    captured_context = {}
+
+    class CapturingPlanner:
+        def plan(self, envelope, *, context, cancellation_requested=None):
+            captured_context.update(context)
+            from fireclaw_core.agent.robot_agent import RobotLocalPlan, RobotLocalPlanStep
+            return RobotLocalPlan(
+                intent="search",
+                steps=[
+                    RobotLocalPlanStep("navigate_to_floor", {"floor": 2}),
+                    RobotLocalPlanStep("report_status", {"floor": 2}),
+                ],
+            )
+
+    from fireclaw_core.agent.robot_agent import RobotAgentRuntime
+
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="debug-robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+            robot_agent_enabled=True,
+            robot_agent_planner="deterministic",
+        )
+    )
+    gateway.robot_agent_runtime = RobotAgentRuntime(planner=CapturingPlanner())
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {
+                "command": "去二楼救人",
+                "structured_task": {
+                    "task_id": "task-1",
+                    "task_type": "search",
+                    "target": {"floor": 2},
+                    "required_skills": ["navigate_to_floor", "report_status"],
+                },
+            },
+        )
+        _wait_for_task_done(gateway.base_url, accepted["task_id"])
+    finally:
+        gateway.stop()
+
+    names = [tool["function"]["name"] for tool in captured_context["skill_tools"]]
+    assert "navigate_to_floor" in names
+    assert "report_status" in names
+    assert "return_to_safe_zone" in names
+    metadata_names = [m["name"] for m in captured_context["skill_metadata"]]
+    assert "navigate_to_floor" in metadata_names
+
+
 def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
     gateway = FireClawGateway(
         GatewayConfig(
