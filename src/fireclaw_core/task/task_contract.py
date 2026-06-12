@@ -52,9 +52,13 @@ def structured_task_from_mission_subtask(
     subtask: MissionSubtask,
     operator_id: str | None = None,
     task_id: str | None = None,
+    capability_skill_chains: dict[str, list[str]] | None = None,
 ) -> StructuredRobotTask:
     task_type = _task_type_from_capability(subtask.capability_required)
-    required_skills = _skills_from_capability(subtask.capability_required)
+    required_skills = skills_from_capability(
+        subtask.capability_required,
+        capability_skill_chains=capability_skill_chains,
+    )
     return StructuredRobotTask(
         task_id=task_id or f"{mission_id}:{subtask.robot_id}:{subtask.floor}:{subtask.execution_group}",
         task_type=task_type,
@@ -116,6 +120,16 @@ def _task_type_from_capability(capability: str) -> str:
     if capability == "search_for_victims":
         return "search"
     return capability
+
+
+def skills_from_capability(
+    capability: str,
+    *,
+    capability_skill_chains: dict[str, list[str]] | None = None,
+) -> list[str]:
+    if capability_skill_chains is not None and capability in capability_skill_chains:
+        return list(capability_skill_chains[capability])
+    return _skills_from_capability(capability)
 
 
 def _skills_from_capability(capability: str) -> list[str]:

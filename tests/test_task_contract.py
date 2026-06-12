@@ -5,6 +5,7 @@ from fireclaw_core.mission.mission_planner import MissionSubtask
 from fireclaw_core.task.task_contract import (
     StructuredRobotTask,
     planning_result_from_structured_task,
+    skills_from_capability,
     structured_task_from_mission_subtask,
     validate_structured_robot_task,
 )
@@ -126,3 +127,24 @@ def test_planning_result_from_structured_task_returns_clarify_on_invalid():
     assert result.status == "clarify"
     assert result.intent == "search"
     assert "task_id must not be empty" in result.message
+
+
+def test_skills_from_capability_uses_profile_skill_chain():
+    chains = {
+        "search_for_victims": ["navigate_to_floor", "search_for_victims", "report_status"],
+        "return_to_safe_zone": ["return_to_safe_zone"],
+    }
+
+    assert skills_from_capability("search_for_victims", capability_skill_chains=chains) == [
+        "navigate_to_floor",
+        "search_for_victims",
+        "report_status",
+    ]
+
+
+def test_skills_from_capability_preserves_default_mapping():
+    assert skills_from_capability("search_for_victims") == [
+        "navigate_to_floor",
+        "search_for_victims",
+        "report_status",
+    ]
