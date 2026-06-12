@@ -95,3 +95,34 @@ def _string_tuple(raw: dict[str, Any], key: str) -> tuple[str, ...]:
     if len(items) != len(value):
         raise ValueError(f"robot.{key} must contain only non-empty strings.")
     return items
+
+
+from fireclaw_core.execution.skills import SkillRegistry
+from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
+
+
+def validate_robot_capability_profile(
+    profile: RobotCapabilityProfile,
+    registry: SkillRegistry,
+    *,
+    ros1_config: Ros1AdapterConfig | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    registered = registry.names()
+    for skill_name in profile.enabled_skills:
+        if skill_name not in registered:
+            errors.append(f"enabled skill {skill_name!r} is not registered")
+    for skill_name in profile.llm_exposed_skills:
+        if skill_name not in profile.enabled_skills:
+            errors.append(f"LLM-exposed skill {skill_name!r} is not in enabled_skills")
+    if profile.adapter == "ros1":
+        if profile.ros1_config is None:
+            errors.append("ros1 profile requires robot.ros1_config")
+        if ros1_config is not None:
+            remapped = set(ros1_config.endpoints)
+            for skill_name in profile.enabled_skills:
+                if skill_name not in remapped:
+                    errors.append(f"enabled skill {skill_name!r} has no ROS1 remap")
+    if not profile.capabilities:
+        errors.append("profile must declare at least one capability")
+    return errors
