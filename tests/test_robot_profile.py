@@ -143,3 +143,14 @@ def test_profile_validation_accepts_gazebo_profile() -> None:
     errors = validate_robot_capability_profile(profile, registry, ros1_config=ros1_config)
 
     assert errors == []
+
+
+def test_example_gazebo_turtlebot3_profile_loads_and_validates() -> None:
+    profile = load_robot_capability_profile("examples/robot_profiles/gazebo_turtlebot3.toml")
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id=profile.robot_id))
+    ros1_config = load_ros1_adapter_config(profile.ros1_config)
+
+    assert profile.robot_id == "gazebo_turtlebot3"
+    assert profile.adapter == "ros1"
+    assert "navigate_to_floor" in profile.llm_exposed_skills
+    assert validate_robot_capability_profile(profile, registry, ros1_config=ros1_config) == []

@@ -5,18 +5,35 @@
 [server]
 host = "0.0.0.0"
 port = 8766
-data_dir = "./data"
+data_dir = "./data/mission"
 adapter = "simulator"          # simulator | ros1
 # ros1_config = "ros1.yaml"   # ROS1 适配器配置路径
 
 [planner]
 type = "deterministic"         # deterministic | llm
 
-# LLM Provider 配置（当 planner.type = "llm" 时使用）
+# LLM Provider 配置（当 planner.type = "llm" 或 robot_agent.planner = "llm" 时使用）
 [provider]
-base_url = "https://api.deepseek.com/v1"
-api_key = "sk-your-key-here"
-model = "deepseek-chat"
+base_url = ""
+api_key = ""
+model = ""
+
+# Robot-Local Gateway 配置
+[robot_gateway]
+host = "127.0.0.1"
+port = 8765
+adapter = "simulator"          # simulator | ros1 | dry-run | mock-ros1
+robot_id = "debug-robot-1"
+profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
+memory_path = "data/robots/debug-robot-1/memory.jsonl"
+event_path = "data/robots/debug-robot-1/events.jsonl"
+task_queue_path = "data/robots/debug-robot-1/tasks.jsonl"
+workspace_skills_dir = "skills"
+dry_run = true
+available_sensors = []
+default_session_id = "default"
+max_active_execution_tasks = 1
+# ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
 
 # Robot-Local Agent 配置
 [robot_agent]
