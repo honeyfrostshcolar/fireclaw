@@ -154,7 +154,19 @@ class FireClawAgent:
         return result
 
     def run_structured_task(self, task: StructuredRobotTask) -> dict[str, Any]:
-        planning_result = planning_result_from_structured_task(task)
+        return self.run_planning_result(
+            command=task.command or task.task_type,
+            structured_task=task,
+            planning_result=planning_result_from_structured_task(task),
+        )
+
+    def run_planning_result(
+        self,
+        *,
+        command: str,
+        planning_result: PlanningResult,
+        structured_task: StructuredRobotTask | None = None,
+    ) -> dict[str, Any]:
         robot_state_object = self._get_robot_state()
         environment_state_object = self._get_environment_state()
         robot_state = self._state_snapshot(robot_state_object)
@@ -167,7 +179,8 @@ class FireClawAgent:
             robot_state=robot_state_object,
             environment_state=environment_state_object,
         )
-        self._emit_event("task.structured_received", task.to_dict())
+        if structured_task is not None:
+            self._emit_event("task.structured_received", structured_task.to_dict())
         self._emit_event("task.planned", self._planning_to_dict(planning_result))
         self._emit_event("safety.decided", asdict(safety_decision))
 
@@ -178,8 +191,7 @@ class FireClawAgent:
         status = self._resolve_status(safety_decision, execution_result)
         result = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "command": task.command or task.task_type,
-            "structured_task": task.to_dict(),
+            "command": command,
             "status": status,
             "message": self._resolve_message(planning_result, safety_decision, execution_result),
             "dry_run": self.dry_run,
@@ -191,6 +203,10 @@ class FireClawAgent:
             "environment_state": environment_state,
             "memory_error": None,
         }
+        result["structured_task"] = structured_task.to_dict() if structured_task is not None else None
+        # Note: session info (session_id, turn_index) is intentionally omitted here
+        # to match the pre-existing run_structured_task() behavior. Session tracking
+        # lives in the run() path for interactive commands.
         self._append_memory_result(result)
         return result
 

@@ -22,6 +22,12 @@ from fireclaw_core.agent import FireClawAgent
 from fireclaw_core.control import AuthorizationRequest, ControlPolicy, OperatorContext, operator_from_payload
 from fireclaw_core.event_ledger import EventLedger
 from fireclaw_core.memory import JsonlMemoryStore
+from fireclaw_core.planner_builder import build_provider_runtime
+from fireclaw_core.robot_agent import (
+    DeterministicRobotAgentPlanner,
+    LLMRobotAgentPlanner,
+    RobotAgentRuntime,
+)
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
 from fireclaw_core.task_queue import JsonlTaskQueue
 from fireclaw_core.task_contract import StructuredRobotTask, validate_structured_robot_task
@@ -45,6 +51,11 @@ class GatewayConfig:
     max_active_execution_tasks: int = 1
     authorization_expiry_seconds: int = 300
     api_token: str | None = None
+    robot_agent_enabled: bool = False
+    robot_agent_planner: str = "deterministic"
+    robot_agent_provider_base_url: str | None = None
+    robot_agent_provider_api_key: str | None = None
+    robot_agent_model: str | None = None
 
 
 @dataclass
@@ -85,6 +96,7 @@ class FireClawGateway:
         self._event_bus = EventBus()
         self._telemetry = TelemetryTracker()
         self._reconcile_stale_task_queue_records()
+        self.robot_agent_runtime = self._build_robot_agent_runtime()
 
     @property
     def base_url(self) -> str:
@@ -459,6 +471,57 @@ class FireClawGateway:
                 )
         return cancelled_task_ids
 
+    def _build_robot_agent_runtime(self) -> RobotAgentRuntime | None:
+        if not self.config.robot_agent_enabled:
+            return None
+        if self.config.robot_agent_planner == "deterministic":
+            return RobotAgentRuntime(planner=DeterministicRobotAgentPlanner())
+        if self.config.robot_agent_planner == "llm":
+            runtime = build_provider_runtime(
+                provider_base_url=self.config.robot_agent_provider_base_url,
+                provider_api_key=self.config.robot_agent_provider_api_key,
+                model=self.config.robot_agent_model,
+            )
+            return RobotAgentRuntime(planner=LLMRobotAgentPlanner(runtime))
+        raise ValueError(f"unsupported robot_agent_planner: {self.config.robot_agent_planner}")
+
+    def _run_robot_agent_structured_task(
+        self,
+        *,
+        agent: FireClawAgent,
+        task_object: StructuredRobotTask,
+        session_id: str,
+        task_id: str,
+        cancellation_requested=None,
+    ) -> dict[str, Any]:
+        assert self.robot_agent_runtime is not None
+
+        def emit(event_type: str, payload: dict[str, Any]) -> None:
+            self._append_event(
+                task_id=task_id,
+                session_id=session_id,
+                type=event_type,
+                payload=payload,
+            )
+
+        context = {
+            "robot_state": agent._state_snapshot(agent._get_robot_state()),
+            "environment_state": agent._state_snapshot(agent._get_environment_state()),
+            "available_sensors": sorted(agent.available_sensors),
+        }
+        planning_result = self.robot_agent_runtime.plan_structured_task(
+            task_object,
+            fallback_robot_id=self.config.robot_id,
+            context=context,
+            event_sink=emit,
+            cancellation_requested=cancellation_requested,
+        )
+        return agent.run_planning_result(
+            command=task_object.command or task_object.task_type,
+            structured_task=task_object,
+            planning_result=planning_result,
+        )
+
     def _execute_agent_task(
         self,
         *,
@@ -484,7 +547,16 @@ class FireClawGateway:
         )
         if structured_task is not None:
             task_object = StructuredRobotTask.from_dict(structured_task)
-            result = agent.run_structured_task(task_object)
+            if self.robot_agent_runtime is not None:
+                result = self._run_robot_agent_structured_task(
+                    agent=agent,
+                    task_object=task_object,
+                    session_id=session_id,
+                    task_id=task_id,
+                    cancellation_requested=cancellation_requested,
+                )
+            else:
+                result = agent.run_structured_task(task_object)
         else:
             result = agent.run(command)
         result["task_id"] = task_id
@@ -1333,6 +1405,11 @@ def main() -> int:
     parser.add_argument("--max-active-execution-tasks", type=int, default=1)
     parser.add_argument("--available-sensor", action="append", default=[])
     parser.add_argument("--real-run", action="store_true")
+    parser.add_argument("--robot-agent", action="store_true", help="Enable robot-local agent planning for structured tasks.")
+    parser.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default="deterministic")
+    parser.add_argument("--robot-agent-provider-base-url", default=None)
+    parser.add_argument("--robot-agent-provider-api-key", default=None)
+    parser.add_argument("--robot-agent-model", default=None)
     args = parser.parse_args()
 
     gateway = FireClawGateway(
@@ -1350,6 +1427,11 @@ def main() -> int:
             available_sensors=tuple(args.available_sensor),
             default_session_id=args.session_id,
             max_active_execution_tasks=max(1, args.max_active_execution_tasks),
+            robot_agent_enabled=args.robot_agent,
+            robot_agent_planner=args.robot_agent_planner,
+            robot_agent_provider_base_url=args.robot_agent_provider_base_url,
+            robot_agent_provider_api_key=args.robot_agent_provider_api_key,
+            robot_agent_model=args.robot_agent_model,
         )
     )
     print(
