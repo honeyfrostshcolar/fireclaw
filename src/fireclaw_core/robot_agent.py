@@ -8,7 +8,7 @@ from typing import Any, Literal, Protocol
 from fireclaw_core.planner import Plan, PlanningResult, PlanStep
 from fireclaw_core.provider import ProviderError
 from fireclaw_core.provider_runtime import FallbackSummaryError, ProviderRuntime
-from fireclaw_core.task_contract import StructuredRobotTask
+from fireclaw_core.task_contract import StructuredRobotTask, planning_result_from_structured_task
 
 SAFE_SUPPLEMENTAL_SKILLS = ("report_status", "return_to_safe_zone")
 # Used by RobotAgentPolicy (floor-mutation guard) and DeterministicRobotAgentPlanner.
@@ -279,6 +279,106 @@ def _local_plan_from_arguments(arguments: dict[str, Any]) -> RobotLocalPlan:
         rationale=str(arguments["rationale"]) if arguments.get("rationale") is not None else None,
         confidence=float(confidence) if isinstance(confidence, int | float) else None,
     )
+
+
+class DeterministicRobotAgentPlanner:
+    def plan(
+        self,
+        envelope: RobotAgentTaskEnvelope,
+        *,
+        context: dict[str, Any],
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> RobotLocalPlan:
+        floor = envelope.target.get("floor")
+        steps = []
+        for skill_name in envelope.required_skills:
+            inputs: dict[str, Any] = {}
+            if skill_name in FLOOR_SKILLS and isinstance(floor, int):
+                inputs["floor"] = floor
+            steps.append(RobotLocalPlanStep(skill_name=skill_name, inputs=inputs))
+        return RobotLocalPlan(
+            intent=envelope.task_type,
+            steps=steps,
+            rationale="Deterministic robot-local fallback plan.",
+            confidence=1.0,
+        )
+
+
+class RobotAgentRuntime:
+    def __init__(
+        self,
+        *,
+        planner: RobotAgentPlanner,
+        policy: RobotAgentPolicy | None = None,
+    ) -> None:
+        self._planner = planner
+        self._policy = policy or RobotAgentPolicy()
+
+    def plan_structured_task(
+        self,
+        task: StructuredRobotTask,
+        *,
+        fallback_robot_id: str,
+        context: dict[str, Any],
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> PlanningResult:
+        envelope = envelope_from_structured_task(task, fallback_robot_id=fallback_robot_id)
+        self._emit(event_sink, "robot_agent.plan_requested", {"task_id": envelope.task_id, "robot_id": envelope.robot_id})
+        try:
+            local_plan = self._planner.plan(
+                envelope,
+                context=context,
+                cancellation_requested=cancellation_requested,
+            )
+        except RobotAgentPlannerError as exc:
+            self._emit(event_sink, "robot_agent.plan_failed", {"task_id": envelope.task_id, "message": str(exc)})
+            return self._fallback(task, event_sink=event_sink, reason="planner_failed")
+
+        decision = self._policy.validate(envelope, local_plan)
+        if decision.status == "allow":
+            self._emit(
+                event_sink,
+                "robot_agent.plan_accepted",
+                {
+                    "task_id": envelope.task_id,
+                    "step_count": len(local_plan.steps),
+                    "confidence": local_plan.confidence,
+                },
+            )
+            return planning_result_from_local_plan(envelope, local_plan)
+        if decision.status == "approval_required":
+            self._emit(
+                event_sink,
+                "robot_agent.policy_rejected",
+                {"task_id": envelope.task_id, "status": decision.status, "reasons": decision.reasons},
+            )
+            return PlanningResult(
+                status="clarify",
+                message="Robot-local plan requires approval before execution.",
+                intent=envelope.task_type,
+            )
+        self._emit(
+            event_sink,
+            "robot_agent.policy_rejected",
+            {"task_id": envelope.task_id, "status": decision.status, "reasons": decision.reasons},
+        )
+        return self._fallback(task, event_sink=event_sink, reason="policy_rejected")
+
+    def _fallback(
+        self,
+        task: StructuredRobotTask,
+        *,
+        event_sink: Callable[[str, dict[str, Any]], None] | None,
+        reason: str,
+    ) -> PlanningResult:
+        self._emit(event_sink, "robot_agent.fallback_used", {"task_id": task.task_id, "reason": reason})
+        return planning_result_from_structured_task(task)
+
+    @staticmethod
+    def _emit(event_sink, event_type: str, payload: dict[str, Any]) -> None:
+        if event_sink is not None:
+            event_sink(event_type, payload)
 
 
 class RobotAgentPlanner(Protocol):
