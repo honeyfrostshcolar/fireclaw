@@ -118,18 +118,19 @@ def main() -> int:
     lifecycle.add_argument("--stale-threshold-seconds", type=float, default=300.0, help="Seconds before a task is considered stale.")
 
     serve = subparsers.add_parser("serve", help="Start a persistent MissionGateway server.")
-    serve.add_argument("--adapter", default="simulator", help="Robot adapter label for deployment metadata.")
+    serve.add_argument("--config", type=Path, default=None, help="Path to fireclaw.toml config file.")
+    serve.add_argument("--adapter", default=None, help="Robot adapter label for deployment metadata.")
     serve.add_argument("--ros1-config", default=None, help="Path to ROS1 adapter config for robot gateways.")
-    serve.add_argument("--host", default="127.0.0.1", help="Host to bind.")
-    serve.add_argument("--port", type=int, default=8766, help="Port to bind.")
-    serve.add_argument("--data-dir", type=Path, default=Path("data"), help="Persistent data directory.")
-    serve.add_argument("--planner", choices=["deterministic", "llm"], default="deterministic", help="Planner backend.")
+    serve.add_argument("--host", default=None, help="Host to bind.")
+    serve.add_argument("--port", type=int, default=None, help="Port to bind.")
+    serve.add_argument("--data-dir", type=Path, default=None, help="Persistent data directory.")
+    serve.add_argument("--planner", choices=["deterministic", "llm"], default=None, help="Planner backend.")
     serve.add_argument("--provider-base-url", default=None, help="LLM provider base URL.")
     serve.add_argument("--provider-api-key", default=None, help="LLM provider API key.")
     serve.add_argument("--model", default=None, help="LLM model id.")
     serve.add_argument("--llm-trace-path", default=None, help="Path to LLM trace JSONL file.")
-    serve.add_argument("--robot-agent", action="store_true", default=False, help="Enable robot-local agent planning.")
-    serve.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default="deterministic", help="Robot-local agent planner backend.")
+    serve.add_argument("--robot-agent", action="store_true", default=None, help="Enable robot-local agent planning.")
+    serve.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default=None, help="Robot-local agent planner backend.")
     serve.add_argument("--robot-agent-provider-base-url", default=None, help="Robot-local agent LLM provider base URL.")
     serve.add_argument("--robot-agent-provider-api-key", default=None, help="Robot-local agent LLM provider API key.")
     serve.add_argument("--robot-agent-model", default=None, help="Robot-local agent LLM model id.")
@@ -192,23 +193,45 @@ def main() -> int:
         _print_json(report)
         return 0 if report["status"] == "ok" else 2
     if args.command_name == "serve":
+        from fireclaw_core.gateway.config import find_config, load_config, merge_config
         from fireclaw_core.gateway.serve import run_server_blocking
+        cfg: dict[str, object] = {}
+        config_path = find_config(args.config)
+        if config_path is not None:
+            cfg = load_config(config_path)
+        merged = merge_config(cfg, {
+            "adapter": args.adapter,
+            "ros1_config": args.ros1_config,
+            "host": args.host,
+            "port": args.port,
+            "data_dir": str(args.data_dir) if args.data_dir else None,
+            "planner_type": args.planner,
+            "provider_base_url": args.provider_base_url,
+            "provider_api_key": args.provider_api_key,
+            "model": args.model,
+            "llm_trace_path": args.llm_trace_path,
+            "robot_agent_enabled": args.robot_agent if args.robot_agent else None,
+            "robot_agent_planner": args.robot_agent_planner,
+            "robot_agent_provider_base_url": args.robot_agent_provider_base_url,
+            "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
+            "robot_agent_model": args.robot_agent_model,
+        })
         run_server_blocking(
-            adapter=args.adapter,
-            ros1_config=args.ros1_config,
-            host=args.host,
-            port=args.port,
-            planner_type=args.planner,
-            provider_base_url=args.provider_base_url,
-            provider_api_key=args.provider_api_key,
-            model=args.model,
-            llm_trace_path=args.llm_trace_path,
-            data_dir=args.data_dir,
-            robot_agent_enabled=args.robot_agent,
-            robot_agent_planner=args.robot_agent_planner,
-            robot_agent_provider_base_url=args.robot_agent_provider_base_url,
-            robot_agent_provider_api_key=args.robot_agent_provider_api_key,
-            robot_agent_model=args.robot_agent_model,
+            adapter=str(merged.get("adapter", "simulator")),
+            ros1_config=merged.get("ros1_config"),
+            host=str(merged.get("host", "127.0.0.1")),
+            port=int(merged.get("port", 8766)),
+            planner_type=str(merged.get("planner_type", "deterministic")),
+            provider_base_url=merged.get("provider_base_url"),
+            provider_api_key=merged.get("provider_api_key"),
+            model=merged.get("model"),
+            llm_trace_path=merged.get("llm_trace_path"),
+            data_dir=Path(str(merged.get("data_dir", "data"))),
+            robot_agent_enabled=bool(merged.get("robot_agent_enabled", False)),
+            robot_agent_planner=str(merged.get("robot_agent_planner", "deterministic")),
+            robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
+            robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
+            robot_agent_model=merged.get("robot_agent_model"),
         )
         return 0
     if args.command_name == "mission":

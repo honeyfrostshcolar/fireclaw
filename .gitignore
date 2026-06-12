@@ -15,3 +15,6 @@ openclaw-main/
 logs/
 results/
 checkpoints/
+
+# FireClaw config (may contain secrets)
+fireclaw.toml
