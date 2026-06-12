@@ -410,6 +410,10 @@ ROS2 native adapter, full ACP/IDE platform parity, and full Web UI remain out of
 
 The next external validation step is a ROS1 high-fidelity or hardware proof run. This is not additional OpenClaw platform parity; it is robotics validation for FireClaw's embodied-agent claims.
 
+## ROS1/Gazebo Unknown-State Semantics
+
+ROS1/Gazebo adapter state must distinguish unknown values from explicit unsafe values. `None` means FireClaw does not yet know the battery, sensors, or reachable floors; `0.0` and `[]` mean the adapter has positively observed zero battery or no reachable floors. SafetyGate uses that distinction to warn or require operator confirmation instead of blocking valid Gazebo bring-up.
+
 ## Experiment Readiness Claims
 
 FireClaw can claim code-level and simulator-level embodied-agent readiness when the gateway-to-gateway e2e test, scenario eval, memory learning loop, and proof bundle all pass.

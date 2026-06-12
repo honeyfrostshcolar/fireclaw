@@ -155,6 +155,22 @@ When transport is enabled, FireClaw renders `goal_template` and `request_templat
 
 The command prints a structured JSON result and appends the same run record to the JSONL memory file.
 
+### Standalone Mission Gateway
+
+Start the mission coordinator:
+
+```bash
+fireclaw serve --data-dir data --host 127.0.0.1 --port 8766 --planner deterministic
+```
+
+Open the operator console:
+
+```bash
+fireclaw mission --server http://127.0.0.1:8766
+```
+
+For ROS1/Gazebo work, keep the robot-local `FireClawGateway` responsible for the adapter. The mission coordinator dispatches to registered robot gateways from `data/robots.json`; it does not directly publish ROS topics or actions.
+
 ## Run the End-to-End Framework Demo
 
 Use `--demo rescue` to run one local rescue task through the Gateway control plane and the mock ROS1 adapter:
