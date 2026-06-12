@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fireclaw_core.agent.robot import DryRunRobotAdapter
 from fireclaw_core.agent.robot_profile import (
     RobotCapabilityProfile,
     load_robot_capability_profile,
+    validate_robot_capability_profile,
 )
+from fireclaw_core.execution.skills import create_default_skill_registry
+from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
 
 
 def test_load_robot_capability_profile_from_toml(tmp_path: Path) -> None:
@@ -67,12 +71,6 @@ llm_exposed_skills = ["navigate_to_floor"]
     }
 
 
-from fireclaw_core.agent.robot import DryRunRobotAdapter
-from fireclaw_core.execution.skills import create_default_skill_registry
-from fireclaw_core.agent.robot_profile import validate_robot_capability_profile
-from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
-
-
 def test_profile_validation_rejects_unknown_enabled_skill() -> None:
     profile = RobotCapabilityProfile(
         robot_id="debug-robot-1",
@@ -89,6 +87,24 @@ def test_profile_validation_rejects_unknown_enabled_skill() -> None:
     errors = validate_robot_capability_profile(profile, registry)
 
     assert "enabled skill 'unknown_skill' is not registered" in errors
+
+
+def test_profile_validation_rejects_llm_exposed_skill_not_in_enabled_skills() -> None:
+    profile = RobotCapabilityProfile(
+        robot_id="debug-robot-1",
+        base_url="http://127.0.0.1:8765",
+        adapter="simulator",
+        ros1_config=None,
+        data_dir=Path("data/robots/debug-robot-1"),
+        capabilities=("search_for_victims",),
+        enabled_skills=("navigate_to_floor", "search_for_victims"),
+        llm_exposed_skills=("navigate_to_floor", "assess_victim"),
+    )
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+
+    errors = validate_robot_capability_profile(profile, registry)
+
+    assert "LLM-exposed skill 'assess_victim' is not in enabled_skills" in errors
 
 
 def test_profile_validation_rejects_ros1_skill_without_remap() -> None:
