@@ -102,3 +102,46 @@ def test_unknown_sensors_require_confirmation_for_real_robot_skill_with_sensor_r
     )
     assert decision.status == "require_confirmation"
     assert "Robot robot-1 available sensors are unknown." in decision.reasons
+
+
+def test_unknown_sensors_warns_in_dry_run() -> None:
+    registry = SkillRegistry(skills={})
+    registry.register(Skill(
+        name="search_for_victims", description="search",
+        handler=lambda inputs: None,
+        required_sensors=["thermal_camera"],
+    ))
+    planning = PlanningResult(
+        status="planned", message="planned", intent="search",
+        target_floor=2,
+        plan=Plan("search", [PlanStep("search_for_victims", {"floor": 2})]),
+    )
+    decision = SafetyGate().evaluate(
+        planning, registry, dry_run=True,
+        robot_state=RobotState("robot-1", "dry_run", True, True, None, 1, None, True),
+    )
+    assert decision.status == "allow"
+    assert "Robot robot-1 available sensors are unknown." in decision.warnings
+
+
+def test_unknown_sensors_deduplicates_per_skill_with_multiple_sensors() -> None:
+    registry = SkillRegistry(skills={})
+    registry.register(Skill(
+        name="search_for_victims", description="search",
+        handler=lambda inputs: None,
+        dry_run_only=False, allow_real_robot=True,
+        required_sensors=["thermal_camera", "lidar"],
+    ))
+    planning = PlanningResult(
+        status="planned", message="planned", intent="search",
+        target_floor=2,
+        plan=Plan("search", [PlanStep("search_for_victims", {"floor": 2})]),
+    )
+    decision = SafetyGate().evaluate(
+        planning, registry, dry_run=False,
+        robot_state=RobotState("robot-1", "ros1", False, True, None, 1, None, True),
+        environment_state=EnvironmentState(reachable_floors=[2]),
+    )
+    assert decision.status == "require_confirmation"
+    sensor_messages = [r for r in decision.reasons if "available sensors are unknown" in r]
+    assert len(sensor_messages) == 1
