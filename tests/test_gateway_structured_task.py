@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import time
 from urllib import request
+from urllib.error import HTTPError
 
 from fireclaw_core.gateway import FireClawGateway, GatewayConfig
 
@@ -62,5 +63,45 @@ def test_gateway_accepts_structured_task_payload(tmp_path):
 
         assert trace["structured_task"]["task_id"] == "structured-1"
         assert trace["result"]["structured_task"]["task_type"] == "search"
+    finally:
+        gateway.stop()
+
+
+def test_gateway_rejects_invalid_structured_task_payload(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+        )
+    )
+    gateway.start()
+    try:
+        try:
+            _json_request(
+                gateway.base_url,
+                "POST",
+                "/tasks",
+                {
+                    "command": "去2楼搜索受困人员",
+                    "structured_task": {
+                        "task_id": "bad-structured-task",
+                        "task_type": "search",
+                        "target": {"floor": 2},
+                        "required_skills": [],
+                    },
+                },
+            )
+        except HTTPError as exc:
+            body = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert body["status"] == "error"
+            assert "required_skills" in body["message"].lower()
+        else:
+            raise AssertionError("Expected HTTP 400 for invalid structured_task")
     finally:
         gateway.stop()

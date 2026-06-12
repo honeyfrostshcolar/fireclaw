@@ -24,6 +24,7 @@ from fireclaw_core.event_ledger import EventLedger
 from fireclaw_core.memory import JsonlMemoryStore
 from fireclaw_core.runtime_config import ADAPTER_CHOICES, create_robot_adapter
 from fireclaw_core.task_queue import JsonlTaskQueue
+from fireclaw_core.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.task_state import project_task_state
 
 
@@ -482,8 +483,6 @@ class FireClawGateway:
             cancellation_requested=cancellation_requested,
         )
         if structured_task is not None:
-            from fireclaw_core.task_contract import StructuredRobotTask
-
             task_object = StructuredRobotTask.from_dict(structured_task)
             result = agent.run_structured_task(task_object)
         else:
@@ -1128,6 +1127,17 @@ class FireClawGateway:
                 structured_task = payload.get("structured_task")
                 if not isinstance(structured_task, dict):
                     structured_task = None
+                if structured_task is not None:
+                    structured_task_errors = validate_structured_robot_task(
+                        StructuredRobotTask.from_dict(structured_task)
+                    )
+                    if structured_task_errors:
+                        self._write_error(
+                            handler,
+                            HTTPStatus.BAD_REQUEST,
+                            "; ".join(structured_task_errors),
+                        )
+                        return
                 result = self.submit_agent(
                     command,
                     session_id=_payload_session(payload, self.config.default_session_id),
