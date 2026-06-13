@@ -79,13 +79,39 @@ class EmergencyStopState:
     task_id: str | None = None
 
 
+def resolve_gateway_config_with_profile(config: GatewayConfig) -> GatewayConfig:
+    """Apply robot profile fields to gateway config before adapter/store construction."""
+    if not config.robot_profile_path:
+        return config
+    from dataclasses import replace
+
+    from fireclaw_core.agent.robot_profile import load_robot_capability_profile
+
+    profile = load_robot_capability_profile(config.robot_profile_path)
+    return replace(
+        config,
+        adapter=profile.adapter,
+        robot_id=profile.robot_id,
+        ros1_config_path=profile.ros1_config,
+        memory_path=str(profile.memory_path),
+        event_path=str(profile.event_path),
+        task_queue_path=str(profile.task_queue_path),
+    )
+
+
 class FireClawGateway:
     def __init__(self, config: GatewayConfig) -> None:
-        self.config = config
-        self.robot = create_robot_adapter(config.adapter, config.robot_id, config_path=config.ros1_config_path)
-        self.memory = JsonlMemoryStore(config.memory_path)
-        self.events = EventLedger(config.event_path)
-        self.task_queue = JsonlTaskQueue(config.task_queue_path)
+        resolved_config = resolve_gateway_config_with_profile(config)
+        self.config = resolved_config
+        self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
+        self.robot_profile = None
+        if resolved_config.robot_profile_path:
+            from fireclaw_core.agent.robot_profile import load_robot_capability_profile
+            self.robot_profile = load_robot_capability_profile(resolved_config.robot_profile_path)
+        self._validate_robot_profile()
+        self.memory = JsonlMemoryStore(resolved_config.memory_path)
+        self.events = EventLedger(resolved_config.event_path)
+        self.task_queue = JsonlTaskQueue(resolved_config.task_queue_path)
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._event_lock = threading.Lock()
@@ -98,11 +124,26 @@ class FireClawGateway:
         self._event_bus = EventBus()
         self._telemetry = TelemetryTracker()
         self._reconcile_stale_task_queue_records()
-        self.robot_profile = None
-        if config.robot_profile_path:
-            from fireclaw_core.agent.robot_profile import load_robot_capability_profile
-            self.robot_profile = load_robot_capability_profile(config.robot_profile_path)
         self.robot_agent_runtime = self._build_robot_agent_runtime()
+
+    def _validate_robot_profile(self) -> None:
+        if self.robot_profile is None:
+            return
+        from fireclaw_core.agent.robot_profile import validate_robot_capability_profile
+        from fireclaw_core.execution.skills import create_default_skill_registry
+        from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
+
+        ros1_config = None
+        if self.robot_profile.ros1_config is not None:
+            ros1_config = load_ros1_adapter_config(self.robot_profile.ros1_config)
+        registry = create_default_skill_registry(self.robot)
+        errors = validate_robot_capability_profile(
+            self.robot_profile,
+            registry,
+            ros1_config=ros1_config,
+        )
+        if errors:
+            raise ValueError("Invalid robot profile: " + "; ".join(errors))
 
     @property
     def base_url(self) -> str:
