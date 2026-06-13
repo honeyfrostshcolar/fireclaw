@@ -449,12 +449,19 @@ class Ros1RobotAdapter:
         )
 
     def get_robot_state(self) -> RobotState:
+        import logging
+
         sensor_diagnostics: dict[str, Any] | None = None
         available_sensors: list[str] | None = None
         if self.sensor_discovery is not None:
-            report = self.sensor_discovery.discover()
-            sensor_diagnostics = report.to_dict()
-            available_sensors = report.verified_sensors()
+            try:
+                report = self.sensor_discovery.discover()
+                sensor_diagnostics = report.to_dict()
+                available_sensors = report.verified_sensors()
+            except Exception:
+                logging.warning("Sensor discovery failed, falling back to static sensors", exc_info=True)
+                if self.available_sensors:
+                    available_sensors = list(self.available_sensors)
         elif self.available_sensors:
             available_sensors = list(self.available_sensors)
         return RobotState(
