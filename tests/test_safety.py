@@ -345,3 +345,45 @@ def test_safety_blocks_unreachable_target_floor_from_environment_state():
 
     assert decision.status == "block"
     assert decision.reasons == ["Target floor is not reachable: 5"]
+
+
+def test_safety_blocks_search_when_rgb_camera_is_only_degraded() -> None:
+    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+    registry = create_default_skill_registry(robot)
+    robot_state = RobotState(
+        robot_id="robot-1",
+        mode="ros1",
+        dry_run=False,
+        online=True,
+        battery_percent=100.0,
+        current_floor=1,
+        available_sensors=["lidar"],
+        supports_real_execution=True,
+        sensor_diagnostics={
+            "source": "ros1",
+            "verified_sensors": ["lidar"],
+            "findings": [
+                {
+                    "sensor": "rgb_camera",
+                    "topic": "/camera/image_raw",
+                    "message_type": "sensor_msgs/Image",
+                    "status": "degraded",
+                    "confidence": 0.9,
+                    "source": "ros1",
+                    "reason": "topic exists but no recent message within 2.0s",
+                }
+            ],
+        },
+    )
+
+    decision = SafetyGate().evaluate(
+        planning_result,
+        registry,
+        dry_run=False,
+        robot_state=robot_state,
+        environment_state=EnvironmentState(reachable_floors=[2]),
+    )
+
+    assert decision.status == "block"
+    assert "Skill search_for_victims requires unavailable sensor: rgb_camera" in decision.reasons
