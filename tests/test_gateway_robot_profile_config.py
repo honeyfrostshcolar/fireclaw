@@ -107,3 +107,43 @@ llm_exposed_skills = ["missing_skill"]
     assert not (data_dir / "memory.jsonl").exists()
     assert not (data_dir / "events.jsonl").exists()
     assert not (data_dir / "tasks.jsonl").exists()
+
+
+def test_profile_gateway_attaches_ros1_sensor_discovery(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    ros1_path = tmp_path / "ros1.yaml"
+    ros1_path.write_text(
+        """
+robot_id: robot-1
+transport:
+  enabled: false
+endpoints:
+  navigate_to_floor:
+    interface: action
+    name: /move_base
+    type: move_base_msgs/MoveBaseAction
+""".strip(),
+        encoding="utf-8",
+    )
+    profile_path.write_text(
+        f"""
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "{ros1_path}"
+data_dir = "{tmp_path / "robot-data"}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor"]
+llm_exposed_skills = ["navigate_to_floor"]
+
+[robot.sensor_discovery]
+enabled = true
+message_timeout_seconds = 1.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    gateway = FireClawGateway(GatewayConfig(robot_profile_path=str(profile_path)))
+
+    assert getattr(gateway.robot, "sensor_discovery", None) is not None

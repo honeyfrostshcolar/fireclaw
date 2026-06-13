@@ -116,6 +116,32 @@ def apply_gateway_dry_run_to_robot(robot: Any, dry_run: bool) -> None:
             logging.warning("Failed to apply gateway dry_run=%s to robot adapter", dry_run, exc_info=True)
 
 
+def attach_profile_sensor_discovery(robot: Any, profile: Any) -> None:
+    """Attach ROS1 sensor discovery to the robot adapter when the profile enables it."""
+    if profile is None:
+        return
+    if profile.adapter != "ros1":
+        return
+    if not profile.sensor_discovery.enabled:
+        return
+    from fireclaw_core.ros.ros1_sensor_discovery import (
+        Ros1CliGraphProvider,
+        Ros1CliMessageProbe,
+        Ros1SensorDiscovery,
+    )
+
+    setattr(
+        robot,
+        "sensor_discovery",
+        Ros1SensorDiscovery(
+            graph_provider=Ros1CliGraphProvider(),
+            message_probe=Ros1CliMessageProbe(),
+            extra_rules=profile.sensor_discovery.rules,
+            timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
+        ),
+    )
+
+
 class FireClawGateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.robot_profile = load_gateway_robot_profile(config)
@@ -123,6 +149,7 @@ class FireClawGateway:
         self.config = resolved_config
         self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
         apply_gateway_dry_run_to_robot(self.robot, resolved_config.dry_run)
+        attach_profile_sensor_discovery(self.robot, self.robot_profile)
         self._validate_robot_profile()
         self.memory = JsonlMemoryStore(resolved_config.memory_path)
         self.events = EventLedger(resolved_config.event_path)

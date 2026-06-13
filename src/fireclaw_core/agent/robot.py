@@ -34,6 +34,7 @@ class RobotState:
     current_floor: int | None
     available_sensors: list[str] | None
     supports_real_execution: bool
+    sensor_diagnostics: dict[str, Any] | None = None
 
 
 @dataclass
@@ -375,6 +376,7 @@ class Ros1RobotAdapter:
     mode: str = "ros1"
     current_floor: int | None = None
     available_sensors: list[str] = field(default_factory=list)
+    sensor_discovery: Any | None = None
     emergency_stopped: bool = False
     emergency_stop_reason: str | None = None
 
@@ -447,6 +449,14 @@ class Ros1RobotAdapter:
         )
 
     def get_robot_state(self) -> RobotState:
+        sensor_diagnostics: dict[str, Any] | None = None
+        available_sensors: list[str] | None = None
+        if self.sensor_discovery is not None:
+            report = self.sensor_discovery.discover()
+            sensor_diagnostics = report.to_dict()
+            available_sensors = report.verified_sensors()
+        elif self.available_sensors:
+            available_sensors = list(self.available_sensors)
         return RobotState(
             robot_id=self.robot_id,
             mode=self.mode,
@@ -454,8 +464,9 @@ class Ros1RobotAdapter:
             online=not self.emergency_stopped,
             battery_percent=None,
             current_floor=self.current_floor,
-            available_sensors=None,
+            available_sensors=available_sensors,
             supports_real_execution=True,
+            sensor_diagnostics=sensor_diagnostics,
         )
 
     def emergency_stop(self, reason: str | None = None) -> RobotActionResult:

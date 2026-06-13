@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from fireclaw_core.agent.robot import Ros1RobotAdapter
-from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
+from fireclaw_core.ros.ros1_config import Ros1AdapterConfig, load_ros1_adapter_config
+from fireclaw_core.ros.ros1_sensor_discovery import (
+    Ros1SensorDiscovery,
+    StaticRos1GraphProvider,
+    StaticRos1MessageProbe,
+)
 
 
 def _write_config(path: Path) -> None:
@@ -37,3 +42,26 @@ def test_ros1_robot_adapter_reports_unknown_state_as_none(tmp_path: Path) -> Non
     assert state.battery_percent is None
     assert state.available_sensors is None
     assert environment.reachable_floors is None
+
+
+def test_ros1_adapter_state_uses_verified_discovered_sensors() -> None:
+    adapter = Ros1RobotAdapter(
+        config=Ros1AdapterConfig(robot_id="robot-1"),
+        sensor_discovery=Ros1SensorDiscovery(
+            graph_provider=StaticRos1GraphProvider({
+                "/camera/image_raw": "sensor_msgs/Image",
+                "/scan": "sensor_msgs/LaserScan",
+            }),
+            message_probe=StaticRos1MessageProbe({
+                "/camera/image_raw": False,
+                "/scan": True,
+            }),
+        ),
+    )
+
+    state = adapter.get_robot_state()
+
+    assert state.available_sensors == ["lidar"]
+    assert state.sensor_diagnostics is not None
+    findings = state.sensor_diagnostics["findings"]
+    assert any(item["sensor"] == "rgb_camera" and item["status"] == "degraded" for item in findings)
