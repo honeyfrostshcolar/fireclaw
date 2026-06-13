@@ -157,7 +157,7 @@ def main() -> int:
         help="Discover ROS1 sensor topics and write suggested profile rules.",
     )
     profile_discover.add_argument("--profile", required=True, help="Path to robot profile TOML.")
-    profile_discover.add_argument("--output", required=True, help="Path to suggested TOML output.")
+    profile_discover.add_argument("--output", default=None, help="Path to suggested TOML output. Required unless --write-profile is given.")
     profile_discover.add_argument(
         "--write-profile",
         action="store_true",
@@ -377,6 +377,10 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
             Ros1SensorDiscovery,
         )
 
+        if not args.write_profile and not args.output:
+            print("Error: --output is required unless --write-profile is given.", file=sys.stderr)
+            return 1
+
         profile = load_robot_capability_profile(args.profile)
         discovery = Ros1SensorDiscovery(
             graph_provider=Ros1CliGraphProvider(),
@@ -385,6 +389,10 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
             timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
         )
         report = discovery.discover()
+
+        def _toml_escape(value: str) -> str:
+            return value.replace("\\", "\\\\").replace('"', '\\"')
+
         lines: list[str] = [
             "# Suggested FireClaw sensor discovery rules.",
             "# Review before copying into the robot profile.",
@@ -399,9 +407,9 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
                 continue
             lines.extend([
                 "[[robot.sensor_discovery.rules]]",
-                f'topic_pattern = "{finding.topic}"',
-                f'message_type = "{finding.message_type}"',
-                f'sensor = "{finding.sensor}"',
+                f'topic_pattern = "{_toml_escape(finding.topic)}"',
+                f'message_type = "{_toml_escape(finding.message_type)}"',
+                f'sensor = "{_toml_escape(finding.sensor)}"',
                 f"confidence = {finding.confidence:.2f}",
                 f"confirmed = {str(finding.status == 'verified').lower()}",
                 "",
