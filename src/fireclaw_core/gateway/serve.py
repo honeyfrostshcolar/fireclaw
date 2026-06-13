@@ -34,9 +34,11 @@ DEFAULT_ROBOTS_TEMPLATE = {
 }
 
 
-def _ensure_data_dir(data_dir: Path) -> None:
-    """Create data directory and robots.json template if they don't exist."""
+def _ensure_data_dir(data_dir: Path, *, create_robot_template: bool = True) -> None:
+    """Create data directory and optional robots.json template."""
     data_dir.mkdir(parents=True, exist_ok=True)
+    if not create_robot_template:
+        return
     robots_path = data_dir / "robots.json"
     if not robots_path.exists():
         robots_path.write_text(json.dumps(DEFAULT_ROBOTS_TEMPLATE, indent=2, ensure_ascii=False))
@@ -80,7 +82,7 @@ def start_server(
     # MissionGateway dispatches to robot gateways; adapter selection happens
     # at the robot-local gateway level, not here.
 
-    _ensure_data_dir(data_dir)
+    _ensure_data_dir(data_dir, create_robot_template=not bool(robot_profiles))
 
     planner = build_planner(
         planner_type=planner_type,
