@@ -64,3 +64,45 @@ def test_ros1_discovery_rejects_unmapped_topic() -> None:
 
     assert report.verified_sensors() == []
     assert report.findings[0].status == "rejected"
+
+
+class _FailingGraphProvider:
+    def topic_types(self) -> dict[str, str]:
+        raise RuntimeError("roscore not reachable")
+
+
+def test_ros1_discovery_returns_degraded_when_graph_provider_fails() -> None:
+    discovery = Ros1SensorDiscovery(
+        graph_provider=_FailingGraphProvider(),  # type: ignore[arg-type]
+        message_probe=StaticRos1MessageProbe({}),
+    )
+
+    report = discovery.discover()
+
+    assert report.verified_sensors() == []
+    assert len(report.findings) == 1
+    assert report.findings[0].status == "degraded"
+    assert "roscore not reachable" in str(report.findings[0].reason)
+
+
+def test_ros1_discovery_handles_multiple_topics_with_mixed_statuses() -> None:
+    discovery = Ros1SensorDiscovery(
+        graph_provider=StaticRos1GraphProvider({
+            "/scan": "sensor_msgs/LaserScan",
+            "/camera/image_raw": "sensor_msgs/Image",
+            "/debug/image": "custom_msgs/DebugImage",
+        }),
+        message_probe=StaticRos1MessageProbe({
+            "/scan": True,
+            "/camera/image_raw": False,
+            "/debug/image": True,
+        }),
+    )
+
+    report = discovery.discover()
+
+    assert report.verified_sensors() == ["lidar"]
+    statuses = {f.topic: f.status for f in report.findings}
+    assert statuses["/scan"] == "verified"
+    assert statuses["/camera/image_raw"] == "degraded"
+    assert statuses["/debug/image"] == "rejected"
