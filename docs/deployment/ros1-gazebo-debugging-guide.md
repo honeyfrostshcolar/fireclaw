@@ -95,39 +95,35 @@ export ROS_IP=127.0.0.1
 
 ### Step 6: Run FireClaw Direct Subtask
 
-Start the robot-local gateway and submit a task through the profile-backed workflow:
+Start the robot-local gateway. The profile in `fireclaw.toml` drives identity, adapter, ROS config, and storage paths automatically:
 
 ```bash
+# 启动 robot-local gateway（从 profile 自动派生配置）
 .venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
 ```
 
-In a separate terminal, export the profile and submit a task:
+In a separate terminal, start the mission gateway (robot registry is built from profiles listed in `[mission].robot_profiles`):
 
 ```bash
-.venv/bin/python -m fireclaw_core robot-profile export \
-  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
-  --output data/mission/robots.json
+# 启动 mission gateway（从 profile 自动构建 robot registry）
+.venv/bin/python -m fireclaw_core serve --config fireclaw.toml
 ```
 
 The Gazebo robot should move toward the target position.
 
 ### Robot-Local Agent Mode
 
-Start the robot-local gateway from a profile-backed config:
+Start the robot-local gateway and mission gateway from the profile-backed config:
 
 ```bash
+# Terminal 1: robot-local gateway
 .venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
+
+# Terminal 2: mission gateway
+.venv/bin/python -m fireclaw_core serve --config fireclaw.toml
 ```
 
-Export the profile into the mission registry:
-
-```bash
-.venv/bin/python -m fireclaw_core robot-profile export \
-  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
-  --output data/mission/robots.json
-```
-
-Then start mission control and submit commands through `fireclaw_core mission`.
+Submit commands through `fireclaw_core mission`. No manual `robots.json` export is needed.
 
 ### Step 7: Run Full Embodied Eval
 
@@ -212,8 +208,9 @@ Gazebo is treated as a ROS1 robot endpoint provider. FireClaw does not know or c
 ### "No online robots available"
 
 - FireClaw's robot registry must list the robot with correct `base_url`
+- With the profile-driven workflow, the registry is built automatically from `[mission].robot_profiles` in `fireclaw.toml`
 - For embodied_eval, this is handled automatically
-- For manual usage, export the robot profile into the mission registry:
+- For legacy workflows, export the robot profile manually:
 
 ```bash
 .venv/bin/python -m fireclaw_core robot-profile export \

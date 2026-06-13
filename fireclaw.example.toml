@@ -1,13 +1,14 @@
 # FireClaw 配置文件示例
 # 复制为 fireclaw.toml 并填入你的实际值
 # CLI 参数会覆盖配置文件中的值
+#
+# 机器人身份、适配器、ROS 配置、存储路径等从 profile 自动派生。
+# 维护 examples/robot_profiles/<robot>.toml 即可，无需在此重复。
 
 [server]
 host = "0.0.0.0"
 port = 8766
 data_dir = "./data/mission"
-adapter = "simulator"          # simulator | ros1
-# ros1_config = "ros1.yaml"   # ROS1 适配器配置路径
 
 [planner]
 type = "deterministic"         # deterministic | llm
@@ -18,22 +19,21 @@ base_url = ""
 api_key = ""
 model = ""
 
+# Mission 配置 — 从 robot profiles 构建 robot registry
+[mission]
+robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
+
 # Robot-Local Gateway 配置
+# robot_id, adapter, ros1_config, memory_path, event_path, task_queue_path
+# 均从 profile_path 自动派生，无需手动指定
 [robot_gateway]
 host = "127.0.0.1"
 port = 8765
-adapter = "simulator"          # simulator | ros1 | dry-run | mock-ros1
-robot_id = "debug-robot-1"
 profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
-memory_path = "data/robots/debug-robot-1/memory.jsonl"
-event_path = "data/robots/debug-robot-1/events.jsonl"
-task_queue_path = "data/robots/debug-robot-1/tasks.jsonl"
 workspace_skills_dir = "skills"
 dry_run = true
-available_sensors = []
 default_session_id = "default"
 max_active_execution_tasks = 1
-# ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
 
 # Robot-Local Agent 配置
 [robot_agent]

@@ -160,8 +160,10 @@ The command prints a structured JSON result and appends the same run record to t
 Start the mission coordinator:
 
 ```bash
-fireclaw serve --data-dir data --host 127.0.0.1 --port 8766 --planner deterministic
+.venv/bin/python -m fireclaw_core serve --config fireclaw.toml
 ```
+
+The `[mission]` section in `fireclaw.toml` lists robot profiles; the registry is built automatically from those profiles — no manual `robots.json` needed.
 
 Open the operator console:
 
@@ -169,7 +171,7 @@ Open the operator console:
 fireclaw mission --server http://127.0.0.1:8766
 ```
 
-For ROS1/Gazebo work, keep the robot-local `FireClawGateway` responsible for the adapter. The mission coordinator dispatches to registered robot gateways from `data/robots.json`; it does not directly publish ROS topics or actions.
+For ROS1/Gazebo work, keep the robot-local `FireClawGateway` responsible for the adapter. The mission coordinator dispatches to registered robot gateways; it does not directly publish ROS topics or actions.
 
 ## Run the End-to-End Framework Demo
 
@@ -258,18 +260,19 @@ FireClaw Gateway v1 is a local HTTP control plane around the same agent core. It
 HTTP in -> FireClawAgent -> SkillExecutor -> RobotAdapter -> simulator / mock ROS2 / future real ROS2
 ```
 
-Start the robot-local gateway from a profile-backed config:
+### Profile-Driven Startup
+
+The recommended workflow uses `fireclaw.toml` with a profile path. Identity, adapter, ROS config, and storage paths are derived from the profile automatically:
 
 ```bash
+# 1. 编辑配置
+cp fireclaw.example.toml fireclaw.toml
+
+# 2. 启动 robot-local gateway（从 profile 自动派生配置）
 .venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
-```
 
-Export the profile into the mission registry:
-
-```bash
-.venv/bin/python -m fireclaw_core robot-profile export \
-  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
-  --output data/mission/robots.json
+# 3. 启动 mission gateway（从 profile 自动构建 robot registry）
+.venv/bin/python -m fireclaw_core serve --config fireclaw.toml
 ```
 
 For one-off runs, CLI flags still override the config file:
@@ -279,6 +282,14 @@ For one-off runs, CLI flags still override the config file:
   --config fireclaw.toml \
   --adapter simulator \
   --robot-id robot-01
+```
+
+For legacy workflows that need an explicit `robots.json` file, the `robot-profile export` command remains available:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-profile export \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/mission/robots.json
 ```
 
 Check health and state:
@@ -469,21 +480,7 @@ Main FireClaw Mission Agent
 
 The main agent can submit subtasks, read state, read task traces, and request cancellation through the robot-local Gateway API. It does not bypass the robot subagent to publish low-level ROS topics or motor commands.
 
-A robot registry JSON file describes available robot subagents:
-
-```json
-{
-  "robots": [
-    {
-      "robot_id": "robot-1",
-      "base_url": "http://robot-1.local:8765",
-      "capabilities": ["navigate", "search_for_victims"],
-      "zone": "building-a",
-      "enabled": true
-    }
-  ]
-}
-```
+A robot registry is built automatically from profiles listed in `[mission].robot_profiles` in `fireclaw.toml`. Each profile contributes a registry entry with `robot_id`, `base_url`, `capabilities`, and other metadata. No manual `robots.json` is needed for the profile-driven workflow.
 
 Python callers can use the v1 contract directly:
 
@@ -513,13 +510,15 @@ trace = mission.mission_trace("mission-001")
 
 The aggregated trace keeps robot-local traces under each subtask. Robot-local Gateway traces remain the source of truth for embodied execution and incident review.
 
-The same v1 contract is available from the CLI. Export the robot profile and submit tasks through the gateway:
+The same v1 contract is available from the CLI. With the profile-driven workflow, the registry is built automatically from `fireclaw.toml` profiles. For legacy workflows, `robot-profile export` remains available:
 
 ```bash
+# Legacy: export profile to robots.json
 .venv/bin/python -m fireclaw_core robot-profile export \
   --profile examples/robot_profiles/gazebo_turtlebot3.toml \
   --output data/mission/robots.json
 
+# Mission CLI commands (use --robot-registry with exported JSON)
 .venv/bin/python -m fireclaw_core.mission_cli trace mission-001 \
   --robot-registry robots.json \
   --mission-registry memory/fireclaw-missions.jsonl
@@ -657,11 +656,6 @@ result = mission_observer.submit_subtask("robot-1", "去二楼搜索", session_i
 **CLI:**
 
 ```bash
-# Export robot profile for mission registry
-.venv/bin/python -m fireclaw_core robot-profile export \
-  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
-  --output data/mission/robots.json
-
 # Submit task via gateway (default operator has all mission scopes)
 curl -X POST http://127.0.0.1:8765/tasks \
   -H "Content-Type: application/json" \
