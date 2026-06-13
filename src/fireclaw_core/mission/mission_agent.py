@@ -70,8 +70,10 @@ class MissionAgent:
         subagent_registry: Any | None = None,
         session_lineage_store: JsonlSessionLineageStore | None = None,
         task_flow_store: JsonlTaskFlowRegistryStore | None = None,
+        profile_skill_chains_by_robot: dict[str, dict[str, tuple[str, ...]]] | None = None,
     ) -> None:
         self.registry = registry
+        self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
         if subagent_client is not None:
             self.subagent_client = subagent_client
         else:
@@ -198,6 +200,7 @@ class MissionAgent:
                 mission_id=mission_id,
                 subtask=mission_subtask,
                 operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
+                capability_skill_chains=self.profile_skill_chains_by_robot.get(robot_id),
             ).to_dict()
         else:
             floor = RuleBasedPlanner()._extract_floor(command)
@@ -214,6 +217,7 @@ class MissionAgent:
                     mission_id=mission_id,
                     subtask=generated_subtask,
                     operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
+                    capability_skill_chains=self.profile_skill_chains_by_robot.get(robot_id),
                 ).to_dict()
 
         subagent_result = self.subagent_client.submit_task(
