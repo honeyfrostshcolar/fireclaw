@@ -268,11 +268,18 @@ The recommended workflow uses `fireclaw.toml` with a profile path. Identity, ada
 # 1. 编辑配置
 cp fireclaw.example.toml fireclaw.toml
 
-# 2. 启动 robot-local gateway（从 profile 自动派生配置）
+# 2. 启动 robot-local gateway（safe default: profile-backed dry run, no ROS transport execution）
 .venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
 
 # 3. 启动 mission gateway（从 profile 自动构建 robot registry）
 .venv/bin/python -m fireclaw_core serve --config fireclaw.toml
+```
+
+In profile-driven mode, the profile chooses the adapter and ROS config; `dry_run` chooses whether the adapter may send transport commands. Use `--real-run` to override the dry-run default when ROS/Gazebo or robot hardware is ready:
+
+```bash
+# Explicit ROS/Gazebo transport execution
+.venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml --real-run
 ```
 
 For one-off runs, CLI flags still override the config file:

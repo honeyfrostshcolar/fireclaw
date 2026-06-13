@@ -95,11 +95,14 @@ export ROS_IP=127.0.0.1
 
 ### Step 6: Run FireClaw Direct Subtask
 
-Start the robot-local gateway. The profile in `fireclaw.toml` drives identity, adapter, ROS config, and storage paths automatically:
+Start the robot-local gateway. The profile in `fireclaw.toml` drives identity, adapter, ROS config, and storage paths automatically. The default config is dry-run — no ROS transport commands are sent unless `--real-run` is passed:
 
 ```bash
-# 启动 robot-local gateway（从 profile 自动派生配置）
+# 启动 robot-local gateway（safe default: dry run, no ROS transport execution）
 .venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml
+
+# 当 ROS/Gazebo 环境就绪后，使用 --real-run 发送实际 transport 命令
+.venv/bin/python -m fireclaw_core robot-gateway --config fireclaw.toml --real-run
 ```
 
 In a separate terminal, start the mission gateway (robot registry is built from profiles listed in `[mission].robot_profiles`):
