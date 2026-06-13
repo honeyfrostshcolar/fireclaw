@@ -1205,3 +1205,58 @@ def test_plan_mission_help_exposes_robot_profile_flag():
 
     assert "--robot-profile" in completed.stdout
     assert "--robot-registry" in completed.stdout
+
+
+def test_robot_profile_discover_writes_suggested_rules(tmp_path, monkeypatch):
+    profile_path = tmp_path / "robot.toml"
+    output_path = tmp_path / "discovered.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "{data_dir}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+""".format(data_dir=tmp_path / "robot-data").strip(),
+        encoding="utf-8",
+    )
+
+    from fireclaw_core.ros import ros1_sensor_discovery
+
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliGraphProvider,
+        "topic_types",
+        lambda self: {"/scan": "sensor_msgs/LaserScan"},
+    )
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliMessageProbe,
+        "has_recent_message",
+        lambda self, topic, timeout_seconds: True,
+    )
+
+    from fireclaw_core.mission.mission_cli import main
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mission-cli",
+            "robot-profile",
+            "discover",
+            "--profile",
+            str(profile_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    exit_code = main()
+
+    assert exit_code == 0
+    text = output_path.read_text(encoding="utf-8")
+    assert "[[robot.sensor_discovery.rules]]" in text
+    assert 'sensor = "lidar"' in text
+    assert 'topic_pattern = "/scan"' in text

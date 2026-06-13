@@ -152,6 +152,18 @@ def main() -> int:
     profile_export.add_argument("--profile", required=True, help="Path to robot profile TOML.")
     profile_export.add_argument("--output", required=True, help="Path to robots.json output.")
 
+    profile_discover = robot_profile_sub.add_parser(
+        "discover",
+        help="Discover ROS1 sensor topics and write suggested profile rules.",
+    )
+    profile_discover.add_argument("--profile", required=True, help="Path to robot profile TOML.")
+    profile_discover.add_argument("--output", required=True, help="Path to suggested TOML output.")
+    profile_discover.add_argument(
+        "--write-profile",
+        action="store_true",
+        help="Explicitly write suggested discovery rules to the profile instead of --output.",
+    )
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -357,6 +369,56 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
         payload = {"robots": [profile.to_robot_registry_entry()]}
         output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         _print_json({"status": "written", "output": str(output), "robot_id": profile.robot_id})
+        return 0
+    if args.robot_profile_command == "discover":
+        from fireclaw_core.ros.ros1_sensor_discovery import (
+            Ros1CliGraphProvider,
+            Ros1CliMessageProbe,
+            Ros1SensorDiscovery,
+        )
+
+        profile = load_robot_capability_profile(args.profile)
+        discovery = Ros1SensorDiscovery(
+            graph_provider=Ros1CliGraphProvider(),
+            message_probe=Ros1CliMessageProbe(),
+            extra_rules=profile.sensor_discovery.rules,
+            timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
+        )
+        report = discovery.discover()
+        lines: list[str] = [
+            "# Suggested FireClaw sensor discovery rules.",
+            "# Review before copying into the robot profile.",
+            "",
+            "[robot.sensor_discovery]",
+            "enabled = true",
+            f"message_timeout_seconds = {profile.sensor_discovery.message_timeout_seconds:.1f}",
+            "",
+        ]
+        for finding in report.findings:
+            if finding.status not in {"verified", "degraded"}:
+                continue
+            lines.extend([
+                "[[robot.sensor_discovery.rules]]",
+                f'topic_pattern = "{finding.topic}"',
+                f'message_type = "{finding.message_type}"',
+                f'sensor = "{finding.sensor}"',
+                f"confidence = {finding.confidence:.2f}",
+                f"confirmed = {str(finding.status == 'verified').lower()}",
+                "",
+            ])
+        text = "\n".join(lines)
+        output = Path(args.profile if args.write_profile else args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if args.write_profile:
+            existing = output.read_text(encoding="utf-8")
+            output.write_text(existing.rstrip() + "\n\n" + text, encoding="utf-8")
+        else:
+            output.write_text(text, encoding="utf-8")
+        _print_json({
+            "status": "written",
+            "output": str(output),
+            "verified_sensors": report.verified_sensors(),
+        })
         return 0
     print(f"Error: unknown robot-profile subcommand: {args.robot_profile_command}", file=sys.stderr)
     return 1
