@@ -221,6 +221,28 @@ Gazebo is treated as a ROS1 robot endpoint provider. FireClaw does not know or c
   --output data/mission/robots.json
 ```
 
+## Sensor Discovery and SafetyGate
+
+The ROS1 robot gateway derives `RobotState.available_sensors` from verified ROS topics.
+
+For each candidate topic, FireClaw checks:
+
+1. the topic is present in `rostopic list`;
+2. `rostopic type <topic>` matches a default or profile mapping rule;
+3. `rostopic echo -n 1 <topic>` returns a recent message within the configured timeout.
+
+Only verified sensors are passed to SafetyGate. If `/camera/image_raw` is absent, has the wrong type, or does not publish a message, `rgb_camera` is not available and `search_for_victims` is blocked. This is expected in Gazebo unless a real camera topic is running.
+
+Generate suggested profile rules:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-profile discover \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output /tmp/gazebo_turtlebot3.discovered.toml
+```
+
+Review the suggestion before copying rules into a profile. Static `available_sensors` declarations must not circumvent SafetyGate verification.
+
 ## What This Proves
 
 When all commands exit 0 and the Gazebo robot moves:

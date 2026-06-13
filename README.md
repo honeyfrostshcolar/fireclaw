@@ -275,7 +275,7 @@ cp fireclaw.example.toml fireclaw.toml
 .venv/bin/python -m fireclaw_core serve --config fireclaw.toml
 ```
 
-In profile-driven mode, the profile chooses the adapter and ROS config; `dry_run` chooses whether the adapter may send transport commands. Use `--real-run` to override the dry-run default when ROS/Gazebo or robot hardware is ready:
+In profile-driven mode, the profile chooses the adapter and ROS config; `dry_run` chooses whether the adapter may send transport commands. Robot profiles may include sensor discovery rules, but runtime sensor availability comes from verified adapter state. In ROS1/Gazebo, a topic must exist, match a sensor rule, and publish a recent message before the corresponding sensor enters `RobotState.available_sensors`. Use `--real-run` to override the dry-run default when ROS/Gazebo or robot hardware is ready:
 
 ```bash
 # Explicit ROS/Gazebo transport execution
