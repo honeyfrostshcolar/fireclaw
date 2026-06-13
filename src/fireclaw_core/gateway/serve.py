@@ -60,6 +60,7 @@ def start_server(
     robot_agent_provider_base_url: str | None = None,
     robot_agent_provider_api_key: str | None = None,
     robot_agent_model: str | None = None,
+    robot_profiles: tuple[str, ...] | None = None,
 ) -> MissionGateway:
     """Assemble and start the MissionGateway HTTP server.
 
@@ -92,6 +93,7 @@ def start_server(
     paths = MissionRuntimePaths(
         robot_registry=data_dir / "robots.json",
         mission_registry=data_dir / "missions.jsonl",
+        robot_profiles=tuple(Path(p) for p in robot_profiles) if robot_profiles else (),
         mission_memory=data_dir / "memory.jsonl",
         memory_index=data_dir / "memory.sqlite",
         task_registry=data_dir / "tasks.jsonl",
@@ -109,7 +111,12 @@ def start_server(
         source="serve",
     )
 
-    registry = load_robot_registry(paths.robot_registry)
+    # When robot_profiles is set, agent.registry is already built from profiles;
+    # otherwise fall back to loading from the JSON file.
+    if robot_profiles:
+        registry = agent.registry
+    else:
+        registry = load_robot_registry(paths.robot_registry)
     config = MissionGatewayConfig(host=host, port=port)
     gw = MissionGateway(
         config,
@@ -142,6 +149,7 @@ def run_server_blocking(
     robot_agent_provider_base_url: str | None = None,
     robot_agent_provider_api_key: str | None = None,
     robot_agent_model: str | None = None,
+    robot_profiles: tuple[str, ...] | None = None,
 ) -> None:
     """Start the server and block until interrupted (Ctrl+C)."""
     gw = start_server(
@@ -160,6 +168,7 @@ def run_server_blocking(
         robot_agent_provider_base_url=robot_agent_provider_base_url,
         robot_agent_provider_api_key=robot_agent_provider_api_key,
         robot_agent_model=robot_agent_model,
+        robot_profiles=robot_profiles,
     )
 
     shutdown_requested = False

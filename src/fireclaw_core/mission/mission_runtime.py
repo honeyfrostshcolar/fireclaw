@@ -23,6 +23,7 @@ from fireclaw_core.safety.validation_sidecar import ValidationSidecar
 class MissionRuntimePaths:
     robot_registry: Path
     mission_registry: Path
+    robot_profiles: tuple[Path, ...] = ()
     mission_memory: Path | None = None
     memory_index: Path | None = None
     task_registry: Path | None = None
@@ -63,8 +64,18 @@ def build_mission_agent_from_paths(
         memory_retriever = MemoryRetriever(index=SqliteMemoryIndex(paths.memory_index))
     task_registry = JsonlTaskRegistryStore(paths.task_registry) if paths.task_registry else None
     subagent_registry = JsonlSubagentRegistry(paths.subagent_registry) if paths.subagent_registry else None
+
+    if paths.robot_profiles:
+        from fireclaw_core.agent.robot_profile import load_robot_capability_profiles
+        from fireclaw_core.agent.robot_registry import robot_registry_from_profiles
+
+        profiles = load_robot_capability_profiles(list(paths.robot_profiles))
+        registry = robot_registry_from_profiles(profiles)
+    else:
+        registry = load_robot_registry(paths.robot_registry)
+
     return MissionAgent(
-        registry=load_robot_registry(paths.robot_registry),
+        registry=registry,
         mission_registry=JsonlMissionRegistry(paths.mission_registry),
         planner=planner,
         control_policy=ControlPolicy(),

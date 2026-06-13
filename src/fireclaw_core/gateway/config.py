@@ -126,6 +126,10 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_gateway_api_token"] = rg.get("api_token")
     cfg["robot_gateway_profile_path"] = rg.get("profile_path")
 
+    # [mission]
+    mission = raw.get("mission", {})
+    cfg["mission_robot_profiles"] = mission.get("robot_profiles")
+
     return cfg
 
 

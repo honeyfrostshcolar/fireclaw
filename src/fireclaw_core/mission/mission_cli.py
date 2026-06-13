@@ -245,6 +245,7 @@ def main() -> int:
             robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
             robot_agent_model=merged.get("robot_agent_model"),
+            robot_profiles=tuple(merged["mission_robot_profiles"]) if merged.get("mission_robot_profiles") else None,
         )
         return 0
     if args.command_name == "mission":
