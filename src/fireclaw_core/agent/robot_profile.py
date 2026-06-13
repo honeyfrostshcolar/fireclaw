@@ -12,6 +12,14 @@ else:
 
 from fireclaw_core.execution.skills import SkillRegistry
 from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
+from fireclaw_core.sensors.discovery import SensorMappingRule
+
+
+@dataclass(frozen=True)
+class SensorDiscoveryProfileConfig:
+    enabled: bool = True
+    message_timeout_seconds: float = 2.0
+    rules: tuple[SensorMappingRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -25,6 +33,9 @@ class RobotCapabilityProfile:
     enabled_skills: tuple[str, ...]
     llm_exposed_skills: tuple[str, ...]
     capability_skill_chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    sensor_discovery: SensorDiscoveryProfileConfig = field(
+        default_factory=SensorDiscoveryProfileConfig
+    )
     enabled: bool = True
 
     @property
@@ -69,6 +80,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
     enabled_skills = _string_tuple(robot, "enabled_skills")
     llm_exposed_skills = _string_tuple(robot, "llm_exposed_skills")
     capability_skill_chains = _skill_chain_map(raw, "capability_skill_chains")
+    sensor_discovery = _sensor_discovery_config(robot)
     return RobotCapabilityProfile(
         robot_id=robot_id,
         base_url=base_url.rstrip("/"),
@@ -79,6 +91,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
         enabled_skills=enabled_skills,
         llm_exposed_skills=llm_exposed_skills,
         capability_skill_chains=capability_skill_chains,
+        sensor_discovery=sensor_discovery,
         enabled=bool(robot.get("enabled", True)),
     )
 
@@ -124,6 +137,36 @@ def _skill_chain_map(raw: dict[str, Any], key: str) -> dict[str, tuple[str, ...]
             raise ValueError(f"{key}.{cap_name} must contain only non-empty strings.")
         result[cap_name] = items
     return result
+
+
+def _sensor_discovery_config(robot: dict[str, Any]) -> SensorDiscoveryProfileConfig:
+    raw = robot.get("sensor_discovery")
+    if raw is None:
+        return SensorDiscoveryProfileConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("robot.sensor_discovery must be a table when provided.")
+    rules_raw = raw.get("rules") or []
+    if not isinstance(rules_raw, list):
+        raise ValueError("robot.sensor_discovery.rules must be an array of tables.")
+    rules: list[SensorMappingRule] = []
+    for index, item in enumerate(rules_raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"robot.sensor_discovery.rules[{index}] must be a table.")
+        rules.append(
+            SensorMappingRule(
+                topic_pattern=_required_string(item, "topic_pattern"),
+                message_type=_required_string(item, "message_type"),
+                sensor=_required_string(item, "sensor"),
+                source="profile",
+                confidence=float(item.get("confidence", 0.9)),
+                confirmed=bool(item.get("confirmed", False)),
+            )
+        )
+    return SensorDiscoveryProfileConfig(
+        enabled=bool(raw.get("enabled", True)),
+        message_timeout_seconds=float(raw.get("message_timeout_seconds", 2.0)),
+        rules=tuple(rules),
+    )
 
 
 def validate_robot_capability_profile(

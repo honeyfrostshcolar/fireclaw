@@ -225,6 +225,92 @@ def test_example_gazebo_turtlebot3_profile_loads_and_validates() -> None:
     assert validate_robot_capability_profile(profile, registry, ros1_config=ros1_config) == []
 
 
+def test_robot_profile_loads_sensor_discovery_rules(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+
+[robot.sensor_discovery]
+enabled = true
+message_timeout_seconds = 1.5
+
+[[robot.sensor_discovery.rules]]
+topic_pattern = "/front_camera/image_raw"
+message_type = "sensor_msgs/Image"
+sensor = "rgb_camera"
+confidence = 0.95
+confirmed = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.sensor_discovery.enabled is True
+    assert profile.sensor_discovery.message_timeout_seconds == 1.5
+    assert profile.sensor_discovery.rules[0].topic_pattern == "/front_camera/image_raw"
+    assert profile.sensor_discovery.rules[0].sensor == "rgb_camera"
+    assert profile.sensor_discovery.rules[0].confirmed is True
+
+
+def test_robot_profile_sensor_discovery_defaults(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor"]
+llm_exposed_skills = ["navigate_to_floor"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.sensor_discovery.enabled is True
+    assert profile.sensor_discovery.message_timeout_seconds == 2.0
+    assert profile.sensor_discovery.rules == ()
+
+
+def test_robot_profile_sensor_discovery_rejects_missing_topic_pattern(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor"]
+llm_exposed_skills = ["navigate_to_floor"]
+
+[[robot.sensor_discovery.rules]]
+message_type = "sensor_msgs/Image"
+sensor = "rgb_camera"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="topic_pattern"):
+        load_robot_capability_profile(profile_path)
+
+
 def test_load_robot_capability_profiles_preserves_order(tmp_path: Path) -> None:
     template = """
 [robot]
