@@ -8,6 +8,7 @@ from fireclaw_core.agent.robot import (
     SimulatorRobotAdapter,
 )
 from fireclaw_core.execution.runtime_config import create_robot_adapter
+from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
 from fireclaw_core.ros.ros1_transport import Ros1Transport
 
 
@@ -458,3 +459,21 @@ def test_simulator_adapter_fails_unreachable_floor_without_state_change():
     assert result.data["floor"] == 5
     assert "unreachable" in str(result.error)
     assert robot.get_robot_state().current_floor == 1
+
+
+class FailingRos1Transport:
+    def execute(self, endpoint, payload, config, cancellation_requested=None):
+        raise AssertionError("dry-run ROS1 adapter must not execute transport")
+
+
+def test_ros1_robot_adapter_dry_run_skips_transport() -> None:
+    config = load_ros1_adapter_config("examples/ros1_configs/gazebo_turtlebot3_move_base.yaml")
+    adapter = Ros1RobotAdapter(config=config, transport=FailingRos1Transport(), dry_run=True)
+
+    result = adapter.navigate_to_floor(2)
+
+    assert result.ok is True
+    assert result.status == "succeeded"
+    assert result.dry_run is True
+    assert result.data["dry_run"] is True
+    assert result.data["ros1_name"] == "/move_base"

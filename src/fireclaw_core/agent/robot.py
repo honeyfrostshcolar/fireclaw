@@ -533,6 +533,17 @@ class Ros1RobotAdapter:
             "ros1_payload": ros1_payload,
             **payload,
         }
+        if self.dry_run:
+            return RobotActionResult(
+                ok=True,
+                status="succeeded",
+                robot_id=self.robot_id,
+                mode=self.mode,
+                action=action,
+                dry_run=True,
+                data=base_data,
+                timestamp=timestamp,
+            )
         if self.config.transport.enabled:
             try:
                 transport = self.transport or Ros1Transport(feedback_sink=feedback_sink)
