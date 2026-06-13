@@ -7,3 +7,6 @@ data_dir = "data/robots/gazebo_turtlebot3"
 capabilities = ["search_for_victims"]
 enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"]
 llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"]
+
+[capability_skill_chains]
+search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]

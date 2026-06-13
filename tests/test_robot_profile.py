@@ -145,6 +145,74 @@ def test_profile_validation_accepts_gazebo_profile() -> None:
     assert errors == []
 
 
+def test_load_robot_capability_profile_with_skill_chains(tmp_path: Path) -> None:
+    profile_path = tmp_path / "debug-robot-1.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "debug-robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "data/robots/debug-robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+
+[capability_skill_chains]
+search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.capability_skill_chains == {
+        "search_for_victims": ("navigate_to_floor", "search_for_victims", "report_status"),
+    }
+
+
+def test_profile_validation_rejects_skill_chain_outside_enabled_skills() -> None:
+    profile = RobotCapabilityProfile(
+        robot_id="debug-robot-1",
+        base_url="http://127.0.0.1:8765",
+        adapter="simulator",
+        ros1_config=None,
+        data_dir=Path("data/robots/debug-robot-1"),
+        capabilities=("search_for_victims",),
+        enabled_skills=("navigate_to_floor", "search_for_victims"),
+        llm_exposed_skills=("navigate_to_floor", "search_for_victims"),
+        capability_skill_chains={
+            "search_for_victims": ("navigate_to_floor", "disabled_skill"),
+        },
+    )
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+
+    errors = validate_robot_capability_profile(profile, registry)
+
+    assert "skill chain 'search_for_victims' references non-enabled skill 'disabled_skill'" in errors
+
+
+def test_profile_validation_rejects_skill_chain_capability_not_in_capabilities() -> None:
+    profile = RobotCapabilityProfile(
+        robot_id="debug-robot-1",
+        base_url="http://127.0.0.1:8765",
+        adapter="simulator",
+        ros1_config=None,
+        data_dir=Path("data/robots/debug-robot-1"),
+        capabilities=("search_for_victims",),
+        enabled_skills=("navigate_to_floor", "search_for_victims"),
+        llm_exposed_skills=("navigate_to_floor", "search_for_victims"),
+        capability_skill_chains={
+            "unknown_capability": ("navigate_to_floor",),
+        },
+    )
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+
+    errors = validate_robot_capability_profile(profile, registry)
+
+    assert "skill chain key 'unknown_capability' is not in capabilities" in errors
+
+
 def test_example_gazebo_turtlebot3_profile_loads_and_validates() -> None:
     profile = load_robot_capability_profile("examples/robot_profiles/gazebo_turtlebot3.toml")
     registry = create_default_skill_registry(DryRunRobotAdapter(robot_id=profile.robot_id))

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ class RobotCapabilityProfile:
     capabilities: tuple[str, ...]
     enabled_skills: tuple[str, ...]
     llm_exposed_skills: tuple[str, ...]
+    capability_skill_chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
     enabled: bool = True
 
     @property
@@ -61,6 +62,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
     capabilities = _string_tuple(robot, "capabilities")
     enabled_skills = _string_tuple(robot, "enabled_skills")
     llm_exposed_skills = _string_tuple(robot, "llm_exposed_skills")
+    capability_skill_chains = _skill_chain_map(raw, "capability_skill_chains")
     return RobotCapabilityProfile(
         robot_id=robot_id,
         base_url=base_url.rstrip("/"),
@@ -70,6 +72,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
         capabilities=capabilities,
         enabled_skills=enabled_skills,
         llm_exposed_skills=llm_exposed_skills,
+        capability_skill_chains=capability_skill_chains,
         enabled=bool(robot.get("enabled", True)),
     )
 
@@ -100,6 +103,23 @@ def _string_tuple(raw: dict[str, Any], key: str) -> tuple[str, ...]:
     return items
 
 
+def _skill_chain_map(raw: dict[str, Any], key: str) -> dict[str, tuple[str, ...]]:
+    value = raw.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be a table mapping capability names to skill lists.")
+    result: dict[str, tuple[str, ...]] = {}
+    for cap_name, chain_list in value.items():
+        if not isinstance(chain_list, list) or not chain_list:
+            raise ValueError(f"{key}.{cap_name} must be a non-empty list of strings.")
+        items = tuple(item.strip() for item in chain_list if isinstance(item, str) and item.strip())
+        if len(items) != len(chain_list):
+            raise ValueError(f"{key}.{cap_name} must contain only non-empty strings.")
+        result[cap_name] = items
+    return result
+
+
 def validate_robot_capability_profile(
     profile: RobotCapabilityProfile,
     registry: SkillRegistry,
@@ -124,4 +144,13 @@ def validate_robot_capability_profile(
                     errors.append(f"enabled skill {skill_name!r} has no ROS1 remap")
     if not profile.capabilities:
         errors.append("profile must declare at least one capability")
+    enabled_set = set(profile.enabled_skills)
+    for cap_name, chain in profile.capability_skill_chains.items():
+        if cap_name not in profile.capabilities:
+            errors.append(f"skill chain key {cap_name!r} is not in capabilities")
+        for skill_name in chain:
+            if skill_name not in enabled_set:
+                errors.append(
+                    f"skill chain {cap_name!r} references non-enabled skill {skill_name!r}"
+                )
     return errors
