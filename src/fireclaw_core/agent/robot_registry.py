@@ -89,6 +89,24 @@ class RobotRegistry:
         return [entry for entry in self._entries.values() if entry.enabled and entry.robot_id in self._last_seen_at]
 
 
+def robot_registry_from_profiles(
+    profiles: list["RobotCapabilityProfile"],
+) -> RobotRegistry:
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile
+
+    return RobotRegistry(
+        [
+            RobotRegistryEntry(
+                robot_id=profile.robot_id,
+                base_url=profile.base_url,
+                capabilities=profile.capabilities,
+                enabled=profile.enabled,
+            )
+            for profile in profiles
+        ]
+    )
+
+
 def load_robot_registry(path: str | Path) -> RobotRegistry:
     raw = Path(path).read_text(encoding="utf-8")
     parsed = json.loads(raw)

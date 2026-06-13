@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -193,3 +194,50 @@ def test_stale_entries_returns_only_enabled_stale():
     stale = registry.stale_entries()
     assert len(stale) == 1
     assert stale[0].robot_id == "r1"
+
+
+def test_robot_registry_from_profiles_uses_profile_registry_entries() -> None:
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile
+    from fireclaw_core.agent.robot_registry import robot_registry_from_profiles
+
+    profile = RobotCapabilityProfile(
+        robot_id="gazebo_turtlebot3",
+        base_url="http://127.0.0.1:8765",
+        adapter="ros1",
+        ros1_config="examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
+        data_dir=Path("data/robots/gazebo_turtlebot3"),
+        capabilities=("search_for_victims",),
+        enabled_skills=("navigate_to_floor", "search_for_victims", "report_status"),
+        llm_exposed_skills=("navigate_to_floor", "search_for_victims", "report_status"),
+    )
+
+    registry = robot_registry_from_profiles([profile])
+
+    entry = registry.get("gazebo_turtlebot3")
+    assert entry is not None
+    assert entry.base_url == "http://127.0.0.1:8765"
+    assert entry.capabilities == ("search_for_victims",)
+
+
+def test_robot_registry_from_profiles_respects_enabled_flag() -> None:
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile
+    from fireclaw_core.agent.robot_registry import robot_registry_from_profiles
+
+    profile = RobotCapabilityProfile(
+        robot_id="disabled-bot",
+        base_url="http://127.0.0.1:8765",
+        adapter="simulator",
+        ros1_config=None,
+        data_dir=Path("data/robots/disabled-bot"),
+        capabilities=("search_for_victims",),
+        enabled_skills=("navigate_to_floor",),
+        llm_exposed_skills=("navigate_to_floor",),
+        enabled=False,
+    )
+
+    registry = robot_registry_from_profiles([profile])
+
+    entry = registry.get("disabled-bot")
+    assert entry is not None
+    assert entry.enabled is False
+    assert registry.enabled_entries() == []

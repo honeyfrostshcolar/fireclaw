@@ -48,6 +48,12 @@ class RobotCapabilityProfile:
         }
 
 
+def load_robot_capability_profiles(
+    paths: list[str | Path] | tuple[str | Path, ...],
+) -> list[RobotCapabilityProfile]:
+    return [load_robot_capability_profile(path) for path in paths]
+
+
 def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
     target = Path(path)
     with target.open("rb") as handle:

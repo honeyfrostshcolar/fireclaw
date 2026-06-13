@@ -6,6 +6,7 @@ from fireclaw_core.agent.robot import DryRunRobotAdapter
 from fireclaw_core.agent.robot_profile import (
     RobotCapabilityProfile,
     load_robot_capability_profile,
+    load_robot_capability_profiles,
     validate_robot_capability_profile,
 )
 from fireclaw_core.execution.skills import create_default_skill_registry
@@ -222,3 +223,25 @@ def test_example_gazebo_turtlebot3_profile_loads_and_validates() -> None:
     assert profile.adapter == "ros1"
     assert "navigate_to_floor" in profile.llm_exposed_skills
     assert validate_robot_capability_profile(profile, registry, ros1_config=ros1_config) == []
+
+
+def test_load_robot_capability_profiles_preserves_order(tmp_path: Path) -> None:
+    template = """
+[robot]
+id = "{robot_id}"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "data/robots/{robot_id}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor"]
+llm_exposed_skills = ["navigate_to_floor"]
+""".strip()
+
+    first = tmp_path / "r1.toml"
+    second = tmp_path / "r2.toml"
+    first.write_text(template.format(robot_id="r1"), encoding="utf-8")
+    second.write_text(template.format(robot_id="r2"), encoding="utf-8")
+
+    profiles = load_robot_capability_profiles([first, second])
+
+    assert [profile.robot_id for profile in profiles] == ["r1", "r2"]
