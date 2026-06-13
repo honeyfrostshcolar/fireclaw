@@ -245,3 +245,33 @@ Tasks 1-6 completed:
 - `src/fireclaw_core/gateway/gateway.py` — attach_profile_sensor_discovery() wiring
 - `src/fireclaw_core/mission/mission_cli.py` — robot-profile discover command
 - Tests: test_sensor_discovery.py, test_ros1_sensor_discovery.py, test_robot_profile.py, test_ros1_adapter_state.py, test_gateway_robot_profile_config.py, test_safety.py, test_mission_cli.py
+
+## Verification Result (2026-06-14)
+
+**Focused tests:** 79 passed (7 sensor discovery related test files)
+
+**Full suite:** 1177 passed, 6 skipped, 1 pre-existing failure (test_serve.py network connectivity)
+
+**Live Gazebo `/state` sensor diagnostics:**
+- `sensor_diagnostics` field present in robot state response
+- `/scan` topic: matched to `lidar`, status `degraded` (topic exists, no recent message within 2.0s)
+- `/imu` topic: matched to `imu`, status `degraded` (topic exists, no recent message within 2.0s)
+- 19 other topics: status `rejected` (no sensor mapping rule matched)
+- `verified_sensors: []`, `available_sensors: []`
+- No camera topic present in Gazebo TurtleBot3 world (expected)
+
+**Mission submission result:**
+- Mission gateway started and registered `gazebo_turtlebot3` robot
+- Fleet doctor reported robot unreachable (timeout) due to slow `/state` endpoint
+- `/state` endpoint takes ~11s because CLI probes (`rostopic echo -n 1`) spawn per-topic subprocess with 2s timeout
+
+**SafetyGate outcome:**
+- `available_sensors` is empty (no verified sensors)
+- `search_for_victims` would be blocked because `rgb_camera` is not in available_sensors
+- SafetyGate regression test confirms this behavior (test_safety.py::test_safety_blocks_search_when_rgb_camera_is_only_degraded)
+
+**Remaining gaps:**
+1. CLI probe performance: `Ros1CliGraphProvider.topic_types()` does N+1 subprocess calls (one `rostopic list` + one `rostopic type` per topic). With 20+ topics, `/state` takes 11s. Future optimization: use `rostopic list -p` (includes types in one call) or cache results.
+2. Mission gateway fleet health check times out because robot gateway's `/state` is slow. The health endpoint (`/health`) is fast (5ms), but the fleet doctor may call `/state` instead.
+3. Gazebo TurtleBot3 default world has no camera topic. To test verified `rgb_camera`, a camera sensor must be added to the Gazebo world or a different robot profile used.
+4. No live `robot-profile discover` test was run (requires ROS1 master with actual publishing topics).
