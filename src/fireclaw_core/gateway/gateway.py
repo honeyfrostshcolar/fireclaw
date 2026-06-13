@@ -79,15 +79,23 @@ class EmergencyStopState:
     task_id: str | None = None
 
 
-def resolve_gateway_config_with_profile(config: GatewayConfig) -> GatewayConfig:
+def load_gateway_robot_profile(config: GatewayConfig):
+    """Load robot profile from config path, returning None when no path is set."""
+    if not config.robot_profile_path:
+        return None
+    from fireclaw_core.agent.robot_profile import load_robot_capability_profile
+
+    return load_robot_capability_profile(config.robot_profile_path)
+
+
+def resolve_gateway_config_with_profile(config: GatewayConfig, profile=None) -> GatewayConfig:
     """Apply robot profile fields to gateway config before adapter/store construction."""
     if not config.robot_profile_path:
         return config
     from dataclasses import replace
 
-    from fireclaw_core.agent.robot_profile import load_robot_capability_profile
-
-    profile = load_robot_capability_profile(config.robot_profile_path)
+    if profile is None:
+        profile = load_gateway_robot_profile(config)
     return replace(
         config,
         adapter=profile.adapter,
@@ -110,14 +118,11 @@ def apply_gateway_dry_run_to_robot(robot: Any, dry_run: bool) -> None:
 
 class FireClawGateway:
     def __init__(self, config: GatewayConfig) -> None:
-        resolved_config = resolve_gateway_config_with_profile(config)
+        self.robot_profile = load_gateway_robot_profile(config)
+        resolved_config = resolve_gateway_config_with_profile(config, self.robot_profile)
         self.config = resolved_config
         self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
         apply_gateway_dry_run_to_robot(self.robot, resolved_config.dry_run)
-        self.robot_profile = None
-        if resolved_config.robot_profile_path:
-            from fireclaw_core.agent.robot_profile import load_robot_capability_profile
-            self.robot_profile = load_robot_capability_profile(resolved_config.robot_profile_path)
         self._validate_robot_profile()
         self.memory = JsonlMemoryStore(resolved_config.memory_path)
         self.events = EventLedger(resolved_config.event_path)

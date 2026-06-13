@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
@@ -1146,3 +1148,60 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
     assert body["status"] == "written"
     assert registry["robots"][0]["robot_id"] == "debug-robot-1"
     assert registry["robots"][0]["capabilities"] == ["search_for_victims"]
+
+
+def test_build_mission_runtime_paths_accepts_robot_profiles(tmp_path):
+    from argparse import Namespace
+    from fireclaw_core.mission.mission_cli import _build_mission_runtime_paths
+
+    args = Namespace(
+        robot_registry=None,
+        robot_profile=[str(tmp_path / "robot.toml")],
+        mission_registry=str(tmp_path / "missions.jsonl"),
+        memory_path=None,
+        memory_index=None,
+        task_registry=None,
+        subagent_registry=None,
+        session_lineage=None,
+        task_flow=None,
+        approval_path=None,
+    )
+
+    paths = _build_mission_runtime_paths(args)
+
+    assert paths.robot_profiles == (tmp_path / "robot.toml",)
+    assert paths.robot_registry == Path("robots.json")
+
+
+def test_build_mission_runtime_paths_requires_registry_without_profiles(tmp_path):
+    from argparse import Namespace
+    from fireclaw_core.mission.mission_cli import _build_mission_runtime_paths
+
+    args = Namespace(
+        robot_registry=None,
+        robot_profile=None,
+        mission_registry=str(tmp_path / "missions.jsonl"),
+        memory_path=None,
+        memory_index=None,
+        task_registry=None,
+        subagent_registry=None,
+        session_lineage=None,
+        task_flow=None,
+        approval_path=None,
+    )
+
+    with pytest.raises(SystemExit, match="--robot-registry is required"):
+        _build_mission_runtime_paths(args)
+
+
+def test_plan_mission_help_exposes_robot_profile_flag():
+    completed = subprocess.run(
+        [".venv/bin/python", "-m", "fireclaw_core", "plan-mission", "--help"],
+        check=True,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    assert "--robot-profile" in completed.stdout
+    assert "--robot-registry" in completed.stdout

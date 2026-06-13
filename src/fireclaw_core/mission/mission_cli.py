@@ -363,7 +363,8 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
 
 
 def _add_shared_paths(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--robot-registry", required=True, help="Path to robot registry JSON.")
+    parser.add_argument("--robot-registry", default=None, help="Path to robot registry JSON. Required when --robot-profile is not provided.")
+    parser.add_argument("--robot-profile", action="append", default=None, help="Path to robot profile TOML. Repeat for multiple robots.")
     parser.add_argument("--mission-registry", required=True, help="Path to mission registry JSONL.")
     parser.add_argument("--operator-id", default="mission-agent", help="Operator ID for authorization.")
     parser.add_argument("--role", default="operator", help="Operator role (observer, operator, supervisor, admin).")
@@ -381,8 +382,16 @@ def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
 
 
 def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePaths:
+    robot_profiles = tuple(Path(p) for p in (getattr(args, "robot_profile", None) or ()))
+    robot_registry = getattr(args, "robot_registry", None)
+    if robot_registry is None:
+        if not robot_profiles:
+            raise SystemExit("--robot-registry is required when --robot-profile is not provided")
+        robot_registry_path = Path("robots.json")
+    else:
+        robot_registry_path = Path(robot_registry)
     return MissionRuntimePaths(
-        robot_registry=args.robot_registry,
+        robot_registry=robot_registry_path,
         mission_registry=args.mission_registry,
         mission_memory=getattr(args, "memory_path", None),
         memory_index=getattr(args, "memory_index", None),
@@ -391,6 +400,7 @@ def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePath
         session_lineage=getattr(args, "session_lineage", None),
         task_flow=getattr(args, "task_flow", None),
         approvals=getattr(args, "approval_path", None),
+        robot_profiles=robot_profiles,
     )
 
 

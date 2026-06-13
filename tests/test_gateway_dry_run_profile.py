@@ -13,7 +13,7 @@ from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 ROS1_CONFIG_YAML = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
 
 
-def _write_ros1_profile(tmp_path: Path, *, dry_run: bool) -> Path:
+def _write_ros1_profile(tmp_path: Path) -> Path:
     """Write a minimal ROS1 robot profile TOML to *tmp_path* and return its path."""
     profile = tmp_path / "robot.toml"
     profile.write_text(
@@ -35,7 +35,7 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
 
 def test_profile_gateway_applies_dry_run_to_ros1_adapter(tmp_path: Path) -> None:
     """Gateway with dry_run=True must set robot.dry_run on the ROS1 adapter."""
-    profile_path = _write_ros1_profile(tmp_path, dry_run=True)
+    profile_path = _write_ros1_profile(tmp_path)
 
     gateway = FireClawGateway(
         GatewayConfig(
@@ -55,7 +55,7 @@ def test_profile_gateway_applies_dry_run_to_ros1_adapter(tmp_path: Path) -> None
 
 def test_profile_gateway_real_run_keeps_ros1_adapter_live(tmp_path: Path) -> None:
     """Gateway with dry_run=False must NOT force the adapter into dry-run."""
-    profile_path = _write_ros1_profile(tmp_path, dry_run=False)
+    profile_path = _write_ros1_profile(tmp_path)
 
     gateway = FireClawGateway(
         GatewayConfig(

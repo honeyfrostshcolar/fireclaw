@@ -82,3 +82,28 @@ llm_exposed_skills = ["missing_skill"]
             task_queue_path=str(tmp_path / "tq.jsonl"),
             workspace_skills_dir=None,
         ))
+
+
+def test_invalid_profile_does_not_create_gateway_store_files(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    data_dir = tmp_path / "robot-data"
+    profile_path.write_text(
+        f"""
+[robot]
+id = "bad-robot"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "{data_dir}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["missing_skill"]
+llm_exposed_skills = ["missing_skill"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="enabled skill 'missing_skill' is not registered"):
+        FireClawGateway(GatewayConfig(port=0, robot_profile_path=str(profile_path), workspace_skills_dir=None))
+
+    assert not (data_dir / "memory.jsonl").exists()
+    assert not (data_dir / "events.jsonl").exists()
+    assert not (data_dir / "tasks.jsonl").exists()
