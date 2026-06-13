@@ -99,11 +99,21 @@ def resolve_gateway_config_with_profile(config: GatewayConfig) -> GatewayConfig:
     )
 
 
+def apply_gateway_dry_run_to_robot(robot: Any, dry_run: bool) -> None:
+    """Synchronize gateway dry-run mode onto adapters that expose a dry_run flag."""
+    if hasattr(robot, "dry_run"):
+        try:
+            setattr(robot, "dry_run", dry_run)
+        except Exception:
+            logging.warning("Failed to apply gateway dry_run=%s to robot adapter", dry_run, exc_info=True)
+
+
 class FireClawGateway:
     def __init__(self, config: GatewayConfig) -> None:
         resolved_config = resolve_gateway_config_with_profile(config)
         self.config = resolved_config
         self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
+        apply_gateway_dry_run_to_robot(self.robot, resolved_config.dry_run)
         self.robot_profile = None
         if resolved_config.robot_profile_path:
             from fireclaw_core.agent.robot_profile import load_robot_capability_profile
