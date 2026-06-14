@@ -133,3 +133,22 @@ def test_report_serializes_fingerprint_diagnostics() -> None:
     }
     assert payload["profile_fingerprint_status"] == "stale"
     assert payload["profile_fingerprint_reason"] == "topics_hash_mismatch"
+
+
+def test_sensor_finding_serializes_health_status_and_reason() -> None:
+    finding = SensorFinding(
+        sensor="rgb_camera",
+        topic="/camera/image_raw",
+        message_type="sensor_msgs/Image",
+        status="degraded",
+        confidence=0.9,
+        source="ros1",
+        reason="health check failed",
+        health_status="invalid",
+        health_reason="payload is empty",
+    )
+
+    payload = finding.to_dict()
+
+    assert payload["health_status"] == "invalid"
+    assert payload["health_reason"] == "payload is empty"

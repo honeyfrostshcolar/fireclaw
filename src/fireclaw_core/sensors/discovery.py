@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from typing import Literal
 
+from fireclaw_core.sensors.health import SensorHealthStatus
+
 
 SensorFindingStatus = Literal["discovered", "verified", "degraded", "rejected"]
 FingerprintComparisonStatus = Literal["fresh", "missing", "stale", "unknown"]
@@ -75,6 +77,8 @@ class SensorFinding:
     reason: str | None = None
     confirmed: bool = False
     confirmation_stale: bool = False
+    health_status: SensorHealthStatus | None = None
+    health_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -89,6 +93,10 @@ class SensorFinding:
         }
         if self.reason is not None:
             payload["reason"] = self.reason
+        if self.health_status is not None:
+            payload["health_status"] = self.health_status
+        if self.health_reason is not None:
+            payload["health_reason"] = self.health_reason
         return payload
 
 
