@@ -1,11 +1,47 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from typing import Literal
 
 
 SensorFindingStatus = Literal["discovered", "verified", "degraded", "rejected"]
+FingerprintComparisonStatus = Literal["fresh", "missing", "stale", "unknown"]
+
+
+@dataclass(frozen=True)
+class DiscoveryFingerprint:
+    source: str
+    topics_hash: str
+    nodes_hash: str | None = None
+    created_at: str | None = None
+    confirmed_by: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "source": self.source,
+            "topics_hash": self.topics_hash,
+        }
+        if self.nodes_hash is not None:
+            payload["nodes_hash"] = self.nodes_hash
+        if self.created_at is not None:
+            payload["created_at"] = self.created_at
+        if self.confirmed_by is not None:
+            payload["confirmed_by"] = self.confirmed_by
+        return payload
+
+
+@dataclass(frozen=True)
+class FingerprintComparison:
+    status: FingerprintComparisonStatus
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {"status": self.status}
+        if self.reason is not None:
+            payload["reason"] = self.reason
+        return payload
 
 
 @dataclass(frozen=True)
@@ -37,6 +73,8 @@ class SensorFinding:
     confidence: float
     source: str
     reason: str | None = None
+    confirmed: bool = False
+    confirmation_stale: bool = False
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -46,6 +84,8 @@ class SensorFinding:
             "status": self.status,
             "confidence": self.confidence,
             "source": self.source,
+            "confirmed": self.confirmed,
+            "confirmation_stale": self.confirmation_stale,
         }
         if self.reason is not None:
             payload["reason"] = self.reason
@@ -56,6 +96,9 @@ class SensorFinding:
 class SensorDiscoveryReport:
     findings: tuple[SensorFinding, ...]
     source: str = "ros1"
+    runtime_fingerprint: DiscoveryFingerprint | None = None
+    profile_fingerprint: DiscoveryFingerprint | None = None
+    fingerprint_comparison: FingerprintComparison | None = None
 
     def verified_sensors(self) -> list[str]:
         seen: set[str] = set()
@@ -67,11 +110,20 @@ class SensorDiscoveryReport:
         return result
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "source": self.source,
             "verified_sensors": self.verified_sensors(),
             "findings": [finding.to_dict() for finding in self.findings],
         }
+        if self.runtime_fingerprint is not None:
+            payload["runtime_fingerprint"] = self.runtime_fingerprint.to_dict()
+        if self.profile_fingerprint is not None:
+            payload["profile_fingerprint"] = self.profile_fingerprint.to_dict()
+        if self.fingerprint_comparison is not None:
+            payload["profile_fingerprint_status"] = self.fingerprint_comparison.status
+            if self.fingerprint_comparison.reason is not None:
+                payload["profile_fingerprint_reason"] = self.fingerprint_comparison.reason
+        return payload
 
 
 DEFAULT_SENSOR_MAPPING_RULES: tuple[SensorMappingRule, ...] = (
@@ -83,6 +135,36 @@ DEFAULT_SENSOR_MAPPING_RULES: tuple[SensorMappingRule, ...] = (
     SensorMappingRule("/thermal/image_raw", "sensor_msgs/Image", "thermal_camera", confidence=0.85),
     SensorMappingRule("/gas_sensor", "std_msgs/Float32", "gas_detector", confidence=0.9),
 )
+
+
+def fingerprint_topic_types(
+    topic_types: dict[str, str],
+    *,
+    source: str = "ros1",
+) -> DiscoveryFingerprint:
+    lines = [
+        f"{topic}\t{message_type}"
+        for topic, message_type in sorted(topic_types.items())
+    ]
+    digest = hashlib.sha256(("\n".join(lines) + "\n").encode("utf-8")).hexdigest()
+    return DiscoveryFingerprint(source=source, topics_hash=f"sha256:{digest}")
+
+
+def compare_fingerprints(
+    runtime: DiscoveryFingerprint | None,
+    profile: DiscoveryFingerprint | None,
+) -> FingerprintComparison:
+    if runtime is None:
+        return FingerprintComparison(status="unknown", reason="runtime_fingerprint_unavailable")
+    if profile is None:
+        return FingerprintComparison(status="missing", reason="profile_fingerprint_missing")
+    if runtime.source != profile.source:
+        return FingerprintComparison(status="stale", reason="source_mismatch")
+    if runtime.topics_hash != profile.topics_hash:
+        return FingerprintComparison(status="stale", reason="topics_hash_mismatch")
+    if runtime.nodes_hash is not None and profile.nodes_hash is not None and runtime.nodes_hash != profile.nodes_hash:
+        return FingerprintComparison(status="stale", reason="nodes_hash_mismatch")
+    return FingerprintComparison(status="fresh")
 
 
 def match_sensor_rule(

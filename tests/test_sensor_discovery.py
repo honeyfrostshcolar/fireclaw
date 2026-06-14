@@ -1,8 +1,11 @@
 from fireclaw_core.sensors.discovery import (
     DEFAULT_SENSOR_MAPPING_RULES,
+    DiscoveryFingerprint,
     SensorDiscoveryReport,
     SensorFinding,
     SensorMappingRule,
+    compare_fingerprints,
+    fingerprint_topic_types,
     match_sensor_rule,
     verified_sensor_names,
 )
@@ -61,3 +64,72 @@ def test_report_verified_sensor_names_excludes_degraded() -> None:
 
     assert verified_sensor_names(report) == ["lidar"]
     assert report.to_dict()["findings"][0]["status"] == "degraded"
+
+
+def test_fingerprint_topic_types_is_order_independent() -> None:
+    first = fingerprint_topic_types({
+        "/scan": "sensor_msgs/LaserScan",
+        "/camera/image_raw": "sensor_msgs/Image",
+    })
+    second = fingerprint_topic_types({
+        "/camera/image_raw": "sensor_msgs/Image",
+        "/scan": "sensor_msgs/LaserScan",
+    })
+
+    assert first == second
+    assert first.source == "ros1"
+    assert first.topics_hash.startswith("sha256:")
+
+
+def test_fingerprint_topic_types_changes_when_graph_changes() -> None:
+    first = fingerprint_topic_types({"/scan": "sensor_msgs/LaserScan"})
+    second = fingerprint_topic_types({"/scan": "sensor_msgs/PointCloud2"})
+
+    assert first.topics_hash != second.topics_hash
+
+
+def test_compare_fingerprints_reports_fresh_missing_stale_and_source_mismatch() -> None:
+    runtime = DiscoveryFingerprint(source="ros1", topics_hash="sha256:abc")
+
+    assert compare_fingerprints(runtime, runtime).status == "fresh"
+    assert compare_fingerprints(runtime, None).status == "missing"
+
+    stale = compare_fingerprints(
+        runtime,
+        DiscoveryFingerprint(source="ros1", topics_hash="sha256:def"),
+    )
+    assert stale.status == "stale"
+    assert stale.reason == "topics_hash_mismatch"
+
+    source_mismatch = compare_fingerprints(
+        runtime,
+        DiscoveryFingerprint(source="ros2", topics_hash="sha256:abc"),
+    )
+    assert source_mismatch.status == "stale"
+    assert source_mismatch.reason == "source_mismatch"
+
+
+def test_report_serializes_fingerprint_diagnostics() -> None:
+    runtime = DiscoveryFingerprint(source="ros1", topics_hash="sha256:abc")
+    profile = DiscoveryFingerprint(source="ros1", topics_hash="sha256:def")
+    comparison = compare_fingerprints(runtime, profile)
+    report = SensorDiscoveryReport(
+        findings=(),
+        source="ros1",
+        runtime_fingerprint=runtime,
+        profile_fingerprint=profile,
+        fingerprint_comparison=comparison,
+    )
+
+    payload = report.to_dict()
+
+    assert payload["runtime_fingerprint"] == {
+        "source": "ros1",
+        "topics_hash": "sha256:abc",
+    }
+    assert payload["profile_fingerprint"] == {
+        "source": "ros1",
+        "topics_hash": "sha256:def",
+    }
+    assert payload["profile_fingerprint_status"] == "stale"
+    assert payload["profile_fingerprint_reason"] == "topics_hash_mismatch"
