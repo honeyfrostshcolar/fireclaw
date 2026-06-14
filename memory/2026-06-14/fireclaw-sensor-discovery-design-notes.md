@@ -303,3 +303,65 @@ This plan addresses review findings discovered after the initial implementation:
 - `tests/test_cli.py::test_module_cli_accepts_ros1_config_for_adapter_skeleton`: pre-existing failure (status "failed" vs expected "block", not sensor-related)
 - Full suite status: 1181 passed, 2 failed (both pre-existing), 6 skipped
 - Remaining risks: CLI probe performance (N+1 subprocess, cached at 5s TTL now), pre-existing serve/cli test failures unrelated to sensor discovery
+
+## Final-Version Phase 1 Design Started (2026-06-14)
+
+After confirming the ROS1/Gazebo sensor discovery v1 is only an initial version, the user chose the first final-version phase: profile stale detection using discovery fingerprints.
+
+Design decision:
+
+- Add profile/runtime discovery fingerprints for ROS1 topic graph identity.
+- Store optional `[robot.discovery_fingerprint]` in robot profiles.
+- Compute runtime fingerprint from sorted `(topic, message_type)` pairs.
+- Compare profile fingerprint with runtime fingerprint during ROS1 discovery.
+- Report comparison status in diagnostics: `fresh`, `missing`, `stale`, or `unknown`.
+- Treat stale or missing fingerprints as a warning/trust downgrade for `confirmed=true` profile rules.
+- Keep SafetyGate independent of ROS fingerprint details; SafetyGate still only uses live `verified` sensors from `RobotState.available_sensors`.
+- Do not implement a full operator confirmation command or per-sensor health policy in this phase.
+
+Created design spec:
+
+- `docs/superpowers/specs/2026-06-14-ros1-discovery-fingerprint-stale-profile-design.md`
+
+The user approved the spec and selected the recommended scope: diagnostic-first fingerprint stale detection plus safety-critical trust downgrade, without building the full operator confirmation loop yet.
+
+Created implementation plan:
+
+- `docs/superpowers/plans/2026-06-14-ros1-discovery-fingerprint-stale-profile.md`
+
+Plan tasks:
+
+1. Add fingerprint core models.
+2. Parse profile discovery fingerprints.
+3. Attach fingerprint comparison to ROS1 discovery.
+4. Wire profile fingerprints into gateway and robot state.
+5. Write fingerprints from `robot-profile discover`.
+6. Run focused/broader/full verification and record results.
+
+## Discovery Fingerprint Phase 1 Implementation (2026-06-14)
+
+Implemented ROS1 discovery fingerprint stale-profile detection.
+
+Files changed:
+
+- `src/fireclaw_core/sensors/discovery.py`
+- `src/fireclaw_core/sensors/__init__.py`
+- `src/fireclaw_core/agent/robot_profile.py`
+- `src/fireclaw_core/ros/ros1_sensor_discovery.py`
+- `src/fireclaw_core/gateway/gateway.py`
+- `src/fireclaw_core/mission/mission_cli.py`
+
+Behavior:
+
+- Runtime ROS1 topic/type snapshots now produce a deterministic SHA-256 discovery fingerprint.
+- Robot profiles may store `[robot.discovery_fingerprint]`.
+- ROS1 discovery reports `fresh`, `missing`, `stale`, or `unknown` profile fingerprint status.
+- Stale profile confirmations are surfaced on findings with `confirmation_stale=true`.
+- SafetyGate remains unchanged and still uses only live verified sensors.
+- `robot-profile discover` writes a runtime fingerprint block in suggested output and `--write-profile`.
+
+Verification:
+
+- Focused fingerprint suite (6 test files): 79 passed
+- Broader sensor/profile suite (9 test files): 136 passed
+- Full suite: 1196 passed, 2 failed (pre-existing: test_cli.py and test_serve.py), 6 skipped
