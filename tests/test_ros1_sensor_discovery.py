@@ -219,3 +219,29 @@ def test_ros1_discovery_reports_unknown_fingerprint_when_graph_provider_fails() 
     assert payload["profile_fingerprint_status"] == "unknown"
     assert payload["profile_fingerprint_reason"] == "runtime_fingerprint_unavailable"
     assert report.verified_sensors() == []
+
+
+def test_ros1_discovery_marks_confirmed_rule_stale_when_fingerprint_missing() -> None:
+    discovery = Ros1SensorDiscovery(
+        graph_provider=StaticRos1GraphProvider({"/thermal/image_raw": "sensor_msgs/Image"}),
+        message_probe=StaticRos1MessageProbe({"/thermal/image_raw": True}),
+        extra_rules=(
+            SensorMappingRule(
+                topic_pattern="/thermal/image_raw",
+                message_type="sensor_msgs/Image",
+                sensor="thermal_camera",
+                source="profile",
+                confidence=0.85,
+                confirmed=True,
+            ),
+        ),
+    )
+
+    report = discovery.discover()
+    payload = report.to_dict()
+
+    assert payload["profile_fingerprint_status"] == "missing"
+    assert report.verified_sensors() == ["thermal_camera"]
+    assert payload["findings"][0]["sensor"] == "thermal_camera"
+    assert payload["findings"][0]["confirmed"] is True
+    assert payload["findings"][0]["confirmation_stale"] is True

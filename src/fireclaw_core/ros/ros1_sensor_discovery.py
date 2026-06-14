@@ -133,7 +133,7 @@ class Ros1SensorDiscovery:
 
         runtime_fingerprint = fingerprint_topic_types(topic_types)
         fingerprint_comparison = compare_fingerprints(runtime_fingerprint, self.profile_fingerprint)
-        confirmation_stale = fingerprint_comparison.status == "stale"
+        confirmation_stale = fingerprint_comparison.status in {"stale", "missing", "unknown"}
 
         for topic, message_type in sorted(topic_types.items()):
             rule = match_sensor_rule(topic, message_type, rules)
