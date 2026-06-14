@@ -1314,3 +1314,57 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
     text = profile_path.read_text(encoding="utf-8")
     assert "[[robot.sensor_discovery.rules]]" in text
     assert 'sensor = "lidar"' in text
+
+
+def test_robot_profile_discover_write_profile_keeps_existing_discovery_table_parseable(tmp_path, monkeypatch):
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "{data_dir}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+
+[robot.sensor_discovery]
+enabled = true
+message_timeout_seconds = 2.0
+""".format(data_dir=tmp_path / "robot-data").strip(),
+        encoding="utf-8",
+    )
+
+    from fireclaw_core.ros import ros1_sensor_discovery
+
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliGraphProvider,
+        "topic_types",
+        lambda self: {"/scan": "sensor_msgs/LaserScan"},
+    )
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliMessageProbe,
+        "has_recent_message",
+        lambda self, topic, timeout_seconds: True,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mission-cli",
+            "robot-profile",
+            "discover",
+            "--profile",
+            str(profile_path),
+            "--write-profile",
+        ],
+    )
+
+    from fireclaw_core.mission.mission_cli import main
+
+    assert main() == 0
+
+    from fireclaw_core.agent.robot_profile import load_robot_capability_profile
+    profile = load_robot_capability_profile(profile_path)
+    assert profile.sensor_discovery.rules[0].sensor == "lidar"

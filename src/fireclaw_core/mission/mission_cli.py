@@ -393,7 +393,7 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
         def _toml_escape(value: str) -> str:
             return value.replace("\\", "\\\\").replace('"', '\\"')
 
-        lines: list[str] = [
+        header_lines: list[str] = [
             "# Suggested FireClaw sensor discovery rules.",
             "# Review before copying into the robot profile.",
             "",
@@ -402,10 +402,11 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
             f"message_timeout_seconds = {profile.sensor_discovery.message_timeout_seconds:.1f}",
             "",
         ]
+        rule_lines: list[str] = []
         for finding in report.findings:
             if finding.status not in {"verified", "degraded"}:
                 continue
-            lines.extend([
+            rule_lines.extend([
                 "[[robot.sensor_discovery.rules]]",
                 f'topic_pattern = "{_toml_escape(finding.topic)}"',
                 f'message_type = "{_toml_escape(finding.message_type)}"',
@@ -414,12 +415,16 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
                 f"confirmed = {str(finding.status == 'verified').lower()}",
                 "",
             ])
-        text = "\n".join(lines)
+        text = "\n".join(header_lines + rule_lines)
         output = Path(args.profile if args.write_profile else args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         if args.write_profile:
             existing = output.read_text(encoding="utf-8")
-            output.write_text(existing.rstrip() + "\n\n" + text, encoding="utf-8")
+            if "[robot.sensor_discovery]" in existing:
+                addition = "\n".join(rule_lines)
+            else:
+                addition = text
+            output.write_text(existing.rstrip() + "\n\n" + addition, encoding="utf-8")
         else:
             output.write_text(text, encoding="utf-8")
         _print_json({
