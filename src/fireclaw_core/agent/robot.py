@@ -127,7 +127,7 @@ class DryRunRobotAdapter:
     dry_run: bool = True
     mode: str = "dry_run"
     current_floor: int = 1
-    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
     emergency_stopped: bool = False
@@ -230,7 +230,7 @@ class MockRos1RobotAdapter:
     dry_run: bool = True
     mode: str = "mock_ros1"
     current_floor: int = 1
-    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
     emergency_stopped: bool = False
@@ -618,7 +618,7 @@ class MockRos2RobotAdapter:
     dry_run: bool = True
     mode: str = "mock_ros2"
     current_floor: int = 1
-    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
     emergency_stopped: bool = False
@@ -724,7 +724,7 @@ class SimulatorRobotAdapter:
     reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
     victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
     hazards: list[str] = field(default_factory=list)
-    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera"])
+    available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
     online: bool = True
     battery_percent: float = 100.0
     dry_run: bool = True

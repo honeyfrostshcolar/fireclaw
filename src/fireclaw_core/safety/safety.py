@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from fireclaw_core.planner.planner import PlanningResult
 from fireclaw_core.agent.robot import EnvironmentState, RobotState
 from fireclaw_core.execution.skills import SkillRegistry
+from fireclaw_core.safety.sensor_policy import evaluate_sensor_policy
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class SafetyGate:
             sensors = set(robot_state.available_sensors)
         else:
             sensors = set()
+        sensor_findings = _sensor_findings_by_name(robot_state)
         missing_sensors: list[str] = []
         sensor_confirmations: list[str] = []
         sensor_warnings: list[str] = []
@@ -78,10 +80,24 @@ class SafetyGate:
                     else:
                         sensor_confirmations.append(message)
                     break
-                if sensor not in sensors:
-                    missing_sensors.append(
-                        f"Skill {step.skill_name} requires unavailable sensor: {sensor}"
-                    )
+                finding = sensor_findings.get(sensor)
+                health_status = finding.get("health_status") if finding else ("healthy" if sensor in sensors else None)
+                health_reason = finding.get("health_reason") if finding else None
+                policy_decision = evaluate_sensor_policy(
+                    skill_name=step.skill_name,
+                    sensor=sensor,
+                    health_status=str(health_status) if health_status is not None else None,
+                    health_reason=str(health_reason) if health_reason is not None else None,
+                    mode=robot_state.mode if robot_state is not None else "unknown",
+                    dry_run=dry_run,
+                    verified_sensors=set(sensors),
+                )
+                if policy_decision.action == "block":
+                    missing_sensors.append(policy_decision.reason or f"Skill {step.skill_name} requires unavailable sensor: {sensor}")
+                elif policy_decision.action == "escalate":
+                    sensor_confirmations.append(policy_decision.reason or f"Skill {step.skill_name} requires operator confirmation for sensor: {sensor}")
+                elif policy_decision.action in {"warn", "degrade"} and policy_decision.reason:
+                    sensor_warnings.append(policy_decision.reason)
         state_warnings.extend(sensor_warnings)
         state_confirmations.extend(sensor_confirmations)
         if missing_sensors:
@@ -170,3 +186,19 @@ class SafetyGate:
             elif planning_result.target_floor not in environment_state.reachable_floors:
                 blocks.append(f"Target floor is not reachable: {planning_result.target_floor}")
         return blocks, warnings, confirmations
+
+
+def _sensor_findings_by_name(robot_state: RobotState | None) -> dict[str, dict[str, object]]:
+    if robot_state is None or not robot_state.sensor_diagnostics:
+        return {}
+    findings = robot_state.sensor_diagnostics.get("findings")
+    if not isinstance(findings, list):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        sensor = finding.get("sensor")
+        if isinstance(sensor, str) and sensor not in result:
+            result[sensor] = finding
+    return result

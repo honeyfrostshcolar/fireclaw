@@ -127,3 +127,9 @@ def test_create_subprocess_skill_with_new_fields() -> None:
     assert skill.domain == "perception"
     assert skill.preconditions == ["robot_online"]
     assert skill.degraded_mode_policy == "fallback"
+
+
+def test_navigation_skill_requires_lidar() -> None:
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="r1"))
+
+    assert registry.get("navigate_to_floor").required_sensors == ["lidar"]

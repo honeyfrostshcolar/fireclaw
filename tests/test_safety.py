@@ -124,6 +124,7 @@ def test_safety_blocks_non_dry_run_direct_skill_invocation():
         registry,
         dry_run=False,
         operator_confirmed=True,
+        available_sensors={"rgb_camera", "thermal_camera", "lidar"},
     )
 
     assert decision.status == "block"
@@ -387,3 +388,154 @@ def test_safety_blocks_search_when_rgb_camera_is_only_degraded() -> None:
 
     assert decision.status == "block"
     assert "Skill search_for_victims requires unavailable sensor: rgb_camera" in decision.reasons
+
+
+def test_safety_blocks_navigation_when_lidar_health_is_invalid() -> None:
+    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+    registry = create_default_skill_registry(robot)
+    robot_state = RobotState(
+        robot_id="robot-1",
+        mode="ros1",
+        dry_run=False,
+        online=True,
+        battery_percent=100.0,
+        current_floor=1,
+        available_sensors=["rgb_camera"],
+        supports_real_execution=True,
+        sensor_diagnostics={
+            "source": "ros1",
+            "verified_sensors": ["rgb_camera"],
+            "findings": [
+                {
+                    "sensor": "lidar",
+                    "topic": "/scan",
+                    "message_type": "sensor_msgs/LaserScan",
+                    "status": "degraded",
+                    "health_status": "invalid",
+                    "health_reason": "no finite ranges",
+                    "confidence": 0.99,
+                    "source": "ros1",
+                }
+            ],
+        },
+    )
+
+    decision = SafetyGate().evaluate(
+        planning_result,
+        registry,
+        dry_run=False,
+        robot_state=robot_state,
+        environment_state=EnvironmentState(reachable_floors=[2]),
+        operator_confirmed=True,
+    )
+
+    assert decision.status == "block"
+    assert "Skill navigate_to_floor requires lidar, but health is invalid: no finite ranges" in decision.reasons
+
+
+def test_safety_requires_confirmation_when_imu_health_is_unknown_for_navigation() -> None:
+    planning_result = RuleBasedPlanner().plan("运行 navigate_to_floor")
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+    registry = SkillRegistry(
+        skills={
+            "navigate_to_floor": Skill(
+                name="navigate_to_floor",
+                description="Navigate robot to a target floor.",
+                handler=lambda inputs: _successful_result(),
+                required_sensors=["imu"],
+                allow_real_robot=True,
+                dry_run_only=False,
+                idempotent=True,
+            )
+        }
+    )
+    robot_state = RobotState(
+        robot_id="robot-1",
+        mode="ros1",
+        dry_run=False,
+        online=True,
+        battery_percent=100.0,
+        current_floor=1,
+        available_sensors=[],
+        supports_real_execution=True,
+        sensor_diagnostics={
+            "source": "ros1",
+            "verified_sensors": [],
+            "findings": [
+                {
+                    "sensor": "imu",
+                    "topic": "/imu",
+                    "message_type": "sensor_msgs/Imu",
+                    "status": "degraded",
+                    "health_status": "unknown",
+                    "health_reason": "observation age is unknown",
+                    "confidence": 0.99,
+                    "source": "ros1",
+                }
+            ],
+        },
+    )
+
+    decision = SafetyGate().evaluate(
+        planning_result,
+        registry,
+        dry_run=False,
+        robot_state=robot_state,
+        operator_confirmed=False,
+    )
+
+    assert decision.status == "require_confirmation"
+    assert "Skill navigate_to_floor requires imu, but health is unknown: observation age is unknown" in decision.reasons
+
+
+def test_safety_warns_for_unknown_lidar_health_in_dry_run() -> None:
+    planning_result = RuleBasedPlanner().plan("运行 navigate_to_floor")
+    registry = SkillRegistry(
+        skills={
+            "navigate_to_floor": Skill(
+                name="navigate_to_floor",
+                description="Navigate robot to a target floor.",
+                handler=lambda inputs: _successful_result(),
+                required_sensors=["lidar"],
+                dry_run_only=True,
+                idempotent=True,
+            )
+        }
+    )
+    robot_state = RobotState(
+        robot_id="robot-1",
+        mode="simulator",
+        dry_run=True,
+        online=True,
+        battery_percent=100.0,
+        current_floor=1,
+        available_sensors=[],
+        supports_real_execution=False,
+        sensor_diagnostics={
+            "source": "simulator",
+            "verified_sensors": [],
+            "findings": [
+                {
+                    "sensor": "lidar",
+                    "topic": "/scan",
+                    "message_type": "sensor_msgs/LaserScan",
+                    "status": "degraded",
+                    "health_status": "unknown",
+                    "health_reason": "observation age is unknown",
+                    "confidence": 0.99,
+                    "source": "simulator",
+                }
+            ],
+        },
+    )
+
+    decision = SafetyGate().evaluate(
+        planning_result,
+        registry,
+        dry_run=True,
+        robot_state=robot_state,
+    )
+
+    assert decision.status == "allow"
+    assert "Skill navigate_to_floor requires lidar, but health is unknown: observation age is unknown" in decision.warnings

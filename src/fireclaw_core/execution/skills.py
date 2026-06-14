@@ -229,6 +229,7 @@ def create_default_skill_registry(
                 output_schema=dict(NAVIGATE_OUTPUT_SCHEMA),
                 domain="navigation",
                 preconditions=["robot_online", "floor_reachable"],
+                required_sensors=["lidar"],
                 degraded_mode_policy="retry",
                 idempotent=True,
                 allow_real_robot=True,

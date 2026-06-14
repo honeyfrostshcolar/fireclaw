@@ -768,10 +768,12 @@ def test_agent_uses_robot_state_verified_sensors_when_no_override() -> None:
             graph_provider=StaticRos1GraphProvider({
                 "/camera/image_raw": "sensor_msgs/Image",
                 "/thermal/image_raw": "sensor_msgs/Image",
+                "/scan": "sensor_msgs/LaserScan",
             }),
             message_probe=StaticRos1MessageProbe({
                 "/camera/image_raw": True,
                 "/thermal/image_raw": True,
+                "/scan": True,
             }),
         ),
         dry_run=True,
@@ -781,7 +783,7 @@ def test_agent_uses_robot_state_verified_sensors_when_no_override() -> None:
     result = agent.run("去二楼救人")
 
     assert result["status"] in {"succeeded", "completed"}
-    assert result["robot_state"]["available_sensors"] == ["rgb_camera", "thermal_camera"]
+    assert sorted(result["robot_state"]["available_sensors"]) == sorted(["rgb_camera", "thermal_camera", "lidar"])
 
 
 def test_agent_blocks_search_when_discovered_camera_health_is_invalid() -> None:
@@ -800,12 +802,12 @@ def test_agent_blocks_search_when_discovered_camera_health_is_invalid() -> None:
         sensor_discovery=Ros1SensorDiscovery(
             graph_provider=StaticRos1GraphProvider({
                 "/camera/image_raw": "sensor_msgs/Image",
-                "/thermal/image_raw": "sensor_msgs/Image",
+                "/scan": "sensor_msgs/LaserScan",
             }),
             message_probe=StaticRos1MessageProbe(
                 {
                     "/camera/image_raw": True,
-                    "/thermal/image_raw": True,
+                    "/scan": True,
                 },
                 observations={
                     "/camera/image_raw": SensorObservation(
@@ -814,11 +816,11 @@ def test_agent_blocks_search_when_discovered_camera_health_is_invalid() -> None:
                         payload_size=0,
                         frame_id="camera",
                     ),
-                    "/thermal/image_raw": SensorObservation(
+                    "/scan": SensorObservation(
                         observed=True,
                         age_seconds=0.1,
-                        payload_size=64,
-                        frame_id="thermal",
+                        finite_range_count=100,
+                        frame_id="lidar",
                     ),
                 },
             ),
@@ -831,4 +833,4 @@ def test_agent_blocks_search_when_discovered_camera_health_is_invalid() -> None:
 
     assert result["status"] == "block"
     assert "rgb_camera" in result["message"]
-    assert result["robot_state"]["available_sensors"] == ["thermal_camera"]
+    assert sorted(result["robot_state"]["available_sensors"]) == sorted(["lidar"])
