@@ -5,7 +5,13 @@ import sys
 from fireclaw_core.agent.agent import FireClawAgent
 from fireclaw_core.memory.memory import JsonlMemoryStore
 from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
-from fireclaw_core.agent.robot import DryRunRobotAdapter, MockRos2RobotAdapter, SimulatorRobotAdapter
+from fireclaw_core.agent.robot import DryRunRobotAdapter, MockRos2RobotAdapter, Ros1RobotAdapter, SimulatorRobotAdapter
+from fireclaw_core.ros.ros1_config import Ros1AdapterConfig, Ros1EndpointConfig
+from fireclaw_core.ros.ros1_sensor_discovery import (
+    Ros1SensorDiscovery,
+    StaticRos1GraphProvider,
+    StaticRos1MessageProbe,
+)
 
 
 class FailingMemoryStore:
@@ -742,3 +748,36 @@ def test_agent_forwards_executor_live_events(tmp_path):
     assert events[2][1]["skill_name"] == "navigate_to_floor"
     assert events[3][1]["action_type"] == "navigate_to_floor"
     assert [event_type for event_type, _payload in events].count("skill.started") == 5
+
+
+def test_agent_uses_robot_state_verified_sensors_when_no_override() -> None:
+    endpoint = Ros1EndpointConfig(interface="topic", name="/fireclaw/test", type="std_msgs/String")
+    robot = Ros1RobotAdapter(
+        config=Ros1AdapterConfig(
+            robot_id="robot-1",
+            endpoints={
+                "navigate_to_floor": endpoint,
+                "search_for_victims": endpoint,
+                "assess_victim": endpoint,
+                "report_status": endpoint,
+                "return_to_safe_zone": endpoint,
+            },
+        ),
+        sensor_discovery=Ros1SensorDiscovery(
+            graph_provider=StaticRos1GraphProvider({
+                "/camera/image_raw": "sensor_msgs/Image",
+                "/thermal/image_raw": "sensor_msgs/Image",
+            }),
+            message_probe=StaticRos1MessageProbe({
+                "/camera/image_raw": True,
+                "/thermal/image_raw": True,
+            }),
+        ),
+        dry_run=True,
+    )
+    agent = FireClawAgent(robot=robot, workspace_skills_dir=None, dry_run=True)
+
+    result = agent.run("去二楼救人")
+
+    assert result["status"] in {"succeeded", "completed"}
+    assert result["robot_state"]["available_sensors"] == ["rgb_camera", "thermal_camera"]

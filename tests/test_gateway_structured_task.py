@@ -319,3 +319,55 @@ def test_gateway_robot_agent_respects_profile_exposed_skills(tmp_path):
     names = [tool["function"]["name"] for tool in captured_context["skill_tools"]]
     assert "navigate_to_floor" in names
     assert "report_status" not in names  # Constrained by profile
+
+
+def test_robot_agent_context_uses_runtime_verified_sensors(tmp_path):
+    gateway = FireClawGateway(GatewayConfig(
+        port=0,
+        robot_agent_enabled=True,
+        workspace_skills_dir=None,
+    ))
+    gateway.robot.available_sensors = []
+
+    original_get_state = gateway.robot.get_robot_state
+
+    def get_state_with_runtime_sensor():
+        state = original_get_state()
+        state.available_sensors = ["rgb_camera"]
+        return state
+
+    gateway.robot.get_robot_state = get_state_with_runtime_sensor
+
+    captured = {}
+
+    class CapturingPlanner:
+        def plan(self, envelope, *, context, **kwargs):
+            captured["available_sensors"] = context["available_sensors"]
+            from fireclaw_core.agent.robot_agent import RobotLocalPlan
+            return RobotLocalPlan(
+                intent="search",
+                steps=[],
+                confidence=1.0,
+            )
+
+    from fireclaw_core.agent.robot_agent import RobotAgentRuntime
+    gateway.robot_agent_runtime = RobotAgentRuntime(planner=CapturingPlanner())
+    agent = gateway._create_agent(task_id="task-1", session_id="session-1")
+    from fireclaw_core.task.task_contract import StructuredRobotTask
+    task = StructuredRobotTask(
+        task_id="task-1",
+        robot_id=gateway.config.robot_id,
+        task_type="search",
+        command="search",
+        target={"floor": 2},
+        required_skills=[],
+    )
+
+    gateway._run_robot_agent_structured_task(
+        agent=agent,
+        task_object=task,
+        session_id="session-1",
+        task_id="task-1",
+    )
+
+    assert captured["available_sensors"] == ["rgb_camera"]

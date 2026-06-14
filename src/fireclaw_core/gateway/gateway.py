@@ -616,10 +616,13 @@ class FireClawGateway:
             if metadata["name"] in exposed_skill_names
         ]
 
+        robot_state_object = agent._get_robot_state()
+        robot_state = agent._state_snapshot(robot_state_object)
+        runtime_sensors = robot_state.get("available_sensors")
         context = {
-            "robot_state": agent._state_snapshot(agent._get_robot_state()),
+            "robot_state": robot_state,
             "environment_state": agent._state_snapshot(agent._get_environment_state()),
-            "available_sensors": sorted(agent.available_sensors),
+            "available_sensors": sorted(runtime_sensors or agent.available_sensors),
             "skill_tools": skill_tools,
             "skill_metadata": skill_metadata,
         }

@@ -64,6 +64,7 @@ class FireClawAgent:
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
         self.dry_run = dry_run
         # If no sensors specified, infer from robot adapter when possible
+        self._available_sensors_override = available_sensors is not None
         if available_sensors is not None:
             self.available_sensors = available_sensors
         elif hasattr(self.robot, "available_sensors"):
@@ -93,6 +94,11 @@ class FireClawAgent:
             cancellation_requested=cancellation_requested,
         )
 
+    def _safety_available_sensors(self) -> set[str] | None:
+        if self._available_sensors_override:
+            return self.available_sensors
+        return None
+
     def run(self, command: str) -> dict[str, Any]:
         if self._is_confirmation_command(command):
             return self._confirm_pending_plan(command)
@@ -117,7 +123,7 @@ class FireClawAgent:
             planning_result,
             self.registry,
             dry_run=self.dry_run,
-            available_sensors=self.available_sensors,
+            available_sensors=self._safety_available_sensors(),
             robot_state=robot_state_object,
             environment_state=environment_state_object,
         )
@@ -175,7 +181,7 @@ class FireClawAgent:
             planning_result,
             self.registry,
             dry_run=self.dry_run,
-            available_sensors=self.available_sensors,
+            available_sensors=self._safety_available_sensors(),
             robot_state=robot_state_object,
             environment_state=environment_state_object,
         )
@@ -544,7 +550,7 @@ class FireClawAgent:
             planning_result,
             self.registry,
             dry_run=self.dry_run,
-            available_sensors=self.available_sensors,
+            available_sensors=self._safety_available_sensors(),
             operator_confirmed=True,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
