@@ -1,4 +1,7 @@
+import subprocess
+
 from fireclaw_core.ros.ros1_sensor_discovery import (
+    Ros1CliMessageProbe,
     Ros1SensorDiscovery,
     StaticRos1GraphProvider,
     StaticRos1MessageProbe,
@@ -378,3 +381,97 @@ def test_ros1_discovery_degrades_gas_detector_with_out_of_range_value() -> None:
     assert payload["findings"][0]["sensor"] == "gas_detector"
     assert payload["findings"][0]["health_status"] == "invalid"
     assert "below minimum" in payload["findings"][0]["health_reason"]
+
+
+def test_ros1_cli_probe_reports_empty_image_data_as_empty_payload(monkeypatch) -> None:
+    image_text = """header:
+  seq: 1
+  stamp:
+    secs: 12
+    nsecs: 34
+  frame_id: "camera"
+height: 480
+width: 640
+encoding: "rgb8"
+is_bigendian: 0
+step: 1920
+data: []"""
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout=image_text, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    observation = Ros1CliMessageProbe().observe("/camera/image_raw", "rgb_camera", 1.0)
+
+    assert observation.observed is True
+    assert observation.frame_id == "camera"
+    assert observation.payload_size == 0
+
+
+def test_ros1_cli_probe_counts_non_empty_image_data(monkeypatch) -> None:
+    image_text = """header:
+  frame_id: "camera"
+height: 1
+width: 2
+encoding: "mono8"
+data: [0, 17]"""
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout=image_text, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    observation = Ros1CliMessageProbe().observe("/camera/image_raw", "rgb_camera", 1.0)
+
+    assert observation.payload_size == 2
+
+
+def test_ros1_cli_probe_reports_empty_laserscan_ranges_as_zero(monkeypatch) -> None:
+    scan_text = """header:
+  seq: 1
+  stamp:
+    secs: 12
+    nsecs: 34
+  frame_id: "laser"
+angle_min: -1.57
+angle_max: 1.57
+angle_increment: 0.01
+time_increment: 0.0
+scan_time: 0.1
+range_min: 0.12
+range_max: 3.5
+ranges: []
+intensities: []"""
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout=scan_text, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    observation = Ros1CliMessageProbe().observe("/scan", "lidar", 1.0)
+
+    assert observation.frame_id == "laser"
+    assert observation.finite_range_count == 0
+
+
+def test_ros1_cli_probe_counts_only_laserscan_ranges(monkeypatch) -> None:
+    scan_text = """header:
+  seq: 1
+  stamp:
+    secs: 12
+    nsecs: 34
+  frame_id: "laser"
+angle_min: -1.57
+angle_max: 1.57
+ranges: [inf, .nan, 0.75, 2.5]
+intensities: [10, 20]"""
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout=scan_text, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    observation = Ros1CliMessageProbe().observe("/scan", "lidar", 1.0)
+
+    assert observation.finite_range_count == 2

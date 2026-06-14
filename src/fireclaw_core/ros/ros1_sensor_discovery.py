@@ -115,7 +115,7 @@ class Ros1CliMessageProbe:
         return SensorObservation(
             observed=result.returncode == 0 and bool(text),
             age_seconds=0.0 if result.returncode == 0 and text else None,
-            payload_size=len(text.encode("utf-8")) if text else 0,
+            payload_size=_extract_payload_size(text, sensor),
             frame_id=_extract_frame_id(text),
             numeric_value=_extract_float_value(text),
             finite_range_count=_count_finite_ranges(text),
@@ -143,11 +143,74 @@ def _extract_float_value(text: str) -> float | None:
     return None
 
 
+def _extract_payload_size(text: str, sensor: str) -> int:
+    if sensor in {"rgb_camera", "thermal_camera"}:
+        return _count_array_items(text, "data") or 0
+    return len(text.encode("utf-8")) if text else 0
+
+
+def _count_array_items(text: str, field_name: str) -> int | None:
+    values = _extract_array_values(text, field_name)
+    if values is None:
+        return None
+    return len(values)
+
+
+def _extract_array_values(text: str, field_name: str) -> list[str] | None:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith(f"{field_name}:"):
+            continue
+        after_colon = stripped.split(":", 1)[1].strip()
+        if after_colon.startswith("["):
+            return _parse_inline_array(after_colon, lines[index + 1 :])
+        if after_colon:
+            return [after_colon]
+        return _parse_block_array(lines[index + 1 :])
+    return None
+
+
+def _parse_inline_array(first_fragment: str, following_lines: list[str]) -> list[str]:
+    fragments = [first_fragment]
+    if "]" not in first_fragment:
+        for line in following_lines:
+            stripped = line.strip()
+            fragments.append(stripped)
+            if "]" in stripped:
+                break
+    joined = " ".join(fragments)
+    start = joined.find("[")
+    end = joined.find("]", start + 1)
+    if start == -1 or end == -1:
+        return []
+    inner = joined[start + 1 : end].strip()
+    if not inner:
+        return []
+    return [item.strip() for item in inner.split(",") if item.strip()]
+
+
+def _parse_block_array(following_lines: list[str]) -> list[str]:
+    values: list[str] = []
+    for line in following_lines:
+        if line and not line.startswith((" ", "\t", "-")):
+            break
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("-"):
+            value = stripped[1:].strip()
+            if value:
+                values.append(value)
+    return values
+
+
 def _count_finite_ranges(text: str) -> int | None:
-    if "ranges:" not in text:
+    values = _extract_array_values(text, "ranges")
+    if values is None:
         return None
     count = 0
-    for token in text.replace("[", " ").replace("]", " ").replace(",", " ").split():
+    for token in values:
         try:
             value = float(token)
         except ValueError:
