@@ -7,9 +7,12 @@ from typing import Protocol
 
 from fireclaw_core.sensors.discovery import (
     DEFAULT_SENSOR_MAPPING_RULES,
+    DiscoveryFingerprint,
     SensorDiscoveryReport,
     SensorFinding,
     SensorMappingRule,
+    compare_fingerprints,
+    fingerprint_topic_types,
     match_sensor_rule,
 )
 
@@ -89,6 +92,7 @@ class Ros1SensorDiscovery:
     graph_provider: Ros1GraphProvider
     message_probe: Ros1MessageProbe
     extra_rules: tuple[SensorMappingRule, ...] = ()
+    profile_fingerprint: DiscoveryFingerprint | None = None
     timeout_seconds: float = 2.0
     cache_ttl_seconds: float = 5.0
     _cached_report: SensorDiscoveryReport | None = field(default=None, init=False, repr=False)
@@ -120,9 +124,16 @@ class Ros1SensorDiscovery:
                             source="ros1",
                             reason=f"ROS1 topic discovery failed: {exc}",
                         ),
-                    )
+                    ),
+                    runtime_fingerprint=None,
+                    profile_fingerprint=self.profile_fingerprint,
+                    fingerprint_comparison=compare_fingerprints(None, self.profile_fingerprint),
                 )
             )
+
+        runtime_fingerprint = fingerprint_topic_types(topic_types)
+        fingerprint_comparison = compare_fingerprints(runtime_fingerprint, self.profile_fingerprint)
+        confirmation_stale = fingerprint_comparison.status == "stale"
 
         for topic, message_type in sorted(topic_types.items()):
             rule = match_sensor_rule(topic, message_type, rules)
@@ -148,6 +159,8 @@ class Ros1SensorDiscovery:
                         status="verified",
                         confidence=rule.confidence,
                         source=rule.source,
+                        confirmed=rule.confirmed,
+                        confirmation_stale=rule.confirmed and confirmation_stale,
                     )
                 )
             else:
@@ -160,9 +173,19 @@ class Ros1SensorDiscovery:
                         confidence=rule.confidence,
                         source=rule.source,
                         reason=f"topic exists but no recent message within {self.timeout_seconds:.1f}s",
+                        confirmed=rule.confirmed,
+                        confirmation_stale=rule.confirmed and confirmation_stale,
                     )
                 )
-        return self._remember(SensorDiscoveryReport(findings=tuple(findings), source="ros1"))
+        return self._remember(
+            SensorDiscoveryReport(
+                findings=tuple(findings),
+                source="ros1",
+                runtime_fingerprint=runtime_fingerprint,
+                profile_fingerprint=self.profile_fingerprint,
+                fingerprint_comparison=fingerprint_comparison,
+            )
+        )
 
     def _remember(self, report: SensorDiscoveryReport) -> SensorDiscoveryReport:
         self._cached_report = report
