@@ -9,6 +9,7 @@ from fireclaw_core.ros.ros1_sensor_discovery import (
     StaticRos1GraphProvider,
     StaticRos1MessageProbe,
 )
+from fireclaw_core.sensors.discovery import DiscoveryFingerprint
 
 
 def _write_config(path: Path) -> None:
@@ -65,3 +66,21 @@ def test_ros1_adapter_state_uses_verified_discovered_sensors() -> None:
     assert state.sensor_diagnostics is not None
     findings = state.sensor_diagnostics["findings"]
     assert any(item["sensor"] == "rgb_camera" and item["status"] == "degraded" for item in findings)
+
+
+def test_ros1_adapter_state_exposes_stale_fingerprint_diagnostics() -> None:
+    adapter = Ros1RobotAdapter(
+        config=Ros1AdapterConfig(robot_id="robot-1"),
+        sensor_discovery=Ros1SensorDiscovery(
+            graph_provider=StaticRos1GraphProvider({"/scan": "sensor_msgs/LaserScan"}),
+            message_probe=StaticRos1MessageProbe({"/scan": True}),
+            profile_fingerprint=DiscoveryFingerprint(source="ros1", topics_hash="sha256:old"),
+        ),
+    )
+
+    state = adapter.get_robot_state()
+
+    assert state.available_sensors == ["lidar"]
+    assert state.sensor_diagnostics is not None
+    assert state.sensor_diagnostics["profile_fingerprint_status"] == "stale"
+    assert state.sensor_diagnostics["profile_fingerprint_reason"] == "topics_hash_mismatch"

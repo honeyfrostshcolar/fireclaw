@@ -138,6 +138,7 @@ def attach_profile_sensor_discovery(robot: Any, profile: Any) -> None:
             message_probe=Ros1CliMessageProbe(),
             extra_rules=profile.sensor_discovery.rules,
             timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
+            profile_fingerprint=profile.discovery_fingerprint,
         ),
     )
 
