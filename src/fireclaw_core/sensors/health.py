@@ -96,6 +96,8 @@ def evaluate_sensor_health(
             status="stale",
             reason=f"observation is stale: {observation.age_seconds:.1f}s > {active_policy.max_age_seconds:.1f}s",
         )
+    if observation.details.get("inspection") == "freshness_only":
+        return SensorHealthResult(sensor=sensor, status="healthy")
     if active_policy.require_payload and (observation.payload_size is None or observation.payload_size <= 0):
         return SensorHealthResult(sensor=sensor, status="invalid", reason="payload is empty")
     if active_policy.require_numeric_value:

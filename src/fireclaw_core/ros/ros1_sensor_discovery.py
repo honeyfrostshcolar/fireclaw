@@ -53,6 +53,7 @@ class StaticRos1MessageProbe:
         return SensorObservation(
             observed=self.has_recent_message(topic, timeout_seconds),
             age_seconds=0.0 if self.has_recent_message(topic, timeout_seconds) else None,
+            details={"inspection": "freshness_only"},
         )
 
 
@@ -170,6 +171,7 @@ def _observe_topic(
     return SensorObservation(
         observed=observed,
         age_seconds=0.0 if observed else None,
+        details={"inspection": "freshness_only"},
     )
 
 
