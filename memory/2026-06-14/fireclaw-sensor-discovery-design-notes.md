@@ -365,3 +365,78 @@ Verification:
 - Focused fingerprint suite (6 test files): 79 passed
 - Broader sensor/profile suite (9 test files): 136 passed
 - Full suite: 1196 passed, 2 failed (pre-existing: test_cli.py and test_serve.py), 6 skipped
+
+## Full Suite Cleanup After Fingerprint Review (2026-06-14)
+
+After the fingerprint phase review, the two previously noted full-suite failures were fixed.
+
+Root causes:
+
+1. `tests/test_cli.py::test_module_cli_accepts_ros1_config_for_adapter_skeleton`
+   - The agent CLI created a ROS1 adapter without explicit available sensors.
+   - `Ros1RobotAdapter.get_robot_state()` reported `available_sensors=None`, which SafetyGate treated as unknown sensors and only warned in dry-run mode.
+   - Execution then reached the ROS1 adapter and failed because transport was disabled.
+   - Fix: `src/fireclaw_core/agent/agent_cli.py` now treats `--adapter ros1` with no `--available-sensor` flags as an explicit empty sensor set, so SafetyGate blocks sensor-requiring skills before execution.
+
+2. `tests/test_serve.py::test_start_server_submit_and_trace`
+   - The test intended to run without a real robot gateway and only monkeypatched `RobotSubagentClient.check_presence`.
+   - The mission submit path still called `RobotSubagentClient.submit_task()` and attempted a real HTTP POST to `http://localhost:8765/tasks`.
+   - Fix: `tests/test_serve.py` now also monkeypatches `submit_task()` and `get_task_trace()` with deterministic fake responses for this no-real-robot server test.
+
+Verification:
+
+- Original failing CLI test: `.venv/bin/python -m pytest tests/test_cli.py::test_module_cli_accepts_ros1_config_for_adapter_skeleton -q` -> `1 passed`
+- Original failing serve test: `.venv/bin/python -m pytest tests/test_serve.py::test_start_server_submit_and_trace -q` -> `1 passed`
+- Related suite: `.venv/bin/python -m pytest tests/test_cli.py tests/test_serve.py -q` -> `23 passed`
+- Full suite: `.venv/bin/python -m pytest -q` -> `1199 passed, 6 skipped in 169.63s`
+
+## Final Sensor Capability Grounding Design (2026-06-14)
+
+The user asked whether the remaining final-version work can be covered by one large plan instead of only planning the next small phase. Decision:
+
+- Write a master final-version design covering all five phases.
+- Keep Phase 1 as completed baseline.
+- Mark Phase 2 as the next code implementation phase.
+- Keep later phases in the master design with dependencies and acceptance criteria, but do not pretend their code-level steps are fully known before Phase 2 stabilizes.
+
+Created spec:
+
+- `docs/superpowers/specs/2026-06-14-sensor-capability-grounding-final-design.md`
+
+Covered phases:
+
+1. Discovery fingerprint and stale profile detection — completed.
+2. Per-sensor health checks — next implementation phase.
+3. Safety-critical sensor policy.
+4. Operator confirmation loop.
+5. Adapter-agnostic discovery backend.
+
+Next step:
+
+- User review of the final design spec.
+- After approval, create `docs/superpowers/plans/2026-06-14-sensor-capability-grounding-master-plan.md` with all five phases at roadmap level and Phase 2 expanded to executable implementation steps.
+
+The user approved the final design spec. Created master implementation plan:
+
+- `docs/superpowers/plans/2026-06-14-sensor-capability-grounding-master-plan.md`
+
+The plan covers all five phases and expands Phase 2 (`Per-Sensor Health Checks`) into executable TDD tasks. Later phases are kept as master-plan sections with entry conditions, deliverables, and acceptance criteria.
+
+## Sensor Health Phase 2 Implementation (2026-06-14)
+
+Implemented per-sensor health checks for ROS1 sensor discovery.
+
+Behavior:
+
+- `SensorObservation`, `SensorHealthPolicy`, and `SensorHealthResult` model sensor health.
+- ROS1 discovery now marks a sensor verified only when health status is `healthy`.
+- Invalid camera payload, invalid gas value, and invalid lidar ranges produce degraded findings.
+- Robot state diagnostics include `health_status` and `health_reason`.
+- SafetyGate continues to consume only `RobotState.available_sensors`.
+
+Verification:
+
+- Sensor health suite: 7/7 passed (test_sensor_health.py)
+- ROS1 discovery suite: 15/15 passed (test_ros1_sensor_discovery.py)
+- Adapter state suite: 4/4 passed (test_ros1_adapter_state.py)
+- Agent/safety suite: 57/57 passed (test_agent.py + test_safety.py + test_safety_unknown_state.py)

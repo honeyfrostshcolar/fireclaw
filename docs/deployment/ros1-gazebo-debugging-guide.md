@@ -254,3 +254,16 @@ When all commands exit 0 and the Gazebo robot moves:
 - Proof bundle contains all required artifacts
 
 This validates the full chain from operator command to simulated robot execution. For real robot validation, see `ros1-hardware-smoke-proof.md`.
+
+## Sensor Health Diagnostics
+
+FireClaw separates topic discovery from sensor verification.
+
+- `discovered`: a topic/type matched a known or profile rule.
+- `healthy`: the current stream passed the sensor health policy.
+- `verified`: the sensor is mapped and healthy.
+- `degraded`: the topic exists but the health policy failed.
+
+SafetyGate only uses verified sensors from `RobotState.available_sensors`.
+
+For Gazebo TurtleBot3, `search_for_victims` remains blocked unless a camera topic is present and its health check passes. A camera topic with empty or stale data is reported in `sensor_diagnostics.findings` but is not added to `available_sensors`.
