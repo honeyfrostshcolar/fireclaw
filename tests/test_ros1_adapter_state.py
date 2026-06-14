@@ -84,3 +84,36 @@ def test_ros1_adapter_state_exposes_stale_fingerprint_diagnostics() -> None:
     assert state.sensor_diagnostics is not None
     assert state.sensor_diagnostics["profile_fingerprint_status"] == "stale"
     assert state.sensor_diagnostics["profile_fingerprint_reason"] == "topics_hash_mismatch"
+
+
+from fireclaw_core.sensors.health import SensorObservation
+
+
+def test_ros1_adapter_state_includes_sensor_health_diagnostics() -> None:
+    adapter = Ros1RobotAdapter(
+        config=Ros1AdapterConfig(robot_id="robot-1"),
+        sensor_discovery=Ros1SensorDiscovery(
+            graph_provider=StaticRos1GraphProvider({"/camera/image_raw": "sensor_msgs/Image"}),
+            message_probe=StaticRos1MessageProbe(
+                {"/camera/image_raw": True},
+                observations={
+                    "/camera/image_raw": SensorObservation(
+                        observed=True,
+                        age_seconds=0.1,
+                        payload_size=0,
+                        frame_id="camera",
+                    )
+                },
+            ),
+        ),
+    )
+
+    state = adapter.get_robot_state()
+
+    assert state.available_sensors == []
+    assert state.sensor_diagnostics is not None
+    finding = state.sensor_diagnostics["findings"][0]
+    assert finding["sensor"] == "rgb_camera"
+    assert finding["status"] == "degraded"
+    assert finding["health_status"] == "invalid"
+    assert finding["health_reason"] == "payload is empty"
