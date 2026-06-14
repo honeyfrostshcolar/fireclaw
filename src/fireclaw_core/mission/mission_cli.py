@@ -400,15 +400,54 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
         def _toml_escape(value: str) -> str:
             return value.replace("\\", "\\\\").replace('"', '\\"')
 
+        def _fingerprint_lines() -> list[str]:
+            if report.runtime_fingerprint is None:
+                return []
+            fingerprint = report.runtime_fingerprint
+            lines = [
+                "[robot.discovery_fingerprint]",
+                f'source = "{_toml_escape(fingerprint.source)}"',
+                f'topics_hash = "{_toml_escape(fingerprint.topics_hash)}"',
+            ]
+            if fingerprint.nodes_hash is not None:
+                lines.append(f'nodes_hash = "{_toml_escape(fingerprint.nodes_hash)}"')
+            lines.append('confirmed_by = "robot-profile discover"')
+            lines.append("")
+            return lines
+
+        def _replace_table_block(existing: str, table_header: str, replacement_lines: list[str]) -> str:
+            if table_header not in existing:
+                return existing.rstrip() + "\n\n" + "\n".join(replacement_lines).rstrip() + "\n"
+            lines = existing.splitlines()
+            result: list[str] = []
+            index = 0
+            while index < len(lines):
+                if lines[index].strip() == table_header:
+                    result.extend(replacement_lines)
+                    index += 1
+                    while index < len(lines):
+                        stripped = lines[index].strip()
+                        if stripped.startswith("[") and stripped.endswith("]"):
+                            break
+                        index += 1
+                    continue
+                result.append(lines[index])
+                index += 1
+            return "\n".join(result).rstrip() + "\n"
+
+        fingerprint_lines = _fingerprint_lines()
         header_lines: list[str] = [
             "# Suggested FireClaw sensor discovery rules.",
             "# Review before copying into the robot profile.",
             "",
+        ]
+        header_lines.extend(fingerprint_lines)
+        header_lines.extend([
             "[robot.sensor_discovery]",
             "enabled = true",
             f"message_timeout_seconds = {profile.sensor_discovery.message_timeout_seconds:.1f}",
             "",
-        ]
+        ])
         rule_lines: list[str] = []
         for finding in report.findings:
             if finding.status not in {"verified", "degraded"}:
@@ -427,11 +466,20 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         if args.write_profile:
             existing = output.read_text(encoding="utf-8")
-            if "[robot.sensor_discovery]" in existing:
+            updated = existing
+            if fingerprint_lines:
+                updated = _replace_table_block(updated, "[robot.discovery_fingerprint]", fingerprint_lines)
+            if "[robot.sensor_discovery]" in updated:
                 addition = "\n".join(rule_lines)
             else:
-                addition = text
-            output.write_text(existing.rstrip() + "\n\n" + addition, encoding="utf-8")
+                addition = "\n".join([
+                    "[robot.sensor_discovery]",
+                    "enabled = true",
+                    f"message_timeout_seconds = {profile.sensor_discovery.message_timeout_seconds:.1f}",
+                    "",
+                    *rule_lines,
+                ])
+            output.write_text(updated.rstrip() + "\n\n" + addition.rstrip() + "\n", encoding="utf-8")
         else:
             output.write_text(text, encoding="utf-8")
         _print_json({
