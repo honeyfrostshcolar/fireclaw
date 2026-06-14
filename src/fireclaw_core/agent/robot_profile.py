@@ -12,7 +12,7 @@ else:
 
 from fireclaw_core.execution.skills import SkillRegistry
 from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
-from fireclaw_core.sensors.discovery import SensorMappingRule
+from fireclaw_core.sensors.discovery import DiscoveryFingerprint, SensorMappingRule
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ class RobotCapabilityProfile:
     sensor_discovery: SensorDiscoveryProfileConfig = field(
         default_factory=SensorDiscoveryProfileConfig
     )
+    discovery_fingerprint: DiscoveryFingerprint | None = None
     enabled: bool = True
 
     @property
@@ -81,6 +82,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
     llm_exposed_skills = _string_tuple(robot, "llm_exposed_skills")
     capability_skill_chains = _skill_chain_map(raw, "capability_skill_chains")
     sensor_discovery = _sensor_discovery_config(robot)
+    discovery_fingerprint = _discovery_fingerprint(robot)
     return RobotCapabilityProfile(
         robot_id=robot_id,
         base_url=base_url.rstrip("/"),
@@ -92,6 +94,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
         llm_exposed_skills=llm_exposed_skills,
         capability_skill_chains=capability_skill_chains,
         sensor_discovery=sensor_discovery,
+        discovery_fingerprint=discovery_fingerprint,
         enabled=bool(robot.get("enabled", True)),
     )
 
@@ -166,6 +169,36 @@ def _sensor_discovery_config(robot: dict[str, Any]) -> SensorDiscoveryProfileCon
         enabled=bool(raw.get("enabled", True)),
         message_timeout_seconds=float(raw.get("message_timeout_seconds", 2.0)),
         rules=tuple(rules),
+    )
+
+
+def _discovery_fingerprint(robot: dict[str, Any]) -> DiscoveryFingerprint | None:
+    raw = robot.get("discovery_fingerprint")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("robot.discovery_fingerprint must be a table when provided.")
+    source = raw.get("source")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("robot.discovery_fingerprint.source must be a non-empty string.")
+    topics_hash = raw.get("topics_hash")
+    if not isinstance(topics_hash, str) or not topics_hash.strip():
+        raise ValueError("robot.discovery_fingerprint.topics_hash must be a non-empty string.")
+    nodes_hash = raw.get("nodes_hash")
+    if nodes_hash is not None and (not isinstance(nodes_hash, str) or not nodes_hash.strip()):
+        raise ValueError("robot.discovery_fingerprint.nodes_hash must be a non-empty string when provided.")
+    created_at = raw.get("created_at")
+    if created_at is not None and not isinstance(created_at, str):
+        raise ValueError("robot.discovery_fingerprint.created_at must be a string when provided.")
+    confirmed_by = raw.get("confirmed_by")
+    if confirmed_by is not None and (not isinstance(confirmed_by, str) or not confirmed_by.strip()):
+        raise ValueError("robot.discovery_fingerprint.confirmed_by must be a non-empty string when provided.")
+    return DiscoveryFingerprint(
+        source=source.strip(),
+        topics_hash=topics_hash.strip(),
+        nodes_hash=nodes_hash.strip() if isinstance(nodes_hash, str) else None,
+        created_at=created_at.strip() if isinstance(created_at, str) else None,
+        confirmed_by=confirmed_by.strip() if isinstance(confirmed_by, str) else None,
     )
 
 

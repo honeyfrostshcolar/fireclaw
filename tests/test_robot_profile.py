@@ -11,6 +11,7 @@ from fireclaw_core.agent.robot_profile import (
 )
 from fireclaw_core.execution.skills import create_default_skill_registry
 from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
+from fireclaw_core.sensors.discovery import DiscoveryFingerprint
 
 
 def test_load_robot_capability_profile_from_toml(tmp_path: Path) -> None:
@@ -331,3 +332,86 @@ llm_exposed_skills = ["navigate_to_floor"]
     profiles = load_robot_capability_profiles([first, second])
 
     assert [profile.robot_id for profile in profiles] == ["r1", "r2"]
+
+
+def test_load_robot_profile_with_discovery_fingerprint(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+
+[robot.discovery_fingerprint]
+source = "ros1"
+topics_hash = "sha256:abc"
+nodes_hash = "sha256:nodes"
+created_at = "2026-06-14T12:00:00+08:00"
+confirmed_by = "operator"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.discovery_fingerprint == DiscoveryFingerprint(
+        source="ros1",
+        topics_hash="sha256:abc",
+        nodes_hash="sha256:nodes",
+        created_at="2026-06-14T12:00:00+08:00",
+        confirmed_by="operator",
+    )
+
+
+def test_load_robot_profile_without_discovery_fingerprint_is_backward_compatible(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.discovery_fingerprint is None
+
+
+def test_load_robot_profile_rejects_empty_discovery_fingerprint_source(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+
+[robot.discovery_fingerprint]
+source = ""
+topics_hash = "sha256:abc"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="robot.discovery_fingerprint.source must be a non-empty string"):
+        load_robot_capability_profile(profile_path)
