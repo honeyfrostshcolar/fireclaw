@@ -12,6 +12,7 @@ from fireclaw_core.ros.ros1_sensor_discovery import (
     StaticRos1GraphProvider,
     StaticRos1MessageProbe,
 )
+from fireclaw_core.sensors.health import SensorObservation
 
 
 class FailingMemoryStore:
@@ -781,3 +782,53 @@ def test_agent_uses_robot_state_verified_sensors_when_no_override() -> None:
 
     assert result["status"] in {"succeeded", "completed"}
     assert result["robot_state"]["available_sensors"] == ["rgb_camera", "thermal_camera"]
+
+
+def test_agent_blocks_search_when_discovered_camera_health_is_invalid() -> None:
+    endpoint = Ros1EndpointConfig(interface="topic", name="/fireclaw/test", type="std_msgs/String")
+    robot = Ros1RobotAdapter(
+        config=Ros1AdapterConfig(
+            robot_id="robot-1",
+            endpoints={
+                "navigate_to_floor": endpoint,
+                "search_for_victims": endpoint,
+                "assess_victim": endpoint,
+                "report_status": endpoint,
+                "return_to_safe_zone": endpoint,
+            },
+        ),
+        sensor_discovery=Ros1SensorDiscovery(
+            graph_provider=StaticRos1GraphProvider({
+                "/camera/image_raw": "sensor_msgs/Image",
+                "/thermal/image_raw": "sensor_msgs/Image",
+            }),
+            message_probe=StaticRos1MessageProbe(
+                {
+                    "/camera/image_raw": True,
+                    "/thermal/image_raw": True,
+                },
+                observations={
+                    "/camera/image_raw": SensorObservation(
+                        observed=True,
+                        age_seconds=0.1,
+                        payload_size=0,
+                        frame_id="camera",
+                    ),
+                    "/thermal/image_raw": SensorObservation(
+                        observed=True,
+                        age_seconds=0.1,
+                        payload_size=64,
+                        frame_id="thermal",
+                    ),
+                },
+            ),
+        ),
+        dry_run=True,
+    )
+    agent = FireClawAgent(robot=robot, workspace_skills_dir=None, dry_run=True)
+
+    result = agent.run("去二楼救人")
+
+    assert result["status"] == "block"
+    assert "rgb_camera" in result["message"]
+    assert result["robot_state"]["available_sensors"] == ["thermal_camera"]
