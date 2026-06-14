@@ -622,7 +622,7 @@ class FireClawGateway:
         context = {
             "robot_state": robot_state,
             "environment_state": agent._state_snapshot(agent._get_environment_state()),
-            "available_sensors": sorted(runtime_sensors or agent.available_sensors),
+            "available_sensors": sorted(runtime_sensors if runtime_sensors is not None else agent.available_sensors),
             "skill_tools": skill_tools,
             "skill_metadata": skill_metadata,
         }
