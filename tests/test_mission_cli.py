@@ -1207,6 +1207,18 @@ def test_plan_mission_help_exposes_robot_profile_flag():
     assert "--robot-registry" in completed.stdout
 
 
+def test_serve_help_exposes_robot_profile_flag():
+    completed = subprocess.run(
+        [sys.executable, "-m", "fireclaw_core", "serve", "--help"],
+        check=True,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    assert "--robot-profile" in completed.stdout
+
+
 def test_robot_profile_discover_writes_suggested_rules(tmp_path, monkeypatch):
     profile_path = tmp_path / "robot.toml"
     output_path = tmp_path / "discovered.toml"

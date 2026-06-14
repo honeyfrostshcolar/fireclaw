@@ -138,6 +138,12 @@ def main() -> int:
     serve.add_argument("--robot-agent-provider-base-url", default=None, help="Robot-local agent LLM provider base URL.")
     serve.add_argument("--robot-agent-provider-api-key", default=None, help="Robot-local agent LLM provider API key.")
     serve.add_argument("--robot-agent-model", default=None, help="Robot-local agent LLM model id.")
+    serve.add_argument(
+        "--robot-profile",
+        action="append",
+        default=None,
+        help="Path to robot profile TOML. Repeat for multiple robots.",
+    )
 
     mission = subparsers.add_parser("mission", help="Open the interactive mission console.")
     mission.add_argument("--server", default="http://127.0.0.1:8766", help="MissionGateway base URL.")
@@ -240,6 +246,7 @@ def main() -> int:
             "robot_agent_provider_base_url": args.robot_agent_provider_base_url,
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
             "robot_agent_model": args.robot_agent_model,
+            "mission_robot_profiles": args.robot_profile,
         })
         run_server_blocking(
             adapter=str(merged.get("adapter", "simulator")),
