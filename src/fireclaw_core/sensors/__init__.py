@@ -12,8 +12,17 @@ from fireclaw_core.sensors.discovery import (
     match_sensor_rule,
     verified_sensor_names,
 )
+from fireclaw_core.sensors.health import (
+    DEFAULT_SENSOR_HEALTH_POLICIES,
+    SensorHealthPolicy,
+    SensorHealthResult,
+    SensorHealthStatus,
+    SensorObservation,
+    evaluate_sensor_health,
+)
 
 __all__ = [
+    "DEFAULT_SENSOR_HEALTH_POLICIES",
     "DEFAULT_SENSOR_MAPPING_RULES",
     "DiscoveryFingerprint",
     "FingerprintComparison",
@@ -21,8 +30,13 @@ __all__ = [
     "SensorDiscoveryReport",
     "SensorFinding",
     "SensorFindingStatus",
+    "SensorHealthPolicy",
+    "SensorHealthResult",
+    "SensorHealthStatus",
     "SensorMappingRule",
+    "SensorObservation",
     "compare_fingerprints",
+    "evaluate_sensor_health",
     "fingerprint_topic_types",
     "match_sensor_rule",
     "verified_sensor_names",
