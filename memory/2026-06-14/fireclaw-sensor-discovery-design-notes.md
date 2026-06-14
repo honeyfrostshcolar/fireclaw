@@ -275,3 +275,31 @@ Tasks 1-6 completed:
 2. Mission gateway fleet health check times out because robot gateway's `/state` is slow. The health endpoint (`/health`) is fast (5ms), but the fleet doctor may call `/state` instead.
 3. Gazebo TurtleBot3 default world has no camera topic. To test verified `rgb_camera`, a camera sensor must be added to the Gazebo world or a different robot profile used.
 4. No live `robot-profile discover` test was run (requires ROS1 master with actual publishing topics).
+
+## Review Fixup Plan Created
+
+Created:
+
+- `docs/superpowers/plans/2026-06-14-ros1-sensor-discovery-fixups.md`
+
+This plan addresses review findings discovered after the initial implementation:
+
+1. `FireClawAgent` still passed a cached static sensor set to SafetyGate, so verified runtime sensors from `robot_state.available_sensors` could be ignored.
+2. ROS1 discovery was too slow for repeated `/state` calls and caused mission-side robot presence checks to time out.
+3. `robot-profile discover --write-profile` could append a duplicate `[robot.sensor_discovery]` table and make the profile invalid TOML.
+4. `serve --help` did not expose `--robot-profile`.
+5. `fireclaw.example.toml` still showed hand-written robot gateway fields and static `available_sensors` instead of the profile-driven flow.
+
+## Fixup Verification (2026-06-14 09:20 UTC)
+
+- Runtime verified sensors SafetyGate regression: PASS (test_agent.py + test_gateway_structured_task.py, 39/39)
+- Gateway truthiness fix: PASS (`runtime_sensors if runtime_sensors is not None else agent.available_sensors`)
+- ROS1 discovery cache regression: PASS (test_ros1_sensor_discovery.py, 7/7)
+- Profile write-back TOML regression: PASS (test_mission_cli.py discover tests, 3/3)
+- Serve `--robot-profile` CLI regression: PASS (test_mission_cli.py, 4/4)
+- `fireclaw.example.toml` profile-driven status: PASS (static fields removed, profile_path added)
+- Focused test command: `pytest tests/test_sensor_discovery.py tests/test_ros1_sensor_discovery.py tests/test_robot_profile.py tests/test_ros1_adapter_state.py tests/test_gateway_robot_profile_config.py tests/test_safety.py tests/test_agent.py tests/test_gateway_structured_task.py tests/test_mission_cli.py -q` → 121 passed
+- `tests/test_serve.py` status: pre-existing failure (ConnectionRefusedError, not sensor-related)
+- `tests/test_cli.py::test_module_cli_accepts_ros1_config_for_adapter_skeleton`: pre-existing failure (status "failed" vs expected "block", not sensor-related)
+- Full suite status: 1181 passed, 2 failed (both pre-existing), 6 skipped
+- Remaining risks: CLI probe performance (N+1 subprocess, cached at 5s TTL now), pre-existing serve/cli test failures unrelated to sensor discovery
