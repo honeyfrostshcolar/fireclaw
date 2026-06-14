@@ -267,3 +267,27 @@ FireClaw separates topic discovery from sensor verification.
 SafetyGate only uses verified sensors from `RobotState.available_sensors`.
 
 For Gazebo TurtleBot3, `search_for_victims` remains blocked unless a camera topic is present and its health check passes. A camera topic with empty or stale data is reported in `sensor_diagnostics.findings` but is not added to `available_sensors`.
+
+## Safety-Critical Sensor Policy
+
+FireClaw treats runtime sensor capability as a safety input, not as static configuration.
+
+The runtime chain is:
+
+```text
+ROS1 topic/type discovery
+  -> topic-to-sensor mapping
+  -> sensor-specific health check
+  -> verified sensor list and findings diagnostics
+  -> SafetyGate sensor policy
+```
+
+SafetyGate only trusts sensors that are verified at runtime. Degraded, stale, invalid, or unknown sensors are handled by sensor-specific policy:
+
+- `rgb_camera`: required for victim search unless a verified alternative victim-search sensor is available.
+- `thermal_camera`: required for victim/fire assessment; degraded thermal data may block or require operator confirmation depending on the skill.
+- `gas_detector`: stale, invalid, or degraded gas data blocks hazardous-atmosphere decisions.
+- `lidar`: stale, invalid, or degraded lidar blocks real navigation.
+- `imu`: unknown or degraded IMU can require operator confirmation for real navigation.
+
+In dry-run or simulator mode, unknown health may be downgraded to a warning. This behavior is explicit and must not be used as authority for real robot execution.
