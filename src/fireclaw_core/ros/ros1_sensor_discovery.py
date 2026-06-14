@@ -15,6 +15,10 @@ from fireclaw_core.sensors.discovery import (
     fingerprint_topic_types,
     match_sensor_rule,
 )
+from fireclaw_core.sensors.health import (
+    SensorObservation,
+    evaluate_sensor_health,
+)
 
 
 class Ros1GraphProvider(Protocol):
@@ -38,9 +42,18 @@ class StaticRos1GraphProvider:
 @dataclass(frozen=True)
 class StaticRos1MessageProbe:
     topic_status: dict[str, bool]
+    observations: dict[str, SensorObservation] | None = None
 
     def has_recent_message(self, topic: str, timeout_seconds: float) -> bool:
         return bool(self.topic_status.get(topic, False))
+
+    def observe(self, topic: str, sensor: str, timeout_seconds: float) -> SensorObservation:
+        if self.observations is not None and topic in self.observations:
+            return self.observations[topic]
+        return SensorObservation(
+            observed=self.has_recent_message(topic, timeout_seconds),
+            age_seconds=0.0 if self.has_recent_message(topic, timeout_seconds) else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -85,6 +98,79 @@ class Ros1CliMessageProbe:
         except subprocess.TimeoutExpired:
             return False
         return result.returncode == 0 and bool(result.stdout.strip())
+
+    def observe(self, topic: str, sensor: str, timeout_seconds: float) -> SensorObservation:
+        try:
+            result = subprocess.run(
+                [self.rostopic_executable, "echo", "-n", "1", topic],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return SensorObservation(observed=False)
+        text = result.stdout.strip()
+        return SensorObservation(
+            observed=result.returncode == 0 and bool(text),
+            age_seconds=0.0 if result.returncode == 0 and text else None,
+            payload_size=len(text.encode("utf-8")) if text else 0,
+            frame_id=_extract_frame_id(text),
+            numeric_value=_extract_float_value(text),
+            finite_range_count=_count_finite_ranges(text),
+        )
+
+
+def _extract_frame_id(text: str) -> str | None:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("frame_id:"):
+            value = stripped.split(":", 1)[1].strip().strip("'\"")
+            return value or None
+    return None
+
+
+def _extract_float_value(text: str) -> float | None:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("data:"):
+            value = stripped.split(":", 1)[1].strip()
+            try:
+                return float(value)
+            except ValueError:
+                return None
+    return None
+
+
+def _count_finite_ranges(text: str) -> int | None:
+    if "ranges:" not in text:
+        return None
+    count = 0
+    for token in text.replace("[", " ").replace("]", " ").replace(",", " ").split():
+        try:
+            value = float(token)
+        except ValueError:
+            continue
+        if value == value and value not in {float("inf"), float("-inf")}:
+            count += 1
+    return count
+
+
+def _observe_topic(
+    probe: Ros1MessageProbe,
+    *,
+    topic: str,
+    sensor: str,
+    timeout_seconds: float,
+) -> SensorObservation:
+    observe = getattr(probe, "observe", None)
+    if callable(observe):
+        return observe(topic, sensor, timeout_seconds)
+    observed = probe.has_recent_message(topic, timeout_seconds)
+    return SensorObservation(
+        observed=observed,
+        age_seconds=0.0 if observed else None,
+    )
 
 
 @dataclass
@@ -150,33 +236,30 @@ class Ros1SensorDiscovery:
                     )
                 )
                 continue
-            if self.message_probe.has_recent_message(topic, self.timeout_seconds):
-                findings.append(
-                    SensorFinding(
-                        sensor=rule.sensor,
-                        topic=topic,
-                        message_type=message_type,
-                        status="verified",
-                        confidence=rule.confidence,
-                        source=rule.source,
-                        confirmed=rule.confirmed,
-                        confirmation_stale=rule.confirmed and confirmation_stale,
-                    )
+            observation = _observe_topic(
+                self.message_probe,
+                topic=topic,
+                sensor=rule.sensor,
+                timeout_seconds=self.timeout_seconds,
+            )
+            health = evaluate_sensor_health(rule.sensor, observation)
+            finding_status = "verified" if health.status == "healthy" else "degraded"
+            reason = None if finding_status == "verified" else health.reason or f"sensor health is {health.status}"
+            findings.append(
+                SensorFinding(
+                    sensor=rule.sensor,
+                    topic=topic,
+                    message_type=message_type,
+                    status=finding_status,
+                    confidence=rule.confidence,
+                    source=rule.source,
+                    reason=reason,
+                    confirmed=rule.confirmed,
+                    confirmation_stale=rule.confirmed and confirmation_stale,
+                    health_status=health.status,
+                    health_reason=health.reason,
                 )
-            else:
-                findings.append(
-                    SensorFinding(
-                        sensor=rule.sensor,
-                        topic=topic,
-                        message_type=message_type,
-                        status="degraded",
-                        confidence=rule.confidence,
-                        source=rule.source,
-                        reason=f"topic exists but no recent message within {self.timeout_seconds:.1f}s",
-                        confirmed=rule.confirmed,
-                        confirmation_stale=rule.confirmed and confirmation_stale,
-                    )
-                )
+            )
         return self._remember(
             SensorDiscoveryReport(
                 findings=tuple(findings),

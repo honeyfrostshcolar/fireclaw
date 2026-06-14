@@ -8,12 +8,23 @@ from fireclaw_core.sensors.discovery import (
     SensorMappingRule,
     fingerprint_topic_types,
 )
+from fireclaw_core.sensors.health import SensorObservation
 
 
 def test_ros1_discovery_verifies_topic_when_recent_message_exists() -> None:
     discovery = Ros1SensorDiscovery(
         graph_provider=StaticRos1GraphProvider({"/scan": "sensor_msgs/LaserScan"}),
-        message_probe=StaticRos1MessageProbe({"/scan": True}),
+        message_probe=StaticRos1MessageProbe(
+            {"/scan": True},
+            observations={
+                "/scan": SensorObservation(
+                    observed=True,
+                    age_seconds=0.1,
+                    finite_range_count=360,
+                    frame_id="laser",
+                )
+            },
+        ),
     )
 
     report = discovery.discover()
@@ -33,13 +44,23 @@ def test_ros1_discovery_marks_matching_topic_degraded_without_recent_message() -
     assert report.verified_sensors() == []
     assert report.findings[0].sensor == "rgb_camera"
     assert report.findings[0].status == "degraded"
-    assert "no recent message" in str(report.findings[0].reason)
+    assert "no recent observation" in str(report.findings[0].reason)
 
 
 def test_ros1_discovery_uses_profile_rule_for_nonstandard_camera_topic() -> None:
     discovery = Ros1SensorDiscovery(
         graph_provider=StaticRos1GraphProvider({"/front_camera/image_raw": "sensor_msgs/Image"}),
-        message_probe=StaticRos1MessageProbe({"/front_camera/image_raw": True}),
+        message_probe=StaticRos1MessageProbe(
+            {"/front_camera/image_raw": True},
+            observations={
+                "/front_camera/image_raw": SensorObservation(
+                    observed=True,
+                    age_seconds=0.1,
+                    payload_size=128,
+                    frame_id="front_cam",
+                )
+            },
+        ),
         extra_rules=(
             SensorMappingRule(
                 topic_pattern="/front_camera/image_raw",
@@ -96,11 +117,21 @@ def test_ros1_discovery_handles_multiple_topics_with_mixed_statuses() -> None:
             "/camera/image_raw": "sensor_msgs/Image",
             "/debug/image": "custom_msgs/DebugImage",
         }),
-        message_probe=StaticRos1MessageProbe({
-            "/scan": True,
-            "/camera/image_raw": False,
-            "/debug/image": True,
-        }),
+        message_probe=StaticRos1MessageProbe(
+            {
+                "/scan": True,
+                "/camera/image_raw": False,
+                "/debug/image": True,
+            },
+            observations={
+                "/scan": SensorObservation(
+                    observed=True,
+                    age_seconds=0.1,
+                    finite_range_count=360,
+                    frame_id="laser",
+                ),
+            },
+        ),
     )
 
     report = discovery.discover()
@@ -129,6 +160,15 @@ class CountingMessageProbe:
         self.calls += 1
         return True
 
+    def observe(self, topic: str, sensor: str, timeout_seconds: float) -> SensorObservation:
+        self.calls += 1
+        return SensorObservation(
+            observed=True,
+            age_seconds=0.1,
+            finite_range_count=360,
+            frame_id="laser",
+        )
+
 
 def test_ros1_discovery_uses_cache_within_ttl() -> None:
     graph = CountingGraphProvider()
@@ -152,7 +192,17 @@ def test_ros1_discovery_reports_fresh_profile_fingerprint() -> None:
     topics = {"/scan": "sensor_msgs/LaserScan"}
     discovery = Ros1SensorDiscovery(
         graph_provider=StaticRos1GraphProvider(topics),
-        message_probe=StaticRos1MessageProbe({"/scan": True}),
+        message_probe=StaticRos1MessageProbe(
+            {"/scan": True},
+            observations={
+                "/scan": SensorObservation(
+                    observed=True,
+                    age_seconds=0.1,
+                    finite_range_count=360,
+                    frame_id="laser",
+                )
+            },
+        ),
         profile_fingerprint=fingerprint_topic_types(topics),
     )
 
@@ -224,7 +274,17 @@ def test_ros1_discovery_reports_unknown_fingerprint_when_graph_provider_fails() 
 def test_ros1_discovery_marks_confirmed_rule_stale_when_fingerprint_missing() -> None:
     discovery = Ros1SensorDiscovery(
         graph_provider=StaticRos1GraphProvider({"/thermal/image_raw": "sensor_msgs/Image"}),
-        message_probe=StaticRos1MessageProbe({"/thermal/image_raw": True}),
+        message_probe=StaticRos1MessageProbe(
+            {"/thermal/image_raw": True},
+            observations={
+                "/thermal/image_raw": SensorObservation(
+                    observed=True,
+                    age_seconds=0.1,
+                    payload_size=64,
+                    frame_id="thermal_cam",
+                )
+            },
+        ),
         extra_rules=(
             SensorMappingRule(
                 topic_pattern="/thermal/image_raw",
@@ -245,3 +305,76 @@ def test_ros1_discovery_marks_confirmed_rule_stale_when_fingerprint_missing() ->
     assert payload["findings"][0]["sensor"] == "thermal_camera"
     assert payload["findings"][0]["confirmed"] is True
     assert payload["findings"][0]["confirmation_stale"] is True
+
+
+def test_ros1_discovery_verifies_camera_only_when_health_is_healthy() -> None:
+    discovery = Ros1SensorDiscovery(
+        graph_provider=StaticRos1GraphProvider({"/camera/image_raw": "sensor_msgs/Image"}),
+        message_probe=StaticRos1MessageProbe(
+            {"/camera/image_raw": True},
+            observations={
+                "/camera/image_raw": SensorObservation(
+                    observed=True,
+                    age_seconds=0.2,
+                    payload_size=64,
+                    frame_id="camera_rgb",
+                )
+            },
+        ),
+    )
+
+    report = discovery.discover()
+    payload = report.to_dict()
+
+    assert report.verified_sensors() == ["rgb_camera"]
+    assert payload["findings"][0]["status"] == "verified"
+    assert payload["findings"][0]["health_status"] == "healthy"
+
+
+def test_ros1_discovery_degrades_camera_with_empty_payload() -> None:
+    discovery = Ros1SensorDiscovery(
+        graph_provider=StaticRos1GraphProvider({"/camera/image_raw": "sensor_msgs/Image"}),
+        message_probe=StaticRos1MessageProbe(
+            {"/camera/image_raw": True},
+            observations={
+                "/camera/image_raw": SensorObservation(
+                    observed=True,
+                    age_seconds=0.2,
+                    payload_size=0,
+                    frame_id="camera_rgb",
+                )
+            },
+        ),
+    )
+
+    report = discovery.discover()
+    payload = report.to_dict()
+
+    assert report.verified_sensors() == []
+    assert payload["findings"][0]["status"] == "degraded"
+    assert payload["findings"][0]["health_status"] == "invalid"
+    assert payload["findings"][0]["health_reason"] == "payload is empty"
+
+
+def test_ros1_discovery_degrades_gas_detector_with_out_of_range_value() -> None:
+    discovery = Ros1SensorDiscovery(
+        graph_provider=StaticRos1GraphProvider({"/gas_sensor": "std_msgs/Float32"}),
+        message_probe=StaticRos1MessageProbe(
+            {"/gas_sensor": True},
+            observations={
+                "/gas_sensor": SensorObservation(
+                    observed=True,
+                    age_seconds=0.1,
+                    numeric_value=-1.0,
+                )
+            },
+        ),
+    )
+
+    report = discovery.discover()
+    payload = report.to_dict()
+
+    assert report.verified_sensors() == []
+    assert payload["findings"][0]["sensor"] == "gas_detector"
+    assert payload["findings"][0]["health_status"] == "invalid"
+    assert "below minimum" in payload["findings"][0]["health_reason"]
