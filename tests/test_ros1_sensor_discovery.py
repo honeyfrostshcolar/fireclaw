@@ -106,3 +106,39 @@ def test_ros1_discovery_handles_multiple_topics_with_mixed_statuses() -> None:
     assert statuses["/scan"] == "verified"
     assert statuses["/camera/image_raw"] == "degraded"
     assert statuses["/debug/image"] == "rejected"
+
+
+class CountingGraphProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def topic_types(self) -> dict[str, str]:
+        self.calls += 1
+        return {"/scan": "sensor_msgs/LaserScan"}
+
+
+class CountingMessageProbe:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def has_recent_message(self, topic: str, timeout_seconds: float) -> bool:
+        self.calls += 1
+        return True
+
+
+def test_ros1_discovery_uses_cache_within_ttl() -> None:
+    graph = CountingGraphProvider()
+    probe = CountingMessageProbe()
+    discovery = Ros1SensorDiscovery(
+        graph_provider=graph,
+        message_probe=probe,
+        cache_ttl_seconds=30.0,
+    )
+
+    first = discovery.discover()
+    second = discovery.discover()
+
+    assert first.verified_sensors() == ["lidar"]
+    assert second.verified_sensors() == ["lidar"]
+    assert graph.calls == 1
+    assert probe.calls == 1

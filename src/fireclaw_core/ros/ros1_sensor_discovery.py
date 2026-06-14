@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from fireclaw_core.sensors.discovery import (
@@ -89,24 +90,37 @@ class Ros1SensorDiscovery:
     message_probe: Ros1MessageProbe
     extra_rules: tuple[SensorMappingRule, ...] = ()
     timeout_seconds: float = 2.0
+    cache_ttl_seconds: float = 5.0
+    _cached_report: SensorDiscoveryReport | None = field(default=None, init=False, repr=False)
+    _cached_at: float = field(default=0.0, init=False, repr=False)
 
     def discover(self) -> SensorDiscoveryReport:
+        now = time.monotonic()
+        if (
+            self._cached_report is not None
+            and self.cache_ttl_seconds > 0
+            and now - self._cached_at <= self.cache_ttl_seconds
+        ):
+            return self._cached_report
+
         findings: list[SensorFinding] = []
         rules = self.extra_rules + DEFAULT_SENSOR_MAPPING_RULES
         try:
             topic_types = self.graph_provider.topic_types()
         except Exception as exc:
-            return SensorDiscoveryReport(
-                findings=(
-                    SensorFinding(
-                        sensor="ros1_graph",
-                        topic="*",
-                        message_type="unknown",
-                        status="degraded",
-                        confidence=0.0,
-                        source="ros1",
-                        reason=f"ROS1 topic discovery failed: {exc}",
-                    ),
+            return self._remember(
+                SensorDiscoveryReport(
+                    findings=(
+                        SensorFinding(
+                            sensor="ros1_graph",
+                            topic="*",
+                            message_type="unknown",
+                            status="degraded",
+                            confidence=0.0,
+                            source="ros1",
+                            reason=f"ROS1 topic discovery failed: {exc}",
+                        ),
+                    )
                 )
             )
 
@@ -148,4 +162,9 @@ class Ros1SensorDiscovery:
                         reason=f"topic exists but no recent message within {self.timeout_seconds:.1f}s",
                     )
                 )
-        return SensorDiscoveryReport(findings=tuple(findings), source="ros1")
+        return self._remember(SensorDiscoveryReport(findings=tuple(findings), source="ros1"))
+
+    def _remember(self, report: SensorDiscoveryReport) -> SensorDiscoveryReport:
+        self._cached_report = report
+        self._cached_at = time.monotonic()
+        return report
