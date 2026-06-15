@@ -170,6 +170,12 @@ def main() -> int:
         help="Explicitly write suggested discovery rules to the profile instead of --output.",
     )
 
+    profile_diff = robot_profile_sub.add_parser(
+        "diff-discovery",
+        help="Compare current ROS1 sensor discovery against profile rules and fingerprint.",
+    )
+    profile_diff.add_argument("--profile", required=True, help="Path to robot profile TOML.")
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -394,6 +400,7 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
             message_probe=Ros1CliMessageProbe(),
             extra_rules=profile.sensor_discovery.rules,
             timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
+            profile_fingerprint=profile.discovery_fingerprint,
         )
         report = discovery.discover()
 
@@ -487,6 +494,29 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
             "output": str(output),
             "verified_sensors": report.verified_sensors(),
         })
+        return 0
+    if args.robot_profile_command == "diff-discovery":
+        from fireclaw_core.agent.profile_discovery import build_discovery_diff
+        from fireclaw_core.ros.ros1_sensor_discovery import (
+            Ros1CliGraphProvider,
+            Ros1CliMessageProbe,
+            Ros1SensorDiscovery,
+        )
+
+        profile = load_robot_capability_profile(args.profile)
+        discovery = Ros1SensorDiscovery(
+            graph_provider=Ros1CliGraphProvider(),
+            message_probe=Ros1CliMessageProbe(),
+            extra_rules=profile.sensor_discovery.rules,
+            timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
+            profile_fingerprint=profile.discovery_fingerprint,
+        )
+        report = discovery.discover()
+        diff = build_discovery_diff(report, profile.sensor_discovery.rules)
+        payload = diff.to_dict()
+        payload["verified_sensors"] = report.verified_sensors()
+        payload["findings"] = [finding.to_dict() for finding in report.findings]
+        _print_json(payload)
         return 0
     print(f"Error: unknown robot-profile subcommand: {args.robot_profile_command}", file=sys.stderr)
     return 1

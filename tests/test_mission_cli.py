@@ -1501,3 +1501,115 @@ message_timeout_seconds = 2.0
     assert profile.discovery_fingerprint is not None
     assert profile.discovery_fingerprint.topics_hash.startswith("sha256:")
     assert profile.sensor_discovery.rules[0].sensor == "lidar"
+
+
+def test_robot_profile_diff_discovery_reports_added_candidate(tmp_path, monkeypatch, capsys):
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "{data_dir}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+""".format(data_dir=tmp_path / "robot-data").strip(),
+        encoding="utf-8",
+    )
+
+    from fireclaw_core.ros import ros1_sensor_discovery
+
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliGraphProvider,
+        "topic_types",
+        lambda self: {"/scan": "sensor_msgs/LaserScan"},
+    )
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliMessageProbe,
+        "has_recent_message",
+        lambda self, topic, timeout_seconds: True,
+    )
+
+    from fireclaw_core.mission.mission_cli import main
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mission-cli",
+            "robot-profile",
+            "diff-discovery",
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
+    assert main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "changed"
+    assert payload["added"] == ["/scan"]
+
+
+def test_robot_profile_diff_discovery_reports_stale_fingerprint(tmp_path, monkeypatch, capsys):
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "{data_dir}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+
+[robot.discovery_fingerprint]
+source = "ros1"
+topics_hash = "sha256:old"
+confirmed_by = "operator-1"
+confirmed_at = "2026-06-15T12:00:00+08:00"
+
+[[robot.sensor_discovery.rules]]
+topic_pattern = "/scan"
+message_type = "sensor_msgs/LaserScan"
+sensor = "lidar"
+confirmed = true
+confirmed_by = "operator-1"
+confirmed_at = "2026-06-15T12:00:00+08:00"
+""".format(data_dir=tmp_path / "robot-data").strip(),
+        encoding="utf-8",
+    )
+
+    from fireclaw_core.ros import ros1_sensor_discovery
+
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliGraphProvider,
+        "topic_types",
+        lambda self: {"/scan": "sensor_msgs/LaserScan"},
+    )
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliMessageProbe,
+        "has_recent_message",
+        lambda self, topic, timeout_seconds: True,
+    )
+
+    from fireclaw_core.mission.mission_cli import main
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mission-cli",
+            "robot-profile",
+            "diff-discovery",
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
+    assert main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stale_confirmation"] is True
+    assert payload["fingerprint_status"] == "stale"
