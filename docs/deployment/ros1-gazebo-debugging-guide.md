@@ -291,3 +291,39 @@ SafetyGate only trusts sensors that are verified at runtime. Degraded, stale, in
 - `imu`: unknown or degraded IMU can require operator confirmation for real navigation.
 
 In dry-run or simulator mode, unknown health may be downgraded to a warning. This behavior is explicit and must not be used as authority for real robot execution.
+
+## Operator Confirmation Workflow
+
+Sensor discovery is not the same as operator confirmation.
+
+Use this sequence when onboarding or changing a ROS1/Gazebo robot profile:
+
+```bash
+.venv/bin/python -m fireclaw_core robot-profile discover \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --output data/debug-gazebo/discovered-sensors.toml
+
+.venv/bin/python -m fireclaw_core robot-profile diff-discovery \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml
+
+.venv/bin/python -m fireclaw_core robot-profile confirm-discovery \
+  --profile examples/robot_profiles/gazebo_turtlebot3.toml \
+  --confirmed-by operator-id
+```
+
+`discover` produces candidates. `diff-discovery` compares current runtime discovery against the profile. `confirm-discovery` is the auditable action that writes confirmed rules and the runtime fingerprint.
+
+Confirmed rules include:
+
+- `confirmed = true`
+- `confirmed_by`
+- `confirmed_at`
+
+The profile fingerprint includes:
+
+- `source`
+- `topics_hash`
+- `confirmed_by`
+- `confirmed_at`
+
+If the runtime fingerprint later changes, FireClaw marks the confirmation stale and SafetyGate continues to trust only live verified sensors.
