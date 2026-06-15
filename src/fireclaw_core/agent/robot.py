@@ -9,7 +9,7 @@ from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
 from fireclaw_core.ros.ros1_config import Ros1EndpointConfig
 from fireclaw_core.ros.ros1_template import render_ros1_template
 from fireclaw_core.ros.ros1_transport import FeedbackSink, CancellationCheck, Ros1Transport
-from fireclaw_core.sensors.backends import SensorDiscoveryBackend
+from fireclaw_core.sensors.backends import SensorDiscoveryBackend, ensure_real_mode_backend_allowed
 
 
 @dataclass
@@ -368,6 +368,19 @@ class MockRos1RobotAdapter:
         )
 
 
+def _discovered_sensor_state(
+    *,
+    backend: SensorDiscoveryBackend | None,
+    mode: str,
+    dry_run: bool,
+) -> tuple[list[str] | None, dict[str, Any] | None]:
+    if backend is None:
+        return None, None
+    ensure_real_mode_backend_allowed(backend, mode=mode, dry_run=dry_run)
+    report = backend.discover()
+    return report.verified_sensors(), report.to_dict()
+
+
 @dataclass
 class Ros1RobotAdapter:
     config: Ros1AdapterConfig
@@ -456,9 +469,13 @@ class Ros1RobotAdapter:
         available_sensors: list[str] | None = None
         if self.sensor_discovery is not None:
             try:
-                report = self.sensor_discovery.discover()
-                sensor_diagnostics = report.to_dict()
-                available_sensors = report.verified_sensors()
+                available_sensors, sensor_diagnostics = _discovered_sensor_state(
+                    backend=self.sensor_discovery,
+                    mode=self.mode,
+                    dry_run=self.dry_run,
+                )
+            except ValueError:
+                raise
             except Exception:
                 logging.warning("Sensor discovery failed, falling back to static sensors", exc_info=True)
                 if self.available_sensors:

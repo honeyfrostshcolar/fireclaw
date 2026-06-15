@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from fireclaw_core.agent.robot import Ros1RobotAdapter
 from fireclaw_core.ros.ros1_config import Ros1AdapterConfig, load_ros1_adapter_config
 from fireclaw_core.ros.ros1_sensor_discovery import (
@@ -135,3 +137,17 @@ def test_ros1_adapter_state_consumes_backend_protocol_not_ros1_class() -> None:
     assert state.available_sensors == ["rgb_camera", "lidar"]
     assert state.sensor_diagnostics is not None
     assert state.sensor_diagnostics["source"] == "test_static"
+
+
+def test_ros1_adapter_state_rejects_static_backend_for_real_mode() -> None:
+    adapter = Ros1RobotAdapter(
+        config=Ros1AdapterConfig(robot_id="robot-1"),
+        sensor_discovery=StaticDeclaredDiscoveryBackend(
+            sensors=("rgb_camera",),
+            source="static",
+            allow_real_mode=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Static sensor discovery backend is not allowed for real mode"):
+        adapter.get_robot_state()
