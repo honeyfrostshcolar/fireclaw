@@ -539,3 +539,33 @@ def test_safety_warns_for_unknown_lidar_health_in_dry_run() -> None:
 
     assert decision.status == "allow"
     assert "Skill navigate_to_floor requires lidar, but health is unknown: observation age is unknown" in decision.warnings
+
+
+def test_safety_uses_backend_verified_sensors_from_robot_state() -> None:
+    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    robot_state = RobotState(
+        robot_id="robot-1",
+        mode="simulator",
+        dry_run=True,
+        online=True,
+        battery_percent=100.0,
+        current_floor=1,
+        available_sensors=["rgb_camera", "lidar", "thermal_camera"],
+        supports_real_execution=False,
+        sensor_diagnostics={
+            "source": "simulator",
+            "verified_sensors": ["rgb_camera", "lidar", "thermal_camera"],
+            "findings": [],
+        },
+    )
+
+    decision = SafetyGate().evaluate(
+        planning_result,
+        registry,
+        dry_run=True,
+        robot_state=robot_state,
+        environment_state=EnvironmentState(reachable_floors=[2]),
+    )
+
+    assert decision.status == "allow"

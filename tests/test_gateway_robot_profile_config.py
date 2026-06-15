@@ -240,6 +240,37 @@ message_timeout_seconds = 1.0
     assert isinstance(backend, Ros1SensorDiscoveryBackend)
 
 
+def test_simulator_profile_attaches_static_declared_discovery_backend(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        f"""
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "{tmp_path / "robot-data"}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+
+[robot.sensor_discovery]
+enabled = true
+message_timeout_seconds = 1.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    gateway = FireClawGateway(GatewayConfig(robot_profile_path=str(profile_path)))
+    backend = getattr(gateway.robot, "sensor_discovery", None)
+
+    from fireclaw_core.sensors.backends import StaticDeclaredDiscoveryBackend
+
+    assert isinstance(backend, StaticDeclaredDiscoveryBackend)
+    report = backend.discover()
+    assert report.source == "simulator"
+    assert "lidar" in report.verified_sensors()
+
+
 def test_static_discovery_backend_rejected_for_ros1_real_mode() -> None:
     import pytest
 
