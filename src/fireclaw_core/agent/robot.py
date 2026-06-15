@@ -750,6 +750,7 @@ class SimulatorRobotAdapter:
     actions: list[dict[str, Any]] = field(default_factory=list)
     emergency_stopped: bool = False
     emergency_stop_reason: str | None = None
+    sensor_discovery: SensorDiscoveryBackend | None = None
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         from_floor = self.current_floor
@@ -785,6 +786,16 @@ class SimulatorRobotAdapter:
         return self._record("return_to_safe_zone", {"from_floor": from_floor, "floor": 1})
 
     def get_robot_state(self) -> RobotState:
+        sensor_diagnostics: dict[str, Any] | None = None
+        available_sensors = list(self.available_sensors)
+        if self.sensor_discovery is not None:
+            discovered_sensors, sensor_diagnostics = _discovered_sensor_state(
+                backend=self.sensor_discovery,
+                mode=self.mode,
+                dry_run=self.dry_run,
+            )
+            if discovered_sensors is not None:
+                available_sensors = discovered_sensors
         return RobotState(
             robot_id=self.robot_id,
             mode=self.mode,
@@ -792,8 +803,9 @@ class SimulatorRobotAdapter:
             online=self.online and not self.emergency_stopped,
             battery_percent=float(self.battery_percent),
             current_floor=self.current_floor,
-            available_sensors=list(self.available_sensors),
+            available_sensors=available_sensors,
             supports_real_execution=False,
+            sensor_diagnostics=sensor_diagnostics,
         )
 
     def emergency_stop(self, reason: str | None = None) -> RobotActionResult:

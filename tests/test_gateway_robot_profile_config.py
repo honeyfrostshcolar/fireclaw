@@ -270,6 +270,29 @@ message_timeout_seconds = 1.0
     assert report.source == "simulator"
     assert "lidar" in report.verified_sensors()
 
+    state = gateway.robot.get_robot_state()
+    assert state.sensor_diagnostics is not None
+    assert state.sensor_diagnostics["source"] == "simulator"
+    assert state.available_sensors == ["rgb_camera", "thermal_camera", "lidar"]
+
+
+def test_simulator_adapter_state_uses_attached_discovery_backend() -> None:
+    from fireclaw_core.agent.robot import SimulatorRobotAdapter
+    from fireclaw_core.sensors.backends import StaticDeclaredDiscoveryBackend
+
+    robot = SimulatorRobotAdapter(robot_id="sim-1")
+    robot.sensor_discovery = StaticDeclaredDiscoveryBackend(
+        sensors=("gas_detector",),
+        source="simulator",
+        allow_real_mode=False,
+    )
+
+    state = robot.get_robot_state()
+
+    assert state.available_sensors == ["gas_detector"]
+    assert state.sensor_diagnostics is not None
+    assert state.sensor_diagnostics["source"] == "simulator"
+
 
 def test_static_discovery_backend_rejected_for_ros1_real_mode() -> None:
     import pytest
