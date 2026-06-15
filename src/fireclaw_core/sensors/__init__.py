@@ -1,3 +1,9 @@
+from fireclaw_core.sensors.backends import (
+    Ros1SensorDiscoveryBackend,
+    SensorDiscoveryBackend,
+    StaticDeclaredDiscoveryBackend,
+    ensure_real_mode_backend_allowed,
+)
 from fireclaw_core.sensors.discovery import (
     DEFAULT_SENSOR_MAPPING_RULES,
     DiscoveryFingerprint,
@@ -23,6 +29,10 @@ from fireclaw_core.sensors.health import (
 
 __all__ = [
     "DEFAULT_SENSOR_HEALTH_POLICIES",
+    "Ros1SensorDiscoveryBackend",
+    "SensorDiscoveryBackend",
+    "StaticDeclaredDiscoveryBackend",
+    "ensure_real_mode_backend_allowed",
     "DEFAULT_SENSOR_MAPPING_RULES",
     "DiscoveryFingerprint",
     "FingerprintComparison",
