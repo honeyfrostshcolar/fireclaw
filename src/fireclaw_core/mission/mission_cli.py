@@ -426,7 +426,6 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
             ]
             if fingerprint.nodes_hash is not None:
                 lines.append(f'nodes_hash = "{_toml_escape(fingerprint.nodes_hash)}"')
-            lines.append('confirmed_by = "robot-profile discover"')
             lines.append("")
             return lines
 
@@ -473,7 +472,7 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
                 f'message_type = "{_toml_escape(finding.message_type)}"',
                 f'sensor = "{_toml_escape(finding.sensor)}"',
                 f"confidence = {finding.confidence:.2f}",
-                f"confirmed = {str(finding.status == 'verified').lower()}",
+                "confirmed = false",
                 "",
             ])
         text = "\n".join(header_lines + rule_lines)

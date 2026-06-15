@@ -119,3 +119,35 @@ sensor = "rgb_camera"
     assert 'topic_pattern = "/old"' not in updated
     assert 'topic_pattern = "/scan"' in updated
     assert updated.count("[robot.sensor_discovery]") == 1
+
+
+def test_build_discovery_diff_marks_unconfirmed_rules_as_needing_confirmation() -> None:
+    report = SensorDiscoveryReport(
+        findings=(
+            SensorFinding(
+                sensor="lidar",
+                topic="/scan",
+                message_type="sensor_msgs/LaserScan",
+                status="verified",
+                confidence=0.99,
+                source="ros1",
+            ),
+        ),
+        runtime_fingerprint=DiscoveryFingerprint(source="ros1", topics_hash="sha256:new"),
+        profile_fingerprint=DiscoveryFingerprint(source="ros1", topics_hash="sha256:new"),
+        fingerprint_comparison=FingerprintComparison(status="fresh"),
+    )
+    profile_rules = (
+        SensorMappingRule(
+            topic_pattern="/scan",
+            message_type="sensor_msgs/LaserScan",
+            sensor="lidar",
+            source="profile",
+            confirmed=False,
+        ),
+    )
+
+    diff = build_discovery_diff(report, profile_rules)
+
+    assert diff.status == "needs_confirmation"
+    assert diff.unconfirmed == ["/scan"]

@@ -65,7 +65,12 @@ def build_discovery_diff(
     fingerprint_status = comparison.status if comparison is not None else None
     fingerprint_reason = comparison.reason if comparison is not None else None
     stale_confirmation = fingerprint_status in {"missing", "stale", "unknown"}
-    status = "fresh" if not added and not removed and not changed and not stale_confirmation else "changed"
+    if unconfirmed:
+        status = "needs_confirmation"
+    elif not added and not removed and not changed and not stale_confirmation:
+        status = "fresh"
+    else:
+        status = "changed"
     return DiscoveryDiff(
         status=status,
         added=added,

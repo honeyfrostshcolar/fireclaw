@@ -1272,6 +1272,9 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
     assert "[[robot.sensor_discovery.rules]]" in text
     assert 'sensor = "lidar"' in text
     assert 'topic_pattern = "/scan"' in text
+    assert "confirmed = false" in text
+    assert "confirmed_by" not in text
+    assert "confirmed_at" not in text
 
 
 def test_robot_profile_discover_write_profile_appends_rules(tmp_path, monkeypatch):
@@ -1326,6 +1329,8 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
     text = profile_path.read_text(encoding="utf-8")
     assert "[[robot.sensor_discovery.rules]]" in text
     assert 'sensor = "lidar"' in text
+    assert "confirmed = false" in text
+    assert "confirmed_by" not in text
 
 
 def test_robot_profile_discover_write_profile_keeps_existing_discovery_table_parseable(tmp_path, monkeypatch):
@@ -1434,7 +1439,8 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
     assert "[robot.discovery_fingerprint]" in text
     assert 'source = "ros1"' in text
     assert 'topics_hash = "sha256:' in text
-    assert 'confirmed_by = "robot-profile discover"' in text
+    assert 'confirmed_by = "robot-profile discover"' not in text
+    assert "confirmed_at" not in text
 
 
 def test_robot_profile_discover_write_profile_replaces_existing_fingerprint_table(tmp_path, monkeypatch):
