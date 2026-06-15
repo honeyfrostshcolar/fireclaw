@@ -1613,3 +1613,112 @@ confirmed_at = "2026-06-15T12:00:00+08:00"
     payload = json.loads(capsys.readouterr().out)
     assert payload["stale_confirmation"] is True
     assert payload["fingerprint_status"] == "stale"
+
+
+def test_robot_profile_confirm_discovery_writes_confirmed_rules_and_audit_metadata(tmp_path, monkeypatch):
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "{data_dir}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+""".format(data_dir=tmp_path / "robot-data").strip(),
+        encoding="utf-8",
+    )
+
+    from fireclaw_core.ros import ros1_sensor_discovery
+    from fireclaw_core.sensors.health import SensorObservation
+
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliGraphProvider,
+        "topic_types",
+        lambda self: {"/scan": "sensor_msgs/LaserScan"},
+    )
+    monkeypatch.setattr(
+        ros1_sensor_discovery.Ros1CliMessageProbe,
+        "observe",
+        lambda self, topic, sensor, timeout_seconds: SensorObservation(
+            observed=True, age_seconds=0.0,
+            payload_size=64, frame_id="laser_frame",
+            finite_range_count=360,
+        ),
+    )
+
+    from fireclaw_core.mission.mission_cli import main
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mission-cli",
+            "robot-profile",
+            "confirm-discovery",
+            "--profile",
+            str(profile_path),
+            "--confirmed-by",
+            "operator-1",
+            "--confirmed-at",
+            "2026-06-15T12:00:00+08:00",
+        ],
+    )
+
+    assert main() == 0
+
+    from fireclaw_core.agent.robot_profile import load_robot_capability_profile
+
+    profile = load_robot_capability_profile(profile_path)
+    assert profile.discovery_fingerprint is not None
+    assert profile.discovery_fingerprint.confirmed_by == "operator-1"
+    assert profile.discovery_fingerprint.confirmed_at == "2026-06-15T12:00:00+08:00"
+    assert profile.sensor_discovery.rules[0].sensor == "lidar"
+    assert profile.sensor_discovery.rules[0].confirmed is True
+    assert profile.sensor_discovery.rules[0].confirmed_by == "operator-1"
+    assert profile.sensor_discovery.rules[0].confirmed_at == "2026-06-15T12:00:00+08:00"
+
+
+def test_robot_profile_confirm_discovery_refuses_when_runtime_fingerprint_unavailable(tmp_path, monkeypatch, capsys):
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "{data_dir}"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+""".format(data_dir=tmp_path / "robot-data").strip(),
+        encoding="utf-8",
+    )
+
+    from fireclaw_core.ros import ros1_sensor_discovery
+
+    def fail_topic_types(self):
+        raise RuntimeError("roscore not reachable")
+
+    monkeypatch.setattr(ros1_sensor_discovery.Ros1CliGraphProvider, "topic_types", fail_topic_types)
+
+    from fireclaw_core.mission.mission_cli import main
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mission-cli",
+            "robot-profile",
+            "confirm-discovery",
+            "--profile",
+            str(profile_path),
+            "--confirmed-by",
+            "operator-1",
+        ],
+    )
+
+    assert main() == 1
+    assert "runtime fingerprint unavailable" in capsys.readouterr().err

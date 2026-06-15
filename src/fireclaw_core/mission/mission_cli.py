@@ -176,6 +176,14 @@ def main() -> int:
     )
     profile_diff.add_argument("--profile", required=True, help="Path to robot profile TOML.")
 
+    profile_confirm = robot_profile_sub.add_parser(
+        "confirm-discovery",
+        help="Confirm current ROS1 sensor discovery and write auditable profile rules.",
+    )
+    profile_confirm.add_argument("--profile", required=True, help="Path to robot profile TOML.")
+    profile_confirm.add_argument("--confirmed-by", required=True, help="Operator ID that reviewed the discovery mapping.")
+    profile_confirm.add_argument("--confirmed-at", default=None, help="ISO-8601 confirmation time. Defaults to current UTC time.")
+
     args = parser.parse_args()
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
@@ -517,6 +525,58 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
         payload["verified_sensors"] = report.verified_sensors()
         payload["findings"] = [finding.to_dict() for finding in report.findings]
         _print_json(payload)
+        return 0
+    if args.robot_profile_command == "confirm-discovery":
+        from datetime import datetime, timezone
+
+        from fireclaw_core.agent.profile_discovery import (
+            build_discovery_diff,
+            render_confirmed_discovery_blocks,
+            replace_robot_table_block,
+        )
+        from fireclaw_core.ros.ros1_sensor_discovery import (
+            Ros1CliGraphProvider,
+            Ros1CliMessageProbe,
+            Ros1SensorDiscovery,
+        )
+
+        profile = load_robot_capability_profile(args.profile)
+        discovery = Ros1SensorDiscovery(
+            graph_provider=Ros1CliGraphProvider(),
+            message_probe=Ros1CliMessageProbe(),
+            extra_rules=profile.sensor_discovery.rules,
+            timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
+            profile_fingerprint=profile.discovery_fingerprint,
+        )
+        report = discovery.discover()
+        if report.runtime_fingerprint is None:
+            print("Error: runtime fingerprint unavailable; refusing to confirm discovery.", file=sys.stderr)
+            return 1
+        if not report.verified_sensors():
+            print("Error: no verified sensors discovered; refusing to confirm discovery.", file=sys.stderr)
+            return 1
+        confirmed_at = args.confirmed_at or datetime.now(timezone.utc).isoformat()
+        block_text = render_confirmed_discovery_blocks(
+            report=report,
+            message_timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
+            confirmed_by=args.confirmed_by,
+            confirmed_at=confirmed_at,
+        )
+        replacement_lines = block_text.splitlines()
+        profile_path = Path(args.profile)
+        existing = profile_path.read_text(encoding="utf-8")
+        updated = replace_robot_table_block(existing, "[robot.discovery_fingerprint]", [])
+        updated = replace_robot_table_block(updated, "[robot.sensor_discovery]", replacement_lines)
+        profile_path.write_text(updated, encoding="utf-8")
+        diff = build_discovery_diff(report, profile.sensor_discovery.rules)
+        _print_json({
+            "status": "confirmed",
+            "profile": str(profile_path),
+            "confirmed_by": args.confirmed_by,
+            "confirmed_at": confirmed_at,
+            "verified_sensors": report.verified_sensors(),
+            "diff": diff.to_dict(),
+        })
         return 0
     print(f"Error: unknown robot-profile subcommand: {args.robot_profile_command}", file=sys.stderr)
     return 1
