@@ -327,3 +327,27 @@ The profile fingerprint includes:
 - `confirmed_at`
 
 If the runtime fingerprint later changes, FireClaw marks the confirmation stale and SafetyGate continues to trust only live verified sensors.
+
+## Adapter-Agnostic Discovery Backends
+
+FireClaw discovery now uses a backend contract:
+
+```text
+SensorDiscoveryBackend.discover() -> SensorDiscoveryReport
+```
+
+The core safety path consumes only `SensorDiscoveryReport`:
+
+```text
+backend discovery
+  -> RobotState.available_sensors
+  -> RobotState.sensor_diagnostics
+  -> SafetyGate
+```
+
+Backend labels are explicit:
+
+- `ros1`: live ROS1 topic/type/message discovery.
+- `simulator` or `dry_run`: static declared discovery for non-real runtime only.
+
+Real robot mode must not rely on static declared discovery for safety-critical sensors. Static backends are allowed for simulator and dry-run workflows, but they cannot silently masquerade as real sensor verification.
