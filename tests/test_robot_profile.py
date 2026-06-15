@@ -415,3 +415,67 @@ topics_hash = "sha256:abc"
 
     with pytest.raises(ValueError, match="robot.discovery_fingerprint.source must be a non-empty string"):
         load_robot_capability_profile(profile_path)
+
+
+def test_robot_profile_loads_sensor_rule_confirmation_audit_metadata(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+
+[[robot.sensor_discovery.rules]]
+topic_pattern = "/camera/image_raw"
+message_type = "sensor_msgs/Image"
+sensor = "rgb_camera"
+confidence = 0.95
+confirmed = true
+confirmed_by = "operator-1"
+confirmed_at = "2026-06-15T12:00:00+08:00"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+    rule = profile.sensor_discovery.rules[0]
+
+    assert rule.confirmed is True
+    assert rule.confirmed_by == "operator-1"
+    assert rule.confirmed_at == "2026-06-15T12:00:00+08:00"
+
+
+def test_load_robot_profile_with_discovery_fingerprint_confirmation_time(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "ros1.yaml"
+data_dir = "data/robots/robot-1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+
+[robot.discovery_fingerprint]
+source = "ros1"
+topics_hash = "sha256:abc"
+confirmed_by = "operator-1"
+confirmed_at = "2026-06-15T12:00:00+08:00"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.discovery_fingerprint is not None
+    assert profile.discovery_fingerprint.confirmed_by == "operator-1"
+    assert profile.discovery_fingerprint.confirmed_at == "2026-06-15T12:00:00+08:00"

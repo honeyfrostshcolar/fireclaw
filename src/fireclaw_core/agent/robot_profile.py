@@ -163,6 +163,8 @@ def _sensor_discovery_config(robot: dict[str, Any]) -> SensorDiscoveryProfileCon
                 source="profile",
                 confidence=float(item.get("confidence", 0.9)),
                 confirmed=bool(item.get("confirmed", False)),
+                confirmed_by=_optional_string(item, "confirmed_by"),
+                confirmed_at=_optional_string(item, "confirmed_at"),
             )
         )
     return SensorDiscoveryProfileConfig(
@@ -193,12 +195,16 @@ def _discovery_fingerprint(robot: dict[str, Any]) -> DiscoveryFingerprint | None
     confirmed_by = raw.get("confirmed_by")
     if confirmed_by is not None and (not isinstance(confirmed_by, str) or not confirmed_by.strip()):
         raise ValueError("robot.discovery_fingerprint.confirmed_by must be a non-empty string when provided.")
+    confirmed_at = raw.get("confirmed_at")
+    if confirmed_at is not None and not isinstance(confirmed_at, str):
+        raise ValueError("robot.discovery_fingerprint.confirmed_at must be a string when provided.")
     return DiscoveryFingerprint(
         source=source.strip(),
         topics_hash=topics_hash.strip(),
         nodes_hash=nodes_hash.strip() if isinstance(nodes_hash, str) else None,
         created_at=created_at.strip() if isinstance(created_at, str) else None,
         confirmed_by=confirmed_by.strip() if isinstance(confirmed_by, str) else None,
+        confirmed_at=confirmed_at.strip() if isinstance(confirmed_at, str) else None,
     )
 
 

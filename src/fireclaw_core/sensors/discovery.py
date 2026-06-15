@@ -19,6 +19,7 @@ class DiscoveryFingerprint:
     nodes_hash: str | None = None
     created_at: str | None = None
     confirmed_by: str | None = None
+    confirmed_at: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -31,6 +32,8 @@ class DiscoveryFingerprint:
             payload["created_at"] = self.created_at
         if self.confirmed_by is not None:
             payload["confirmed_by"] = self.confirmed_by
+        if self.confirmed_at is not None:
+            payload["confirmed_at"] = self.confirmed_at
         return payload
 
 
@@ -54,9 +57,11 @@ class SensorMappingRule:
     source: str = "default"
     confidence: float = 0.8
     confirmed: bool = False
+    confirmed_by: str | None = None
+    confirmed_at: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "topic_pattern": self.topic_pattern,
             "message_type": self.message_type,
             "sensor": self.sensor,
@@ -64,6 +69,11 @@ class SensorMappingRule:
             "confidence": self.confidence,
             "confirmed": self.confirmed,
         }
+        if self.confirmed_by is not None:
+            payload["confirmed_by"] = self.confirmed_by
+        if self.confirmed_at is not None:
+            payload["confirmed_at"] = self.confirmed_at
+        return payload
 
 
 @dataclass(frozen=True)

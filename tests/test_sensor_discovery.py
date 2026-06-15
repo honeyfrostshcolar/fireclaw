@@ -152,3 +152,21 @@ def test_sensor_finding_serializes_health_status_and_reason() -> None:
 
     assert payload["health_status"] == "invalid"
     assert payload["health_reason"] == "payload is empty"
+
+
+def test_sensor_mapping_rule_serializes_confirmation_audit_metadata() -> None:
+    from fireclaw_core.sensors.discovery import SensorMappingRule
+
+    rule = SensorMappingRule(
+        topic_pattern="/camera/image_raw",
+        message_type="sensor_msgs/Image",
+        sensor="rgb_camera",
+        source="profile",
+        confidence=0.95,
+        confirmed=True,
+        confirmed_by="operator-1",
+        confirmed_at="2026-06-15T12:00:00+08:00",
+    )
+
+    assert rule.to_dict()["confirmed_by"] == "operator-1"
+    assert rule.to_dict()["confirmed_at"] == "2026-06-15T12:00:00+08:00"
