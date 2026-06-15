@@ -2,6 +2,7 @@ from fireclaw_core.sensors.backends import (
     Ros1SensorDiscoveryBackend,
     SensorDiscoveryBackend,
     StaticDeclaredDiscoveryBackend,
+    create_profile_sensor_discovery_backend,
     ensure_real_mode_backend_allowed,
 )
 from fireclaw_core.sensors.discovery import (
@@ -32,6 +33,7 @@ __all__ = [
     "Ros1SensorDiscoveryBackend",
     "SensorDiscoveryBackend",
     "StaticDeclaredDiscoveryBackend",
+    "create_profile_sensor_discovery_backend",
     "ensure_real_mode_backend_allowed",
     "DEFAULT_SENSOR_MAPPING_RULES",
     "DiscoveryFingerprint",

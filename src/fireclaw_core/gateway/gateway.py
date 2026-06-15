@@ -117,30 +117,17 @@ def apply_gateway_dry_run_to_robot(robot: Any, dry_run: bool) -> None:
 
 
 def attach_profile_sensor_discovery(robot: Any, profile: Any) -> None:
-    """Attach ROS1 sensor discovery to the robot adapter when the profile enables it."""
+    """Attach sensor discovery backend to the robot adapter when the profile enables it."""
     if profile is None:
-        return
-    if profile.adapter != "ros1":
         return
     if not profile.sensor_discovery.enabled:
         return
-    from fireclaw_core.ros.ros1_sensor_discovery import (
-        Ros1CliGraphProvider,
-        Ros1CliMessageProbe,
-        Ros1SensorDiscovery,
-    )
+    from fireclaw_core.sensors.backends import create_profile_sensor_discovery_backend
 
-    setattr(
-        robot,
-        "sensor_discovery",
-        Ros1SensorDiscovery(
-            graph_provider=Ros1CliGraphProvider(),
-            message_probe=Ros1CliMessageProbe(),
-            extra_rules=profile.sensor_discovery.rules,
-            timeout_seconds=profile.sensor_discovery.message_timeout_seconds,
-            profile_fingerprint=profile.discovery_fingerprint,
-        ),
-    )
+    backend = create_profile_sensor_discovery_backend(profile)
+    if backend is None:
+        return
+    setattr(robot, "sensor_discovery", backend)
 
 
 class FireClawGateway:
