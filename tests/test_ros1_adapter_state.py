@@ -9,6 +9,7 @@ from fireclaw_core.ros.ros1_sensor_discovery import (
     StaticRos1GraphProvider,
     StaticRos1MessageProbe,
 )
+from fireclaw_core.sensors.backends import StaticDeclaredDiscoveryBackend
 from fireclaw_core.sensors.discovery import DiscoveryFingerprint
 
 
@@ -117,3 +118,20 @@ def test_ros1_adapter_state_includes_sensor_health_diagnostics() -> None:
     assert finding["status"] == "degraded"
     assert finding["health_status"] == "invalid"
     assert finding["health_reason"] == "payload is empty"
+
+
+def test_ros1_adapter_state_consumes_backend_protocol_not_ros1_class() -> None:
+    adapter = Ros1RobotAdapter(
+        config=Ros1AdapterConfig(robot_id="robot-1"),
+        sensor_discovery=StaticDeclaredDiscoveryBackend(
+            sensors=("rgb_camera", "lidar"),
+            source="test_static",
+            allow_real_mode=True,
+        ),
+    )
+
+    state = adapter.get_robot_state()
+
+    assert state.available_sensors == ["rgb_camera", "lidar"]
+    assert state.sensor_diagnostics is not None
+    assert state.sensor_diagnostics["source"] == "test_static"

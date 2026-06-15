@@ -9,6 +9,7 @@ from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
 from fireclaw_core.ros.ros1_config import Ros1EndpointConfig
 from fireclaw_core.ros.ros1_template import render_ros1_template
 from fireclaw_core.ros.ros1_transport import FeedbackSink, CancellationCheck, Ros1Transport
+from fireclaw_core.sensors.backends import SensorDiscoveryBackend
 
 
 @dataclass
@@ -376,7 +377,7 @@ class Ros1RobotAdapter:
     mode: str = "ros1"
     current_floor: int | None = None
     available_sensors: list[str] = field(default_factory=list)
-    sensor_discovery: Any | None = None
+    sensor_discovery: SensorDiscoveryBackend | None = None
     emergency_stopped: bool = False
     emergency_stop_reason: str | None = None
 
