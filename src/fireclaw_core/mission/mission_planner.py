@@ -76,7 +76,7 @@ class MissionPlannerProtocol(Protocol):
 _INTENT_PATTERNS: list[tuple[str, str, str]] = [
     # (pattern, intent, required_capability)
     (r"搜索|搜救|寻找受困|查找受困", "search", "search_for_victims"),
-    (r"巡逻|巡查|巡检", "patrol", "patrol"),
+    (r"巡逻|巡查|巡检|规划运动|导航测试|简单移动", "patrol", "patrol"),
     (r"灭火|扑灭|压制火势", "firefight", "firefight"),
     (r"侦察|探查|侦查", "recon", "recon"),
     (r"运送|搬运|送物资", "transport", "transport"),

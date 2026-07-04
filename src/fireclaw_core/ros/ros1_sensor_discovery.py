@@ -62,6 +62,17 @@ class Ros1CliGraphProvider:
     rostopic_executable: str = "rostopic"
 
     def topic_types(self) -> dict[str, str]:
+        verbose_result = subprocess.run(
+            [self.rostopic_executable, "list", "-v"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if verbose_result.returncode == 0:
+            result = _parse_verbose_topic_list(verbose_result.stdout)
+            if result:
+                return result
+
         list_result = subprocess.run(
             [self.rostopic_executable, "list"],
             check=True,
@@ -81,6 +92,22 @@ class Ros1CliGraphProvider:
             if type_result.returncode == 0 and message_type:
                 result[topic] = message_type
         return result
+
+
+def _parse_verbose_topic_list(output: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("* "):
+            continue
+        parts = stripped.split()
+        if len(parts) < 3:
+            continue
+        topic = parts[1]
+        message_type = parts[2].strip("[]")
+        if topic.startswith("/") and message_type:
+            result[topic] = message_type
+    return result
 
 
 @dataclass(frozen=True)

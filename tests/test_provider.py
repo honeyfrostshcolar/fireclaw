@@ -133,6 +133,7 @@ def test_openai_compat_provider_returns_chat_completion(mock_post: MagicMock):
     assert result.usage.prompt_tokens == 10
     assert result.usage.completion_tokens == 5
     assert result.usage.total_tokens == 15
+    assert mock_post.call_args.kwargs["trust_env"] is False
 
 
 @patch("fireclaw_core.provider.provider.httpx.post")
@@ -164,6 +165,24 @@ def test_openai_compat_provider_sends_tools(mock_post: MagicMock):
     call_kwargs = mock_post.call_args
     body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json") or call_kwargs[0][1]
     assert body["tools"] == tools
+    assert call_kwargs.kwargs["trust_env"] is False
+
+
+@patch("fireclaw_core.provider.provider.httpx.post")
+def test_openai_compat_provider_can_opt_into_environment_proxy(mock_post: MagicMock):
+    mock_post.return_value = _make_mock_response(200, _sample_openai_response())
+
+    provider = OpenAICompatProvider(
+        base_url="http://localhost:8080",
+        api_key="sk-test",
+        trust_env=True,
+    )
+    provider.chat_completion(
+        messages=[{"role": "user", "content": "Hi"}],
+        model="gpt-4",
+    )
+
+    assert mock_post.call_args.kwargs["trust_env"] is True
 
 
 @patch("fireclaw_core.provider.provider.httpx.post")

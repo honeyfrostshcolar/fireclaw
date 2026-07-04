@@ -33,6 +33,7 @@ class RobotCapabilityProfile:
     enabled_skills: tuple[str, ...]
     llm_exposed_skills: tuple[str, ...]
     capability_skill_chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    primitive_skills: tuple[str, ...] = ()
     sensor_discovery: SensorDiscoveryProfileConfig = field(
         default_factory=SensorDiscoveryProfileConfig
     )
@@ -81,6 +82,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
     enabled_skills = _string_tuple(robot, "enabled_skills")
     llm_exposed_skills = _string_tuple(robot, "llm_exposed_skills")
     capability_skill_chains = _skill_chain_map(raw, "capability_skill_chains")
+    primitive_skills = _string_tuple(robot, "primitive_skills") if "primitive_skills" in robot else ()
     sensor_discovery = _sensor_discovery_config(robot)
     discovery_fingerprint = _discovery_fingerprint(robot)
     return RobotCapabilityProfile(
@@ -93,6 +95,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
         enabled_skills=enabled_skills,
         llm_exposed_skills=llm_exposed_skills,
         capability_skill_chains=capability_skill_chains,
+        primitive_skills=primitive_skills,
         sensor_discovery=sensor_discovery,
         discovery_fingerprint=discovery_fingerprint,
         enabled=bool(robot.get("enabled", True)),
@@ -233,6 +236,15 @@ def validate_robot_capability_profile(
     if not profile.capabilities:
         errors.append("profile must declare at least one capability")
     enabled_set = set(profile.enabled_skills)
+    for skill_name in profile.primitive_skills:
+        skill = registry.get(skill_name)
+        if skill is None:
+            errors.append(f"primitive skill {skill_name!r} is not registered")
+            continue
+        if skill_name not in enabled_set:
+            errors.append(f"primitive skill {skill_name!r} is not in enabled_skills")
+        if skill.metadata.get("kind") != "primitive":
+            errors.append(f"primitive skill {skill_name!r} is not marked as primitive")
     for cap_name, chain in profile.capability_skill_chains.items():
         if cap_name not in profile.capabilities:
             errors.append(f"skill chain key {cap_name!r} is not in capabilities")

@@ -124,6 +124,8 @@ class Ros1RuntimeModule:
             actionlib = import_module("actionlib")
         except Exception as exc:
             raise RuntimeError("ROS1 transport requires rospy and actionlib to be installed.") from exc
+        if not rospy.core.is_initialized():
+            rospy.init_node("fireclaw_gateway", anonymous=True, disable_signals=True)
         return Ros1RuntimeModule(rospy=rospy, actionlib=actionlib)
 
     def __init__(self, *, rospy: Any, actionlib: Any) -> None:

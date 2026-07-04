@@ -7,6 +7,7 @@ from typing import Any
 _WHOLE_TEMPLATE_RE = re.compile(r"^\{\{\s*(.*?)\s*\}\}$")
 _INLINE_TEMPLATE_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
 _INPUT_SUBSTITUTION_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_WHOLE_DOLLAR_TEMPLATE_RE = re.compile(r"^\$\{(.+)\}$")
 
 
 def render_ros1_template(
@@ -33,12 +34,16 @@ def _render_string(value: str, context: dict[str, Any]) -> Any:
     whole_match = _WHOLE_TEMPLATE_RE.match(value)
     if whole_match is not None:
         return _resolve_expression(whole_match.group(1), context)
+    dollar_match = _WHOLE_DOLLAR_TEMPLATE_RE.match(value)
+    if dollar_match is not None:
+        return _resolve_expression(dollar_match.group(1), context)
 
     def replace(match: re.Match[str]) -> str:
         resolved = _resolve_expression(match.group(1), context)
         return str(resolved)
 
-    return _INLINE_TEMPLATE_RE.sub(replace, value)
+    rendered = _INLINE_TEMPLATE_RE.sub(replace, value)
+    return _INPUT_SUBSTITUTION_RE.sub(lambda match: str(_lookup_path(match.group(1), context)), rendered)
 
 
 def _resolve_expression(expression: str, context: dict[str, Any]) -> Any:

@@ -451,6 +451,53 @@ confirmed_at = "2026-06-15T12:00:00+08:00"
     assert rule.confirmed_at == "2026-06-15T12:00:00+08:00"
 
 
+def test_robot_profile_parses_primitive_skills(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "r1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+data_dir = "data/robots/r1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+primitive_skills = ["navigate_to_floor", "report_status"]
+
+[capability_skill_chains]
+search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.primitive_skills == ("navigate_to_floor", "report_status")
+    assert "search_for_victims" in profile.capabilities
+
+
+def test_robot_profile_primitive_skills_defaults_to_empty_tuple(tmp_path: Path) -> None:
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        """
+[robot]
+id = "r1"
+base_url = "http://127.0.0.1:8765"
+adapter = "simulator"
+data_dir = "data/robots/r1"
+capabilities = ["search_for_victims"]
+enabled_skills = ["navigate_to_floor"]
+llm_exposed_skills = ["navigate_to_floor"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile.primitive_skills == ()
+
+
 def test_load_robot_profile_with_discovery_fingerprint_confirmation_time(tmp_path: Path) -> None:
     profile_path = tmp_path / "robot.toml"
     profile_path.write_text(
@@ -479,3 +526,74 @@ confirmed_at = "2026-06-15T12:00:00+08:00"
     assert profile.discovery_fingerprint is not None
     assert profile.discovery_fingerprint.confirmed_by == "operator-1"
     assert profile.discovery_fingerprint.confirmed_at == "2026-06-15T12:00:00+08:00"
+
+
+def test_profile_rejects_unknown_primitive_skill():
+    from dataclasses import replace
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile, validate_robot_capability_profile
+    from fireclaw_core.execution.skills import create_default_skill_registry
+    from fireclaw_core.agent.robot import DryRunRobotAdapter
+
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="test-robot"))
+    profile = _make_valid_profile()
+    profile = replace(profile, primitive_skills=("missing_skill",))
+
+    errors = validate_robot_capability_profile(profile, registry)
+
+    assert any("primitive skill 'missing_skill' is not registered" in error for error in errors)
+
+
+def test_profile_rejects_composite_skill_in_primitive_skills():
+    from dataclasses import replace
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile, validate_robot_capability_profile
+    from fireclaw_core.execution.skills import create_default_skill_registry
+    from fireclaw_core.agent.robot import DryRunRobotAdapter
+
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="test-robot"))
+    profile = _make_valid_profile()
+    profile = replace(
+        profile,
+        primitive_skills=("search_for_victims",),
+        enabled_skills=tuple(dict.fromkeys([*profile.enabled_skills, "search_for_victims"])),
+    )
+
+    errors = validate_robot_capability_profile(profile, registry)
+
+    assert any("not marked as primitive" in error for error in errors)
+
+
+def test_profile_rejects_primitive_skill_not_enabled():
+    from dataclasses import replace
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile, validate_robot_capability_profile
+    from fireclaw_core.execution.skills import create_default_skill_registry
+    from fireclaw_core.agent.robot import DryRunRobotAdapter
+
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="test-robot"))
+    profile = _make_valid_profile()
+    profile = replace(
+        profile,
+        primitive_skills=("report_status",),
+        enabled_skills=tuple(skill for skill in profile.enabled_skills if skill != "report_status"),
+    )
+
+    errors = validate_robot_capability_profile(profile, registry)
+
+    assert any("primitive skill 'report_status' is not in enabled_skills" in error for error in errors)
+
+
+def _make_valid_profile():
+    from pathlib import Path
+    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile
+    return RobotCapabilityProfile(
+        robot_id="test-robot",
+        base_url="http://localhost:8765",
+        adapter="dry_run",
+        ros1_config=None,
+        data_dir=Path("/tmp/test-robot"),
+        capabilities=("search_for_victims",),
+        enabled_skills=("navigate_to_floor", "search_for_victims", "assess_victim", "report_status", "return_to_safe_zone"),
+        llm_exposed_skills=("search_for_victims",),
+        capability_skill_chains={
+            "search_for_victims": ["navigate_to_floor", "search_for_victims", "report_status"],
+        },
+    )

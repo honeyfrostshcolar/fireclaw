@@ -113,6 +113,92 @@ def test_gateway_rejects_invalid_structured_task_payload(tmp_path):
         gateway.stop()
 
 
+def test_gateway_accepts_primitive_composition_allowed_skills(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="debug-robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+            robot_agent_enabled=True,
+            robot_agent_planner="deterministic",
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {
+                "command": "导航到 x=2 y=0",
+                "structured_task": {
+                    "task_id": "primitive-allowed-1",
+                    "task_type": "primitive_composition",
+                    "target": {},
+                    "required_skills": [],
+                    "allowed_skills": ["navigate_to_floor", "report_status"],
+                    "robot_id": "debug-robot-1",
+                },
+            },
+        )
+        trace = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}")
+
+        assert accepted["status"] == "accepted"
+        assert trace["structured_task"]["allowed_skills"] == ["navigate_to_floor", "report_status"]
+    finally:
+        gateway.stop()
+
+
+def test_gateway_rejects_non_list_allowed_skills(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="debug-robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+            robot_agent_enabled=True,
+            robot_agent_planner="deterministic",
+        )
+    )
+    gateway.start()
+    try:
+        try:
+            _json_request(
+                gateway.base_url,
+                "POST",
+                "/tasks",
+                {
+                    "command": "导航到 x=2 y=0",
+                    "structured_task": {
+                        "task_id": "primitive-allowed-bad",
+                        "task_type": "primitive_composition",
+                        "target": {},
+                        "required_skills": [],
+                        "allowed_skills": "navigate_to_floor",
+                        "robot_id": "debug-robot-1",
+                    },
+                },
+            )
+        except HTTPError as exc:
+            body = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert body["status"] == "error"
+            assert "allowed_skills must be a list" in body["message"]
+        else:
+            raise AssertionError("Expected HTTP 400 for non-list allowed_skills")
+    finally:
+        gateway.stop()
+
+
 def test_gateway_robot_agent_mode_emits_robot_agent_events(tmp_path):
     gateway = FireClawGateway(
         GatewayConfig(

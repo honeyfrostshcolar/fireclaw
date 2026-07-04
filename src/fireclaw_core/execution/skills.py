@@ -118,6 +118,7 @@ class Skill:
     domain: str = "navigation"
     preconditions: list[str] = field(default_factory=list)
     degraded_mode_policy: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def run(
         self,
@@ -173,6 +174,7 @@ class SkillRegistry:
                 "domain": skill.domain,
                 "preconditions": list(skill.preconditions),
                 "degraded_mode_policy": skill.degraded_mode_policy,
+                "metadata": dict(skill.metadata),
             }
             for skill in sorted(self.skills.values(), key=lambda item: item.name)
         ]
@@ -212,6 +214,7 @@ def create_default_skill_registry(
     robot: RobotAdapter,
     action_runtime: RobotActionRuntime | None = None,
 ) -> SkillRegistry:
+    runtime_dry_run_only = bool(getattr(robot, "dry_run", True))
     return SkillRegistry(
         skills={
             "navigate_to_floor": Skill(
@@ -232,7 +235,19 @@ def create_default_skill_registry(
                 required_sensors=["lidar"],
                 degraded_mode_policy="retry",
                 idempotent=True,
+                dry_run_only=runtime_dry_run_only,
                 allow_real_robot=True,
+                metadata={
+                    "kind": "primitive",
+                    "primitive_capability": "navigation",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"floor": {"type": "integer", "minimum": 1}},
+                        "required": ["floor"],
+                    },
+                    "safety_class": "motion",
+                    "requires_approval": False,
+                },
             ),
             "search_for_victims": Skill(
                 name="search_for_victims",
@@ -251,7 +266,19 @@ def create_default_skill_registry(
                 preconditions=["robot_online", "camera_available"],
                 required_sensors=["rgb_camera"],
                 degraded_mode_policy="fallback",
+                dry_run_only=runtime_dry_run_only,
                 allow_real_robot=True,
+                metadata={
+                    "kind": "composite",
+                    "primitive_capability": "perception",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"floor": {"type": "integer", "minimum": 1}},
+                        "required": ["floor"],
+                    },
+                    "safety_class": "perception",
+                    "requires_approval": False,
+                },
             ),
             "assess_victim": Skill(
                 name="assess_victim",
@@ -270,7 +297,19 @@ def create_default_skill_registry(
                 preconditions=["robot_online", "victim_detected"],
                 required_sensors=["rgb_camera", "thermal_camera"],
                 degraded_mode_policy="skip",
+                dry_run_only=runtime_dry_run_only,
                 allow_real_robot=True,
+                metadata={
+                    "kind": "composite",
+                    "primitive_capability": "perception",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"floor": {"type": "integer", "minimum": 1}},
+                        "required": ["floor"],
+                    },
+                    "safety_class": "perception",
+                    "requires_approval": False,
+                },
             ),
             "report_status": Skill(
                 name="report_status",
@@ -289,7 +328,19 @@ def create_default_skill_registry(
                 preconditions=["robot_online"],
                 degraded_mode_policy="retry",
                 idempotent=True,
+                dry_run_only=runtime_dry_run_only,
                 allow_real_robot=True,
+                metadata={
+                    "kind": "primitive",
+                    "primitive_capability": "communication",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"floor": {"type": "integer", "minimum": 1}},
+                        "required": ["floor"],
+                    },
+                    "safety_class": "reporting",
+                    "requires_approval": False,
+                },
             ),
             "return_to_safe_zone": Skill(
                 name="return_to_safe_zone",
@@ -308,8 +359,20 @@ def create_default_skill_registry(
                 preconditions=["robot_online"],
                 degraded_mode_policy="abort",
                 idempotent=True,
+                dry_run_only=runtime_dry_run_only,
                 allow_real_robot=True,
                 risk_level="medium",
+                metadata={
+                    "kind": "composite",
+                    "primitive_capability": "navigation",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                    "safety_class": "motion",
+                    "requires_approval": False,
+                },
             ),
         }
     )

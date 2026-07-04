@@ -14,7 +14,7 @@ class RobotSubagentClient:
     def __init__(
         self,
         *,
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float = 15.0,
         api_token: str | None = None,
         registry: JsonlSubagentRegistry | None = None,
     ) -> None:

@@ -92,12 +92,16 @@ def main() -> int:
 
     robot = create_robot_adapter(args.adapter, args.robot_id, config_path=args.ros1_config)
 
+    available_sensors = set(args.available_sensor) if args.available_sensor else None
+    if args.adapter == "ros1" and available_sensors is None:
+        available_sensors = set()
+
     agent = FireClawAgent(
         robot=robot,
         memory=JsonlMemoryStore(args.memory_path),
         workspace_skills_dir=None if args.no_workspace_skills else args.skills_dir,
         dry_run=not args.real_run,
-        available_sensors=set(args.available_sensor) if args.available_sensor else None,
+        available_sensors=available_sensors,
         session_id=args.session_id,
     )
     result = agent.run(args.command)

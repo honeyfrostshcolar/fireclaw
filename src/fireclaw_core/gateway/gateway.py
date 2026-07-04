@@ -28,6 +28,7 @@ from fireclaw_core.agent.robot_agent import (
     LLMRobotAgentPlanner,
     RobotAgentRuntime,
 )
+from fireclaw_core.agent.skill_inventory import build_robot_skill_inventory
 from fireclaw_core.agent.robot_tools import build_robot_skill_tools
 from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot_adapter
 from fireclaw_core.task.task_queue import JsonlTaskQueue
@@ -613,6 +614,12 @@ class FireClawGateway:
             "available_sensors": sorted(runtime_sensors if runtime_sensors is not None else agent.available_sensors),
             "skill_tools": skill_tools,
             "skill_metadata": skill_metadata,
+            "skill_inventory": build_robot_skill_inventory(
+                registry=agent.registry,
+                primitive_skills=self.robot_profile.primitive_skills if self.robot_profile else tuple(agent.registry.names()),
+                composite_chains=self.robot_profile.capability_skill_chains if self.robot_profile else {},
+                verified_sensors=set(runtime_sensors if runtime_sensors is not None else agent.available_sensors),
+            ),
         }
         planning_result = self.robot_agent_runtime.plan_structured_task(
             task_object,
@@ -1309,6 +1316,10 @@ class FireClawGateway:
                     raw_skills = structured_task.get("required_skills")
                     if raw_skills is not None and not isinstance(raw_skills, list):
                         self._write_error(handler, HTTPStatus.BAD_REQUEST, "required_skills must be a list")
+                        return
+                    raw_allowed_skills = structured_task.get("allowed_skills")
+                    if raw_allowed_skills is not None and not isinstance(raw_allowed_skills, list):
+                        self._write_error(handler, HTTPStatus.BAD_REQUEST, "allowed_skills must be a list")
                         return
                     task_object = StructuredRobotTask.from_dict(structured_task)
                     structured_task_errors = validate_structured_robot_task(task_object)

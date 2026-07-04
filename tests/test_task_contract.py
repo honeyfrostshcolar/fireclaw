@@ -148,3 +148,56 @@ def test_skills_from_capability_preserves_default_mapping():
         "search_for_victims",
         "report_status",
     ]
+
+
+def test_structured_task_preserves_allowed_skills():
+    task = StructuredRobotTask.from_dict({
+        "task_id": "t1",
+        "task_type": "primitive_composition",
+        "target": {},
+        "required_skills": [],
+        "allowed_skills": ["navigate_to_floor", "report_status"],
+    })
+
+    assert task.allowed_skills == ["navigate_to_floor", "report_status"]
+    assert task.to_dict()["allowed_skills"] == ["navigate_to_floor", "report_status"]
+
+
+def test_primitive_composition_allows_empty_required_skills_when_allowed_skills_present():
+    task = StructuredRobotTask.from_dict({
+        "task_id": "t1",
+        "task_type": "primitive_composition",
+        "target": {},
+        "required_skills": [],
+        "allowed_skills": ["navigate_to_floor"],
+    })
+
+    assert validate_structured_robot_task(task) == []
+
+
+def test_primitive_composition_rejects_empty_allowed_skills():
+    task = StructuredRobotTask.from_dict({
+        "task_id": "t1",
+        "task_type": "primitive_composition",
+        "target": {},
+        "required_skills": [],
+        "allowed_skills": [],
+    })
+
+    errors = validate_structured_robot_task(task)
+
+    assert any("allowed_skills" in error for error in errors)
+
+
+def test_required_skills_must_be_within_allowed_skills_when_allowlist_is_explicit():
+    task = StructuredRobotTask.from_dict({
+        "task_id": "t1",
+        "task_type": "search",
+        "target": {"floor": 2},
+        "required_skills": ["search_for_victims"],
+        "allowed_skills": ["navigate_to_floor"],
+    })
+
+    errors = validate_structured_robot_task(task)
+
+    assert any("search_for_victims" in error and "allowed_skills" in error for error in errors)

@@ -128,3 +128,25 @@ def test_policy_rejects_multiple_simultaneous_violations():
     assert len(decision.reasons) >= 2
     assert any("firefight" in reason for reason in decision.reasons)
     assert any("floor" in reason for reason in decision.reasons)
+
+
+def test_policy_rejects_empty_primitive_composition():
+    envelope = RobotAgentTaskEnvelope(
+        task_id="t1",
+        mission_id="m1",
+        robot_id="r1",
+        command="test",
+        task_type="primitive_composition",
+        target={},
+        allowed_skills=["navigate_to_floor"],
+        required_skills=[],
+        constraints={},
+        risk_level="low",
+        operator_id=None,
+    )
+    plan = RobotLocalPlan(intent="test", steps=[], rationale="", confidence=0.5)
+
+    decision = RobotAgentPolicy().validate(envelope, plan)
+
+    assert decision.status == "reject"
+    assert any("no executable steps" in r for r in decision.reasons)

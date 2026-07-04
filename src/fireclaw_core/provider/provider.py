@@ -108,10 +108,18 @@ class OpenAICompatProvider:
     Uses *httpx* for HTTP — no dependency on the ``openai`` SDK.
     """
 
-    def __init__(self, base_url: str, api_key: str, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float = 60.0,
+        *,
+        trust_env: bool = False,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.trust_env = trust_env
 
     # -- public API --------------------------------------------------------
 
@@ -152,6 +160,7 @@ class OpenAICompatProvider:
                 json=body,
                 headers=headers,
                 timeout=self.timeout,
+                trust_env=self.trust_env,
             )
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(str(exc)) from exc

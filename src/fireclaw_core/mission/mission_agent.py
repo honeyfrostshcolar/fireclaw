@@ -71,9 +71,11 @@ class MissionAgent:
         session_lineage_store: JsonlSessionLineageStore | None = None,
         task_flow_store: JsonlTaskFlowRegistryStore | None = None,
         profile_skill_chains_by_robot: dict[str, dict[str, tuple[str, ...]]] | None = None,
+        primitive_skills_by_robot: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         self.registry = registry
         self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
+        self.primitive_skills_by_robot = primitive_skills_by_robot or {}
         if subagent_client is not None:
             self.subagent_client = subagent_client
         else:
@@ -453,6 +455,13 @@ class MissionAgent:
             operator_corrections=corrections,
         )
         planning_result = self.planner.plan(command, context=context)
+
+        # Primitive fallback: when planner returns "clarify", try primitive composition
+        if planning_result.status == "clarify" and planning_result.plan is None:
+            fallback = self._try_primitive_fallback(command, online_robot_ids, session_id)
+            if fallback is not None:
+                return fallback
+
         if planning_result.status != "planned" or planning_result.plan is None:
             return {
                 "status": planning_result.status,
@@ -528,7 +537,7 @@ class MissionAgent:
             ]
             self._record_mission_memory(
                 mission_id,
-                "dispatch",
+                "outcome",
                 {
                     "command": command,
                     "subtask_count": len(subtask_results),
@@ -594,6 +603,105 @@ class MissionAgent:
             "plan": planning_result.plan.to_dict(),
             "subtask_results": subtask_results,
         }
+
+    def _get_robot_primitive_skills(self, robot_id: str) -> tuple[str, ...]:
+        """Get primitive skills for a robot from its profile configuration."""
+        return self.primitive_skills_by_robot.get(robot_id, ())
+
+    def _try_primitive_fallback(
+        self,
+        command: str,
+        online_robot_ids: set[str],
+        session_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Try to dispatch a primitive composition task when no composite matches."""
+        # Safety check: block high-risk commands
+        high_risk_keywords = ("灭火", "破拆", "进入危险区域", "开阀", "爆炸", "有毒")
+        for keyword in high_risk_keywords:
+            if keyword in command:
+                return {
+                    "status": "clarify",
+                    "message": "该任务需要专用复合技能或人工确认，不能仅靠 primitive skills 自动执行。",
+                    "subtask_results": [],
+                }
+
+        # Find an online robot with primitive skills
+        for entry in self.registry.enabled_entries():
+            if entry.robot_id not in online_robot_ids:
+                continue
+            primitive_skills = self._get_robot_primitive_skills(entry.robot_id)
+            if not primitive_skills:
+                continue
+
+            # Create a primitive composition task
+            mission_id = _mission_id(session_id)
+            created_at = datetime.now(timezone.utc).isoformat()
+            task_id = f"{mission_id}:{entry.robot_id}:primitive-composition"
+            structured_task = {
+                "task_id": task_id,
+                "mission_id": mission_id,
+                "robot_id": entry.robot_id,
+                "task_type": "primitive_composition",
+                "command": command,
+                "target": {},
+                "required_skills": [],
+                "allowed_skills": list(primitive_skills),
+                "risk_level": "low",
+                "constraints": {"source": "mission_primitive_fallback"},
+            }
+
+            # Submit to robot-gateway
+            try:
+                result = self.subagent_client.submit_task(
+                    entry,
+                    command=command,
+                    session_id=session_id,
+                    mission={"mission_id": mission_id},
+                    structured_task=structured_task,
+                )
+                status = str(result.get("status") or "unknown")
+
+                # Persist mission and subtask records
+                if self.mission_registry is not None and self.mission_registry.get_mission(mission_id) is None:
+                    self.mission_registry.create_mission(
+                        mission_id=mission_id,
+                        session_id=session_id,
+                        command=command,
+                        created_at=created_at,
+                    )
+                    self.mission_registry.record_subtask(
+                        mission_id=mission_id,
+                        robot_id=entry.robot_id,
+                        task_id=result.get("task_id", task_id),
+                        command=command,
+                        status=status,
+                        created_at=created_at,
+                    )
+
+                self._record_mission_memory(
+                    mission_id,
+                    "outcome",
+                    {
+                        "robot_id": entry.robot_id,
+                        "task_id": result.get("task_id", task_id),
+                        "command": command,
+                        "status": status,
+                        "dispatch_mode": "primitive_fallback",
+                    },
+                    robot_id=entry.robot_id,
+                )
+
+                return {
+                    "status": "accepted",
+                    "message": f"Primitive composition task dispatched to {entry.robot_id}",
+                    "mission_id": mission_id,
+                    "subtask_results": [result],
+                }
+            except Exception as exc:
+                logger.warning("Primitive fallback dispatch failed for %s: %s", entry.robot_id, exc)
+                continue
+
+        return None
 
     def _project_task_flow(
         self,

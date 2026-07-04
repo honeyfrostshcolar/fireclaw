@@ -182,6 +182,7 @@ class FireClawAgent:
             self.registry,
             dry_run=self.dry_run,
             available_sensors=self._safety_available_sensors(),
+            operator_confirmed=True,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
         )

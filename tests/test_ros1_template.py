@@ -35,6 +35,31 @@ def test_render_ros1_template_resolves_inputs_and_targets():
     assert rendered["target_pose"]["pose"]["orientation"]["yaw"] == 1.57
 
 
+def test_render_ros1_template_resolves_dollar_expression_to_non_string_value():
+    rendered = render_ros1_template(
+        {
+            "target_pose": {
+                "pose": {
+                    "position": "${targets.floor_${floor}.position}",
+                    "orientation": "${targets.floor_${floor}.orientation}",
+                }
+            },
+            "report": "status_report_floor_${floor}",
+        },
+        inputs={"floor": 2},
+        targets={
+            "floor_2": {
+                "position": {"x": 2.0, "y": 0.0, "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            }
+        },
+    )
+
+    assert rendered["target_pose"]["pose"]["position"] == {"x": 2.0, "y": 0.0, "z": 0.0}
+    assert rendered["target_pose"]["pose"]["orientation"] == {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
+    assert rendered["report"] == "status_report_floor_2"
+
+
 def test_render_ros1_template_raises_for_missing_reference():
     with pytest.raises(ValueError, match="targets.floor_3.x"):
         render_ros1_template(

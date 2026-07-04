@@ -1,6 +1,7 @@
 import subprocess
 
 from fireclaw_core.ros.ros1_sensor_discovery import (
+    Ros1CliGraphProvider,
     Ros1CliMessageProbe,
     Ros1SensorDiscovery,
     StaticRos1GraphProvider,
@@ -12,6 +13,39 @@ from fireclaw_core.sensors.discovery import (
     fingerprint_topic_types,
 )
 from fireclaw_core.sensors.health import SensorObservation
+
+
+def test_ros1_cli_graph_provider_parses_verbose_topic_list_without_per_topic_type_calls(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if args == ["rostopic", "list", "-v"]:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="""
+Published topics:
+ * /scan [sensor_msgs/LaserScan] 1 publisher
+ * /imu [sensor_msgs/Imu] 1 publisher
+
+Subscribed topics:
+ * /cmd_vel [geometry_msgs/Twist] 1 subscriber
+""",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    topics = Ros1CliGraphProvider().topic_types()
+
+    assert topics == {
+        "/scan": "sensor_msgs/LaserScan",
+        "/imu": "sensor_msgs/Imu",
+        "/cmd_vel": "geometry_msgs/Twist",
+    }
+    assert calls == [["rostopic", "list", "-v"]]
 
 
 def test_ros1_discovery_verifies_topic_when_recent_message_exists() -> None:

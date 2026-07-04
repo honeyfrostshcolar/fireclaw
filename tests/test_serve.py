@@ -18,6 +18,26 @@ def _fake_check_presence(self, entry):
     }
 
 
+def _fake_submit_task(self, entry, **kwargs):
+    """Accept tasks without requiring a real robot gateway."""
+    return {
+        "status": "accepted",
+        "task_id": f"task-{entry.robot_id}",
+        "session_id": kwargs.get("session_id"),
+        "robot_id": entry.robot_id,
+    }
+
+
+def _fake_get_task_trace(self, entry, task_id):
+    """Return a terminal trace for missions submitted to the fake robot."""
+    return {
+        "status": "succeeded",
+        "task_id": task_id,
+        "robot_id": entry.robot_id,
+        "result": {"status": "succeeded"},
+    }
+
+
 def test_start_server_creates_data_dir_and_robots_json(tmp_path: Path):
     data_dir = tmp_path / "data"
     gw = start_server(data_dir=data_dir, port=0, planner_type="deterministic")
@@ -44,6 +64,8 @@ def test_start_server_with_deterministic_planner(tmp_path: Path, monkeypatch):
 
 def test_start_server_submit_and_trace(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(RobotSubagentClient, "check_presence", _fake_check_presence)
+    monkeypatch.setattr(RobotSubagentClient, "submit_task", _fake_submit_task)
+    monkeypatch.setattr(RobotSubagentClient, "get_task_trace", _fake_get_task_trace)
     data_dir = tmp_path / "data"
     gw = start_server(data_dir=data_dir, port=0, planner_type="deterministic")
     try:

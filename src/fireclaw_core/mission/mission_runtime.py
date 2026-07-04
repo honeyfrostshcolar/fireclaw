@@ -75,9 +75,15 @@ def build_mission_agent_from_paths(
             profile.robot_id: profile.capability_skill_chains
             for profile in profiles
         }
+        primitive_skills_by_robot = {
+            profile.robot_id: profile.primitive_skills
+            for profile in profiles
+            if profile.primitive_skills
+        }
     else:
         registry = load_robot_registry(paths.robot_registry)
         profile_skill_chains_by_robot = {}
+        primitive_skills_by_robot = {}
 
     return MissionAgent(
         registry=registry,
@@ -94,6 +100,7 @@ def build_mission_agent_from_paths(
         session_lineage_store=JsonlSessionLineageStore(str(paths.session_lineage)) if paths.session_lineage else None,
         task_flow_store=JsonlTaskFlowRegistryStore(paths.task_flow) if paths.task_flow else None,
         profile_skill_chains_by_robot=profile_skill_chains_by_robot,
+        primitive_skills_by_robot=primitive_skills_by_robot,
     )
 
 

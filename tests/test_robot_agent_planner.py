@@ -168,6 +168,41 @@ def test_build_robot_agent_messages_contains_envelope_fields():
     assert payload["context"] == {"robot_state": {}}
 
 
+def test_build_robot_agent_messages_includes_skill_inventory_and_planning_rules():
+    envelope = RobotAgentTaskEnvelope(
+        task_id="t1",
+        mission_id="m1",
+        robot_id="r1",
+        command="导航到 x=2 y=0",
+        task_type="primitive_composition",
+        target={},
+        allowed_skills=["navigate_to_floor", "report_status"],
+        required_skills=[],
+        constraints={},
+        risk_level="low",
+        operator_id=None,
+    )
+
+    messages = build_robot_agent_messages(
+        envelope,
+        context={
+            "skill_inventory": {
+                "skills": [
+                    {"name": "navigate_to_floor", "kind": "primitive", "primitive_capability": "navigation"},
+                    {"name": "search_for_victims", "kind": "composite", "chain": ["navigate_to_floor", "search_for_victims"]},
+                ]
+            }
+        },
+    )
+
+    payload = json.loads(messages[1]["content"])
+    assert "primitive" in json.dumps(payload["skill_inventory"])
+    assert "composite" in json.dumps(payload["skill_inventory"])
+    assert "navigate_to_floor" in json.dumps(payload["skill_inventory"])
+    assert isinstance(payload["planning_rules"], list)
+    assert len(payload["planning_rules"]) >= 4
+
+
 def test_llm_robot_agent_planner_accepts_direct_skill_tool_calls():
     runtime = FakeRuntime(
         response=ChatCompletion(
@@ -207,3 +242,94 @@ def test_llm_robot_agent_planner_accepts_direct_skill_tool_calls():
     assert plan.steps[0].inputs == {"floor": 2}
     assert runtime.last_tools[0]["function"]["name"] == "create_robot_local_plan"
     assert runtime.last_tools[1]["function"]["name"] == "navigate_to_floor"
+
+
+# --- end-to-end: prompt → provider → plan → policy ---
+
+
+def test_llm_robot_agent_plans_navigation_with_primitives():
+    """LLM composes navigate_to_floor + report_status for a navigation command."""
+    from fireclaw_core.agent.robot_agent import RobotAgentPolicy
+
+    runtime = FakeRuntime(
+        response=ChatCompletion(
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name="create_robot_local_plan",
+                    arguments={
+                        "intent": "navigation test",
+                        "steps": [
+                            {"skill_name": "navigate_to_floor", "inputs": {"floor": 2}},
+                            {"skill_name": "report_status", "inputs": {"floor": 2}},
+                        ],
+                        "rationale": "Navigate to floor 2 and report status",
+                        "confidence": 0.9,
+                    },
+                )
+            ],
+            usage=TokenUsage(1, 1, 2),
+            model="fake-model",
+            finish_reason="tool_calls",
+        )
+    )
+
+    envelope = RobotAgentTaskEnvelope(
+        task_id="t1",
+        mission_id="m1",
+        robot_id="r1",
+        command="去二楼做一次简单的规划运动",
+        task_type="primitive_composition",
+        target={},
+        allowed_skills=["navigate_to_floor", "report_status"],
+        required_skills=[],
+        constraints={},
+        risk_level="low",
+        operator_id=None,
+    )
+
+    context = {
+        "skill_inventory": {
+            "skills": [
+                {"name": "navigate_to_floor", "kind": "primitive", "primitive_capability": "navigation"},
+                {"name": "report_status", "kind": "primitive", "primitive_capability": "communication"},
+            ]
+        }
+    }
+
+    plan = LLMRobotAgentPlanner(runtime).plan(envelope, context=context)
+
+    assert len(plan.steps) == 2
+    assert plan.steps[0].skill_name == "navigate_to_floor"
+    assert plan.steps[0].inputs == {"floor": 2}
+    assert plan.steps[1].skill_name == "report_status"
+
+    # Verify the prompt included skill_inventory
+    user_payload = json.loads(runtime.calls[0]["messages"][1]["content"])
+    assert "navigate_to_floor" in json.dumps(user_payload["skill_inventory"])
+    assert "primitive" in json.dumps(user_payload["skill_inventory"])
+
+    # Verify plan passes policy
+    decision = RobotAgentPolicy().validate(envelope, plan)
+    assert decision.status == "allow"
+
+
+def test_envelope_from_structured_task_uses_explicit_allowed_skills():
+    from fireclaw_core.agent.robot_agent import envelope_from_structured_task
+    from fireclaw_core.task.task_contract import StructuredRobotTask
+
+    task = StructuredRobotTask.from_dict({
+        "task_id": "t1",
+        "task_type": "primitive_composition",
+        "target": {},
+        "required_skills": [],
+        "allowed_skills": ["navigate_to_floor"],
+        "robot_id": "r1",
+    })
+
+    envelope = envelope_from_structured_task(task, fallback_robot_id="fallback")
+
+    assert "navigate_to_floor" in envelope.allowed_skills
+    assert "report_status" in envelope.allowed_skills
+    assert envelope.required_skills == []

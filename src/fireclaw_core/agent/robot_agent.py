@@ -50,7 +50,8 @@ def envelope_from_structured_task(
     *,
     fallback_robot_id: str,
 ) -> RobotAgentTaskEnvelope:
-    allowed_skills = list(dict.fromkeys([*task.required_skills, *SAFE_SUPPLEMENTAL_SKILLS]))
+    base_allowed = task.allowed_skills if task.allowed_skills else task.required_skills
+    allowed_skills = list(dict.fromkeys([*base_allowed, *SAFE_SUPPLEMENTAL_SKILLS]))
     return RobotAgentTaskEnvelope(
         task_id=task.task_id,
         mission_id=task.mission_id,
@@ -137,6 +138,9 @@ class RobotAgentPolicy:
                             f"skill {step.skill_name!r} uses floor {actual_floor!r}, expected {expected_floor!r}"
                         )
 
+        if envelope.task_type == "primitive_composition" and not plan.steps:
+            reasons.append("primitive composition produced no executable steps")
+
         for skill_name in envelope.required_skills:
             if skill_name not in planned:
                 reasons.append(f"required skill {skill_name!r} is missing")
@@ -197,6 +201,14 @@ def build_robot_agent_messages(
         "你只能在 allowed_skills 内规划，不能改变 target，不能扩大任务权限。"
         "请调用 create_robot_local_plan 工具返回结构化局部执行计划。"
     )
+    planning_rules = [
+        "优先使用可用 composite skill 完成明确的消防任务。",
+        "没有合适 composite skill 时，可以组合 primitive skills。",
+        "只能使用 allowed_skills 中的技能。",
+        "不能扩大目标、楼层、区域、风险级别。",
+        "运动类 primitive 必须保持在 target/constraints 允许范围内。",
+        "不确定时返回空 steps 并说明需要澄清。",
+    ]
     payload = {
         "task": {
             "task_id": envelope.task_id,
@@ -210,6 +222,8 @@ def build_robot_agent_messages(
             "constraints": envelope.constraints,
             "risk_level": envelope.risk_level,
         },
+        "skill_inventory": context.get("skill_inventory", {}),
+        "planning_rules": planning_rules,
         "context": context,
     }
     return [

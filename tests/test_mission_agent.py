@@ -1,6 +1,8 @@
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.memory.memory_retrieval import RetrievedMemory
 from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.agent.robot_agent import envelope_from_structured_task
+from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
@@ -249,6 +251,7 @@ def test_mission_agent_cancels_recorded_non_terminal_subtasks(tmp_path):
     )
     client = FakeSubagentClient()
     mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
     mission = MissionAgent(
         registry=registry,
         subagent_client=client,
@@ -384,6 +387,85 @@ def test_mission_agent_plan_and_submit_returns_clarify_from_planner():
 
     assert result["status"] == "clarify"
     assert "楼层" in result["message"]
+    assert client.calls == []
+
+
+def test_plan_and_submit_dispatches_primitive_fallback_on_clarify():
+    """When planner returns 'clarify' but a robot has primitive skills, dispatch a primitive_composition task."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="clarify",
+        message="unknown intent",
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        primitive_skills_by_robot={"r1": ("navigate_to_floor", "search_area")},
+    )
+
+    result = mission.plan_and_submit("导航到 x=2 y=0", session_id="m1")
+
+    assert result["status"] == "accepted"
+    assert "r1" in result["message"]
+    assert len(client.calls) == 1
+    submitted_entry, submitted_kwargs = client.calls[0]
+    assert submitted_entry.robot_id == "r1"
+    structured_task = submitted_kwargs.get("structured_task", {})
+    assert structured_task.get("task_type") == "primitive_composition"
+    assert "navigate_to_floor" in structured_task.get("allowed_skills", [])
+    assert "search_area" in structured_task.get("allowed_skills", [])
+
+    # Round-trip: the structured_task should survive from_dict → envelope construction
+    task = StructuredRobotTask.from_dict(structured_task)
+    envelope = envelope_from_structured_task(task, fallback_robot_id="r1")
+    assert "navigate_to_floor" in envelope.allowed_skills
+    assert "search_area" in envelope.allowed_skills
+
+
+def test_plan_and_submit_primitive_fallback_blocked_for_high_risk_command():
+    """High-risk commands should be blocked even when primitive skills exist."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="clarify",
+        message="unknown intent",
+    ))
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        primitive_skills_by_robot={"r1": ("navigate_to_floor",)},
+    )
+
+    result = mission.plan_and_submit("去三楼灭火", session_id="m1")
+
+    assert result["status"] == "clarify"
+    assert "复合技能" in result["message"] or "人工确认" in result["message"]
+    assert client.calls == []
+
+
+def test_plan_and_submit_primitive_fallback_skips_when_no_primitive_skills():
+    """When no robot has primitive skills, fallback should not trigger and original clarify is returned."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765"),
+    ])
+    client = FakeSubagentClient()
+    planner = FakeMissionPlanner(MissionPlanningResult(
+        status="clarify",
+        message="unknown intent",
+    ))
+    # No primitive_skills_by_robot configured
+    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner)
+
+    result = mission.plan_and_submit("导航到 x=2 y=0", session_id="m1")
+
+    assert result["status"] == "clarify"
     assert client.calls == []
 
 
@@ -1327,6 +1409,7 @@ def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
     ])
     client = FakeSubagentClient()
     mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
     plan = MissionPlan(
         intent="search",
         command="去二楼搜索",
@@ -1342,6 +1425,7 @@ def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
         subagent_client=client,
         planner=planner,
         mission_registry=mission_registry,
+        mission_memory=memory_store,
     )
 
     # Mock the MissionScheduler class to avoid actual polling
@@ -1361,6 +1445,8 @@ def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
     assert "group_results" in result
     assert "failure_decisions" in result
     mock_scheduler.schedule.assert_called_once()
+    records = memory_store.list_records(mission_id="mission-1", record_type="outcome")
+    assert any(record.content.get("status") == "succeeded" for record in records)
 
 
 def test_plan_and_submit_preserves_direct_iteration_when_scheduler_disabled():
@@ -2045,3 +2131,22 @@ def test_plan_and_submit_task_flow_not_written_when_store_none(tmp_path):
 
     assert result["status"] == "planned"
     # No crash, no store to check
+
+
+def test_primitive_fallback_structured_task_validates_after_round_trip():
+    structured_task = {
+        "task_id": "m1:r1:primitive-composition",
+        "mission_id": "m1",
+        "robot_id": "r1",
+        "task_type": "primitive_composition",
+        "command": "导航到 x=2 y=0",
+        "target": {},
+        "required_skills": [],
+        "allowed_skills": ["navigate_to_floor", "report_status"],
+        "risk_level": "low",
+        "constraints": {"source": "mission_primitive_fallback"},
+    }
+
+    task = StructuredRobotTask.from_dict(structured_task)
+
+    assert validate_structured_robot_task(task) == []

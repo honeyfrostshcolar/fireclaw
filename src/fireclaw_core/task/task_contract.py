@@ -18,6 +18,7 @@ class StructuredRobotTask:
     task_type: str
     target: dict[str, Any]
     required_skills: list[str]
+    allowed_skills: list[str] = field(default_factory=list)
     constraints: dict[str, Any] = field(default_factory=dict)
     priority: str = "normal"
     risk_level: str = "low"
@@ -36,6 +37,7 @@ class StructuredRobotTask:
             task_type=str(payload.get("task_type") or ""),
             target=dict(payload.get("target") or {}),
             required_skills=[str(item) for item in payload.get("required_skills") or []],
+            allowed_skills=[str(item) for item in payload.get("allowed_skills") or []],
             constraints=dict(payload.get("constraints") or {}),
             priority=str(payload.get("priority") or "normal"),
             risk_level=str(payload.get("risk_level") or "low"),
@@ -80,8 +82,12 @@ def validate_structured_robot_task(task: StructuredRobotTask) -> list[str]:
         errors.append("task_id must not be empty")
     if not task.task_type:
         errors.append("task_type must not be empty")
-    if not task.required_skills:
-        errors.append("required_skills must not be empty")
+    if task.task_type == "primitive_composition":
+        if not task.allowed_skills:
+            errors.append("allowed_skills must not be empty for primitive_composition")
+    else:
+        if not task.required_skills:
+            errors.append("required_skills must not be empty")
     if task.priority not in VALID_PRIORITIES:
         errors.append(f"priority must be one of {sorted(VALID_PRIORITIES)}")
     if task.risk_level not in VALID_RISK_LEVELS:
@@ -89,6 +95,11 @@ def validate_structured_robot_task(task: StructuredRobotTask) -> list[str]:
     floor = task.target.get("floor")
     if floor is not None and (not isinstance(floor, int) or floor <= 0):
         errors.append("target.floor must be a positive integer when provided")
+    if task.allowed_skills:
+        allowed = set(task.allowed_skills)
+        for skill_name in task.required_skills:
+            if skill_name not in allowed:
+                errors.append(f"required skill {skill_name!r} is not in allowed_skills")
     return errors
 
 

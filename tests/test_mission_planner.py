@@ -63,6 +63,20 @@ def test_mission_planner_parses_patrol_command():
     assert sorted(floors) == [1, 2]
 
 
+def test_mission_planner_treats_planned_motion_as_patrol():
+    planner = MissionPlanner()
+    robots = _robots([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("patrol",)),
+    ])
+
+    result = planner.plan("去二楼做一次简单的规划运动", context=robots)
+
+    assert result.status == "planned"
+    assert result.intent == "patrol"
+    assert result.plan.subtasks[0].capability_required == "patrol"
+    assert result.plan.subtasks[0].floor == 2
+
+
 def test_mission_planner_assigns_different_robots_when_enough():
     planner = MissionPlanner()
     robots = _robots([

@@ -133,3 +133,18 @@ def test_navigation_skill_requires_lidar() -> None:
     registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="r1"))
 
     assert registry.get("navigate_to_floor").required_sensors == ["lidar"]
+
+
+def test_default_skill_registry_marks_primitive_and_composite_skills() -> None:
+    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="r1"))
+
+    navigate = registry.get("navigate_to_floor")
+    search = registry.get("search_for_victims")
+
+    assert navigate is not None
+    assert search is not None
+    assert navigate.metadata["kind"] == "primitive"
+    assert navigate.metadata["primitive_capability"] == "navigation"
+    assert navigate.metadata["input_schema"]["required"] == ["floor"]
+    assert search.metadata["kind"] == "composite"
+    assert search.metadata["primitive_capability"] == "perception"
