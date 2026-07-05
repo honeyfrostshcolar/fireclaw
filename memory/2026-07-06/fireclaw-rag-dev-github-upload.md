@@ -1,8 +1,8 @@
 # FireClaw rag-dev GitHub Upload
 
 **Date:** 2026-07-06
-**Last update:** 2026-07-06 07:20:59 +08:00
-**Status:** Local branch prepared; upload blocked on GitHub remote and git identity.
+**Last update:** 2026-07-06 07:20:59 +08:00; updated after commit on same session
+**Status:** Local branch committed; upload blocked on GitHub remote.
 
 ## Task Goal
 
@@ -29,9 +29,9 @@ git remote -v
 returned no output.
 
 - `gh` CLI is not installed on this device.
-- Git commit identity is not configured locally or globally:
-  - `git config user.name` returned empty.
-  - `git config user.email` returned empty.
+- Git commit identity was later configured locally:
+  - `user.name`: `honeyfrostshcolar`
+  - `user.email`: `2216256361@qq.com`
 
 ## Files / Ignore Decisions
 
@@ -72,21 +72,30 @@ Staged summary:
 - includes source, tests, docs, memory Markdown records, config examples, and small RAG Chinese GitHub probe text/code files
 - excludes large RAG PDF/raw/extracted/chunk/index generated outputs and local dependency/temp directories
 
+## Commit Completed
+
+After the user added git identity, committed the staged baseline:
+
+```powershell
+git -C C:\Users\L\Desktop\lpp\fireclaw-master commit -m "Initial FireClaw RAG development baseline"
+```
+
+Result:
+
+- commit: `8a5dd2c`
+- branch: `rag-dev`
+- files changed: `454`
+- insertions: `113576`
+
 ## Current Blocker
 
 Need the user to provide:
 
 - GitHub remote URL, e.g. `https://github.com/<user>/<repo>.git`
-- commit author identity:
-  - `user.name`
-  - `user.email`
 
 After that, recommended commands:
 
 ```powershell
-git -C C:\Users\L\Desktop\lpp\fireclaw-master config user.name "<name>"
-git -C C:\Users\L\Desktop\lpp\fireclaw-master config user.email "<email>"
-git -C C:\Users\L\Desktop\lpp\fireclaw-master commit -m "Initial FireClaw RAG development baseline"
 git -C C:\Users\L\Desktop\lpp\fireclaw-master remote add origin <remote-url>
 git -C C:\Users\L\Desktop\lpp\fireclaw-master push -u origin rag-dev
 ```
