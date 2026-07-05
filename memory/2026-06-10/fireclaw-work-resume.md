@@ -1,0 +1,659 @@
+# FireClaw Work Resume - 2026-06-10
+
+## 当前进展：
+
+- OpenClaw parity v1 已实现并完成一次后续接入修正。
+- Runtime hardening 计划（`docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`）全部 7 个任务已完成。
+- Follow-up hardening：修复了 5 个 P1/P2 问题（memory hooks 接入、TaskRegistry scheduler 路径覆盖、subagent_registry 自动装配、_retrieve_planner_context early return bug、计划文件 checkbox 标记）。
+- 最新默认全量测试结果：`.venv/bin/python -m pytest -q` -> `829 passed, 6 skipped in 97.12s`。
+- 6.10 的工作记录已从 `memory/2026-06-09/fireclaw-work-resume.md` 迁移到本文件。
+
+## 已完成：
+
+- 审核用户实现后的 OpenClaw parity v1 状态。
+- 接入 `MemoryRetriever` 到 `MissionAgent` planner context。
+- 接入 `ApprovalRuntime` 到 `MissionGateway` approval endpoint。
+- 让 `RobotSubagentClient.get_task_trace()` 在观测到 terminal trace 时更新已有 `JsonlSubagentRegistry` run record。
+- 修掉 `tests/test_mission_gateway_client.py` 的 SSE reader thread timeout warning。
+- 把 stale unchecked OpenClaw parity plan 改成 v1 completion record。
+- 同步架构 roadmap 中 PluginRuntime / MemoryRetriever 相关过时表述。
+- **Follow-up: 接入 memory hooks** — `run_memory_hooks("filter"/"rerank")` 现在在 `_retrieve_planner_context()` 检索后执行。
+- **Follow-up: 修复 early return bug** — `mission_memory is None` 不再阻止 `memory_retriever` 调用。
+- **Follow-up: TaskRegistry 覆盖 scheduler 路径** — subtask projection 移入 `submit_subtask()` 内部，scheduler/非 scheduler 路径均覆盖。
+- **Follow-up: subagent_registry 自动装配** — 无显式 client 时自动将 registry 传入 `RobotSubagentClient`。
+- **Follow-up: 计划文件 checkbox 全部标记为 [x]**。
+
+## 当前问题：
+
+- `TaskRegistry` / `SubagentRegistry` lifecycle reconciliation v1 已实现（orphan detection、stale task detection、maintenance runner），但跨进程 reconciliation 自动调度和 orphan recovery 自动修复尚未实现。
+- Plugin control plane v1 已实现（callable hook 注册/执行、policy enforcement、audit trail、control-plane fingerprints），但第三方插件 sandbox loading 尚未实现。
+- `ApprovalRuntime` 持久化和 relay v1 已实现（JSONL token persistence、InMemory/Console/Webhook relay adapters），但部署环境的实际 operator channel 适配器尚未实现。
+- `ProviderRuntime` fallback boundary v1 已实现，但 multi-provider catalog、health/status dashboard 尚未实现。
+- `memory_eval.py` thresholded evaluation 和 doctor integration 已实现，但 embedding provider lifecycle automation、session transcript indexing policy、retrieval 质量回归阈值集成 CI 尚未实现。
+- `MissionGatewayClient` 有 typed HTTP client + typed approval methods，但还没有 typed SSE iterator / reconnect abstraction。
+- ROS2 仍是 protocol boundary 和实施计划，不是 native `rclpy` adapter。
+- ROS1 hardware proof runbook/schema complete, execution pending hardware。
+
+## 下一步：
+
+1. 跨进程 lifecycle reconciliation runner 和 orphan recovery 自动修复。
+2. 给 `MissionGatewayClient` 增加 client-side SSE iterator 和 reconnect/cursor handling。
+3. Provider runtime fallback 深化（multi-provider catalog, fallback chain, health/status dashboard）。
+4. Operator web UI 接入 mission Gateway SSE。
+5. 根据硬件可用性，选择 ROS2 native adapter 或真实 ROS1 hardware smoke proof。
+
+## 需要运行的命令：
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+## Update 2026-06-10 00:08 CST — Fixed Current Test Failures
+
+### Task Goal
+
+Fix the two failing tests from the previous reconciliation and restore the full test suite to green.
+
+### Root Causes
+
+1. `tests/test_mission_gateway.py::test_post_body_too_large`
+   - `MissionGateway._read_json()` rejected an oversized request from `Content-Length` before consuming the request body.
+   - `urllib` was still sending the 1 MB+ body when the server closed the connection, producing `BrokenPipeError` / `URLError` instead of the expected HTTP 400 path.
+
+2. `tests/test_ros1_smoke.py::test_ros1_action_timeout`
+   - The test passed a raw `dict` as a real ROS1 Fibonacci action goal, which actionlib cannot serialize.
+   - After converting to `FibonacciGoal`, the focused test exposed hidden order coupling: `rospy.init_node()` had only been called by an earlier topic smoke test.
+   - Once initialized independently, the transport returned `status="failed"` for action result timeout while the smoke test and task-state model expected a distinct `timeout` status.
+
+### Files Modified
+
+- `src/fireclaw_core/mission_gateway.py`
+  - Oversized request bodies are now consumed before raising `_BadRequestError`, so clients can receive the intended HTTP error response.
+- `tests/test_ros1_smoke.py`
+  - Added `_ensure_rospy_node()`.
+  - Smoke tests now initialize `rospy` independently instead of relying on test order.
+  - Timeout test now uses `actionlib_tutorials.msg.FibonacciGoal(order=100)`.
+- `tests/test_ros1_transport.py`
+  - Added `test_ros1_transport_reports_action_result_timeout`.
+- `src/fireclaw_core/ros1_transport.py`
+  - Action result timeout now returns `{"status": "timeout", ...}` instead of `{"status": "failed", ...}`.
+
+### Verification
+
+- `.venv/bin/python -m pytest tests/test_mission_gateway.py::test_post_body_too_large -q`
+  - GREEN: `1 passed`
+- `.venv/bin/python -m pytest tests/test_ros1_transport.py::test_ros1_transport_reports_action_result_timeout -q`
+  - RED first, then GREEN: `1 passed`
+- `.venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_timeout -q`
+  - GREEN: `1 passed, 5 warnings`
+- `.venv/bin/python -m pytest tests/test_mission_gateway.py tests/test_ros1_transport.py tests/test_ros1_smoke.py -q`
+  - GREEN: `47 passed, 6 warnings`
+- `.venv/bin/python -m pytest -q`
+  - GREEN: `582 passed, 6 warnings in 58.86s`
+
+### Current Conclusion
+
+The two current test failures are fixed and the full local test suite is green again. Warnings are from ROS/actionlib deprecations in ROS Noetic dependencies, not FireClaw test failures.
+
+## Update 2026-06-10 OpenClaw Parity v1 Audit After User Implementation
+
+### Task Goal
+
+Re-check the repository after the user reported implementing the OpenClaw parity next-roadmap tasks. Compare commits, current code, roadmap/memory records, and test status to identify real remaining issues.
+
+### Commands Executed
+
+- `git status --short --branch`
+  - Result: `## master...origin/master [领先 82]`
+  - Dirty/untracked state at that audit point:
+    - `M memory/2026-06-09/fireclaw-work-resume.md`
+    - `?? docs/superpowers/plans/2026-06-09-openclaw-parity-next-roadmap.md`
+- `git log --oneline -12`
+  - Latest commits included:
+    - `772100c docs: update roadmap with OpenClaw parity v1 completion (791 passed)`
+    - `9c3db9a feat: add doctor --fix mode, hardware smoke template, and ROS2 adapter plan`
+    - `c1a7f01 feat: add approval runtime tokens and pending work projection`
+    - `6c6702b fix: deduplicate _cosine_similarity by importing from memory_index`
+    - `52937bc feat: add ranked memory retrieval with optional embedding support`
+    - `d92a973 feat: implement PluginRuntime v1 with hook validation and aggregation`
+    - `c71f028 feat: add SubagentRunRecord and JsonlSubagentRegistry for robot subagent lineage tracking`
+    - `7810d20 feat: add OpenClaw-style TaskRegistry v1`
+- `.venv/bin/python -m pytest -q`
+  - Result: `791 passed, 6 skipped, 1 warning in 99.29s`
+  - Warning: `tests/test_mission_gateway_client.py::TestMissionGatewayClientIntegration::test_client_submit_mission_real` reported a `PytestUnhandledThreadExceptionWarning` from an SSE reader thread timing out.
+
+### Current Audit Findings
+
+- Full suite was green, but not warning-clean.
+- `TaskRegistry` existed and had unit coverage, but was mostly standalone; `MissionAgent` / `MissionScheduler` still did not write mission task lifecycle into it.
+- `JsonlSubagentRegistry` existed and `RobotSubagentClient.submit_task()` could create child run records when an optional registry was injected, but `get_task_trace()` did not update terminal run status and mission event aggregation did not route terminal robot events back into the subagent registry.
+- `PluginRuntime` validated and aggregated declared hook names, but did not execute hook callables or integrate real provider/memory/tool-approval runtime behavior into `llm_planner`, `mission_memory`, or approval flow.
+- `MemoryRetriever` supported lexical plus embedding rank fusion for FTS candidate sets, but `MissionAgent._retrieve_planner_context()` still called `MissionMemoryStore.search()` directly, so the planner path was not using ranked retrieval v2.
+- `ApprovalRuntime` stored tokens only in process memory and was not referenced by `MissionGateway` / `MissionAgent` approval endpoints, so pending projection/token lifecycle was not yet part of the operator control plane.
+- `MissionGatewayClient` covered synchronous JSON endpoints, but had no typed live SSE iterator/client-side cursor abstraction despite server cursor replay being implemented.
+- ROS2 remained a protocol boundary and written plan, not a native `rclpy` adapter.
+- The architecture roadmap correctly listed many of these as partial coverage, but later "重要缺口" text was stale for PluginRuntime and MemoryRetriever because it still said hook/ranking were missing entirely rather than "implemented v1 but not fully wired into runtime".
+- The superpowers implementation plan file remained untracked and unchecked even though many tasks were implemented; this would mislead future agents.
+
+### Next Recommended Step
+
+Treat the implementation as OpenClaw parity v1, not full parity. The highest-value next fixes were: wire `MemoryRetriever` into planner context, connect `ApprovalRuntime` to MissionGateway approvals, make subagent trace/event observation update `JsonlSubagentRegistry`, and either update/commit or remove the stale unchecked superpowers plan file.
+
+## Update 2026-06-10 OpenClaw Parity v1 Wiring Fixes
+
+### Task Goal
+
+Implement the highest-value audit fixes from the prior section:
+
+- wire `MemoryRetriever` into planner context;
+- connect `ApprovalRuntime` to `MissionGateway` approvals;
+- make terminal subagent trace observation update `JsonlSubagentRegistry`;
+- replace the stale unchecked OpenClaw parity plan with a completion record;
+- remove the SSE client test thread timeout warning.
+
+### Files Modified
+
+- `src/fireclaw_core/mission_agent.py`
+  - Added optional `memory_retriever`.
+  - `_retrieve_planner_context()` now uses ranked retriever results when configured and falls back to the existing `MissionMemoryStore.search()` path otherwise.
+- `src/fireclaw_core/subagent_client.py`
+  - `get_task_trace()` now updates an existing subagent run registry record when the observed trace status is terminal.
+  - It does not create lineage records from trace-only observations when no child mapping exists.
+- `src/fireclaw_core/mission_gateway.py`
+  - Added optional `approval_runtime`.
+  - `POST /missions/{id}/approvals` with `action=request` now returns a one-time `approval_token` and public token metadata when runtime is configured.
+  - Added `action=pending` for mission-scoped pending approval projection.
+  - Added `action=resolve_token` for resolving a raw approval token without exposing token hashes.
+- `tests/test_mission_agent.py`
+  - Added regression coverage proving planner context uses ranked retrieved memories when configured.
+- `tests/test_subagent_registry.py`
+  - Replaced the old read-only trace expectation with terminal-trace registry update coverage plus a no-mapping no-create guard.
+- `tests/test_mission_gateway.py`
+  - Added approval runtime token/pending projection endpoint coverage.
+- `tests/test_mission_gateway_client.py`
+  - SSE reader thread now treats socket timeout as a long-stream stop condition, removing the pytest unhandled thread warning.
+- `docs/superpowers/plans/2026-06-09-openclaw-parity-next-roadmap.md`
+  - Replaced stale unchecked implementation plan with an OpenClaw parity v1 completion record and remaining maturity gaps.
+- `docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`
+  - Updated stale PluginRuntime/MemoryRetriever gap wording to reflect v1 implementation plus remaining runtime/provider/evaluation gaps.
+- `memory/2026-06-10/fireclaw-work-resume.md`
+  - Created this 6.10 resume record after the user correctly pointed out that new 6.10 work should not be appended to the 6.9 memory file.
+
+### TDD / Verification
+
+- RED:
+  - `.venv/bin/python -m pytest tests/test_mission_agent.py::test_plan_and_submit_uses_ranked_memory_retriever_when_configured tests/test_subagent_registry.py::test_subagent_client_get_trace_updates_existing_registry_record_on_terminal_status tests/test_mission_gateway.py::test_request_approval_creates_runtime_token_when_configured -q`
+  - Result after fixing a test import typo: 3 expected failures:
+    - `MissionAgent.__init__()` missing `memory_retriever`;
+    - terminal trace left registry status as `dispatched`;
+    - `MissionGateway.__init__()` missing `approval_runtime`.
+- GREEN:
+  - Same focused command -> `3 passed`.
+- Related suites:
+  - `.venv/bin/python -m pytest tests/test_mission_agent.py tests/test_subagent_registry.py tests/test_mission_gateway.py tests/test_approval_runtime.py tests/test_memory_retrieval.py -q`
+  - Result: `133 passed`.
+  - `.venv/bin/python -m pytest tests/test_mission_gateway_client.py -q`
+  - Result: `24 passed`.
+- Full suite:
+  - `.venv/bin/python -m pytest -q`
+  - Result: `794 passed, 6 skipped in 98.22s`.
+
+### Current Conclusion
+
+OpenClaw parity v1 is now better wired into the FireClaw runtime path: ranked retrieval can feed planner context, approval runtime tokens are reachable through MissionGateway, and subagent terminal trace observation updates run lineage. Remaining gaps are still platform maturity work: task/session registry as source of truth, event-driven subagent completion routing, executable plugin hooks with permission boundaries, persistent approval token storage, client-side SSE iterator/reconnect abstraction, ROS2 implementation, and real robot hardware proof.
+
+## Update 2026-06-10 Runtime Hardening Plan Execution
+
+### Task Goal
+
+Execute `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md` — harden remaining OpenClaw parity v1 gaps.
+
+### Tasks Completed
+
+**Task 1: PluginRuntime Callable Hook Boundary**
+- Added `PluginHookCallback` type alias and `PluginHookEffect` frozen dataclass
+- Added `register_callable()`, `run_provider_hooks()`, `run_memory_hooks()`, `run_tool_approval_hooks()`
+- Callback exception isolation: one failing callback does not block remaining hooks
+- 10 new tests (21 total in plugin_runtime)
+
+**Task 2: Wire Plugin Hooks Into Planner, Memory, and Approval**
+- MissionAgent accepts `plugin_runtime`, applies `enrich_context` hooks before planner
+- MissionGateway accepts `plugin_runtime`, applies `add_reason` hooks during approval
+- Plugin-contributed memories/corrections pass through `redact_dict`
+- 5 new tests across mission_agent and mission_gateway
+
+**Task 3: Lifecycle Projection Stores**
+- `JsonlTaskRegistryStore.project_task_state()` — idempotent create-or-update
+- `JsonlSubagentRegistry.mark_terminal()` — idempotent terminal update, skips already-terminal
+- 6 new tests
+
+**Task 4: Wire Lifecycle Projection Into Mission Runtime**
+- MissionAgent accepts `task_registry` and `subagent_registry`, projects mission + subtask lifecycle
+- MissionEventAggregator routes terminal robot events into SubagentRegistry
+- 4 new tests
+
+**Task 5: Persistent Approval Runtime Token Store**
+- `ApprovalRuntime` accepts `token_store_path` for JSONL persistence
+- Only token hash persisted, raw token never written to disk
+- Restart resilience: new instance loads existing tokens
+- 1 new test
+
+**Task 6: Operator Relay Projection and Client Methods**
+- MissionGateway stores relay context (channel + operator_id) per approval request
+- Pending projection includes relay metadata
+- `MissionGatewayClient.get_pending_approvals()` and `resolve_approval_token()` typed methods
+- 2 new tests
+
+**Task 7: Documentation, Memory, and Verification**
+- Updated architecture roadmap with runtime hardening status
+- Updated memory record
+- Full suite verification
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `823 passed, 6 skipped in 99.56s`
+
+### Test Growth
+
+- Session start: 794 passed
+- Session end: 823 passed (+29 tests)
+
+### Files Modified
+
+- `src/fireclaw_core/plugin_runtime.py` — callable hook registry + exception isolation
+- `src/fireclaw_core/mission_agent.py` — plugin_runtime, task_registry, subagent_registry wiring
+- `src/fireclaw_core/mission_gateway.py` — plugin_runtime, approval relay projection
+- `src/fireclaw_core/mission_event_aggregator.py` — subagent_registry terminal routing
+- `src/fireclaw_core/task_registry.py` — project_task_state()
+- `src/fireclaw_core/subagent_registry.py` — mark_terminal()
+- `src/fireclaw_core/approval_runtime.py` — JSONL token persistence
+- `src/fireclaw_core/mission_gateway_client.py` — typed approval methods
+- `tests/test_plugin_runtime.py` — 10 new tests
+- `tests/test_mission_agent.py` — 6 new tests
+- `tests/test_mission_gateway.py` — 5 new tests
+- `tests/test_mission_gateway_client.py` — 1 new test
+- `tests/test_task_registry.py` — 3 new tests
+- `tests/test_subagent_registry.py` — 3 new tests
+- `tests/test_approval_runtime.py` — 1 new test
+- `docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md` — updated gap descriptions
+
+### Known Remaining Gaps
+
+- Native ROS2 adapter remains out of scope
+- Real robot hardware proof remains out of scope
+- Full external operator relay adapters not implemented (relay-ready projection only)
+- Arbitrary third-party plugin loading not implemented (explicit callable registration only)
+- Cross-process TaskRegistry/SubagentRegistry reconciliation and orphan recovery
+- Client-side SSE iterator/reconnect abstraction
+
+## Update 2026-06-10 12:53 CST — OpenClaw Parity Maturity Recheck and New Roadmap
+
+### Task Goal
+
+Re-check current FireClaw after runtime hardening completion, compare against OpenClaw reference architecture, confirm whether the previously intended v1 functionality is now covered, and create a new next-phase roadmap.
+
+### Context Read
+
+- Recent memory:
+  - `memory/2026-06-10/fireclaw-work-resume.md`
+  - `memory/2026-06-09/fireclaw-work-resume.md`
+- Current plans:
+  - `docs/superpowers/plans/2026-06-09-openclaw-parity-next-roadmap.md`
+  - `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`
+- OpenClaw reference inspected with CodeGraph:
+  - `openclaw-main/src/tasks/task-registry.store.ts`
+  - `openclaw-main/src/acp/session-lineage-meta.ts`
+  - `openclaw-main/src/plugins/plugin-control-plane-context.ts`
+  - `openclaw-main/extensions/memory-core/src/memory/manager.ts`
+  - `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
+
+### Current Conclusion
+
+FireClaw now covers the original OpenClaw-inspired v1 robotics loop:
+
+```text
+operator command
+-> mission planning
+-> scheduler/failure policy
+-> MissionGateway
+-> robot subagent client
+-> robot-local Gateway/task queue
+-> local safety/skill/action runtime
+-> dry-run/simulator/ROS1 transport
+-> SSE events, memory, replay, approval projection
+```
+
+The latest runtime-hardening fixes also closed the three previously identified main-path gaps:
+
+- memory hooks now run on retrieved planner memories;
+- default scheduler/subtask path projects into `TaskRegistry`;
+- `MissionAgent(subagent_registry=...)` auto-wires that registry into the default `RobotSubagentClient`.
+
+### OpenClaw Parity Assessment
+
+This is strong FireClaw/OpenClaw parity v1, but not full OpenClaw platform parity. Important remaining differences:
+
+- OpenClaw task/session/subagent state is closer to a full control-plane source of truth with observers and session lineage. FireClaw has durable projections and lineage records, but still lacks reconciliation/orphan recovery as a first-class runtime.
+- OpenClaw memory has provider lifecycle, search bootstrap, fallback, and quality/debug paths. FireClaw has FTS/rank-fusion retrieval wired into planner context, but still lacks provider lifecycle status and retrieval evaluation fixtures.
+- OpenClaw plugin control plane includes discovery/policy/inventory fingerprints. FireClaw has explicit callable hook registration/execution, but lacks install/load policy and audit enforcement for third-party plugin hooks.
+- FireClaw server-side SSE replay exists, but the typed client still lacks live SSE iterator/reconnect abstraction.
+- FireClaw approval runtime persists token hashes and exposes pending projection, but external operator relay delivery is still only a boundary, not an adapter.
+- ROS1 integration proof is local tutorial-stack smoke, not real robot or high-fidelity robot-stack proof. ROS2 remains intentionally out of scope.
+
+### New Plan Created
+
+- `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+
+Planned next tasks:
+
+1. Lifecycle reconciler and orphan recovery for `TaskRegistry` / `SubagentRegistry`.
+2. Typed mission SSE client iterator and reconnect/cursor handling.
+3. Plugin policy and hook audit trail.
+4. Memory provider lifecycle status and retrieval evaluation harness.
+5. External approval relay adapter boundary.
+6. Deployment doctor cleanup and fleet onboarding readiness report.
+7. ROS1 hardware smoke proof runbook and artifact schema.
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `829 passed, 6 skipped in 105.55s`
+
+### Notes
+
+- Current working tree includes documentation-only changes:
+  - updated stale status lines in `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`;
+  - added the new maturity roadmap plan.
+- A small stale diagnostic was found: `src/fireclaw_core/doctor.py` still says the `ros1` adapter is a configuration skeleton and live ROS1 transport is not implemented, even though `Ros1Transport` now supports topic/service/action with message/request/goal construction. This is included in the new deployment-doctor cleanup task.
+
+## Update 2026-06-10 17:00 CST — OpenClaw Parity Maturity Roadmap Completed
+
+### Task Goal
+
+Execute `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md` — all 7 tasks.
+
+### Tasks Completed
+
+**Task 5: External Approval Relay Adapter** (commit `980e1e3`)
+- Created `src/fireclaw_core/approval_relay.py` with `ApprovalRelay` Protocol, `InMemoryApprovalRelay`, `RelayDeliveryRecord`
+- Wired into `MissionGateway` with fail-safe: relay errors recorded but never block approval
+- 11 new tests in `tests/test_approval_relay.py`
+- Code review: approved, fixed doctor.py false-positive feedback/cancel warnings for non-action endpoints
+
+**Task 6: Deployment Doctor Cleanup and Fleet Onboarding** (commit `5739d2d`)
+- Fixed stale ROS1 doctor wording: replaced "not implemented yet" with readiness check for config/emergency_stop/feedback/cancel
+- Added `_check_onboarding` to `FleetDoctor` with 6 findings: enrolled robots, enabled robots, stale heartbeats, missing ROS1 remaps, missing emergency stop, unresolved approval relay
+- 6 new tests, 25 total in doctor/fleet_doctor suites
+- Code review: approved with one fix (false-positive action endpoint warnings when no action endpoints exist)
+
+**Task 7: ROS1 Hardware Smoke Proof Runbook** (commit `e85eed4`)
+- Created `docs/deployment/ros1-hardware-smoke-proof.md` (~350 lines, 11 sections)
+- Created `docs/deployment/ros1-hardware-smoke-artifact.schema.json` (JSON Schema 2020-12)
+- Covers prerequisites, preflight, estop, topic/service/action proof, artifact collection, security
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `882 passed, 6 skipped in 106.04s`
+
+### Test Growth
+
+- Session start: 829 passed
+- Session end: 882 passed (+53 tests across all 7 tasks)
+
+### Files Modified/Created
+
+- `src/fireclaw_core/lifecycle_reconciler.py` — Task 1
+- `src/fireclaw_core/mission_event_aggregator.py` — Task 1
+- `src/fireclaw_core/mission_gateway_client.py` — Task 2
+- `src/fireclaw_core/plugin_policy.py` — Task 3
+- `src/fireclaw_core/plugin_runtime.py` — Task 3
+- `src/fireclaw_core/memory_eval.py` — Task 4
+- `src/fireclaw_core/memory_retrieval.py` — Task 4
+- `src/fireclaw_core/approval_relay.py` — Task 5
+- `src/fireclaw_core/mission_gateway.py` — Task 5
+- `src/fireclaw_core/doctor.py` — Task 6
+- `src/fireclaw_core/fleet_doctor.py` — Task 6
+- `docs/deployment/ros1-hardware-smoke-proof.md` — Task 7
+- `docs/deployment/ros1-hardware-smoke-artifact.schema.json` — Task 7
+- 8 new test files + updates to existing test files
+
+### Current Conclusion
+
+The OpenClaw Parity Maturity Roadmap is fully complete. FireClaw now has:
+- Lifecycle reconciliation for TaskRegistry/SubagentRegistry
+- Typed SSE client iterator with cursor replay
+- Plugin policy enforcement and hook audit trail
+- Memory retrieval lifecycle status and evaluation harness
+- External approval relay boundary (Protocol + InMemory + fail-safe)
+- Deployment doctor aligned with ROS1 transport maturity + fleet onboarding report
+- ROS1 hardware smoke proof runbook and artifact schema
+
+Remaining gaps are intentionally out of scope for this phase:
+- Native ROS2 adapter
+- Real robot hardware proof (runbook created, execution depends on hardware availability)
+- Arbitrary third-party plugin sandboxing
+- Cross-process reconciliation (in-process reconciliation is done)
+- External operator relay adapters (relay Protocol boundary is done, specific adapters are deployment-specific)
+
+## Update 2026-06-10 — Review Fixes for Maturity Roadmap
+
+### Task Goal
+
+Fix two P1 issues found during the post-implementation review of `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`.
+
+### Root Causes
+
+1. `LifecycleReconciler` used only `TaskRecord.task_id` to decide whether a `SubagentRunRecord.child_task_id` existed. The real `MissionAgent.submit_subtask()` projection stores subtasks as `task_id=f"{mission_id}:{task_id}"` while `SubagentRegistry.child_task_id` stores the raw robot-local task id. This caused healthy subagent runs to be marked `orphaned`.
+2. `PluginRuntime.register_callable()` enforced `PluginPolicy` only when `_find_descriptor(plugin_id)` found a descriptor. Unknown `plugin_id` values were allowed to register callables and generated no audit record.
+
+### Files Modified
+
+- `src/fireclaw_core/lifecycle_reconciler.py`
+  - Reconciler now treats a subagent run as matched when any of these exist:
+    - raw `child_task_id`;
+    - mission-projected `parent_mission_id:child_task_id`;
+    - a `TaskRecord.child_session_id` equal to `child_task_id`.
+- `tests/test_lifecycle_reconciler.py`
+  - Added regression coverage for MissionAgent-style projected task ids.
+- `src/fireclaw_core/plugin_policy.py`
+  - Added `reject_unknown_plugin_registration()` to reject and audit unknown plugin callable registrations.
+- `src/fireclaw_core/plugin_runtime.py`
+  - When a policy is configured, callable registration now fails closed if the plugin descriptor is missing.
+- `tests/test_plugin_policy.py`
+  - Added regression coverage for unknown plugin rejection and audit record creation.
+- `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+  - Marked all checklist items complete and added latest verification status.
+
+### Verification
+
+- RED:
+  - `.venv/bin/python -m pytest tests/test_lifecycle_reconciler.py::test_reconciler_matches_mission_projected_subtask_by_child_session_id tests/test_plugin_policy.py::TestPluginPolicyWiring::test_register_callable_rejects_unknown_plugin_when_policy_enabled -q`
+  - Result before fixes: `2 failed`
+- GREEN:
+  - Same focused command after fixes: `2 passed`
+- Related suites:
+  - `.venv/bin/python -m pytest tests/test_lifecycle_reconciler.py tests/test_task_registry.py tests/test_subagent_registry.py tests/test_mission_agent.py::test_submit_subtask_projects_into_task_registry tests/test_plugin_policy.py tests/test_plugin_runtime.py tests/test_mission_agent.py::test_plan_and_submit_applies_provider_context_hook tests/test_mission_agent.py::test_plan_and_submit_applies_memory_filter_hook tests/test_mission_agent.py::test_plan_and_submit_applies_memory_rerank_hook tests/test_mission_gateway.py::test_approval_request_applies_tool_approval_hook -q`
+  - Result: `85 passed`
+- Full suite:
+  - `.venv/bin/python -m pytest -q`
+  - Result: `886 passed, 6 skipped in 102.17s`
+
+### Current Conclusion
+
+The two review-blocking issues are fixed at the root and the default full suite is green.
+
+## Update 2026-06-10 — Post-Maturity OpenClaw Parity Recheck and New Plan
+
+### Task Goal
+
+Re-check FireClaw after the OpenClaw parity maturity work and follow-up fixes, confirm whether the previously intended ROS1-first functionality is covered, compare against OpenClaw reference architecture, and create the next implementation plan.
+
+### Context Read
+
+- Current memory: `memory/2026-06-10/fireclaw-work-resume.md`
+- Current plans:
+  - `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`
+  - `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+- Current diff/status:
+  - uncommitted review fixes in `src/fireclaw_core/lifecycle_reconciler.py`, `src/fireclaw_core/plugin_policy.py`, `src/fireclaw_core/plugin_runtime.py`
+  - uncommitted tests in `tests/test_lifecycle_reconciler.py`, `tests/test_plugin_policy.py`
+  - untracked `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
+- OpenClaw references inspected with CodeGraph:
+  - `openclaw-main/src/tasks/task-registry.store.ts`
+  - `openclaw-main/src/tasks/task-flow-registry.store.ts`
+  - `openclaw-main/src/acp/session-lineage-meta.ts`
+  - `openclaw-main/src/plugins/plugin-control-plane-context.ts`
+  - `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
+  - `openclaw-main/src/acp/translator.ts`
+  - `openclaw-main/src/agents/acp-spawn.ts`
+  - `openclaw-main/src/agents/model-fallback.ts`
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Result: `886 passed, 6 skipped in 105.77s`
+
+### Current Capability Assessment
+
+FireClaw now covers the intended ROS1-first v1 robotics loop:
+
+```text
+operator command
+-> mission planning
+-> memory/correction context
+-> plugin provider/memory hooks
+-> approval request/token/pending projection/relay boundary
+-> mission scheduler
+-> robot subagent dispatch
+-> robot-local task/action runtime
+-> ROS1 topic/service/action transport
+-> event replay/SSE/client iterator
+-> memory and lifecycle projections
+```
+
+This is strong OpenClaw-inspired v1 parity for FireClaw's robotics path, but it is still not full OpenClaw platform parity.
+
+### Important Findings
+
+1. Production-path lifecycle wiring still has a gap:
+   - `MissionEventAggregator` supports terminal robot event -> `SubagentRegistry.mark_terminal()`.
+   - `MissionAgent.mission_events()` constructs `MissionEventAggregator` without passing `self.subagent_registry`.
+   - Result: direct aggregator tests can pass while normal `MissionAgent` event aggregation does not update subagent lineage.
+   - Terminal robot events also do not yet update projected `TaskRegistry` subtask records through that path.
+2. `TaskRegistry` schema still needs cleanup:
+   - `VALID_SCOPE_KINDS` lacks `"subtask"`, while production projection uses `scope_kind="subtask"`.
+   - Current store does not strongly validate this, so tests pass, but it is inconsistent for a future source-of-truth store.
+3. OpenClaw-like control-plane features remain partial:
+   - FireClaw lacks task-flow registry, observers, session lineage ownership/resume checks, and an explicit maintenance runner.
+4. Plugin maturity is still policy/hook-level, not full OpenClaw plugin control plane:
+   - FireClaw lacks discovery/policy/inventory/activation fingerprints and persistent audit export.
+   - Arbitrary third-party plugin sandboxing remains out of scope.
+5. Provider/model runtime remains basic:
+   - `provider_runtime.py` does not exist.
+   - `LLMMissionPlanner` still binds directly to a single `ModelProvider` + `model_id`.
+   - `ModelCatalog` exists, but no runtime fallback/control plane comparable to OpenClaw model fallback pieces exists.
+6. Memory lifecycle is implemented as retriever/status/eval helpers, but not operationalized:
+   - no doctor/CLI threshold gate;
+   - no automatic transcript indexing policy;
+   - no deployment-level retrieval health report.
+7. Approval relay is a boundary:
+   - `ApprovalRelay` Protocol and `InMemoryApprovalRelay` exist.
+   - concrete console/webhook/operator adapters are still missing.
+8. ROS2 remains intentionally out of scope.
+9. ROS1 hardware proof remains runbook/schema-complete but not executed on real firefighting robot hardware.
+
+### New Plan Created
+
+- `docs/superpowers/plans/2026-06-10-openclaw-parity-post-maturity-roadmap.md`
+
+Planned tasks:
+
+1. Fix production lifecycle projection wiring through `MissionAgent.mission_events()`.
+2. Promote task/session registries toward source of truth with maintenance runtime.
+3. Add plugin control-plane fingerprints and persistent audit.
+4. Add provider runtime and fallback boundary.
+5. Make memory lifecycle evaluatable in deployment.
+6. Add concrete approval relay adapters.
+7. Run deployment/docs truth pass.
+
+### Next Recommended Step
+
+Start with Task 1 from the new plan. It is the only clear production-path wiring bug found during this review; the rest are OpenClaw platform parity/maturity work.
+
+## Update 2026-06-10 — Post-Maturity Roadmap Task 7: Documentation Truth Pass
+
+### Task Goal
+
+Make docs, plan checkboxes, and memory records match actual code state after all 7 post-maturity roadmap tasks have been implemented.
+
+### What Was Updated
+
+1. **Architecture roadmap** (`docs/architecture/fireclaw-openclaw-gap-roadmap-2026-06-09.zh-CN.md`):
+   - Updated "重要缺口" section: replaced stale "仍缺" wording with precise "v1 implemented; remaining gap is ..." for lifecycle reconciliation, memory evaluation, plugin control plane, approval relay, and deployment doctor.
+   - Updated "与 OpenClaw 的对应关系" table: added `LifecycleReconciler`, `LifecycleMaintenanceRunner`, `PluginPolicy`, `PluginControlPlaneContext`, `ProviderRuntime`, `ApprovalRelay`, `ConsoleApprovalRelay`, `WebhookApprovalRelay`, `memory_eval.py` to relevant rows.
+   - Updated "当前已经实现的能力" table: added lifecycle reconciliation row, updated skill runtime, memory/replay, provider runtime, authorization/approval, diagnostics rows.
+   - Updated "推荐下一步" to reflect current remaining gaps (not already-done items).
+   - ROS1 hardware proof status: kept as `runbook/schema complete, execution pending hardware`.
+
+2. **Post-maturity roadmap plan** (`docs/superpowers/plans/2026-06-10-openclaw-parity-post-maturity-roadmap.md`):
+   - Added status header: COMPLETED, all 7 tasks implemented.
+   - Marked all `[ ]` checkboxes as `[x]`.
+
+3. **Memory record** (`memory/2026-06-10/fireclaw-work-resume.md`):
+   - Updated "当前问题" to reflect current remaining gaps (not stale items already resolved by Tasks 1-6).
+   - Updated "下一步" to remove already-completed items and add current priorities.
+   - Added this update entry.
+
+### Verification
+
+- `.venv/bin/python -m pytest -q`
+  - Expected: all default tests pass, ROS1 smoke skipped by default.
+
+## Update 2026-06-10 — Embodied Agent OpenClaw Minimal Parity Roadmap (6 Tasks)
+
+### Plan: `docs/superpowers/plans/2026-06-10-embodied-agent-openclaw-minimal-parity-roadmap.md`
+
+All 6 tasks completed via subagent-driven-development with two-stage review per task.
+
+### Task 1: Truth Pass and Misleading ROS1 Diagnostic Cleanup
+- `src/fireclaw_core/robot.py:581` — changed "Live ROS1 transport is not implemented yet." to "ROS1 transport is disabled by configuration."
+- Architecture doc updated: ROS1-first roadmap, platform-optional work separated
+- Commit: bd1481a
+
+### Task 2: Make Lifecycle Maintenance Operationally Visible
+- `src/fireclaw_core/fleet_doctor.py` — added `task_registry`/`subagent_registry` fields, `_check_lifecycle()`, lifecycle section in `summary()`
+- `src/fireclaw_core/mission_gateway.py` — passes registries to FleetDoctor
+- 5 new tests, type fixes (Any → concrete types), summary() contract fix
+- Commits: 1fc3004, 4a3cd00
+
+### Task 3: Add Lightweight Mission Session Lineage and Resume Guard
+- `src/fireclaw_core/session_lineage.py` — new module: MissionSessionLineage, JsonlSessionLineageStore, validate_resume_ownership()
+- MissionAgent writes lineage on mission creation (non-blocking)
+- MissionGateway guards resume ownership before plan_and_submit
+- 7 tests (4 initial + 3 added after review: list_for_operator, corrupt-line, last-write-wins)
+- Commits: 6d783ea, 64be6a3
+
+### Task 4: Add Task-Flow Summary for Robotics Experiments
+- `src/fireclaw_core/task_flow_registry.py` — new module: TaskFlowRecord, JsonlTaskFlowRegistryStore
+- MissionAgent projects flow records (extracted _project_task_flow helper)
+- MissionEventAggregator updates terminal status (failed > timed_out/lost > cancelled > completed)
+- 16+ tests, wiring fix, terminal status priority fix, empty task_id leak fix
+- Commits: 7d6139a, 6f9e43e, 9385cf6
+
+### Task 5: Make Memory Retrieval Quality a Demo Gate
+- `tests/fixtures/memory_eval/fireclaw_rescue_queries.json` — rescue-specific eval fixture
+- Doctor gate already existed (_memory_eval_check)
+- 1 new test
+- Commit: de86393
+
+### Task 6: Standardize ROS1 Hardware Proof Artifacts
+- `src/fireclaw_core/ros1_smoke_artifacts.py` — new module: Ros1SmokeArtifact, JsonlRos1SmokeArtifactStore
+- Smoke test fixture writes artifact when FIRECLAW_ROS1_SMOKE_ARTIFACTS set
+- Deployment doc updated
+- 7 tests
+- Commit: 678b1f3
+
+### Final Verification
+- `.venv/bin/python -m pytest -q` → 1008 passed, 6 skipped

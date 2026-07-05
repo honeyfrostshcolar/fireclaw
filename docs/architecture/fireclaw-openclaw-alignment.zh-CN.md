@@ -1,0 +1,392 @@
+# FireClaw 与 OpenClaw 对齐架构
+
+## 目的
+
+这份文档是 FireClaw 对齐 OpenClaw 的工程架构基线。
+
+目标不是逐行复制 OpenClaw，而是复用 OpenClaw 已经验证过的 agent、session、gateway、task、subagent、permission、memory、provider、plugin 等边界，然后针对消防机器人做工程化改造：
+
+- 物理安全；
+- 机器人本地自主权；
+- 弱通信和断连场景；
+- 可审计任务执行；
+- 仿真与真机隔离；
+- ROS / 机器人 SDK 集成；
+- 多机器人协同。
+
+## 目标系统形态
+
+FireClaw 应该构建为一个 mission-level 主智能体，协调多个具身机器人子智能体：
+
+```text
+Operator
+-> FireClaw Main Mission Agent
+   -> Robot FireClaw Subagent A
+   -> Robot FireClaw Subagent B
+   -> Robot FireClaw Subagent C
+      -> Local Gateway
+      -> Local Planner / Safety Gate / Skills
+      -> ROS / Simulator / Robot SDK Adapter
+```
+
+主智能体负责任务级推理与协调。每个机器人子智能体负责本地具身执行权限。主智能体不能绕过机器人子智能体直接调用 ROS topic、service、action、电机、水炮、机械臂或其他硬件接口。
+
+## OpenClaw 概念映射
+
+| OpenClaw 概念 | FireClaw 主层 | FireClaw 机器人子层 | 当前 FireClaw 状态 |
+|---|---|---|---|
+| Agent | `MissionAgent` | `FireClawAgent` | 主层和机器人本地 agent 都已有基础实现。 |
+| Session | mission/operator session | 机器人本地 task/session context | 机器人本地 session 已有；mission session 目前主要通过 mission ID 隐式表达。 |
+| Subagent | 机器人 FireClaw 节点作为可调用子智能体 | 后续可增加本地诊断 worker | 通过 `RobotSubagentClient` 已有基础子智能体契约。 |
+| Gateway/control plane | 未来的 mission Gateway/API/CLI | `FireClawGateway` | 机器人本地 Gateway 已有；mission CLI 已有；mission HTTP API 缺失。 |
+| Task registry | `JsonlMissionRegistry` | `JsonlTaskQueue` | 两层 registry/queue 都已有。 |
+| Task runtime progress | mission trace aggregation | event ledger、task trace、action feedback | 机器人 trace 已有；mission trace 聚合已有；mission live stream 缺失。 |
+| Permissions/scopes | mission-level authorization scopes | 机器人本地 operator authorization | 两层都有基础实现。 |
+| Safety/sandbox | mission 调用策略和 subagent 边界 | safety gate、emergency stop、ROS transport gating | 机器人本地安全已有；mission failure policy 还不完整。 |
+| Memory | mission memory 和 fleet lessons | 机器人本地 task/environment memory | 机器人本地 memory 已有；mission memory 还没有完整设计。 |
+| Provider runtime | mission-level model selection | 机器人本地/边缘模型 fallback | 尚未实现。 |
+| Tools/skills/plugins | mission tools: plan、assign、cancel、query、aggregate | robot skills: navigate、search、assess、report、stop | 机器人 skill runtime 已有；mission tools 目前还是 Python/CLI 方法。 |
+| Config/doctor/onboarding | fleet 和 mission config 检查 | robot ROS/skill/config 检查 | robot doctor 已有；fleet doctor 缺失。 |
+
+## 分层职责
+
+### 1. Operator Interface Layer
+
+职责：
+
+- 接收自然语言 mission command；
+- 展示 mission 状态、subtask 状态、安全阻断和确认请求；
+- 允许 mission submit、trace、cancel 和后续 approval 操作；
+- 把面向人的输出和机器可读 trace 分开。
+
+当前实现：
+
+- `fireclaw_core.mission_cli` 提供 `submit-subtask`、`trace`、`cancel`、`plan-mission`。
+- `operator_console` 能把机器人本地事件投影成中文状态文本。
+
+缺失：
+
+- mission HTTP API；
+- mission live progress stream；
+- approval workflow UI；
+- 多机器人 mission operator console。
+
+### 2. Main Mission Agent Layer
+
+职责：
+
+- 维护 mission-level 状态；
+- 把 mission plan 分解为机器人 subtask；
+- 检查 fleet presence；
+- 执行 mission-level authorization；
+- 向机器人子智能体提交 subtask；
+- 通过传播 cancel 请求取消 mission；
+- 把机器人本地 trace 聚合成 mission trace。
+
+当前实现：
+
+- `MissionAgent`
+- `MissionPlanner`
+- `JsonlMissionRegistry`
+- 基于 `ControlPolicy` 的 mission-level authorization
+- 基于 `RobotSubagentClient.check_presence(...)` 的 fleet presence check
+
+缺失：
+
+- 遵守 `MissionPlan.execution_group` 的 execution scheduler；
+- 处理 denied、offline、failed、timeout、unreachable subtask 的 mission failure policy；
+- mission-level event stream；
+- mission memory 读写路径；
+- mission HTTP Gateway。
+
+### 3. Fleet/Subagent Contract Layer
+
+职责：
+
+- 存储已知机器人子智能体；
+- 描述机器人能力、区域、启用状态和在线状态；
+- 通过稳定 API 调用机器人本地 Gateway；
+- 让 mission planning 不关心底层 transport 细节。
+
+当前实现：
+
+- `RobotRegistry`
+- `RobotRegistryEntry`
+- `RobotSubagentClient`
+- 针对 state、submit、trace、cancel、presence 的基础 HTTP 调用。
+
+缺失：
+
+- fleet config validation / doctor；
+- heartbeat freshness threshold policy；
+- robot pairing 或 enrollment flow；
+- retry/backoff/circuit-breaker 行为；
+- HTTP 之外的 transport abstraction。
+
+### 4. Robot Subagent Control Plane
+
+职责：
+
+- 接收机器人本地任务；
+- 执行机器人本地 authorization 和 safety；
+- 运行本地 `FireClawAgent`；
+- 持久化 task queue 状态；
+- 暴露 task trace、events、state、cancel、emergency stop。
+
+当前实现：
+
+- `FireClawGateway`
+- `JsonlTaskQueue`
+- `EventLedger`
+- 机器人本地 authorization
+- emergency stop
+- async task execution 和 cancellation
+
+缺失：
+
+- SSE/WebSocket 或同类 event streaming endpoint；
+- 更强的 queue compaction / retention policy；
+- process restart 后除了标记 stale task 为 lost 之外的恢复策略；
+- 真实部署认证。
+
+### 5. Robot Agent, Planner, and Skill Runtime
+
+职责：
+
+- 理解机器人本地命令；
+- 验证 skill schema 和 precondition；
+- 执行 skill 和 robot action；
+- 上报 action feedback 和 terminal outcome；
+- 保持 planner / skill / adapter 分离。
+
+当前实现：
+
+- `FireClawAgent`
+- 本地 planner 和 safety gate
+- skill manifest loading
+- `RobotActionRuntime`
+- robot adapter boundary
+- action feedback 和 cancellation event handling
+
+缺失：
+
+- 面向更多消防任务的机器人本地 planner；
+- 更多真实机器人能力的 typed skill contracts；
+- 更强的 failure taxonomy；
+- skill-level degraded-mode policies。
+
+### 6. Robot Adapter and ROS Integration Layer
+
+职责：
+
+- 隔离 ROS、simulator、SDK、perception、navigation、manipulation、communication、actuation API；
+- 把 FireClaw action 渲染为机器人特定 payload；
+- 在 live transport 前强制显式配置；
+- 传播 feedback、timeout、cancellation。
+
+当前实现：
+
+- `Ros1RobotAdapter`
+- `Ros1Transport`
+- `ros1_config`
+- `ros1_template`
+- mock、simulator、dry-run、ROS1 adapter modes
+
+缺失：
+
+- live ROS master smoke tests；
+- 超出 dictionary payload 的真实 ROS message construction/introspection；
+- ROS2 adapter 的真实实现；
+- long-lived multi-action client registry；
+- 面向部署的 robot config examples。
+
+### 7. Memory and Audit Layer
+
+职责：
+
+- 记录 mission、task、trace、observation、outcome、operator correction 和可复用经验；
+- 保持机器人本地 incident log 可审计；
+- 支持 mission-level retrieval，同时不隐藏机器人本地 source of truth。
+
+当前实现：
+
+- agent run JSONL memory store；
+- `EventLedger`；
+- `JsonlTaskQueue`；
+- `JsonlMissionRegistry`。
+
+缺失：
+
+- first-class mission memory model；
+- 按 mission、robot、location、capability、outcome、operator 的 retrieval filters；
+- cross-robot lessons；
+- retention 和 sensitive-log policy。
+
+### 8. Model and Provider Runtime Layer
+
+职责：
+
+- 为 mission planning 和机器人本地 reasoning 选择 LLM/provider backend；
+- 当模型不可用时支持 deterministic fallback；
+- 隔离 provider-specific request/response 行为。
+
+当前实现：
+
+- 当前主要依赖 deterministic planner 和 Python 逻辑。
+- 尚无独立 provider runtime。
+
+缺失：
+
+- model provider abstraction；
+- 面向 mission planner 的 tool-calling runtime；
+- prompt/runtime configuration；
+- 可 replay 的 LLM traces，用于测试；
+- rule-based planning fallback。
+
+## 核心数据流
+
+### Mission Planning and Execution
+
+```text
+operator command
+-> mission authorization
+-> fleet presence check
+-> mission planning
+-> mission registry record
+-> subtask submission to robot subagents
+-> robot-local task queue and execution
+-> robot-local event/task traces
+-> mission trace aggregation
+-> operator status
+```
+
+### Robot-Local Execution
+
+```text
+subtask request
+-> robot-local authorization
+-> safety gate
+-> planner
+-> skill runtime
+-> robot adapter
+-> ROS/simulator/SDK call
+-> feedback/cancel/result
+-> event ledger and task queue
+-> trace response to main agent
+```
+
+### Cancellation
+
+```text
+operator cancel mission
+-> mission authorization
+-> mission registry lookup
+-> skip terminal subtasks
+-> call robot subagent cancel endpoints
+-> robot-local cancel event
+-> action runtime cancellation
+-> ROS action cancel_goal when applicable
+-> mission registry status update
+```
+
+## 当前构建状态
+
+2026-06-08 最近一次记录的验证状态：
+
+- branch: `master`，领先 `origin/master` 8 个提交；
+- latest commit: `4cf1120 feat: add fleet heartbeat v1 with presence-based robot filtering`；
+- verification: `.venv/bin/python -m pytest -q` -> `265 passed in 15.22s`。
+
+当时存在的未跟踪 planning/config artifacts：
+
+- `.claude/`
+- `CLAUDE.md`
+- `CLAUDE.zh-CN.md`
+- `docs/superpowers/plans/2026-06-08-fleet-heartbeat-v1.md`
+- `docs/superpowers/plans/2026-06-08-mission-authorization-v1.md`
+- `docs/superpowers/plans/2026-06-08-mission-planner-v1.md`
+
+## 框架完成路线图
+
+### Phase 1: 稳定 Main/Subagent 骨架
+
+目标：让当前架构真正表现为一个一致的多机器人框架。
+
+任务：
+
+- Mission Scheduler v1：按顺序执行 `MissionPlan.execution_group`。
+- Mission failure policy：定义 stop、continue、retry、reassign、escalate。
+- Mission trace stream：从机器人本地 trace 暴露 live mission progress。
+- Fleet doctor：验证 registry、robot reachability、capabilities 和 ROS config coverage。
+
+这一阶段应该先于增加更多任务类型，因为它让核心控制闭环可靠。
+
+### Phase 2: 完成机器人本地具身运行时
+
+目标：让每个机器人子智能体成为可信的本地具身 agent。
+
+任务：
+
+- 更丰富的消防 skill metadata；
+- typed skill input/output contracts；
+- adapter-specific capability declarations；
+- 使用真实 ROS master 的 ROS1 smoke tests；
+- simulator / real-robot separation checks；
+- 更强的 local failure taxonomy。
+
+### Phase 3: 增加 Mission Memory 和 Operator Workflow
+
+目标：让 mission 可恢复、可检查，并能跨运行积累经验。
+
+任务：
+
+- mission memory records；
+- cross-robot event aggregation；
+- operator correction recording；
+- 高风险 mission 操作 approval workflow；
+- 基于 mission trace 和 robot-local trace 的 incident replay。
+
+### Phase 4: 增加 Model Provider Runtime
+
+目标：引入 LLM planning，但不让框架正确性依赖模型质量。
+
+任务：
+
+- provider abstraction；
+- tool-calling mission planner；
+- prompt/runtime configuration；
+- replayable LLM traces；
+- deterministic fallback 到 rule-based planning。
+
+### Phase 5: 部署加固
+
+目标：为真实机器人或高保真仿真部署做准备。
+
+任务：
+
+- authentication 和 signed operator approvals；
+- robot pairing / enrollment；
+- heartbeat freshness 和 degraded network policy；
+- queue retention 和 log redaction；
+- deployment config examples；
+- robot control endpoints 安全审查。
+
+## 近期工程优先级
+
+下一步工程任务应该是 `Mission Scheduler v1`。
+
+原因：
+
+- planner 已经生成 `execution_group`；
+- mission agent 已经能 submit、cancel、authorize、check presence 和 aggregate traces；
+- 如果没有 scheduler，多机器人计划只是部分实现；
+- scheduler 是定义 failure policy、retry、reassign、escalation 的自然位置。
+
+最低验收标准：
+
+- 同一个 execution group 的 subtasks 能作为一个 scheduling batch 提交；
+- 后续 groups 只有在前序 groups 到达可接受状态后才启动；
+- denied / offline / failed / cancelled subtasks 会产生明确的 mission-level decision；
+- mission registry 会记录 scheduling decisions；
+- 测试覆盖多机器人并行计划和单机器人顺序计划。
+

@@ -1,0 +1,29 @@
+.codegraph/
+.codex/
+.claude/
+.vscode/
+.pytest_cache/
+.venv/
+.venv*/
+.deps/
+.tmp/
+pytest_tmp*/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Local reference checkout; keep it available for CodeGraph/reference use, not as FireClaw source.
+openclaw-main/
+
+# Runtime logs and generated local traces.
+*.jsonl
+logs/
+results/
+checkpoints/
+data/rag/fire_rescue/raw/
+data/rag/fire_rescue/extracted/
+data/rag/fire_rescue/chunks/
+data/rag/fire_rescue/index_inputs/
+
+# FireClaw config (may contain secrets)
+fireclaw.toml

@@ -1,0 +1,32 @@
+[robot]
+id = "gazebo_turtlebot3"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
+data_dir = "data/robots/gazebo_turtlebot3"
+capabilities = ["search_for_victims", "patrol"]
+enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"]
+llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"]
+primitive_skills = ["navigate_to_floor", "report_status"]
+
+[capability_skill_chains]
+search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]
+patrol = ["navigate_to_floor", "report_status"]
+
+[robot.sensor_discovery]
+enabled = true
+message_timeout_seconds = 2.0
+
+[[robot.sensor_discovery.rules]]
+topic_pattern = "/camera/image_raw"
+message_type = "sensor_msgs/Image"
+sensor = "rgb_camera"
+confidence = 0.9
+confirmed = false
+
+[[robot.sensor_discovery.rules]]
+topic_pattern = "/scan"
+message_type = "sensor_msgs/LaserScan"
+sensor = "lidar"
+confidence = 0.99
+confirmed = true

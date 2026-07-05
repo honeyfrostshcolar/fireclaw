@@ -1,0 +1,17 @@
+# ROS1 actionlib Fibonacci example
+# Use with: rosrun actionlib_tutorials fibonacci_server.py
+robot_id: "fibonacci_robot"
+transport:
+  enabled: true
+  wait_for_server_seconds: 5.0
+  wait_for_result_seconds: 30.0
+endpoints:
+  navigate_to_floor:
+    interface: action
+    name: "/fibonacci"
+    type: "actionlib_tutorials/FibonacciAction"
+    cancel_supported: true
+    feedback_supported: true
+    goal_template:
+      order: "${floor}"
+targets:

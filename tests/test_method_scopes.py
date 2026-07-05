@@ -1,0 +1,327 @@
+from fireclaw_core.gateway.method_scopes import (
+    ADMIN_SCOPE,
+    APPROVALS_SCOPE,
+    EMERGENCY_SCOPE,
+    PAIRING_SCOPE,
+    READ_SCOPE,
+    WRITE_SCOPE,
+    AuthorizationResult,
+    MethodDescriptor,
+    all_descriptors,
+    authorize_method,
+    resolve_required_scope,
+)
+
+
+class TestScopeConstants:
+    def test_scope_constants_are_strings(self):
+        assert isinstance(ADMIN_SCOPE, str)
+        assert isinstance(READ_SCOPE, str)
+        assert isinstance(WRITE_SCOPE, str)
+        assert isinstance(APPROVALS_SCOPE, str)
+        assert isinstance(PAIRING_SCOPE, str)
+        assert isinstance(EMERGENCY_SCOPE, str)
+
+    def test_admin_scope_value(self):
+        assert ADMIN_SCOPE == "admin"
+
+    def test_read_scope_value(self):
+        assert READ_SCOPE == "state.read"
+
+    def test_write_scope_value(self):
+        assert WRITE_SCOPE == "task.submit"
+
+
+class TestMethodDescriptor:
+    def test_descriptor_creation(self):
+        desc = MethodDescriptor(
+            method="GET /state",
+            required_scope=READ_SCOPE,
+            category="read",
+            description="Robot state",
+        )
+        assert desc.method == "GET /state"
+        assert desc.required_scope == READ_SCOPE
+        assert desc.category == "read"
+
+    def test_descriptor_frozen(self):
+        desc = MethodDescriptor(
+            method="GET /state",
+            required_scope=READ_SCOPE,
+            category="read",
+        )
+        try:
+            desc.method = "changed"  # type: ignore[misc]
+            assert False, "Should be frozen"
+        except AttributeError:
+            pass
+
+
+class TestResolveRequiredScope:
+    def test_known_method_returns_scope(self):
+        scope = resolve_required_scope("GET /state")
+        assert scope == READ_SCOPE
+
+    def test_unknown_method_returns_admin(self):
+        scope = resolve_required_scope("GET /totally-unknown")
+        assert scope == ADMIN_SCOPE
+
+    def test_post_missions_requires_submit(self):
+        scope = resolve_required_scope("POST /missions")
+        assert scope == WRITE_SCOPE
+
+    def test_emergency_stop_requires_emergency(self):
+        scope = resolve_required_scope("POST /emergency-stop")
+        assert scope == EMERGENCY_SCOPE
+
+    def test_parameterized_path_matches(self):
+        scope = resolve_required_scope("GET /tasks/task-123")
+        assert scope == READ_SCOPE
+
+    def test_parameterized_path_matches_events(self):
+        scope = resolve_required_scope("GET /tasks/task-123/events")
+        assert scope == READ_SCOPE
+
+    def test_parameterized_cancel_matches(self):
+        scope = resolve_required_scope("POST /tasks/task-123/cancel")
+        assert scope == WRITE_SCOPE
+
+    def test_mission_trace_matches(self):
+        scope = resolve_required_scope("GET /missions/mission-456/trace")
+        assert scope == READ_SCOPE
+
+    def test_mission_cancel_matches(self):
+        scope = resolve_required_scope("POST /missions/mission-456/cancel")
+        assert scope == WRITE_SCOPE
+
+    def test_mission_approvals_matches(self):
+        scope = resolve_required_scope("POST /missions/mission-456/approvals")
+        assert scope == APPROVALS_SCOPE
+
+
+class TestAuthorizeMethod:
+    def test_admin_allows_everything(self):
+        result = authorize_method("POST /missions", {ADMIN_SCOPE})
+        assert result.allowed is True
+
+    def test_read_scope_allows_read_endpoint(self):
+        result = authorize_method("GET /state", {READ_SCOPE})
+        assert result.allowed is True
+
+    def test_write_scope_allows_read_endpoint(self):
+        result = authorize_method("GET /state", {WRITE_SCOPE})
+        assert result.allowed is True
+
+    def test_read_scope_denies_write_endpoint(self):
+        result = authorize_method("POST /missions", {READ_SCOPE})
+        assert result.allowed is False
+        assert result.missing_scope == WRITE_SCOPE
+
+    def test_empty_scopes_denies_read(self):
+        result = authorize_method("GET /state", set())
+        assert result.allowed is False
+        assert result.missing_scope == READ_SCOPE
+
+    def test_unknown_endpoint_requires_admin(self):
+        result = authorize_method("GET /unknown", {WRITE_SCOPE})
+        assert result.allowed is False
+        assert result.missing_scope == ADMIN_SCOPE
+
+    def test_approval_scope_required_for_approvals(self):
+        result = authorize_method("POST /missions/abc/approvals", {WRITE_SCOPE})
+        assert result.allowed is False
+        assert result.missing_scope == APPROVALS_SCOPE
+
+    def test_emergency_scope_required_for_emergency(self):
+        result = authorize_method("POST /emergency-stop", {WRITE_SCOPE})
+        assert result.allowed is False
+        assert result.missing_scope == EMERGENCY_SCOPE
+
+    def test_pairing_scope_required_for_enrollment(self):
+        result = authorize_method("POST /enrollment", {WRITE_SCOPE})
+        assert result.allowed is False
+        assert result.missing_scope == PAIRING_SCOPE
+
+    def test_write_implies_read_for_missions_trace(self):
+        result = authorize_method("GET /missions/abc/trace", {WRITE_SCOPE})
+        assert result.allowed is True
+
+    def test_write_implies_read_for_fleet_state(self):
+        result = authorize_method("GET /fleet/state", {WRITE_SCOPE})
+        assert result.allowed is True
+
+    def test_approvals_does_not_imply_write(self):
+        result = authorize_method("POST /missions", {APPROVALS_SCOPE})
+        assert result.allowed is False
+        assert result.missing_scope == WRITE_SCOPE
+
+
+class TestAllDescriptors:
+    def test_returns_list(self):
+        descriptors = all_descriptors()
+        assert isinstance(descriptors, list)
+        assert len(descriptors) > 0
+
+    def test_contains_robot_gateway_endpoints(self):
+        descriptors = all_descriptors()
+        methods = [d.method for d in descriptors]
+        assert "GET /state" in methods
+        assert "POST /tasks" in methods
+        assert "POST /emergency-stop" in methods
+
+    def test_contains_mission_gateway_endpoints(self):
+        descriptors = all_descriptors()
+        methods = [d.method for d in descriptors]
+        assert "POST /missions" in methods
+        assert "GET /fleet/state" in methods
+
+    def test_sorted_by_method(self):
+        descriptors = all_descriptors()
+        methods = [d.method for d in descriptors]
+        assert methods == sorted(methods)
+
+
+class TestAuthorizationResult:
+    def test_allowed_result(self):
+        result = AuthorizationResult(allowed=True)
+        assert result.allowed is True
+        assert result.missing_scope is None
+
+    def test_denied_result(self):
+        result = AuthorizationResult(allowed=False, missing_scope=WRITE_SCOPE)
+        assert result.allowed is False
+        assert result.missing_scope == WRITE_SCOPE
+
+
+class TestGatewayScopeEnforcement:
+    """Test that gateways enforce method scopes end-to-end."""
+
+    def _make_gateway(self):
+        from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+        gateway = FireClawGateway(GatewayConfig(adapter="dry-run", port=0))
+        gateway.start()
+        return gateway
+
+    def test_read_scope_allows_get_state(self):
+        import urllib.request
+        gateway = self._make_gateway()
+        try:
+            req = urllib.request.Request(
+                f"{gateway.base_url}/state",
+                headers={"X-Operator-Scopes": "state.read"},
+            )
+            resp = urllib.request.urlopen(req)
+            assert resp.status == 200
+        finally:
+            gateway.stop()
+
+    def test_read_scope_denies_post_tasks(self):
+        import urllib.request
+        import json
+        gateway = self._make_gateway()
+        try:
+            data = json.dumps({"command": "test"}).encode()
+            req = urllib.request.Request(
+                f"{gateway.base_url}/tasks",
+                data=data,
+                headers={
+                    "X-Operator-Scopes": "state.read",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req)
+                assert False, "Should have returned 403"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+                body = json.loads(e.read())
+                assert "task.submit" in body["message"]
+        finally:
+            gateway.stop()
+
+    def test_write_scope_allows_post_tasks(self):
+        import urllib.request
+        import json
+        gateway = self._make_gateway()
+        try:
+            data = json.dumps({"command": "test"}).encode()
+            req = urllib.request.Request(
+                f"{gateway.base_url}/tasks",
+                data=data,
+                headers={
+                    "X-Operator-Scopes": "task.submit",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req)
+            assert resp.status == 202
+        finally:
+            gateway.stop()
+
+    def test_no_scope_header_defaults_to_read_only(self):
+        import urllib.request
+        import json
+        gateway = self._make_gateway()
+        try:
+            # GET /state should work with no scope header (default read)
+            req = urllib.request.Request(f"{gateway.base_url}/state")
+            resp = urllib.request.urlopen(req)
+            assert resp.status == 200
+
+            # POST /tasks should fail with no scope header (default read)
+            data = json.dumps({"command": "test"}).encode()
+            req = urllib.request.Request(
+                f"{gateway.base_url}/tasks",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req)
+                assert False, "Should have returned 403"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+        finally:
+            gateway.stop()
+
+    def test_health_bypasses_scope_enforcement(self):
+        import urllib.request
+        gateway = self._make_gateway()
+        try:
+            # Health check should work even with empty scopes
+            req = urllib.request.Request(
+                f"{gateway.base_url}/health",
+                headers={"X-Operator-Scopes": ""},
+            )
+            resp = urllib.request.urlopen(req)
+            assert resp.status == 200
+        finally:
+            gateway.stop()
+
+    def test_emergency_scope_required_for_emergency_stop(self):
+        import urllib.request
+        import json
+        gateway = self._make_gateway()
+        try:
+            # Write scope should NOT allow emergency stop
+            data = json.dumps({}).encode()
+            req = urllib.request.Request(
+                f"{gateway.base_url}/emergency-stop",
+                data=data,
+                headers={
+                    "X-Operator-Scopes": "task.submit",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req)
+                assert False, "Should have returned 403"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+                body = json.loads(e.read())
+                assert "emergency.stop" in body["message"]
+        finally:
+            gateway.stop()
