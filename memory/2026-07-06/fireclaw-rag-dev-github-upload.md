@@ -1,8 +1,8 @@
 # FireClaw rag-dev GitHub Upload
 
 **Date:** 2026-07-06
-**Last update:** 2026-07-06 07:20:59 +08:00; updated after commit on same session
-**Status:** Local branch committed; upload blocked on GitHub remote.
+**Last update:** 2026-07-06 07:20:59 +08:00; updated after commit and remote URL confirmation on same session
+**Status:** Local branch committed; GitHub remote URL received.
 
 ## Task Goal
 
@@ -87,17 +87,21 @@ Result:
 - files changed: `454`
 - insertions: `113576`
 
-## Current Blocker
+## Remote URL Received
 
-Need the user to provide:
+The user provided the GitHub repository URL:
 
-- GitHub remote URL, e.g. `https://github.com/<user>/<repo>.git`
+```text
+https://github.com/honeyfrostshcolar/fireclaw.git
+```
 
-After that, recommended commands:
+Next commands to run:
 
 ```powershell
-git -C C:\Users\L\Desktop\lpp\fireclaw-master remote add origin <remote-url>
+git -C C:\Users\L\Desktop\lpp\fireclaw-master remote add origin https://github.com/honeyfrostshcolar/fireclaw.git
 git -C C:\Users\L\Desktop\lpp\fireclaw-master push -u origin rag-dev
 ```
+
+## Current Blocker
 
 Network push will likely require elevated command execution and valid GitHub credentials/token already available to Git.
