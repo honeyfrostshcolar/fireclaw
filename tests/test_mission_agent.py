@@ -1,9 +1,12 @@
+from unittest.mock import MagicMock
+
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.memory.memory_retrieval import RetrievedMemory
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.agent.robot_agent import envelope_from_structured_task
 from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
+from fireclaw_core.mission.mission_planning_audit import GuardDecision, MissionPlanningAuditRecord
 from fireclaw_core.mission.mission_planner import MissionPlan, MissionPlannerContext, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
 from fireclaw_core.plugin.plugin_runtime import PluginRuntime
@@ -67,6 +70,19 @@ class FakeMemoryRetriever:
         return self.results[:limit]
 
 
+class FakeAuditSink:
+    def __init__(self):
+        self.records = []
+
+    def record(self, record):
+        self.records.append(record)
+
+
+class FailingAuditSink:
+    def record(self, record):
+        raise RuntimeError("audit unavailable")
+
+
 def test_mission_agent_submits_explicit_subtask_to_registered_robot():
     registry = RobotRegistry(
         [
@@ -117,6 +133,204 @@ def test_mission_agent_rejects_unknown_robot_without_submitting():
         "message": "Robot subagent is not registered.",
         "subtasks": [],
     }
+    assert client.calls == []
+
+
+def test_mission_agent_records_validator_allow_decision_before_dispatch():
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(
+                robot_id="robot-1",
+                base_url="http://robot-1.local:8765",
+                capabilities=("search_for_victims",),
+            )
+        ]
+    )
+    client = FakeSubagentClient()
+    audit_sink = FakeAuditSink()
+    base_audit = MissionPlanningAuditRecord(
+        command="去二楼搜索受困人员",
+        available_robots=[
+            {
+                "robot_id": "robot-1",
+                "capabilities": ["search_for_victims"],
+                "enabled": True,
+                "zone": None,
+            }
+        ],
+        tool_schema={"type": "function"},
+        llm_tool_call={"name": "create_mission_plan", "arguments": {}},
+        decisions=[
+            GuardDecision(
+                layer="parser",
+                status="allow",
+                reason="mission_plan_parsed",
+                message="LLM mission plan parsed.",
+            )
+        ],
+        final_status="planned",
+        final_message="planned",
+        created_at="2026-07-04T00:00:00+00:00",
+    )
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="去二楼搜索受困人员",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="robot-1",
+                    command="去2楼搜索受困人员",
+                    floor=2,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=base_audit,
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_planning_audit_sink=audit_sink,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索受困人员", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    assert len(audit_sink.records) == 1
+    record = audit_sink.records[0]
+    assert record.mission_id == "mission-1"
+    assert record.final_status == "planned"
+    assert record.decisions[-1].layer == "validator"
+    assert record.decisions[-1].status == "allow"
+    assert record.decisions[-1].reason == "mission_plan_valid"
+    assert client.calls
+
+
+def test_mission_agent_records_validator_block_decision_without_dispatching():
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(
+                robot_id="robot-1",
+                base_url="http://robot-1.local:8765",
+                capabilities=("search_for_victims",),
+            )
+        ]
+    )
+    client = FakeSubagentClient()
+    audit_sink = FakeAuditSink()
+    base_audit = MissionPlanningAuditRecord(
+        command="去二楼搜索受困人员",
+        available_robots=[
+            {
+                "robot_id": "robot-1",
+                "capabilities": ["search_for_victims"],
+                "enabled": True,
+                "zone": None,
+            }
+        ],
+        tool_schema={"type": "function"},
+        llm_tool_call={"name": "create_mission_plan", "arguments": {}},
+        decisions=[],
+        final_status="planned",
+        final_message="planned",
+        created_at="2026-07-04T00:00:00+00:00",
+    )
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="去二楼搜索受困人员",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="robot-1",
+                    command="去2楼搜索受困人员",
+                    floor=0,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=base_audit,
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_planning_audit_sink=audit_sink,
+    )
+
+    result = mission.plan_and_submit("去二楼搜索受困人员", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "blocked"
+    assert "Subtask floor must be positive" in result["errors"][0]
+    assert client.calls == []
+    assert len(audit_sink.records) == 1
+    record = audit_sink.records[0]
+    assert record.final_status == "blocked"
+    assert record.decisions[-1].layer == "validator"
+    assert record.decisions[-1].status == "block"
+    assert record.decisions[-1].reason == "mission_plan_invalid"
+    assert "errors" in record.decisions[-1].details
+
+
+def test_mission_agent_blocks_allowed_plan_when_audit_sink_fails():
+    registry = RobotRegistry(
+        [
+            RobotRegistryEntry(
+                robot_id="robot-1",
+                base_url="http://robot-1.local:8765",
+                capabilities=("search_for_victims",),
+            )
+        ]
+    )
+    client = FakeSubagentClient()
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="去二楼搜索受困人员",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="robot-1",
+                    command="去2楼搜索受困人员",
+                    floor=2,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=MissionPlanningAuditRecord(
+            command="去二楼搜索受困人员",
+            available_robots=[],
+            tool_schema={"type": "function"},
+            llm_tool_call=None,
+            decisions=[],
+            final_status="planned",
+            final_message="planned",
+            created_at="2026-07-04T00:00:00+00:00",
+        ),
+    )
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_planning_audit_sink=FailingAuditSink(),
+    )
+
+    result = mission.plan_and_submit("去二楼搜索受困人员", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "blocked"
+    assert result["message"] == "Mission planning audit could not be recorded."
+    assert result["subtask_results"] == []
     assert client.calls == []
 
 

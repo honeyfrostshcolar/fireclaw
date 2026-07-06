@@ -103,6 +103,7 @@ def start_server(
         session_lineage=data_dir / "lineage.jsonl",
         task_flow=data_dir / "flows.jsonl",
         approvals=data_dir / "approvals.jsonl",
+        mission_planning_audit=data_dir / "mission-planning-audit.jsonl",
     )
 
     agent = build_mission_agent_from_paths(

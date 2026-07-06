@@ -131,3 +131,109 @@ Use one of:
 - `superpowers:subagent-driven-development` if the user explicitly authorizes subagent-driven work.
 
 Given the current environment and user request to continue working, inline execution is the simplest default unless the user asks for subagents.
+
+## 2026-07-04 Update: Mission Planning Guard/Audit Implemented
+
+**Timestamp:** 2026-07-04 Asia/Shanghai, current session.
+
+### Task Goal
+
+Execute `docs/superpowers/plans/2026-07-04-fireclaw-mission-planning-guard-audit.md` with TDD.
+
+### Files Modified
+
+- Added:
+  - `src/fireclaw_core/mission/mission_planning_audit.py`
+  - `tests/test_mission_planning_audit.py`
+- Modified:
+  - `src/fireclaw_core/mission/mission_planner.py`
+  - `src/fireclaw_core/planner/llm_planner.py`
+  - `src/fireclaw_core/mission/mission_agent.py`
+  - `tests/test_llm_planner.py`
+  - `tests/test_mission_agent.py`
+  - `tests/test_gateway.py`
+
+### Implementation Summary
+
+- Added `GuardDecision`, `MissionPlanningAuditRecord`, `MissionPlanningAuditSink`, `build_available_robot_snapshot()`, `append_guard_decision()`, and `utc_now_iso()`.
+- Added optional `audit_record` to `MissionPlanningResult`.
+- Added `build_constrained_mission_plan_tool(context)` in `LLMMissionPlanner`.
+  - Deep-copies `MISSION_PLAN_TOOL`.
+  - Injects `robot_id.enum` from `context.available_robots`.
+  - Leaves the base schema unchanged.
+- Added no-available-robots preflight guard in `LLMMissionPlanner.plan()`.
+  - Does not call provider.
+  - Returns `MissionPlanningResult(status="error")`.
+  - Adds audit decision `preflight/block/no_available_robots`.
+- Refactored `LLMMissionPlanner._parse_response()` to return audit records.
+  - Captures raw tool call id, name, and arguments.
+  - Blocks missing tool calls, wrong tool name, invalid intent, empty subtasks, invalid subtask shape, missing robot ID, unknown robot ID, missing command, invalid floor, missing capability, and invalid execution group.
+  - Unknown robot IDs now fail closed with `unknown_robot_id` regardless of known set emptiness; preflight normally prevents empty set from reaching parser.
+  - Valid parser output records `parser/allow/mission_plan_parsed`.
+- Wired `MissionAgent` with optional `mission_planning_audit_sink`.
+  - Non-planned planner results record planner-provided audit if available.
+  - Validator block appends `validator/block/mission_plan_invalid` and records audit before returning blocked.
+  - Validator allow appends `validator/allow/mission_plan_valid` and records audit before dispatch.
+  - If audit persistence fails for an otherwise allowed plan, mission is blocked before dispatch with message `Mission planning audit could not be recorded.`
+- Adjusted `tests/test_gateway.py::_wait_for_task_result()` default timeout from `5.0` to `15.0`.
+  - Root-cause investigation showed gateway async tasks completed correctly in focused diagnostics, but the previous 5s helper was flaky under gateway file/full-suite sequencing in this environment.
+  - This is a test robustness change only; production gateway behavior was not changed.
+
+### TDD Evidence
+
+Observed expected RED failures before implementation:
+
+- `tests/test_mission_planning_audit.py` failed with `ModuleNotFoundError` before adding audit module.
+- New `tests/test_llm_planner.py` schema/preflight tests failed because `build_constrained_mission_plan_tool` did not exist.
+- Parser audit tests failed because `MissionPlanningResult.audit_record` was `None`.
+- MissionAgent audit tests failed because `MissionAgent.__init__()` did not accept `mission_planning_audit_sink`.
+
+### Verification Commands And Results
+
+- `.venv/bin/python -m pytest tests/test_mission_planning_audit.py -q`
+  - `4 passed in 0.02s`
+- `.venv/bin/python -m pytest tests/test_llm_planner.py::test_constrained_mission_plan_tool_adds_robot_id_enum_without_mutating_base_tool tests/test_llm_planner.py::test_llm_planner_blocks_without_provider_call_when_no_available_robots -q`
+  - `2 passed in 0.05s`
+- `.venv/bin/python -m pytest tests/test_llm_planner.py::test_llm_planner_uses_constrained_schema_for_provider_call tests/test_llm_planner.py::test_llm_planner_blocks_unknown_robot_id_with_audit_record tests/test_llm_planner.py::test_llm_planner_records_parser_allow_for_valid_plan -q`
+  - `3 passed in 0.06s`
+- `.venv/bin/python -m pytest tests/test_mission_agent.py::test_mission_agent_records_validator_allow_decision_before_dispatch tests/test_mission_agent.py::test_mission_agent_records_validator_block_decision_without_dispatching tests/test_mission_agent.py::test_mission_agent_blocks_allowed_plan_when_audit_sink_fails -q`
+  - `3 passed in 0.10s`
+- `.venv/bin/python -m pytest tests/test_mission_planning_audit.py tests/test_llm_planner.py tests/test_mission_agent.py -q`
+  - `94 passed in 0.21s`
+- `.venv/bin/python -m pytest tests/test_task_contract.py tests/test_robot_agent_contract.py tests/test_robot_agent_runtime.py tests/test_robot_agent_structured_task.py tests/test_gateway_structured_task.py tests/test_subagent_client.py -q`
+  - `43 passed in 8.25s`
+- `.venv/bin/python -m pytest tests/test_provider.py tests/test_provider_runtime.py tests/test_llm_planner.py -q`
+  - `58 passed in 0.12s`
+- First full-suite run:
+  - `.venv/bin/python -m pytest -q`
+  - Result: `2 failed, 1287 passed, 6 skipped in 207.79s`
+  - Failures were gateway async task timeout tests.
+- Focused rerun of failed gateway tests:
+  - `.venv/bin/python -m pytest tests/test_gateway.py::test_gateway_events_endpoint_returns_recent_events tests/test_gateway.py::test_gateway_events_endpoint_filters_by_task_id -q`
+  - One pass/one timeout on first focused rerun, later passed after investigation.
+- Diagnostic script showed gateway tasks did complete and wrote terminal events; first task had result by the next 0.5s polling tick in the probe.
+- `tests/test_gateway.py` before timeout adjustment:
+  - One timeout in `test_gateway_confirms_pending_high_risk_skill`, showing timeout target varied and was test timing related.
+- After increasing `_wait_for_task_result()` default timeout to `15.0`:
+  - `.venv/bin/python -m pytest tests/test_gateway.py -q`
+  - `28 passed in 100.75s`
+- Final full-suite run:
+  - `.venv/bin/python -m pytest -q`
+  - `1289 passed, 6 skipped in 206.70s`
+
+### Current Conclusion
+
+Mission-level planning now has a concrete guard/audit slice:
+
+- LLM planner cannot call the provider with no available robots.
+- LLM planner tool schema constrains robot IDs to currently available robots.
+- Parser rejects fabricated robot IDs close to the source and records why.
+- MissionAgent records validator decisions before dispatch.
+- Audit sink failure blocks allowed plans rather than silently allowing unaudited physical work.
+
+This strengthens engineering correctness and research validity for FireClaw's safety-critical planning story. It is still mission-planning-only; future work should extend the same audit pattern to robot-local planning, SafetyGate decisions, and execution/ROS payload logging.
+
+### Remaining Notes
+
+- `data/` remains local untracked runtime/debug output and should not be committed unless explicitly requested.
+- No commit has been made for this implementation in this session yet.

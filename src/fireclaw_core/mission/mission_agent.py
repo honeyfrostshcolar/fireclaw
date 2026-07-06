@@ -12,6 +12,12 @@ from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
 from fireclaw_core.infra.log_redaction import redact_dict
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
+from fireclaw_core.mission.mission_planning_audit import (
+    GuardDecision,
+    MissionPlanningAuditRecord,
+    MissionPlanningAuditSink,
+    append_guard_decision,
+)
 from fireclaw_core.mission.mission_planner import MissionPlannerContext, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
 from fireclaw_core.mission.mission_registry import TERMINAL_SUBTASK_STATUSES
@@ -72,6 +78,7 @@ class MissionAgent:
         task_flow_store: JsonlTaskFlowRegistryStore | None = None,
         profile_skill_chains_by_robot: dict[str, dict[str, tuple[str, ...]]] | None = None,
         primitive_skills_by_robot: dict[str, tuple[str, ...]] | None = None,
+        mission_planning_audit_sink: MissionPlanningAuditSink | None = None,
     ) -> None:
         self.registry = registry
         self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
@@ -96,6 +103,7 @@ class MissionAgent:
         self.subagent_registry = subagent_registry
         self._session_lineage_store = session_lineage_store
         self._task_flow_store = task_flow_store
+        self.mission_planning_audit_sink = mission_planning_audit_sink
 
     @property
     def session_lineage_store(self) -> JsonlSessionLineageStore | None:
@@ -139,6 +147,53 @@ class MissionAgent:
             self.mission_memory.append(record)
         except Exception:
             logger.warning("Failed to write mission memory record", exc_info=True)
+
+    def _record_mission_planning_audit(
+        self,
+        record: MissionPlanningAuditRecord | None,
+    ) -> str | None:
+        if record is None or self.mission_planning_audit_sink is None:
+            return None
+        try:
+            self.mission_planning_audit_sink.record(record)
+            return None
+        except Exception:
+            logger.warning("Failed to record mission planning audit", exc_info=True)
+            return "Mission planning audit could not be recorded."
+
+    def _with_validator_decision(
+        self,
+        record: MissionPlanningAuditRecord | None,
+        *,
+        validation_errors: list[str],
+        final_status: str,
+        final_message: str,
+        mission_id: str | None,
+    ) -> MissionPlanningAuditRecord | None:
+        if record is None:
+            return None
+        if validation_errors:
+            decision = GuardDecision(
+                layer="validator",
+                status="block",
+                reason="mission_plan_invalid",
+                message="Mission plan failed deterministic validation.",
+                details={"errors": list(validation_errors)},
+            )
+        else:
+            decision = GuardDecision(
+                layer="validator",
+                status="allow",
+                reason="mission_plan_valid",
+                message="Mission plan passed deterministic validation.",
+            )
+        return append_guard_decision(
+            record,
+            decision,
+            final_status=final_status,
+            final_message=final_message,
+            mission_id=mission_id,
+        )
 
     def check_fleet_presence(self) -> dict[str, dict[str, Any]]:
         """Check presence of all enabled robots. Updates registry with last_seen_at.
@@ -463,20 +518,49 @@ class MissionAgent:
                 return fallback
 
         if planning_result.status != "planned" or planning_result.plan is None:
-            return {
+            audit_error = self._record_mission_planning_audit(planning_result.audit_record)
+            response = {
                 "status": planning_result.status,
                 "message": planning_result.message,
                 "subtask_results": [],
             }
+            if audit_error is not None:
+                response["audit_warning"] = audit_error
+            return response
         validation_errors = MissionPlanValidator().validate(planning_result.plan, self.registry)
+        mission_id = _mission_id(session_id)
         if validation_errors:
-            return {
+            audit_record = self._with_validator_decision(
+                planning_result.audit_record,
+                validation_errors=validation_errors,
+                final_status="blocked",
+                final_message="Mission plan failed deterministic validation.",
+                mission_id=mission_id,
+            )
+            audit_error = self._record_mission_planning_audit(audit_record)
+            response = {
                 "status": "blocked",
                 "message": "Mission plan failed deterministic validation.",
                 "errors": validation_errors,
                 "subtask_results": [],
             }
-        mission_id = _mission_id(session_id)
+            if audit_error is not None:
+                response["audit_warning"] = audit_error
+            return response
+        audit_record = self._with_validator_decision(
+            planning_result.audit_record,
+            validation_errors=[],
+            final_status=planning_result.status,
+            final_message=planning_result.message,
+            mission_id=mission_id,
+        )
+        audit_error = self._record_mission_planning_audit(audit_record)
+        if audit_error is not None:
+            return {
+                "status": "blocked",
+                "message": audit_error,
+                "subtask_results": [],
+            }
         created_at = datetime.now(timezone.utc).isoformat()
         if self.mission_registry is not None and self.mission_registry.get_mission(mission_id) is None:
             self.mission_registry.create_mission(

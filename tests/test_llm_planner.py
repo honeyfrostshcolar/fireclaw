@@ -11,6 +11,7 @@ from fireclaw_core.planner.llm_planner import (
     LLMMissionPlanner,
     MISSION_PLAN_TOOL,
     VALID_INTENTS,
+    build_constrained_mission_plan_tool,
     build_system_prompt,
 )
 from fireclaw_core.mission.mission_planner import MissionPlannerContext
@@ -116,6 +117,20 @@ def test_mission_plan_tool_schema_has_required_fields():
     assert "capability_required" in subtask_required
 
 
+def test_constrained_mission_plan_tool_adds_robot_id_enum_without_mutating_base_tool():
+    ctx = _make_context(
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("patrol",)),
+    )
+
+    tool = build_constrained_mission_plan_tool(ctx)
+
+    robot_id_schema = tool["function"]["parameters"]["properties"]["subtasks"]["items"]["properties"]["robot_id"]
+    assert robot_id_schema == {"type": "string", "enum": ["r1", "r2"]}
+    base_robot_id_schema = MISSION_PLAN_TOOL["function"]["parameters"]["properties"]["subtasks"]["items"]["properties"]["robot_id"]
+    assert base_robot_id_schema == {"type": "string"}
+
+
 # --- Test: system prompt includes robots ---
 
 
@@ -171,6 +186,119 @@ def test_llm_planner_returns_plan_from_tool_call():
     assert result.plan.subtasks[0].robot_id == "r1"
     assert result.plan.subtasks[0].floor == 2
     assert result.plan.subtasks[0].capability_required == "search_for_victims"
+
+
+def test_llm_planner_blocks_without_provider_call_when_no_available_robots():
+    provider = MagicMock()
+    planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
+
+    result = planner.plan("去二楼搜索受困人员", context=MissionPlannerContext())
+
+    assert result.status == "error"
+    assert result.message == "No available robots for mission planning."
+    provider.chat_completion.assert_not_called()
+    assert result.audit_record is not None
+    assert result.audit_record.tool_schema is None
+    assert result.audit_record.llm_tool_call is None
+    assert result.audit_record.final_status == "error"
+    assert result.audit_record.decisions[0].layer == "preflight"
+    assert result.audit_record.decisions[0].status == "block"
+    assert result.audit_record.decisions[0].reason == "no_available_robots"
+
+
+def test_llm_planner_uses_constrained_schema_for_provider_call():
+    ctx = _make_context(
+        RobotRegistryEntry(
+            robot_id="gazebo_turtlebot3",
+            base_url="http://r1:8765",
+            capabilities=("search_for_victims",),
+        ),
+    )
+    provider = _make_provider(_make_tool_call_response(
+        subtasks=[
+            {
+                "robot_id": "gazebo_turtlebot3",
+                "command": "去2楼搜索受困人员",
+                "floor": 2,
+                "capability_required": "search_for_victims",
+                "execution_group": 0,
+            }
+        ]
+    ))
+    planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
+
+    result = planner.plan("去二楼搜索受困人员", context=ctx)
+
+    assert result.status == "planned"
+    tool = provider.chat_completion.call_args.kwargs["tools"][0]
+    robot_id_schema = tool["function"]["parameters"]["properties"]["subtasks"]["items"]["properties"]["robot_id"]
+    assert robot_id_schema["enum"] == ["gazebo_turtlebot3"]
+
+
+def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
+    ctx = _make_context(
+        RobotRegistryEntry(
+            robot_id="gazebo_turtlebot3",
+            base_url="http://r1:8765",
+            capabilities=("search_for_victims",),
+        ),
+    )
+    provider = _make_provider(_make_tool_call_response(
+        subtasks=[
+            {
+                "robot_id": "robot_001",
+                "command": "去2楼搜索受困人员",
+                "floor": 2,
+                "capability_required": "search_for_victims",
+                "execution_group": 0,
+            }
+        ]
+    ))
+    planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
+
+    result = planner.plan("去二楼搜索受困人员", context=ctx)
+
+    assert result.status == "error"
+    assert result.plan is None
+    assert "不存在的机器人" in result.message
+    assert result.audit_record is not None
+    assert result.audit_record.llm_tool_call == {
+        "id": "call_001",
+        "name": "create_mission_plan",
+        "arguments": {
+            "intent": "search",
+            "subtasks": [
+                {
+                    "robot_id": "robot_001",
+                    "command": "去2楼搜索受困人员",
+                    "floor": 2,
+                    "capability_required": "search_for_victims",
+                    "execution_group": 0,
+                }
+            ],
+        },
+    }
+    assert result.audit_record.decisions[-1].layer == "parser"
+    assert result.audit_record.decisions[-1].status == "block"
+    assert result.audit_record.decisions[-1].reason == "unknown_robot_id"
+
+
+def test_llm_planner_records_parser_allow_for_valid_plan():
+    ctx = _make_context(
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    )
+    provider = _make_provider(_make_tool_call_response())
+    planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
+
+    result = planner.plan("去二楼搜索受困人员", context=ctx)
+
+    assert result.status == "planned"
+    assert result.audit_record is not None
+    assert result.audit_record.final_status == "planned"
+    assert result.audit_record.final_message == result.message
+    assert result.audit_record.tool_schema is not None
+    assert result.audit_record.decisions[-1].reason == "mission_plan_parsed"
+    assert result.audit_record.decisions[-1].status == "allow"
 
 
 def test_llm_planner_uses_provider_runtime_when_configured():

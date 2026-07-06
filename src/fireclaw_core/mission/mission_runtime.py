@@ -10,6 +10,7 @@ from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 from fireclaw_core.memory.memory_retrieval import MemoryRetriever
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_memory import MissionMemoryStore
+from fireclaw_core.mission.mission_planning_audit import JsonlMissionPlanningAuditSink
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
 from fireclaw_core.agent.robot_registry import load_robot_registry
 from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore
@@ -31,6 +32,7 @@ class MissionRuntimePaths:
     session_lineage: Path | None = None
     task_flow: Path | None = None
     approvals: Path | None = None
+    mission_planning_audit: Path | None = None
 
 
 def build_operator_context(
@@ -64,6 +66,11 @@ def build_mission_agent_from_paths(
         memory_retriever = MemoryRetriever(index=SqliteMemoryIndex(paths.memory_index))
     task_registry = JsonlTaskRegistryStore(paths.task_registry) if paths.task_registry else None
     subagent_registry = JsonlSubagentRegistry(paths.subagent_registry) if paths.subagent_registry else None
+    mission_planning_audit_sink = (
+        JsonlMissionPlanningAuditSink(paths.mission_planning_audit)
+        if paths.mission_planning_audit
+        else None
+    )
 
     if paths.robot_profiles:
         from fireclaw_core.agent.robot_profile import load_robot_capability_profiles
@@ -101,6 +108,7 @@ def build_mission_agent_from_paths(
         task_flow_store=JsonlTaskFlowRegistryStore(paths.task_flow) if paths.task_flow else None,
         profile_skill_chains_by_robot=profile_skill_chains_by_robot,
         primitive_skills_by_robot=primitive_skills_by_robot,
+        mission_planning_audit_sink=mission_planning_audit_sink,
     )
 
 

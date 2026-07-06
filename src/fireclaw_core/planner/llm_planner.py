@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import time
 import uuid
 from typing import Any
@@ -10,6 +11,12 @@ from fireclaw_core.mission.mission_planner import (
     MissionPlannerContext,
     MissionPlanningResult,
     MissionSubtask,
+)
+from fireclaw_core.mission.mission_planning_audit import (
+    GuardDecision,
+    MissionPlanningAuditRecord,
+    build_available_robot_snapshot,
+    utc_now_iso,
 )
 from fireclaw_core.provider.provider import (
     ChatCompletion,
@@ -60,6 +67,17 @@ MISSION_PLAN_TOOL: dict[str, Any] = {
         },
     },
 }
+
+
+def build_constrained_mission_plan_tool(context: MissionPlannerContext) -> dict[str, Any]:
+    tool = deepcopy(MISSION_PLAN_TOOL)
+    robot_ids = [robot.robot_id for robot in context.available_robots]
+    robot_id_schema = (
+        tool["function"]["parameters"]["properties"]["subtasks"]["items"]["properties"]["robot_id"]
+    )
+    if robot_ids:
+        robot_id_schema["enum"] = robot_ids
+    return tool
 
 
 def build_system_prompt(context: MissionPlannerContext) -> str:
@@ -139,18 +157,43 @@ class LLMMissionPlanner:
         if context is None:
             context = MissionPlannerContext()
 
+        if not context.available_robots:
+            decision = GuardDecision(
+                layer="preflight",
+                status="block",
+                reason="no_available_robots",
+                message="No available robots for mission planning.",
+                details={"available_robot_count": 0},
+            )
+            audit = MissionPlanningAuditRecord(
+                command=command,
+                available_robots=build_available_robot_snapshot(context.available_robots),
+                tool_schema=None,
+                llm_tool_call=None,
+                decisions=[decision],
+                final_status="error",
+                final_message=decision.message,
+                created_at=utc_now_iso(),
+            )
+            return MissionPlanningResult(
+                status="error",
+                message=decision.message,
+                audit_record=audit,
+            )
+
         system_prompt = build_system_prompt(context)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": command},
         ]
+        mission_tool = build_constrained_mission_plan_tool(context)
 
         start_time = time.monotonic()
         try:
             if self._provider_runtime is not None:
                 response = self._provider_runtime.chat_completion(
                     messages=messages,
-                    tools=[MISSION_PLAN_TOOL],
+                    tools=[mission_tool],
                     temperature=0.0,
                     max_tokens=4096,
                 )
@@ -159,7 +202,7 @@ class LLMMissionPlanner:
                 response = self._provider.chat_completion(
                     messages=messages,
                     model=self._model_id,
-                    tools=[MISSION_PLAN_TOOL],
+                    tools=[mission_tool],
                     temperature=0.0,
                     max_tokens=4096,
                 )
@@ -200,7 +243,12 @@ class LLMMissionPlanner:
                 token_usage=None,
             )
 
-        result = self._parse_response(response, context)
+        result = self._parse_response(
+            response,
+            context,
+            command=command,
+            tool_schema=mission_tool,
+        )
 
         self._record_trace(
             messages=messages,
@@ -216,49 +264,215 @@ class LLMMissionPlanner:
         self,
         response: ChatCompletion,
         context: MissionPlannerContext,
+        *,
+        command: str,
+        tool_schema: dict[str, Any],
     ) -> MissionPlanningResult:
         """Parse a ChatCompletion into a MissionPlanningResult."""
-        if not response.tool_calls:
+        available_robots = build_available_robot_snapshot(context.available_robots)
+        decisions: list[GuardDecision] = []
+        llm_tool_call: dict[str, Any] | None = None
+
+        def make_result(
+            *,
+            status: str,
+            message: str,
+            decision: GuardDecision,
+            intent: str | None = None,
+            plan: MissionPlan | None = None,
+        ) -> MissionPlanningResult:
+            audit = MissionPlanningAuditRecord(
+                command=command,
+                available_robots=available_robots,
+                tool_schema=tool_schema,
+                llm_tool_call=llm_tool_call,
+                decisions=[*decisions, decision],
+                final_status=status,
+                final_message=message,
+                created_at=utc_now_iso(),
+            )
             return MissionPlanningResult(
+                status=status,
+                message=message,
+                intent=intent,
+                plan=plan,
+                audit_record=audit,
+            )
+
+        if not response.tool_calls:
+            return make_result(
                 status="error",
                 message="LLM 未返回工具调用。",
+                decision=GuardDecision(
+                    layer="parser",
+                    status="block",
+                    reason="missing_tool_call",
+                    message="LLM did not return a mission planning tool call.",
+                ),
             )
 
         tool_call = response.tool_calls[0]
         arguments = tool_call.arguments
+        llm_tool_call = {
+            "id": tool_call.id,
+            "name": tool_call.name,
+            "arguments": arguments,
+        }
+        if tool_call.name != "create_mission_plan":
+            return make_result(
+                status="error",
+                message=f"LLM 调用了未知工具：{tool_call.name}",
+                decision=GuardDecision(
+                    layer="parser",
+                    status="block",
+                    reason="unexpected_tool_name",
+                    message="LLM called an unexpected tool.",
+                    details={"tool_name": tool_call.name},
+                ),
+            )
 
         intent = arguments.get("intent", "")
         if intent not in VALID_INTENTS:
-            return MissionPlanningResult(
+            return make_result(
                 status="error",
                 message=f"LLM 返回了无效的意图：{intent}",
+                decision=GuardDecision(
+                    layer="parser",
+                    status="block",
+                    reason="invalid_intent",
+                    message="LLM returned an invalid mission intent.",
+                    details={"intent": intent},
+                ),
             )
 
         raw_subtasks = arguments.get("subtasks", [])
         if not isinstance(raw_subtasks, list) or not raw_subtasks:
-            return MissionPlanningResult(
+            return make_result(
                 status="error",
                 message="LLM 未返回子任务列表。",
+                decision=GuardDecision(
+                    layer="parser",
+                    status="block",
+                    reason="empty_subtasks",
+                    message="LLM did not return a non-empty subtask list.",
+                ),
             )
 
         # Build a lookup of available robot_ids from context.
         known_robot_ids = {r.robot_id for r in context.available_robots}
 
         subtasks: list[MissionSubtask] = []
-        for item in raw_subtasks:
-            robot_id = item.get("robot_id", "")
-            if known_robot_ids and robot_id not in known_robot_ids:
-                return MissionPlanningResult(
+        for index, item in enumerate(raw_subtasks):
+            if not isinstance(item, dict):
+                return make_result(
+                    status="error",
+                    message="LLM 返回了无效的子任务。",
+                    decision=GuardDecision(
+                        layer="parser",
+                        status="block",
+                        reason="invalid_subtask",
+                        message="LLM returned a non-object subtask.",
+                        details={"index": index},
+                    ),
+                )
+            robot_id = str(item.get("robot_id") or "")
+            if not robot_id:
+                return make_result(
+                    status="error",
+                    message="LLM 子任务缺少 robot_id。",
+                    decision=GuardDecision(
+                        layer="parser",
+                        status="block",
+                        reason="missing_robot_id",
+                        message="LLM subtask did not include robot_id.",
+                        details={"index": index},
+                    ),
+                )
+            if robot_id not in known_robot_ids:
+                return make_result(
                     status="error",
                     message=f"LLM 指定了不存在的机器人：{robot_id}",
+                    decision=GuardDecision(
+                        layer="parser",
+                        status="block",
+                        reason="unknown_robot_id",
+                        message="LLM selected a robot outside the available robot set.",
+                        details={
+                            "index": index,
+                            "robot_id": robot_id,
+                            "known_robot_ids": sorted(known_robot_ids),
+                        },
+                    ),
+                )
+            command_value = str(item.get("command") or "")
+            if not command_value:
+                return make_result(
+                    status="error",
+                    message="LLM 子任务缺少 command。",
+                    decision=GuardDecision(
+                        layer="parser",
+                        status="block",
+                        reason="missing_command",
+                        message="LLM subtask did not include command.",
+                        details={"index": index, "robot_id": robot_id},
+                    ),
+                )
+            try:
+                floor = int(item.get("floor", 0))
+            except (TypeError, ValueError):
+                floor = 0
+            if floor <= 0:
+                return make_result(
+                    status="error",
+                    message=f"LLM 返回了无效楼层：{item.get('floor')}",
+                    decision=GuardDecision(
+                        layer="parser",
+                        status="block",
+                        reason="invalid_floor",
+                        message="LLM subtask returned an invalid floor.",
+                        details={"index": index, "robot_id": robot_id, "floor": item.get("floor")},
+                    ),
+                )
+            capability_required = str(item.get("capability_required") or "")
+            if not capability_required:
+                return make_result(
+                    status="error",
+                    message="LLM 子任务缺少 capability_required。",
+                    decision=GuardDecision(
+                        layer="parser",
+                        status="block",
+                        reason="missing_capability",
+                        message="LLM subtask did not include capability_required.",
+                        details={"index": index, "robot_id": robot_id},
+                    ),
+                )
+            try:
+                execution_group = int(item.get("execution_group", 0))
+            except (TypeError, ValueError):
+                execution_group = -1
+            if execution_group < 0:
+                return make_result(
+                    status="error",
+                    message=f"LLM 返回了无效执行组：{item.get('execution_group')}",
+                    decision=GuardDecision(
+                        layer="parser",
+                        status="block",
+                        reason="invalid_execution_group",
+                        message="LLM subtask returned an invalid execution_group.",
+                        details={
+                            "index": index,
+                            "robot_id": robot_id,
+                            "execution_group": item.get("execution_group"),
+                        },
+                    ),
                 )
             subtasks.append(
                 MissionSubtask(
                     robot_id=robot_id,
-                    command=item.get("command", ""),
-                    floor=int(item.get("floor", 0)),
-                    capability_required=item.get("capability_required", ""),
-                    execution_group=int(item.get("execution_group", 0)),
+                    command=command_value,
+                    floor=floor,
+                    capability_required=capability_required,
+                    execution_group=execution_group,
                 )
             )
 
@@ -268,11 +482,19 @@ class LLMMissionPlanner:
             subtasks=subtasks,
         )
 
-        return MissionPlanningResult(
+        message = f"已生成任务计划：{len(subtasks)} 个子任务，{plan.execution_groups} 个执行组。"
+        return make_result(
             status="planned",
-            message=f"已生成任务计划：{len(subtasks)} 个子任务，{plan.execution_groups} 个执行组。",
+            message=message,
             intent=intent,
             plan=plan,
+            decision=GuardDecision(
+                layer="parser",
+                status="allow",
+                reason="mission_plan_parsed",
+                message="LLM mission plan parsed.",
+                details={"subtask_count": len(subtasks), "execution_groups": plan.execution_groups},
+            ),
         )
 
     def _record_and_return(

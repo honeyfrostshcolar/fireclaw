@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib import request
 
 from fireclaw_core.gateway.serve import start_server
+from fireclaw_core.mission.mission_planning_audit import JsonlMissionPlanningAuditSink
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
 
@@ -90,5 +91,16 @@ def test_start_server_submit_and_trace(tmp_path: Path, monkeypatch):
         resp = request.urlopen(f"{url}/missions/{mission_id}/trace", timeout=5)
         trace = json.loads(resp.read())
         assert trace["mission_id"] == mission_id
+    finally:
+        gw.stop()
+
+
+def test_start_server_wires_default_mission_planning_audit_sink(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    gw = start_server(data_dir=data_dir, port=0, planner_type="deterministic")
+    try:
+        sink = gw.mission_agent.mission_planning_audit_sink
+        assert isinstance(sink, JsonlMissionPlanningAuditSink)
+        assert sink.path == data_dir / "mission-planning-audit.jsonl"
     finally:
         gw.stop()

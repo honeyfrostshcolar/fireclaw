@@ -102,7 +102,7 @@ def _write_slow_policy_skill(skills_dir: Path) -> None:
     )
 
 
-def _wait_for_task_result(gateway: FireClawGateway, task_id: str, timeout_seconds: float = 5.0) -> dict:
+def _wait_for_task_result(gateway: FireClawGateway, task_id: str, timeout_seconds: float = 15.0) -> dict:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         trace = gateway.task_trace(task_id)

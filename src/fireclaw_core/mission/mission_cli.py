@@ -598,6 +598,7 @@ def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--session-lineage", default=None, help="Path to session lineage JSONL.")
     parser.add_argument("--task-flow", default=None, help="Path to task-flow registry JSONL.")
     parser.add_argument("--approval-path", default=None, help="Path to approval store JSONL.")
+    parser.add_argument("--mission-planning-audit-path", default=None, help="Path to mission planning audit JSONL.")
 
 
 def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePaths:
@@ -620,6 +621,7 @@ def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePath
         task_flow=getattr(args, "task_flow", None),
         approvals=getattr(args, "approval_path", None),
         robot_profiles=robot_profiles,
+        mission_planning_audit=Path(p) if (p := getattr(args, "mission_planning_audit_path", None)) else None,
     )
 
 

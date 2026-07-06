@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from fireclaw_core.planner.planner import CHINESE_DIGITS
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+from fireclaw_core.mission.mission_planning_audit import MissionPlanningAuditRecord
 
 
 # --- Data types ---
@@ -55,6 +56,7 @@ class MissionPlanningResult:
     message: str
     intent: str | None = None
     plan: MissionPlan | None = None
+    audit_record: MissionPlanningAuditRecord | None = None
 
 
 @dataclass(frozen=True)

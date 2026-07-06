@@ -1194,6 +1194,32 @@ def test_build_mission_runtime_paths_requires_registry_without_profiles(tmp_path
         _build_mission_runtime_paths(args)
 
 
+def test_build_mission_runtime_paths_includes_mission_planning_audit_path(tmp_path):
+    from argparse import Namespace
+    from fireclaw_core.mission.mission_cli import _build_mission_runtime_paths
+
+    robot_registry = tmp_path / "robots.json"
+    mission_registry = tmp_path / "missions.jsonl"
+    audit_path = tmp_path / "mission-planning-audit.jsonl"
+    args = Namespace(
+        robot_profile=None,
+        robot_registry=str(robot_registry),
+        mission_registry=str(mission_registry),
+        memory_path=None,
+        memory_index=None,
+        task_registry=None,
+        subagent_registry=None,
+        session_lineage=None,
+        task_flow=None,
+        approval_path=None,
+        mission_planning_audit_path=str(audit_path),
+    )
+
+    paths = _build_mission_runtime_paths(args)
+
+    assert paths.mission_planning_audit == audit_path
+
+
 def test_plan_mission_help_exposes_robot_profile_flag():
     completed = subprocess.run(
         [".venv/bin/python", "-m", "fireclaw_core", "plan-mission", "--help"],
