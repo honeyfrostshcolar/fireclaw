@@ -3,6 +3,7 @@
 .claude/
 .vscode/
 .pytest_cache/
+.cache/
 .venv/
 .venv*/
 .deps/
@@ -24,6 +25,7 @@ data/rag/fire_rescue/raw/
 data/rag/fire_rescue/extracted/
 data/rag/fire_rescue/chunks/
 data/rag/fire_rescue/index_inputs/
+data/rag/fire_rescue/indexes/
 
 # FireClaw config (may contain secrets)
 fireclaw.toml
