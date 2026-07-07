@@ -1,0 +1,3074 @@
+{
+  "case_count": 10,
+  "hit_at_1": 0.4,
+  "hit_at_5": 0.8,
+  "hit_at_10": 1.0,
+  "mrr_at_10": 0.607619,
+  "gold_recall_at_10": 1.0,
+  "results": [
+    {
+      "case_id": "dense_zh_001",
+      "topic": "thermal_victim_search",
+      "query": "在浓烟遮挡、光照差的室内火灾里，为什么应优先用热成像而不是普通RGB相机搜人？",
+      "gold_parent_ids": [
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002"
+      ],
+      "retrieved_parent_ids": [
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002",
+        "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00001",
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00003",
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00008",
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00001",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002",
+        "arxiv_2009_10679_firefighting_ar_thermal_rgb_depth__parent_00001",
+        "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00002",
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00007"
+      ],
+      "retrieved_gold_parent_ids": [
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002"
+      ],
+      "first_gold_rank": 1,
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 1.0,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.032266458495966696,
+          "chunk_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002__small_002",
+          "parent_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002",
+          "doc_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting",
+          "source_file": "raw/arxiv_1910_03617_thermal_image_target_detection_firefighting.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "ARTICLE INFO",
+          "text_preview": "To address this issue, a robust real-time detection system based on CNN is proposed which is able to detect and localize the target of interest instantaneously.\n\nThe research presented found in [13], describes the usage of infrared images t",
+          "fusion_score": 0.032266458495966696,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.032266458495966696,
+            "dense": 0.04787506400409626
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            1,
+            11,
+            15,
+            30
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.032266458495966696,
+          "chunk_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00001__small_004",
+          "parent_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00001",
+          "doc_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion",
+          "source_file": "raw/arxiv_2307_04223_fire_human_detection_ir_thermal_fusion.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. I NTRODUCTION",
+          "text_preview": "Recently, deep learning-based methods have emerged as a promising approach for multi-sensor fusion. For example, a deep neural network has been proposed for fusing data from multiple\n\nHowever, detecting and rescuing victims in fire accident",
+          "fusion_score": 0.032266458495966696,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.03225806451612903,
+            "dense": 0.04891591750396616
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            1,
+            5,
+            10,
+            24
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.03225806451612903,
+          "chunk_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00003__small_003",
+          "parent_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00003",
+          "doc_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting",
+          "source_file": "raw/arxiv_1910_03617_thermal_image_target_detection_firefighting.pdf",
+          "page_start": 3,
+          "page_end": 3,
+          "heading": "2. System Description",
+          "text_preview": "Albuquerque Fire Department(AFD) and Santa Fe Fire Department keep at least one camera in a truck at all times.\n\nThe National Fire Protection Association also supports their usage over RGB-based cameras, which are dependant on light sources",
+          "fusion_score": 0.03225806451612903,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.032266458495966696,
+            "dense": 0.04839549075403121
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            1,
+            12
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.030330882352941176,
+          "chunk_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00008__small_002",
+          "parent_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00008",
+          "doc_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting",
+          "source_file": "raw/arxiv_1910_03617_thermal_image_target_detection_firefighting.pdf",
+          "page_start": 11,
+          "page_end": 12,
+          "heading": "85.6 41.4 10.8 Crawling",
+          "text_preview": "5. Conclusion\n\nThe scene of a structural fire is chaotic, dangerous, and disorienting. Heavy smoke, near zero visibility, extreme heat and active flames create a perfect storm for stress induced misjudgments that can affect even seasoned fi",
+          "fusion_score": 0.030330882352941176,
+          "variant_ranks": {
+            "bm25": 8,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.028612012987012988,
+            "dense": 0.046634615384615385
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            5
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.029877369007803793,
+          "chunk_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001__small_003",
+          "parent_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001",
+          "doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+          "source_file": "raw/arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. I NTRODUCTION",
+          "text_preview": "Although the performance of UAVs in other tasks such as active wildfire monitoring with decision-making systems [5] and spread modeling of fire frontiers, all rely on how accurate their input is provided by a flame detection system.\n\nWhile ",
+          "fusion_score": 0.029877369007803793,
+          "variant_ranks": {
+            "bm25": 9,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.02857142857142857,
+            "dense": 0.045928030303030304
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            4,
+            15,
+            16,
+            43
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.02946912242686891,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00001__small_002",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00001",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. INTRODUCTION",
+          "text_preview": "Our approach paves the way toward mobile robots that can be autonomously deployed in fire-affected environments, with potential applications in search-and-rescue, firefighting, and hazardous material response.\n\nI. INTRODUCTION\n\nDeploying ro",
+          "fusion_score": 0.02946912242686891,
+          "variant_ranks": {
+            "bm25": 5,
+            "dense": 11
+          },
+          "variant_scores": {
+            "bm25": 0.02964426877470356,
+            "dense": 0.04168252759802056
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            8
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.028283227848101264,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002__small_002",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. RELATED WORK",
+          "text_preview": "II. RELATED WORK\n\nWe review related work in robotics and fire modeling to identify research gap and motivate our contribution. A. Robotics in Firefighting Operating robots in hazardous environments has a long history. A number of early syst",
+          "fusion_score": 0.028283227848101264,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 19
+          },
+          "variant_scores": {
+            "bm25": 0.029857397504456328,
+            "dense": 0.03708339852918166
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            8
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.027651515151515153,
+          "chunk_id": "arxiv_2009_10679_firefighting_ar_thermal_rgb_depth__parent_00001__small_004",
+          "parent_id": "arxiv_2009_10679_firefighting_ar_thermal_rgb_depth__parent_00001",
+          "doc_id": "arxiv_2009_10679_firefighting_ar_thermal_rgb_depth",
+          "source_file": "raw/arxiv_2009_10679_firefighting_ar_thermal_rgb_depth.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. I NTRODUCTION",
+          "text_preview": "The data acquired by these sensors can also be leveraged for an additional purpose: to provide firefighters with object recognition and tracking and 3D scene reconstruction in real-time, creating a next generation smart and connected firefi",
+          "fusion_score": 0.027651515151515153,
+          "variant_ranks": {
+            "bm25": 20,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.02314071696094168,
+            "dense": 0.04501587087188492
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            6,
+            20,
+            40
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.027271052146674038,
+          "chunk_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00002__small_002",
+          "parent_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00002",
+          "doc_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion",
+          "source_file": "raw/arxiv_2307_04223_fire_human_detection_ir_thermal_fusion.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. PROPOSED M ETHOD",
+          "text_preview": "IR Lighting\n\nII. PROPOSED M ETHOD\n\nIn this section, we discuss the methods adopted to synchronize the data captured by IR and thermal cameras. Following that, we introduce a multi-sensor feature fusion strategy designed based on the YOLOv4-",
+          "fusion_score": 0.027271052146674038,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 21
+          },
+          "variant_scores": {
+            "bm25": 0.02919863597612958,
+            "dense": 0.03589261285909713
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            10,
+            22,
+            26
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.02694394213381555,
+          "chunk_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00007__small_003",
+          "parent_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00007",
+          "doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+          "source_file": "raw/arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection.pdf",
+          "page_start": 7,
+          "page_end": 7,
+          "heading": "1 Feed the input dataset minibatch Bm = {(x(i) , y (i) ) |",
+          "text_preview": "It should be noted that successful knowledge transfer relies on the fact that obscured and unobscured thermal domain representations of flame samples are significantly correlated. Fig. 4 shows two frames captured\n\n7 seconds apart, from FLAM",
+          "fusion_score": 0.02694394213381555,
+          "variant_ranks": {
+            "bm25": 19,
+            "dense": 10
+          },
+          "variant_scores": {
+            "bm25": 0.023769338959212377,
+            "dense": 0.041905590275540666
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            8,
+            44
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持这样一类证据：热成像在人命搜救中能在烟雾、低照度和遮挡条件下提供可检测的目标线索，而普通RGB相机在可见光受限时更容易失效或失去空间定位能力。",
+      "source_doc_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002.",
+      "query_variants": {
+        "dense:zh": "在浓烟遮挡、光照差的室内火灾里，为什么应优先用热成像而不是普通RGB相机搜人？",
+        "dense:en": "In an indoor fire with dense smoke and poor lighting, why should thermal imaging be preferred over a regular RGB camera for victim search?",
+        "dense:terms": "thermal imaging infrared camera victim detection fireground smoke low visibility RGB camera target detection firefighter search and rescue",
+        "bm25:en": "In an indoor fire with dense smoke and poor lighting, why should thermal imaging be preferred over a regular RGB camera for victim search?",
+        "bm25:terms": "thermal imaging infrared camera victim detection fireground smoke low visibility RGB camera target detection firefighter search and rescue"
+      }
+    },
+    {
+      "case_id": "dense_zh_002",
+      "topic": "remote_gas_source_detection",
+      "query": "已知厂房平面图时，机器人如何规划远程气体扫描，尽快找出可燃气体泄漏源？",
+      "gold_parent_ids": [
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00002"
+      ],
+      "retrieved_parent_ids": [
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00001",
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00002",
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00007",
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00005",
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00008",
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00006",
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00004",
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00003",
+        "nist_response_robot_test_methods_guide__parent_00017",
+        "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00002"
+      ],
+      "retrieved_gold_parent_ids": [
+        "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00002"
+      ],
+      "first_gold_rank": 2,
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 0.5,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03278688524590164,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00001__small_001",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00001",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. I NTRODUCTION",
+          "text_preview": "A Next-Best-Smell Approach for Remote Gas Detection with a Mobile Robot\n\narXiv:1801.06819v1 [cs.RO] 21 Jan 2018\n\nRiccardo Polvara1∗ , Marco Trabattoni2∗ , Tomasz Piotr Kucner3, Erik Schaffernicht3 Francesco Amigoni2 and Achim J. Lilienthal3",
+          "fusion_score": 0.03278688524590164,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.03278688524590164,
+            "dense": 0.04891591750396616
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.03225806451612903,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00002__small_001",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00002",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. P ROBLEM D EFINITION",
+          "text_preview": "10m\n\nRMLD reading 590ppmxm\n\n10ppm\n\n1m\n\n2m\n\n8m\n\n9m\n\nReﬂective surface\n\nCH4\n\n10ppm\n\n500ppm\n\n10ppm\n\nFig. 1: The Remote Methane Leak Detector is a TDLAS sensor which reports the integral concentration of methane along its laser beam (parts per ",
+          "fusion_score": 0.03225806451612903,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.03200204813108039,
+            "dense": 0.04610294966520434
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            1,
+            7
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.03125763125763126,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00007__small_004",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00007",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 7,
+          "page_end": 7,
+          "heading": "10 minutes for 90x90 grids, being able to compute covering",
+          "text_preview": "The contribution of this paper is to use MCDM for originally addressing and solving the gas detection task with an online approach that considers novel criteria with respect to those used in exploration.\n\nVI. C ONCLUSIONS\n\nIn this paper we ",
+          "fusion_score": 0.03125763125763126,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.03149801587301587,
+            "dense": 0.04424464424464425
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            4,
+            7,
+            10
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.031009615384615385,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00005__small_003",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00005",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 5,
+          "page_end": 5,
+          "heading": "85 sensing positions, a bit more than half of the final",
+          "text_preview": "For this reason, in situations in which the map of the environment is not provided (experiments have been done only in simulation) choosing configurations similar to E tends to result in good coverage time.\n\nC. Real World Experiments\n\nWe al",
+          "fusion_score": 0.031009615384615385,
+          "variant_ranks": {
+            "bm25": 5,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.030309988518943745,
+            "dense": 0.04443926202321725
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            4
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.030776515151515152,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00008__small_003",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00008",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 8,
+          "page_end": 8,
+          "heading": "R EFERENCES",
+          "text_preview": "M. Trincavelli. Towards real-world gas distribution mapping and leak\n\nlocalization using a mobile robot with 3d and remote gas sensing capabilities. In Proc. ICRA, pages 2335–2340, 2013. [10] G. Bonow and A. Kroll. Gas leak localization in ",
+          "fusion_score": 0.030776515151515152,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.030776515151515152,
+            "dense": 0.04360401125107008
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            5,
+            12,
+            15
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.029957522915269395,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00006__small_001",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00006",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 6,
+          "page_end": 6,
+          "heading": "9. During this experiment the robot used out-of-the-box",
+          "text_preview": "Fig. 8: Gasbot [9] equipped with a LIDAR scanner, a pan-tilt unit and a TDLAS sensor for remote gas detection. Methane leaks are simulated in the environment with four transparent bottles filled with the gas.\n\nFig. 9: Real-world experiment:",
+          "fusion_score": 0.029957522915269395,
+          "variant_ranks": {
+            "bm25": 11,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.015151515151515152,
+            "dense": 0.045949904158859384
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            5
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.029850746268656716,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00004__small_002",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00004",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 4,
+          "page_end": 4,
+          "heading": "IV. E XPERIMENTAL R ESULTS",
+          "text_preview": "Total time(m) 147.55 227.49 210.61 157.48 153.89 146.50 154.94 183.35 170.76 161.17 146.66 199.54 150.94\n\nTABLE II: Results for Freiburg University map for each considered configuration.\n\nThe maximum range rmax of the gas sensor (10 or 15 m",
+          "fusion_score": 0.029850746268656716,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 7
+          },
+          "variant_scores": {
+            "bm25": 0.027051561365286855,
+            "dense": 0.043496271748135876
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            13
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.026050420168067225,
+          "chunk_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00003__small_001",
+          "parent_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00003",
+          "doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+          "source_file": "raw/arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection.pdf",
+          "page_start": 3,
+          "page_end": 3,
+          "heading": "II. P ROBLEM D EFINITION",
+          "text_preview": "orientation θ ∈ Θ. In order to choose the best pose among the candidate ones, we define three criteria for their evaluation: •\n\n•\n\n•\n\nTravel distance, computed as the distance between the current robot pose and the candidate pose using A* o",
+          "fusion_score": 0.026050420168067225,
+          "variant_ranks": {
+            "bm25": 10,
+            "dense": 25
+          },
+          "variant_scores": {
+            "bm25": 0.015384615384615385,
+            "dense": 0.014925373134328358
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            8,
+            19,
+            30
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.02538152610441767,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00017__small_005",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00017",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 22,
+          "page_end": 23,
+          "heading": "IRT",
+          "text_preview": "Do you like your robot’s operator interface?\n\nEither way you may not want to move to an unfamiliar operator interface figuring you would have to learn the new system, maintain the old system, and keep trained up on both!\n\nThese are all cons",
+          "fusion_score": 0.02538152610441767,
+          "variant_ranks": {
+            "bm25": 15,
+            "dense": 23
+          },
+          "variant_scores": {
+            "bm25": 0.014285714285714285,
+            "dense": 0.023392612859097127
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            12
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.025098039215686277,
+          "chunk_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00002__small_001",
+          "parent_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00002",
+          "doc_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency",
+          "source_file": "raw/arxiv_2606_23246_robotic_intervention_industrial_emergency.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "III. M ISSION DESCRIPTION",
+          "text_preview": "or natural catastrophes—by deploying unmanned ground and aerial systems for safe reconnaissance, manipulation, and data collection. Operating under a cooperative model involving national, regional, and municipal authorities, the task force ",
+          "fusion_score": 0.025098039215686277,
+          "variant_ranks": {
+            "bm25": 25,
+            "dense": 15
+          },
+          "variant_scores": {
+            "bm25": 0.013157894736842105,
+            "dense": 0.03225806451612903
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            4,
+            36
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持远程气体检测的已知环境规划证据：如何把扫描视为覆盖问题，如何选取候选扫描点，以及如何通过距离、信息增益和扫描时间等代价尽快覆盖全部气源。",
+      "source_doc_id": "arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk arxiv_1801_06819_next_best_smell_mobile_robot_gas_detection__parent_00002.",
+      "query_variants": {
+        "dense:zh": "已知厂房平面图时，机器人如何规划远程气体扫描，尽快找出可燃气体泄漏源？",
+        "dense:en": "Given a known factory floor plan, how should a robot plan remote gas scanning to find combustible gas leak sources as quickly as possible?",
+        "dense:terms": "remote gas detection methane leak TDLAS Remote Methane Leak Detector coverage planning candidate locations information gain sensing time occupancy grid",
+        "bm25:en": "Given a known factory floor plan, how should a robot plan remote gas scanning to find combustible gas leak sources as quickly as possible?",
+        "bm25:terms": "remote gas detection methane leak TDLAS Remote Methane Leak Detector coverage planning candidate locations information gain sensing time occupancy grid"
+      }
+    },
+    {
+      "case_id": "dense_zh_003",
+      "topic": "smoke_obscured_flame_detection",
+      "query": "无人机在浓烟遮挡下怎样利用热成像发现被烟挡住的明火位置？",
+      "gold_parent_ids": [
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001"
+      ],
+      "retrieved_parent_ids": [
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002",
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001",
+        "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00001",
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00003",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002",
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00009",
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00002",
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00008",
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00004",
+        "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00008"
+      ],
+      "retrieved_gold_parent_ids": [
+        "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001"
+      ],
+      "first_gold_rank": 2,
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 0.5,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03252247488101534,
+          "chunk_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002__small_003",
+          "parent_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00002",
+          "doc_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting",
+          "source_file": "raw/arxiv_1910_03617_thermal_image_target_detection_firefighting.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "ARTICLE INFO",
+          "text_preview": "In [14] a Bayesian procedure to detect fire and smoke and discriminate them from thermal reflections in infrared is used in [33].\n\nIn the recent work [1], authors introduce a methodology based on Random Markov fields to segment fire, smoke ",
+          "fusion_score": 0.03252247488101534,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.03200204813108039,
+            "dense": 0.04787506400409626
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            2,
+            8,
+            26
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.03252247488101534,
+          "chunk_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001__small_003",
+          "parent_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001",
+          "doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+          "source_file": "raw/arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. I NTRODUCTION",
+          "text_preview": "Although the performance of UAVs in other tasks such as active wildfire monitoring with decision-making systems [5] and spread modeling of fire frontiers, all rely on how accurate their input is provided by a flame detection system.\n\nWhile ",
+          "fusion_score": 0.03252247488101534,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.03200204813108039,
+            "dense": 0.04918032786885246
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            1,
+            2,
+            4,
+            15
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.03149801587301587,
+          "chunk_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00001__small_004",
+          "parent_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion__parent_00001",
+          "doc_id": "arxiv_2307_04223_fire_human_detection_ir_thermal_fusion",
+          "source_file": "raw/arxiv_2307_04223_fire_human_detection_ir_thermal_fusion.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. I NTRODUCTION",
+          "text_preview": "Recently, deep learning-based methods have emerged as a promising approach for multi-sensor fusion. For example, a deep neural network has been proposed for fusing data from multiple\n\nHowever, detecting and rescuing victims in fire accident",
+          "fusion_score": 0.03149801587301587,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.030679156908665108,
+            "dense": 0.047379032258064516
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            4,
+            21
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.03149801587301587,
+          "chunk_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00003__small_003",
+          "parent_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00003",
+          "doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+          "source_file": "raw/arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection.pdf",
+          "page_start": 3,
+          "page_end": 3,
+          "heading": "III. P ROPOSED M ETHOD",
+          "text_preview": "1. Unobscured Flame Annotation: Annotating visible flames\n\nin RGB images using Alg. III-A.\n\n2. DML-guided Learning: Training an Auto-Encoder and\n\nClassifier on annotated thermal images with DML for flame detection (Alg.III-C3).\n\n3. DML-guid",
+          "fusion_score": 0.03149801587301587,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.03131881575727918,
+            "dense": 0.04466027597918165
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            14,
+            35
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.02967032967032967,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002__small_003",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. RELATED WORK",
+          "text_preview": "However, thermal representations from most existing thermal reconstruction and localization approaches only apply to objects, not free spaces, which is insufficient for navigation in active fires.\n\nC. High-Fidelity Environmental Modelling\n\n",
+          "fusion_score": 0.02967032967032967,
+          "variant_ranks": {
+            "bm25": 10,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.02900988017658188,
+            "dense": 0.04377551842282981
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            8,
+            10,
+            46
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.029418126757516764,
+          "chunk_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00009__small_005",
+          "parent_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00009",
+          "doc_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting",
+          "source_file": "raw/arxiv_1910_03617_thermal_image_target_detection_firefighting.pdf",
+          "page_start": 13,
+          "page_end": 13,
+          "heading": "85.6 41.4 10.8 Crawling",
+          "text_preview": "Convolutional neural network approach for buried target recognition in FL-LWIR imagery, in: Detection and Sensing of Mines, Explosive Objects, and Obscured Targets XIX, International Society for Optics and Photonics.\n\np.\n\n907219.\n\nTÃűreyin,",
+          "fusion_score": 0.029418126757516764,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 9
+          },
+          "variant_scores": {
+            "bm25": 0.02946912242686891,
+            "dense": 0.04214426877470356
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            6,
+            15,
+            18,
+            34
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.028850145288501453,
+          "chunk_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00002__small_003",
+          "parent_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00002",
+          "doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+          "source_file": "raw/arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. R ELATED W ORKS",
+          "text_preview": "R ELATED W ORKS\n\nSupervised machine-learning techniques are increasingly applied in wildfire detection.\n\nIn [14], an approach combines local binary pattern (LBP) and SVM for smoke detection from UAV-captured RGB images, and a CNN for flame ",
+          "fusion_score": 0.028850145288501453,
+          "variant_ranks": {
+            "bm25": 6,
+            "dense": 13
+          },
+          "variant_scores": {
+            "bm25": 0.030303030303030304,
+            "dense": 0.04036377708978328
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            7,
+            19,
+            23
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.028850145288501453,
+          "chunk_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00008__small_002",
+          "parent_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00008",
+          "doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+          "source_file": "raw/arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection.pdf",
+          "page_start": 8,
+          "page_end": 8,
+          "heading": "IV. P ERFORMANCE E VALUATION",
+          "text_preview": "Given that wildfires’ early-stage flames typically manifest as dispersed spots, this methodology facilitates a detailed understanding of such regions through targeted analysis of the masked portions.\n\nIV. P ERFORMANCE E VALUATION\n\nIn this s",
+          "fusion_score": 0.028850145288501453,
+          "variant_ranks": {
+            "bm25": 13,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.02684684684684685,
+            "dense": 0.04262701716371101
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            8,
+            46
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.02817460317460317,
+          "chunk_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00004__small_001",
+          "parent_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00004",
+          "doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+          "source_file": "raw/arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection.pdf",
+          "page_start": 4,
+          "page_end": 4,
+          "heading": "III. P ROPOSED M ETHOD",
+          "text_preview": "4\n\nis done in III-A3 to further justify the automated segmentation.\n\n1) RGB Mask Generation: In light of the approaches proposed by [35], [36] for forest fire detection, we have developed a well-fitted masking method to cater to the specifi",
+          "fusion_score": 0.02817460317460317,
+          "variant_ranks": {
+            "bm25": 12,
+            "dense": 10
+          },
+          "variant_scores": {
+            "bm25": 0.028404512489927477,
+            "dense": 0.0417821309125657
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            8,
+            15
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.027526395173453996,
+          "chunk_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00008__small_002",
+          "parent_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting__parent_00008",
+          "doc_id": "arxiv_1910_03617_thermal_image_target_detection_firefighting",
+          "source_file": "raw/arxiv_1910_03617_thermal_image_target_detection_firefighting.pdf",
+          "page_start": 11,
+          "page_end": 12,
+          "heading": "85.6 41.4 10.8 Crawling",
+          "text_preview": "5. Conclusion\n\nThe scene of a structural fire is chaotic, dangerous, and disorienting. Heavy smoke, near zero visibility, extreme heat and active flames create a perfect storm for stress induced misjudgments that can affect even seasoned fi",
+          "fusion_score": 0.027526395173453996,
+          "variant_ranks": {
+            "bm25": 18,
+            "dense": 8
+          },
+          "variant_scores": {
+            "bm25": 0.02402745995423341,
+            "dense": 0.04214949137549757
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            12
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持无人机/热成像火焰检测证据：热红外能够穿透烟雾干扰并暴露明火热特征，因此适合在能见度差时定位被烟遮住的火点。",
+      "source_doc_id": "arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk arxiv_2404_06653_flamefinder_smoke_thermal_fire_detection__parent_00001.",
+      "query_variants": {
+        "dense:zh": "无人机在浓烟遮挡下怎样利用热成像发现被烟挡住的明火位置？",
+        "dense:en": "How can a UAV use thermal imaging to detect open flame locations that are obscured by dense smoke?",
+        "dense:terms": "UAV thermal imaging flame detection smoke-obscured fire infrared thermal fire detection",
+        "bm25:en": "How can a UAV use thermal imaging to detect open flame locations that are obscured by dense smoke?",
+        "bm25:terms": "UAV thermal imaging flame detection smoke-obscured fire infrared thermal fire detection"
+      }
+    },
+    {
+      "case_id": "dense_zh_004",
+      "topic": "usar_void_space_robot",
+      "query": "建筑坍塌后，什么类型的机器人更适合进入狭小空洞搜索幸存者？",
+      "gold_parent_ids": [
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001"
+      ],
+      "retrieved_parent_ids": [
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00002",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00008",
+        "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00004",
+        "nist_usar_robot_performance_requirements__parent_00007",
+        "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00005",
+        "nist_response_robot_test_methods_guide__parent_00022",
+        "nist_response_robot_test_methods_guide__parent_00016",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00006"
+      ],
+      "retrieved_gold_parent_ids": [
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001"
+      ],
+      "first_gold_rank": 1,
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 1.0,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03278688524590164,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001__small_001",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. INTRODUCTION",
+          "text_preview": "Field Insights for Portable Vine Robots in Urban Search and Rescue\n\narXiv:2411.06615v1 [cs.RO] 10 Nov 2024\n\nCiera McFarland1∗ , Ankush Dhawan2,3∗ , Riya Kumari2 , Chad Council2 , Margaret Coad1† , and Nathaniel Hanson2†\n\nAbstract— Soft, gro",
+          "fusion_score": 0.03278688524590164,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.03278688524590164,
+            "dense": 0.04918032786885246
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.03200204813108039,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00002__small_004",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00002",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. RELATED WORK",
+          "text_preview": "The top and bottom rows of images present close-up views of the trial locations from the second field study (B) and the initial field study (A). Middle image is a birds-eye view of the rubble pile. Map data: Google 2024.\n\nhumans could not e",
+          "fusion_score": 0.03200204813108039,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.03125763125763126,
+            "dense": 0.048131080389144903
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            4,
+            9,
+            11,
+            18
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.031754032258064516,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003__small_002",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 3,
+          "page_end": 3,
+          "heading": "1 2",
+          "text_preview": "Test locations, highlighted in Fig. 2, are mapped to levels on the taxonomy of difficulty based on their characteristics.\n\nthe initial phase, we brought an existing vine robot setup, largely unchanged from previous field experiments [16], t",
+          "fusion_score": 0.031754032258064516,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.03225806451612903,
+            "dense": 0.04616113053613054
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            3,
+            16,
+            26,
+            48
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.03149801587301587,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00008__small_002",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00008",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 8,
+          "page_end": 8,
+          "heading": "VII. CONCLUSIONS",
+          "text_preview": "Overall, our work demonstrates that vine robots are platforms with great potential to affect USAR operations, especially when developments are tightly coupled to the operating conditions of the field.\n\nACKNOWLEDGMENTS\n\nThanks to members of ",
+          "fusion_score": 0.03149801587301587,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.03125,
+            "dense": 0.04640914640914641
+          },
+          "child_hit_count": 5,
+          "child_ranks": [
+            5,
+            6,
+            12,
+            13,
+            20
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.02817460317460317,
+          "chunk_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00004__small_005",
+          "parent_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00004",
+          "doc_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building",
+          "source_file": "raw/insarag_guidelines_2020_volume_ii_manual_a_capacity_building.pdf",
+          "page_start": 7,
+          "page_end": 8,
+          "heading": "2 Building Local Capacity",
+          "text_preview": "\n\n\n\nConfined space rescue: A confined space is an enclosed area with limited entry or egress, which has an internal configuration not designed for human occupancy such that an entrant could become trapped or asphyxiated. It may have inwar",
+          "fusion_score": 0.02817460317460317,
+          "variant_ranks": {
+            "bm25": 10,
+            "dense": 12
+          },
+          "variant_scores": {
+            "bm25": 0.026013513513513515,
+            "dense": 0.039139064085035064
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            20
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.027745885954841176,
+          "chunk_id": "nist_usar_robot_performance_requirements__parent_00007__small_002",
+          "parent_id": "nist_usar_robot_performance_requirements__parent_00007",
+          "doc_id": "nist_usar_robot_performance_requirements",
+          "source_file": "raw/nist_usar_robot_performance_requirements.pdf",
+          "page_start": 13,
+          "page_end": 14,
+          "heading": "1. Robots",
+          "text_preview": "Robots\n\nuntenable\n\nGround: Confined Space, Temporary\n\n5. Shore Robots\n\nTradeoffs\n\nAdaptive, temporary shoring; provide stay behind monitoring; victim triage & support Placed: lowered via tether\n\nGround: Confined Space Search; provide stay\n\n",
+          "fusion_score": 0.027745885954841176,
+          "variant_ranks": {
+            "bm25": 18,
+            "dense": 7
+          },
+          "variant_scores": {
+            "bm25": 0.015151515151515152,
+            "dense": 0.043715762529523056
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            12,
+            14,
+            47
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.026878868258178604,
+          "chunk_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00005__small_002",
+          "parent_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00005",
+          "doc_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency",
+          "source_file": "raw/arxiv_2606_23246_robotic_intervention_industrial_emergency.pdf",
+          "page_start": 5,
+          "page_end": 5,
+          "heading": "3 1",
+          "text_preview": "•\n\n•\n\nand localize the robot down to the centimetre. SLAM systems are available on some modern robots, but often not adapted to the harsh conditions encountered in search and rescue missions. As an illustration, Fig. 10 shows a point cloud ",
+          "fusion_score": 0.026878868258178604,
+          "variant_ranks": {
+            "bm25": 27,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.013333333333333334,
+            "dense": 0.04538690476190476
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            5,
+            36
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.026333789329685362,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00022__small_001",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00022",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 32,
+          "page_end": 33,
+          "heading": "SHELF",
+          "text_preview": "Standard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\nFIGURE 31: Search and map a dwelling with a basement. Locate any signs of life (v",
+          "fusion_score": 0.026333789329685362,
+          "variant_ranks": {
+            "bm25": 26,
+            "dense": 8
+          },
+          "variant_scores": {
+            "bm25": 0.013513513513513514,
+            "dense": 0.042080272649063596
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            19
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.02564935064935065,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00016__small_002",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00016",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 21,
+          "page_end": 21,
+          "heading": "DHS-NIST-ASTM STANDARD TEST METHODS FOR RESONSE ROBOTS (GROUND)",
+          "text_preview": "• reliability (field maintenance and resets); • water fording (10 cm / 4 in); • throw distance (2.4 m / 8 ft) • and a dozen others are recommended to define the overall characteristics of a given robot.\n\nDHS-NIST-ASTM STANDARD TEST METHODS ",
+          "fusion_score": 0.02564935064935065,
+          "variant_ranks": {
+            "bm25": 28,
+            "dense": 10
+          },
+          "variant_scores": {
+            "bm25": 0.013157894736842105,
+            "dense": 0.039427134775971984
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            17,
+            27
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.02557544757033248,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00006__small_001",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00006",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 6,
+          "page_end": 6,
+          "heading": "C. Second Field Study Results",
+          "text_preview": "Fig. 5: System architecture for portable SPROUT operation. With improvements between field studies, SPROUT runs fully on battery power, features a condensed electronics and fluidic control system, and utilizes a joystick gamepad for control",
+          "fusion_score": 0.02557544757033248,
+          "variant_ranks": {
+            "bm25": 8,
+            "dense": 32
+          },
+          "variant_scores": {
+            "bm25": 0.027313266443701224,
+            "dense": 0.014925373134328358
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            19,
+            36,
+            50
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持空洞搜索机器人选择的证据：软体、可伸展或藤蔓式机器人更适合进入狭窄、弯折、碎石约束的空隙，完成幸存者搜索与现场探查。",
+      "source_doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001.",
+      "query_variants": {
+        "dense:zh": "建筑坍塌后，什么类型的机器人更适合进入狭小空洞搜索幸存者？",
+        "dense:en": "After a building collapse, what type of robot is better suited to enter narrow void spaces to search for survivors?",
+        "dense:terms": "USAR void space search vine robot soft robot continuum robot confined spaces collapsed structure survivor search",
+        "bm25:en": "After a building collapse, what type of robot is better suited to enter narrow void spaces to search for survivors?",
+        "bm25:terms": "USAR void space search vine robot soft robot continuum robot confined spaces collapsed structure survivor search"
+      }
+    },
+    {
+      "case_id": "dense_zh_005",
+      "topic": "usar_void_entry_risk",
+      "query": "坍塌废墟中的空洞入口危险度怎么分级，哪些情况对人类很难但对软体机器人更可行？",
+      "gold_parent_ids": [
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003"
+      ],
+      "retrieved_parent_ids": [
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00002",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003",
+        "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00002",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00008",
+        "nist_usar_robot_performance_requirements__parent_00020",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00004",
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00007",
+        "nist_response_robot_test_methods_guide__parent_00019",
+        "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00010"
+      ],
+      "retrieved_gold_parent_ids": [
+        "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003"
+      ],
+      "first_gold_rank": 3,
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 0.3333333333333333,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03252247488101534,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001__small_001",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00001",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. INTRODUCTION",
+          "text_preview": "Field Insights for Portable Vine Robots in Urban Search and Rescue\n\narXiv:2411.06615v1 [cs.RO] 10 Nov 2024\n\nCiera McFarland1∗ , Ankush Dhawan2,3∗ , Riya Kumari2 , Chad Council2 , Margaret Coad1† , and Nathaniel Hanson2†\n\nAbstract— Soft, gro",
+          "fusion_score": 0.03252247488101534,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.03200204813108039,
+            "dense": 0.048915917503966164
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            2,
+            9
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.032266458495966696,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00002__small_004",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00002",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. RELATED WORK",
+          "text_preview": "The top and bottom rows of images present close-up views of the trial locations from the second field study (B) and the initial field study (A). Middle image is a birds-eye view of the rubble pile. Map data: Google 2024.\n\nhumans could not e",
+          "fusion_score": 0.032266458495966696,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.03278688524590164,
+            "dense": 0.045750384880819665
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            1,
+            7,
+            9,
+            12
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.03200204813108039,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003__small_002",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 3,
+          "page_end": 3,
+          "heading": "1 2",
+          "text_preview": "Test locations, highlighted in Fig. 2, are mapped to levels on the taxonomy of difficulty based on their characteristics.\n\nthe initial phase, we brought an existing vine robot setup, largely unchanged from previous field experiments [16], t",
+          "fusion_score": 0.03200204813108039,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.03200204813108039,
+            "dense": 0.048651507139079855
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            2,
+            20
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.031009615384615385,
+          "chunk_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00002__small_001",
+          "parent_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00002",
+          "doc_id": "arxiv_2606_23246_robotic_intervention_industrial_emergency",
+          "source_file": "raw/arxiv_2606_23246_robotic_intervention_industrial_emergency.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "III. M ISSION DESCRIPTION",
+          "text_preview": "or natural catastrophes—by deploying unmanned ground and aerial systems for safe reconnaissance, manipulation, and data collection. Operating under a cooperative model involving national, regional, and municipal authorities, the task force ",
+          "fusion_score": 0.031009615384615385,
+          "variant_ranks": {
+            "bm25": 5,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.02964426877470356,
+            "dense": 0.04495626139461756
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            4,
+            6
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.030330882352941176,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00008__small_004",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00008",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 8,
+          "page_end": 8,
+          "heading": "VII. CONCLUSIONS",
+          "text_preview": "1–8.\n\n[12] E.\n\nW.\n\nHawkes, L.\n\nH.\n\nBlumenschein, J.\n\nD.\n\nGreer, and A.\n\nM.\n\nOkamura, “A soft robot that navigates its environment through growth,” Science Robotics, vol.\n\n2, no.\n\n8, p.\n\neaan3028, 2017.\n\n[13] L.\n\nH.\n\nBlumenschein, M.\n\nM.\n\nCo",
+          "fusion_score": 0.030330882352941176,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 8
+          },
+          "variant_scores": {
+            "bm25": 0.03076923076923077,
+            "dense": 0.04220680520270123
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            10,
+            15,
+            22,
+            29
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.028381642512077296,
+          "chunk_id": "nist_usar_robot_performance_requirements__parent_00020__small_001",
+          "parent_id": "nist_usar_robot_performance_requirements__parent_00020",
+          "doc_id": "nist_usar_robot_performance_requirements",
+          "source_file": "raw/nist_usar_robot_performance_requirements.pdf",
+          "page_start": 38,
+          "page_end": 39,
+          "heading": "Chapter 7",
+          "text_preview": "Preliminary Report\n\nChapter 7\n\nBUILDING AND COLLAPSE TYPES\n\nAs an integral effort to define test methods for urban search and rescue robotics, a description and classification of potential operating environments is required. To that end, th",
+          "fusion_score": 0.028381642512077296,
+          "variant_ranks": {
+            "bm25": 9,
+            "dense": 12
+          },
+          "variant_scores": {
+            "bm25": 0.027912386121341344,
+            "dense": 0.03888395875591616
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            9,
+            13
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.027271052146674038,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00004__small_003",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00004",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 4,
+          "page_end": 4,
+          "heading": "C. Initial Field Study Description",
+          "text_preview": "Adding the camera allowed us to meaningfully teleoperate the robot in void spaces where we could not see the robot, but removing the camera allowed us to grow the robot without the added resistance and weight of the camera mount.\n\nD. Initia",
+          "fusion_score": 0.027271052146674038,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 21
+          },
+          "variant_scores": {
+            "bm25": 0.028814262023217248,
+            "dense": 0.024695121951219513
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            13,
+            17,
+            28
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.02684684684684685,
+          "chunk_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00007__small_003",
+          "parent_id": "arxiv_2411_06615_vine_robots_usar_field_insights__parent_00007",
+          "doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+          "source_file": "raw/arxiv_2411_06615_vine_robots_usar_field_insights.pdf",
+          "page_start": 7,
+          "page_end": 7,
+          "heading": "2.5 m/min growth, slower with camera mount",
+          "text_preview": "Externally mounted sensors can also become caught on the environment. In a worst case scenario, the robot could be abandoned in the inspection space and be easily replaced since the vine\n\nbody itself is inexpensive. However, the sensors on ",
+          "fusion_score": 0.02684684684684685,
+          "variant_ranks": {
+            "bm25": 14,
+            "dense": 15
+          },
+          "variant_scores": {
+            "bm25": 0.02557544757033248,
+            "dense": 0.029910714285714284
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            14,
+            18,
+            27,
+            50
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.02532051282051282,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00019__small_002",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00019",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 26,
+          "page_end": 27,
+          "heading": "IRT",
+          "text_preview": "25\n\nS t a n d a r d Te s t M e t h o d s f o r R e s p o n s e R o b o t s\n\nStandard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\ntesti",
+          "fusion_score": 0.02532051282051282,
+          "variant_ranks": {
+            "bm25": 18,
+            "dense": 20
+          },
+          "variant_scores": {
+            "bm25": 0.015625,
+            "dense": 0.025035205758097326
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            4,
+            20
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.025320462098433298,
+          "chunk_id": "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00010__small_004",
+          "parent_id": "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00010",
+          "doc_id": "insarag_guidelines_2020_volume_ii_manual_b_operations",
+          "source_file": "raw/insarag_guidelines_2020_volume_ii_manual_b_operations.pdf",
+          "page_start": 19,
+          "page_end": 20,
+          "heading": "4 USAR Detailed Operations Following the Response Cycle",
+          "text_preview": "USAR Team Rescue \n\n       \n\nPerform rescue (breaching, extrication and transport) in collapsed or failed structures of concrete, heavy wood/reinforced masonry with structural steel (rigging and lifting) in close operation with USAR",
+          "fusion_score": 0.025320462098433298,
+          "variant_ranks": {
+            "bm25": 11,
+            "dense": 29
+          },
+          "variant_scores": {
+            "bm25": 0.027071520029266508,
+            "dense": 0.014925373134328358
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            20,
+            42
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持空洞入口风险分级证据：入口越窄、越不稳定、越受碎石和坠落风险影响，人类进入越危险；但软体机器人在低间隙、非结构化、可变形路径中可能更有机会通行。",
+      "source_doc_id": "arxiv_2411_06615_vine_robots_usar_field_insights",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk arxiv_2411_06615_vine_robots_usar_field_insights__parent_00003.",
+      "query_variants": {
+        "dense:zh": "坍塌废墟中的空洞入口危险度怎么分级，哪些情况对人类很难但对软体机器人更可行？",
+        "dense:en": "How should void entrance risk in collapsed rubble be classified, and which conditions are difficult for humans but more feasible for soft robots?",
+        "dense:terms": "void entrance risk collapsed rubble soft robot vine robot constrained aperture unstable debris low clearance human entry risk USAR",
+        "bm25:en": "How should void entrance risk in collapsed rubble be classified, and which conditions are difficult for humans but more feasible for soft robots?",
+        "bm25:terms": "void entrance risk collapsed rubble soft robot vine robot constrained aperture unstable debris low clearance human entry risk USAR"
+      }
+    },
+    {
+      "case_id": "dense_zh_006",
+      "topic": "response_robot_test_methods",
+      "query": "消防救援机器人在采购前应该从哪些标准化能力维度做测试？",
+      "gold_parent_ids": [
+        "nist_response_robot_test_methods_guide__parent_00003"
+      ],
+      "retrieved_parent_ids": [
+        "nist_response_robot_test_methods_guide__parent_00003",
+        "nist_response_robot_test_methods_guide__parent_00006",
+        "nist_response_robot_test_methods_guide__parent_00017",
+        "nist_response_robot_test_methods_guide__parent_00018",
+        "nist_response_robot_test_methods_guide__parent_00016",
+        "nist_response_robot_test_methods_guide__parent_00010",
+        "nist_response_robot_test_methods_guide__parent_00013",
+        "nist_response_robot_test_methods_guide__parent_00004",
+        "nist_response_robot_test_methods_guide__parent_00011",
+        "nist_response_robot_test_methods_guide__parent_00024"
+      ],
+      "retrieved_gold_parent_ids": [
+        "nist_response_robot_test_methods_guide__parent_00003"
+      ],
+      "first_gold_rank": 1,
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 1.0,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03252247488101534,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00003__small_005",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00003",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 4,
+          "page_end": 5,
+          "heading": "Appendix A: Robot Capabilities Bar Charts ....................................................................38",
+          "text_preview": "FIGURE 1: The development cycle for DHS-NIST-ASTM International Standard Test Methods for Response Robots is a responder driven process for generating, validating, and standardizing test methods.\n\nObjective This document describes the suite",
+          "fusion_score": 0.03252247488101534,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.0315136476426799,
+            "dense": 0.046511196246139225
+          },
+          "child_hit_count": 5,
+          "child_ranks": [
+            2,
+            4,
+            5,
+            17,
+            26
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.03200204813108039,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00006__small_002",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00006",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 9,
+          "page_end": 9,
+          "heading": "'=-,9\u0001\u0017,9D:9\u0001\u00199A4=:9809? \u0003#=:?:?D;492\u0004",
+          "text_preview": "This helps inform and guide purchasing decisions by clearly indicating the range of available robot capabilities in any given test method, and the particular combinations of capabilities available in certain robot configurations.\n\nResponder",
+          "fusion_score": 0.03200204813108039,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.03131881575727918,
+            "dense": 0.04580520732883317
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            14,
+            33
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.031024531024531024,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00017__small_005",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00017",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 22,
+          "page_end": 23,
+          "heading": "IRT",
+          "text_preview": "Do you like your robot’s operator interface?\n\nEither way you may not want to move to an unfamiliar operator interface figuring you would have to learn the new system, maintain the old system, and keep trained up on both!\n\nThese are all cons",
+          "fusion_score": 0.031024531024531024,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.029957522915269395,
+            "dense": 0.0430274024024024
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            3,
+            8,
+            11,
+            23
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.03076923076923077,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00018__small_001",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00018",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 24,
+          "page_end": 25,
+          "heading": "IRT",
+          "text_preview": "Standard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\nTraining Operators with Measures of Proficiency Beyond purchases, standard test m",
+          "fusion_score": 0.03076923076923077,
+          "variant_ranks": {
+            "bm25": 5,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.029386529386529386,
+            "dense": 0.04319073083778966
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            9
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.03028233151183971,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00016__small_001",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00016",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 21,
+          "page_end": 21,
+          "heading": "DHS-NIST-ASTM STANDARD TEST METHODS FOR RESONSE ROBOTS (GROUND)",
+          "text_preview": "Standard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\nGuiding Robot Purchases Selecting a Suite of Representative Test Methods The firs",
+          "fusion_score": 0.03028233151183971,
+          "variant_ranks": {
+            "bm25": 12,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.01639344262295082,
+            "dense": 0.04813947436898257
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            2,
+            49
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.029910714285714284,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00010__small_003",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00010",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 14,
+          "page_end": 14,
+          "heading": "80 (meters per minute)",
+          "text_preview": "In these cases the overall system performance is captured in the same way but the percentage of time the operator interacts with the system is also captured as a rough measure of operator workload.\n\nMore advanced measures are possible as mo",
+          "fusion_score": 0.029910714285714284,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 10
+          },
+          "variant_scores": {
+            "bm25": 0.02946236559139785,
+            "dense": 0.04056029713924451
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            2,
+            41
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.029850746268656716,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00013__small_001",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00013",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 17,
+          "page_end": 17,
+          "heading": "80 (meters per minute)",
+          "text_preview": "Standard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\nincluding color, icon, text, and number.\n\nThe text and numbers are sized for aver",
+          "fusion_score": 0.029850746268656716,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 7
+          },
+          "variant_scores": {
+            "bm25": 0.027443609022556388,
+            "dense": 0.04266735679779158
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            11
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.029236022193768675,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00004__small_003",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00004",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 6,
+          "page_end": 7,
+          "heading": "Appendix A: Robot Capabilities Bar Charts ....................................................................38",
+          "text_preview": "5\n\nS t a n d a r d Te s t M e t h o d s f o r R e s p o n s e R o b o t s\n\nStandard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\nWhat i",
+          "fusion_score": 0.029236022193768675,
+          "variant_ranks": {
+            "bm25": 6,
+            "dense": 11
+          },
+          "variant_scores": {
+            "bm25": 0.029083245521601686,
+            "dense": 0.040091564967186855
+          },
+          "child_hit_count": 4,
+          "child_ranks": [
+            7,
+            9,
+            11,
+            13
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.028985507246376812,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00011__small_001",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00011",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 15,
+          "page_end": 15,
+          "heading": "80 (meters per minute)",
+          "text_preview": "Standard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\ncontainers should be captured along with the shipping weights. Videos of routine ",
+          "fusion_score": 0.028985507246376812,
+          "variant_ranks": {
+            "bm25": 9,
+            "dense": 9
+          },
+          "variant_scores": {
+            "bm25": 0.025158227848101268,
+            "dense": 0.04171108742004265
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            8,
+            44
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.028404512489927477,
+          "chunk_id": "nist_response_robot_test_methods_guide__parent_00024__small_001",
+          "parent_id": "nist_response_robot_test_methods_guide__parent_00024",
+          "doc_id": "nist_response_robot_test_methods_guide",
+          "source_file": "raw/nist_response_robot_test_methods_guide.pdf",
+          "page_start": 36,
+          "page_end": 37,
+          "heading": "2 Figure 40) Armadillo–Manipulator–Wheels, MacroUSA Corp. and RE , Inc., USA (4.8kg /10.6lbs)",
+          "text_preview": "Standard Test Methods For Response Robots ASTM International Standards Committee on Homeland Security Applications; Operational Equipment; Robots (E54.08.01)\n\nResulting Capabilities Compendium Comparison and Trade-Off Tool (software interfa",
+          "fusion_score": 0.028404512489927477,
+          "variant_ranks": {
+            "bm25": 13,
+            "dense": 8
+          },
+          "variant_scores": {
+            "bm25": 0.015625,
+            "dense": 0.04207025850861468
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            8
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持机器人采购测试证据：应按照标准化能力维度评估响应机器人，例如机动性、感知、通信、操控、自主性、耐久性与任务适配性，而不仅是单一演示表现。",
+      "source_doc_id": "nist_response_robot_test_methods_guide",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk nist_response_robot_test_methods_guide__parent_00003.",
+      "query_variants": {
+        "dense:zh": "消防救援机器人在采购前应该从哪些标准化能力维度做测试？",
+        "dense:en": "Before purchasing a firefighting or rescue robot, which standardized capability dimensions should be tested?",
+        "dense:terms": "response robots standard test methods DHS-NIST-ASTM robot purchases representative test methods performance objectives lower capability thresholds mission capabilities operator proficiency",
+        "bm25:en": "Before purchasing a firefighting or rescue robot, which standardized capability dimensions should be tested?",
+        "bm25:terms": "response robots standard test methods DHS-NIST-ASTM robot purchases representative test methods performance objectives lower capability thresholds mission capabilities operator proficiency"
+      }
+    },
+    {
+      "case_id": "dense_zh_007",
+      "topic": "building_fire_service_features",
+      "query": "大型建筑做消防预案时，消防队最关心哪些建筑消防系统和现场标识信息？",
+      "gold_parent_ids": [
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00062"
+      ],
+      "retrieved_parent_ids": [
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00062",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00026",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00030",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00058",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00047",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00057",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00056",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00061",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00022",
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00031"
+      ],
+      "retrieved_gold_parent_ids": [
+        "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00062"
+      ],
+      "first_gold_rank": 1,
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 1.0,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.032018442622950824,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00062__small_001",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00062",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 121,
+          "page_end": 122,
+          "heading": "Chapter",
+          "text_preview": "Feature\n\nChapter\n\nEntry doors — signage at rear doors, blocked doors, utility rooms, fire protection system rooms\n\n6, 8, 9, 11\n\nFeatures required or desired to be at main fire service entrance\n\n4, 6, 10, 11\n\nBuilding plans and information —",
+          "fusion_score": 0.032018442622950824,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.03278688524590164,
+            "dense": 0.044988213864780885
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            1
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.03149801587301587,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00026__small_003",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00026",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 49,
+          "page_end": 50,
+          "heading": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS",
+          "text_preview": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS\n\n41\n\nCHAPTER 7\n\nHAZARDS TO FIREFIGHTERS\n\nSeveral building features present unique or unexpected hazards to firefighters. Designers and code officials can mitigate some but not a",
+          "fusion_score": 0.03149801587301587,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.0293236301369863,
+            "dense": 0.04513888888888889
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            4
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.031054405392392875,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00030__small_002",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00030",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 57,
+          "page_end": 58,
+          "heading": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS",
+          "text_preview": "ng emergency contact information for owners and technical personnel Sharing information for pre-incident planning Training emergency responders to help them operate safety Maintaining the feature in good working order Notifying emergency re",
+          "fusion_score": 0.031054405392392875,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 7
+          },
+          "variant_scores": {
+            "bm25": 0.030834914611005692,
+            "dense": 0.04354276388991915
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            2,
+            46
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.031024531024531024,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00058__small_003",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00058",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 113,
+          "page_end": 114,
+          "heading": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS",
+          "text_preview": "One example is security bollards that are not coordinated with fire hydrant locations. Another is fixed planters or furniture obstructing FDCs. With a large number of possible features needing coordination, all stakeholders should remain vi",
+          "fusion_score": 0.031024531024531024,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.02976190476190476,
+            "dense": 0.04371263324049414
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            3
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.029906956136464335,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00047__small_003",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00047",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 91,
+          "page_end": 92,
+          "heading": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS",
+          "text_preview": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS\n\n83\n\noptional, automatic fire service notification often results in the fastest response and therefore the best opportunity to affect rescues and limit property damage. Reportin",
+          "fusion_score": 0.029906956136464335,
+          "variant_ranks": {
+            "bm25": 14,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.02649122807017544,
+            "dense": 0.04713064713064713
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            3,
+            11,
+            19
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.029116045245077504,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00057__small_005",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00057",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 111,
+          "page_end": 112,
+          "heading": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS",
+          "text_preview": "Federal Emergency Management Agency, ”Six Firefighter\n\nFatalities in Construction Site Explosion”, USFA-TR-024, November 1988, http://www.usfa.fema.gov/downloads/pdf/ publications/tr-024.pdf\n\n10 4\n\nFigure 13.4. Firefighters can obtain valua",
+          "fusion_score": 0.029116045245077504,
+          "variant_ranks": {
+            "bm25": 17,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.025708635464733027,
+            "dense": 0.046494801754268796
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            2,
+            7,
+            18
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.028814262023217248,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00056__small_004",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00056",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 109,
+          "page_end": 110,
+          "heading": "CHAPTER 13",
+          "text_preview": "For example, a shopping center must have its water supply in place before any individual tenant can be sprinklered. This is complicated further when a single water supply or fire pump feeds several buildings. The Occupancy section below dis",
+          "fusion_score": 0.028814262023217248,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 12
+          },
+          "variant_scores": {
+            "bm25": 0.028283227848101264,
+            "dense": 0.0412250253104403
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            4,
+            39
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.028790389395194696,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00061__small_001",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00061",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 119,
+          "page_end": 120,
+          "heading": "■■ IBC",
+          "text_preview": "Questions to Ask – Building Phases ■■ Has communication with jurisdictional representatives begun as early as possible? ■■ Are both code officials and emergency responders in the communication loop? ■■ Should security professionals be consu",
+          "fusion_score": 0.028790389395194696,
+          "variant_ranks": {
+            "bm25": 8,
+            "dense": 11
+          },
+          "variant_scores": {
+            "bm25": 0.02782608695652174,
+            "dense": 0.04164274322169059
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            9,
+            13
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.028006267136701922,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00022__small_003",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00022",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 41,
+          "page_end": 42,
+          "heading": "FIRE SERVICE FEATURES OF BUILDINGS AND FIRE PROTECTION SYSTEMS",
+          "text_preview": "The lettering size should be legible from the firefighters’ vantage point. If these doors are properly marked, firefighters will not waste time trying to gain entry through them.\n\nRoom and Floor Designations Coordination of floor and room d",
+          "fusion_score": 0.028006267136701922,
+          "variant_ranks": {
+            "bm25": 9,
+            "dense": 14
+          },
+          "variant_scores": {
+            "bm25": 0.027479766610201392,
+            "dense": 0.03961840628507295
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            9
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.027884615384615386,
+          "chunk_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00031__small_003",
+          "parent_id": "osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00031",
+          "doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+          "source_file": "raw/osha_fire_service_features_buildings_fire_protection_systems_2015.pdf",
+          "page_start": 59,
+          "page_end": 60,
+          "heading": "CHAPTER 8",
+          "text_preview": "Zoning It is important for sprinkler designers and fire alarm designers to work together in buildings of any size or complexity. The fire alarm system will often have an annunciator to indicate the location of the alarm to the fire\n\nFIRE SE",
+          "fusion_score": 0.027884615384615386,
+          "variant_ranks": {
+            "bm25": 20,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.024152480721664482,
+            "dense": 0.04479578392621871
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            6
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持建筑预案证据：消防队需要掌握建筑消防系统、报警和抑制设施、入口与疏散标识、楼层/竖井/消防控制位置等信息，以便制定战术和现场进入方案。",
+      "source_doc_id": "osha_fire_service_features_buildings_fire_protection_systems_2015",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk osha_fire_service_features_buildings_fire_protection_systems_2015__parent_00062.",
+      "query_variants": {
+        "dense:zh": "大型建筑做消防预案时，消防队最关心哪些建筑消防系统和现场标识信息？",
+        "dense:en": "When preparing a fire preplan for a large building, which building fire protection systems and on-site signage information matter most to the fire service?",
+        "dense:terms": "fire service features pre-incident planning building fire protection systems fire alarm sprinkler standpipe fire command center signage evacuation floor plans access points",
+        "bm25:en": "When preparing a fire preplan for a large building, which building fire protection systems and on-site signage information matter most to the fire service?",
+        "bm25:terms": "fire service features pre-incident planning building fire protection systems fire alarm sprinkler standpipe fire command center signage evacuation floor plans access points"
+      }
+    },
+    {
+      "case_id": "dense_zh_008",
+      "topic": "firefighter_rehab_thresholds",
+      "query": "消防员连续作业多久、用完几瓶空呼后，必须进入rehab做补水和医疗评估？",
+      "gold_parent_ids": [
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00102"
+      ],
+      "retrieved_parent_ids": [
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00068",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00048",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00070",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00086",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00069",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00072",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00102",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00056",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00071",
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00050"
+      ],
+      "retrieved_gold_parent_ids": [
+        "usfa_emergency_incident_rehabilitation_fa_314__parent_00102"
+      ],
+      "first_gold_rank": 7,
+      "hit_at_1": false,
+      "hit_at_5": false,
+      "hit_at_10": true,
+      "mrr_at_10": 0.14285714285714285,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03278688524590164,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00068__small_001",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00068",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 119,
+          "page_end": 119,
+          "heading": "Chapter 5: Caring for Firefighters During Rehab Operations",
+          "text_preview": "Chapter 5: Caring for Firefighters During Rehab Operations\n\n113\n\nexpenditure of two 30-minute SCBA cylinders. Requirements for nonstructural firefighting incidents were either nonexistent or inconsistent. NFPA 1584 provided the first standa",
+          "fusion_score": 0.03278688524590164,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.03278688524590164,
+            "dense": 0.048915917503966164
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            5,
+            24
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.03225806451612903,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00048__small_002",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00048",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 80,
+          "page_end": 81,
+          "heading": "CHAPTER 4",
+          "text_preview": "Figure 4.2—Courtesy of Chris Mickal, New Orleans Fire Department.\n\nChapter 4: Establishing and Operating a Rehab Area\n\n75\n\nmeet the criteria for seeking rehab services. NFPA 1584 provides the following two guidelines for company or crew reh",
+          "fusion_score": 0.03225806451612903,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.03225806451612903,
+            "dense": 0.048651507139079855
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            1,
+            13
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.03149801587301587,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00070__small_001",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00070",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 121,
+          "page_end": 122,
+          "heading": "Chapter 5: Caring for Firefighters During Rehab Operations",
+          "text_preview": "Chapter 5: Caring for Firefighters During Rehab Operations\n\n115\n\nmomentarily of the duties they were performing and have some time to rest and drink some fluids. NFPA\n\n1584 recommends that the self-rehab period should be at least 10 minutes",
+          "fusion_score": 0.03149801587301587,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.03076923076923077,
+            "dense": 0.04712301587301587
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            6
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.03149801587301587,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00086__small_001",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00086",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 146,
+          "page_end": 147,
+          "heading": "Chapter 5: Caring for Firefighters During Rehab Operations",
+          "text_preview": "140\n\nEmergency Incident Rehabilitation\n\nRehydration Strategies Regardless of how well firefighters have prehydrated prior to an emergency incident or training exercise, it will be necessary for them to take on additional fluids during and a",
+          "fusion_score": 0.03149801587301587,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.031746031746031744,
+            "dense": 0.046649531024531024
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            3
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.03076923076923077,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00069__small_003",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00069",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 120,
+          "page_end": 120,
+          "heading": "Chapter 5: Caring for Firefighters During Rehab Operations",
+          "text_preview": "This section examines the various parts of the rehab process. They are covered in a logical manner, the same order in which firefighters should proceed through the process. The overall rehab process includes both selfrehab and formal rehab ",
+          "fusion_score": 0.03076923076923077,
+          "variant_ranks": {
+            "bm25": 5,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.03055037313432836,
+            "dense": 0.04501587087188492
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            9
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.03007688828584351,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00072__small_002",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00072",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 125,
+          "page_end": 126,
+          "heading": "Chapter 5: Caring for Firefighters During Rehab Operations",
+          "text_preview": "and Refreshment Unit varies depending on a variety of conditions, including • the responder’s level of physical conditioning; • the atmospheric conditions; • the nature of the activities the responder was performing before entering rehab; a",
+          "fusion_score": 0.03007688828584351,
+          "variant_ranks": {
+            "bm25": 6,
+            "dense": 7
+          },
+          "variant_scores": {
+            "bm25": 0.029236022193768675,
+            "dense": 0.044723161161517325
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            6,
+            24
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.029437229437229435,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00102__small_003",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00102",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 172,
+          "page_end": 173,
+          "heading": "IC. It will continue to be the responsibility of Incident Command to make an early determination of situations",
+          "text_preview": "Personnel must report to the Rehab Group/Sector as follows: • following the use of two 30-minute SCBA cylinders or one 45- or 60-minute cylinder • after 40 minutes of intense physical labor\n\nAppendix B: Fire Department Standard Operating Pr",
+          "fusion_score": 0.029437229437229435,
+          "variant_ranks": {
+            "bm25": 10,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.027820121951219513,
+            "dense": 0.04482184482184482
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            7
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.028790389395194696,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00056__small_001",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00056",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 96,
+          "page_end": 97,
+          "heading": "Chapter 4: Establishing and Operating a Rehab Area",
+          "text_preview": "90\n\nEmergency Incident Rehabilitation\n\nFigure 4.16\n\nFigure 4.15\n\nIf one member of a crew or company who is in rehab is deemed unfit to return to service, the Rehab Group Supervisor should not return the markers to any members of that compan",
+          "fusion_score": 0.028790389395194696,
+          "variant_ranks": {
+            "bm25": 8,
+            "dense": 11
+          },
+          "variant_scores": {
+            "bm25": 0.02821939586645469,
+            "dense": 0.03846633961227827
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            10,
+            20,
+            27
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.028404512489927477,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00071__small_003",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00071",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 123,
+          "page_end": 124,
+          "heading": "Chapter 5: Caring for Firefighters During Rehab Operations",
+          "text_preview": "Figure 5.5\n\nFigure 5.6—Courtesy of Phoenix, AZ Fire Department\n\n118\n\nEmergency Incident Rehabilitation\n\nFigure 5.7—Courtesy of Ron Jeffers, Union City, NJ.\n\nEach fire department needs to establish criteria in their SOPs on vital signs that ",
+          "fusion_score": 0.028404512489927477,
+          "variant_ranks": {
+            "bm25": 13,
+            "dense": 8
+          },
+          "variant_scores": {
+            "bm25": 0.026973565905412694,
+            "dense": 0.04111647051257315
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            16
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.028381642512077296,
+          "chunk_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00050__small_001",
+          "parent_id": "usfa_emergency_incident_rehabilitation_fa_314__parent_00050",
+          "doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+          "source_file": "raw/usfa_emergency_incident_rehabilitation_fa_314.pdf",
+          "page_start": 84,
+          "page_end": 85,
+          "heading": "Chapter 4: Establishing and Operating a Rehab Area",
+          "text_preview": "78\n\nEmergency Incident Rehabilitation\n\nFigure 4.4\n\nFirefighters who operate at large-scale at wildland fires typically work 12- to 24-hour shifts on the fire line. Firefighters may have to walk long distances over rugged or hilly terrain si",
+          "fusion_score": 0.028381642512077296,
+          "variant_ranks": {
+            "bm25": 12,
+            "dense": 9
+          },
+          "variant_scores": {
+            "bm25": 0.026992753623188405,
+            "dense": 0.04017789838685361
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            11,
+            17
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持 rehab 触发与处置证据：连续高强度作业、空呼使用、热负荷和脱水风险会要求消防员进入rehab进行补水、生命体征检查和医疗评估。",
+      "source_doc_id": "usfa_emergency_incident_rehabilitation_fa_314",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk usfa_emergency_incident_rehabilitation_fa_314__parent_00102.",
+      "query_variants": {
+        "dense:zh": "消防员连续作业多久、用完几瓶空呼后，必须进入rehab做补水和医疗评估？",
+        "dense:en": "When must firefighters enter rehab for hydration and medical evaluation after continuous work or after using SCBA cylinders?",
+        "dense:terms": "SCBA self-contained breathing apparatus SCBA cylinder NFPA 1584 emergency incident rehabilitation self-rehab formal rehab medical evaluation hydration work-to-rest ratio vital signs",
+        "bm25:en": "When must firefighters enter rehab for hydration and medical evaluation after continuous work or after using SCBA cylinders?",
+        "bm25:terms": "SCBA self-contained breathing apparatus SCBA cylinder NFPA 1584 emergency incident rehabilitation self-rehab formal rehab medical evaluation hydration work-to-rest ratio vital signs"
+      }
+    },
+    {
+      "case_id": "dense_zh_009",
+      "topic": "usar_hazmat_entry_safety",
+      "query": "在疑似有毒泄漏或危险品污染的坍塌现场，USAR队进入前必须检查哪些风险？",
+      "gold_parent_ids": [
+        "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00021"
+      ],
+      "retrieved_parent_ids": [
+        "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00027",
+        "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00021",
+        "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00014",
+        "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00048",
+        "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00022",
+        "arxiv_2311_08732_emergency_decision_kg_llm__parent_00011",
+        "arxiv_2311_08732_emergency_decision_kg_llm__parent_00010",
+        "arxiv_2311_08732_emergency_decision_kg_llm__parent_00015",
+        "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00007",
+        "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00010"
+      ],
+      "retrieved_gold_parent_ids": [
+        "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00021"
+      ],
+      "first_gold_rank": 2,
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr_at_10": 0.5,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03278688524590164,
+          "chunk_id": "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00027__small_002",
+          "parent_id": "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00027",
+          "doc_id": "insarag_guidelines_2020_volume_ii_manual_b_operations",
+          "source_file": "raw/insarag_guidelines_2020_volume_ii_manual_b_operations.pdf",
+          "page_start": 53,
+          "page_end": 54,
+          "heading": "5 ASR search complete on car",
+          "text_preview": "Resume Operations\n\nFigure 26: Resume Operations: one long signal + one short signal.\n\nUnited Nations Office for the Coordination of Humanitarians Affairs (OCHA) www.unocha.org\n\n53\n\n7 Hazardous Materials Operations\n\n7.1\n\nIntroduction\n\nIntern",
+          "fusion_score": 0.03278688524590164,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.032266458495966696,
+            "dense": 0.047907090265630725
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            1,
+            5
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.031754032258064516,
+          "chunk_id": "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00021__small_002",
+          "parent_id": "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00021",
+          "doc_id": "insarag_guidelines_2020_volume_iii_operational_field_guide",
+          "source_file": "raw/insarag_guidelines_2020_volume_iii_operational_field_guide.pdf",
+          "page_start": 41,
+          "page_end": 42,
+          "heading": "8 Safety and Security",
+          "text_preview": "Teams should not commit to a contaminated site without conducting a thorough assessment of their hazmat capability for short or longer-term operations. If it is deemed appropriate that a team can work in a contaminated environment the follo",
+          "fusion_score": 0.031754032258064516,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.03128054740957967,
+            "dense": 0.04446778711484593
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            3,
+            6
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.03125763125763126,
+          "chunk_id": "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00014__small_003",
+          "parent_id": "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00014",
+          "doc_id": "insarag_guidelines_2020_volume_iii_operational_field_guide",
+          "source_file": "raw/insarag_guidelines_2020_volume_iii_operational_field_guide.pdf",
+          "page_start": 27,
+          "page_end": 28,
+          "heading": "DVI",
+          "text_preview": "fatigue).\n\n\n\nGeneral state of health – monitor trends (e.g. diarrhoea).\n\n\n\nHydration status.\n\n\n\nNutrition status.\n\n\n\nThe potential for hazardous materials contamination or other exposures (and documentation of potential exposures per ho",
+          "fusion_score": 0.03125763125763126,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.02919863597612958,
+            "dense": 0.04413529939476644
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            10,
+            34
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.029910714285714284,
+          "chunk_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00048__small_003",
+          "parent_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00048",
+          "doc_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building",
+          "source_file": "raw/insarag_guidelines_2020_volume_ii_manual_a_capacity_building.pdf",
+          "page_start": 93,
+          "page_end": 94,
+          "heading": "450 mm thick and timber",
+          "text_preview": "Use of the local emergency response guide for hazmat.\n\nHeavy \n\nRecognition, identification and documentation of basic risks and hazards at the rescue site and BoO.\n\n\n\nIdentification of hazmat and application of\n\nOperate atmospheric monito",
+          "fusion_score": 0.029910714285714284,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 10
+          },
+          "variant_scores": {
+            "bm25": 0.028612012987012988,
+            "dense": 0.039721385542168676
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            5,
+            36,
+            43
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.029827662395050816,
+          "chunk_id": "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00022__small_002",
+          "parent_id": "insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00022",
+          "doc_id": "insarag_guidelines_2020_volume_iii_operational_field_guide",
+          "source_file": "raw/insarag_guidelines_2020_volume_iii_operational_field_guide.pdf",
+          "page_start": 43,
+          "page_end": 44,
+          "heading": "9 Hazardous Materials Operations",
+          "text_preview": "Go or No-go conditions – and subsequent risk assessments: o Time required to complete the assignment. o Protection and limitations of available personal protective equipment. o Results of the risk-benefit analysis. o Resource status. o Secu",
+          "fusion_score": 0.029827662395050816,
+          "variant_ranks": {
+            "bm25": 13,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.01639344262295082,
+            "dense": 0.047891458495966696
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            1,
+            7
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.029631255487269532,
+          "chunk_id": "arxiv_2311_08732_emergency_decision_kg_llm__parent_00011__small_002",
+          "parent_id": "arxiv_2311_08732_emergency_decision_kg_llm__parent_00011",
+          "doc_id": "arxiv_2311_08732_emergency_decision_kg_llm",
+          "source_file": "raw/arxiv_2311_08732_emergency_decision_kg_llm.pdf",
+          "page_start": 16,
+          "page_end": 16,
+          "heading": "2. Q2: (On-site Command)In the event of hazardous chemical leaks, what procedures should emergency",
+          "text_preview": "• GPT-3.5: Accidents involving hazardous chemical spills require immediate yet cautious response to ensure the safety of the responders and minimize environmental and public impact.\n\nThe following steps may be employed by emergency responde",
+          "fusion_score": 0.029631255487269532,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 8
+          },
+          "variant_scores": {
+            "bm25": 0.027056277056277056,
+            "dense": 0.04173602219376867
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            8
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.02904040404040404,
+          "chunk_id": "arxiv_2311_08732_emergency_decision_kg_llm__parent_00010__small_001",
+          "parent_id": "arxiv_2311_08732_emergency_decision_kg_llm__parent_00010",
+          "doc_id": "arxiv_2311_08732_emergency_decision_kg_llm",
+          "source_file": "raw/arxiv_2311_08732_emergency_decision_kg_llm.pdf",
+          "page_start": 15,
+          "page_end": 15,
+          "heading": "2. Q2: (On-site Command)In the event of hazardous chemical leaks, what procedures should emergency",
+          "text_preview": "Enhancing Emergency Decision-making with Knowledge Graphs and Large Language Models\n\nProtective equipment: Provides necessary personal protective equipment for workers, such as protective glasses, respiratory protectors, protective clothing",
+          "fusion_score": 0.02904040404040404,
+          "variant_ranks": {
+            "bm25": 6,
+            "dense": 12
+          },
+          "variant_scores": {
+            "bm25": 0.028083267871170464,
+            "dense": 0.038302277432712216
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            9
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.0288981288981289,
+          "chunk_id": "arxiv_2311_08732_emergency_decision_kg_llm__parent_00015__small_002",
+          "parent_id": "arxiv_2311_08732_emergency_decision_kg_llm__parent_00015",
+          "doc_id": "arxiv_2311_08732_emergency_decision_kg_llm",
+          "source_file": "raw/arxiv_2311_08732_emergency_decision_kg_llm.pdf",
+          "page_start": 20,
+          "page_end": 20,
+          "heading": "6. Q6: (Personal Protective Equipment)In the event of a leak at a hazardous materials warehouse, with leaked",
+          "text_preview": "For sulfur dioxide, as it’s a toxic gas, full-enclosure chemical protective suits are needed to protect the respiratory system and skin.\n\nFor propylene, as it’s extremely flammable, simple gas masks and chemical-resistant gloves are necessa",
+          "fusion_score": 0.0288981288981289,
+          "variant_ranks": {
+            "bm25": 5,
+            "dense": 14
+          },
+          "variant_scores": {
+            "bm25": 0.028404512489927477,
+            "dense": 0.03759281304126734
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            11,
+            19,
+            48
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.028309409888357256,
+          "chunk_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00007__small_002",
+          "parent_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building__parent_00007",
+          "doc_id": "insarag_guidelines_2020_volume_ii_manual_a_capacity_building",
+          "source_file": "raw/insarag_guidelines_2020_volume_ii_manual_a_capacity_building.pdf",
+          "page_start": 13,
+          "page_end": 14,
+          "heading": "2 Building Local Capacity",
+          "text_preview": "Common risks and target hazards found in communities:            \n\nUnderground tunnels/waterways/sewers: Confined spaces, toxic gases, oxygen deficiency. Rivers/flood ducts: Swift water rescue, calm water rescue, toxic water env",
+          "fusion_score": 0.028309409888357256,
+          "variant_ranks": {
+            "bm25": 16,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.015625,
+            "dense": 0.04355921855921856
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            6,
+            48
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.02821869488536155,
+          "chunk_id": "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00010__small_004",
+          "parent_id": "insarag_guidelines_2020_volume_ii_manual_b_operations__parent_00010",
+          "doc_id": "insarag_guidelines_2020_volume_ii_manual_b_operations",
+          "source_file": "raw/insarag_guidelines_2020_volume_ii_manual_b_operations.pdf",
+          "page_start": 19,
+          "page_end": 20,
+          "heading": "4 USAR Detailed Operations Following the Response Cycle",
+          "text_preview": "USAR Team Rescue \n\n       \n\nPerform rescue (breaching, extrication and transport) in collapsed or failed structures of concrete, heavy wood/reinforced masonry with structural steel (rigging and lifting) in close operation with USAR",
+          "fusion_score": 0.02821869488536155,
+          "variant_ranks": {
+            "bm25": 21,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.014285714285714285,
+            "dense": 0.04529114263053264
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            3
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持USAR危险品进入前检查证据：进入前要评估有毒或危险物质暴露、空气监测、污染控制、PPE要求和进入授权条件，确保队员安全。",
+      "source_doc_id": "insarag_guidelines_2020_volume_iii_operational_field_guide",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk insarag_guidelines_2020_volume_iii_operational_field_guide__parent_00021.",
+      "query_variants": {
+        "dense:zh": "在疑似有毒泄漏或危险品污染的坍塌现场，USAR队进入前必须检查哪些风险？",
+        "dense:en": "At a collapsed structure site suspected of toxic leakage or hazardous materials contamination, what risks must a USAR team check before entry?",
+        "dense:terms": "USAR hazmat hazardous materials contaminated site contaminated environment PPE personal protective equipment go/no-go conditions risk-benefit analysis detection and monitoring decontamination clean entry points",
+        "bm25:en": "At a collapsed structure site suspected of toxic leakage or hazardous materials contamination, what risks must a USAR team check before entry?",
+        "bm25:terms": "USAR hazmat hazardous materials contaminated site contaminated environment PPE personal protective equipment go/no-go conditions risk-benefit analysis detection and monitoring decontamination clean entry points"
+      }
+    },
+    {
+      "case_id": "dense_zh_010",
+      "topic": "thermal_radiation_path_planning",
+      "query": "机器人要穿过有多个火源的区域时，怎样根据热辐射代价图规划一条更安全的路线？",
+      "gold_parent_ids": [
+        "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00007"
+      ],
+      "retrieved_parent_ids": [
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00005",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00004",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00008",
+        "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00006",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00001",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00007",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002",
+        "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00006",
+        "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00005",
+        "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00007"
+      ],
+      "retrieved_gold_parent_ids": [
+        "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00007"
+      ],
+      "first_gold_rank": 10,
+      "hit_at_1": false,
+      "hit_at_5": false,
+      "hit_at_10": true,
+      "mrr_at_10": 0.1,
+      "gold_recall_at_10": 1.0,
+      "top_hits": [
+        {
+          "rank": 1,
+          "score": 0.03252247488101534,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00005__small_001",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00005",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 5,
+          "page_end": 5,
+          "heading": "D. Algorithmics",
+          "text_preview": "Fig. 6: Fire-aware navigation results for the Boston Dynamics Spot robot. When no fire is present the robot walks over the fire training device (a)-(d). When the fire is turned on and a larger safety margin is activated, the robot plans and",
+          "fusion_score": 0.03252247488101534,
+          "variant_ranks": {
+            "bm25": 2,
+            "dense": 1
+          },
+          "variant_scores": {
+            "bm25": 0.03200204813108039,
+            "dense": 0.048651507139079855
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            2,
+            16
+          ]
+        },
+        {
+          "rank": 2,
+          "score": 0.03177805800756621,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00004__small_001",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00004",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 4,
+          "page_end": 4,
+          "heading": "1 2 3 4",
+          "text_preview": "ALGORITHM 1: Occupancy map generation with LiDAR and thermal radiation fields.\n\n1 2 3 4\n\nFig. 4: Registration result: we show the registered RGB frames of the Spot with a thermal overlay (a) as well as a zoomed in view to show more details ",
+          "fusion_score": 0.03177805800756621,
+          "variant_ranks": {
+            "bm25": 1,
+            "dense": 5
+          },
+          "variant_scores": {
+            "bm25": 0.032266458495966696,
+            "dense": 0.04618300439195962
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            11,
+            12
+          ]
+        },
+        {
+          "rank": 3,
+          "score": 0.031754032258064516,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00008__small_001",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00008",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 8,
+          "page_end": 8,
+          "heading": "VI. CONCLUSIONS",
+          "text_preview": "sophisticated physical models. Nevertheless, the presented results establish a proof of concept that fire localization and thermal radiation field estimation are valuable additions for autonomous robot navigation in hazardous environments.\n",
+          "fusion_score": 0.031754032258064516,
+          "variant_ranks": {
+            "bm25": 4,
+            "dense": 2
+          },
+          "variant_scores": {
+            "bm25": 0.03125,
+            "dense": 0.04839549075403121
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            28,
+            29
+          ]
+        },
+        {
+          "rank": 4,
+          "score": 0.03149801587301587,
+          "chunk_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00006__small_002",
+          "parent_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00006",
+          "doc_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics",
+          "source_file": "raw/arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics.pdf",
+          "page_start": 6,
+          "page_end": 6,
+          "heading": "10 m domain (Fig. 6). Each fire source is simulated with",
+          "text_preview": "B. Thermally-Aware Path Planning a) Setup: In this experiment, we position three fire sources of increasing intensity, F1 (small), F2 (medium), and F3 (large), along the y = 5 m centerline within the 20 m ×\n\n10 m domain (Fig. 6). Each fire ",
+          "fusion_score": 0.03149801587301587,
+          "variant_ranks": {
+            "bm25": 3,
+            "dense": 4
+          },
+          "variant_scores": {
+            "bm25": 0.03177805800756621,
+            "dense": 0.04688263125763126
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            1,
+            3,
+            20
+          ]
+        },
+        {
+          "rank": 5,
+          "score": 0.030303030303030304,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00001__small_001",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00001",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 1,
+          "page_end": 1,
+          "heading": "I. INTRODUCTION",
+          "text_preview": "Understanding Fire Through Thermal Radiation Fields for Mobile Robots\n\narXiv:2602.19108v1 [cs.RO] 22 Feb 2026\n\nAnton R. Wagner1 , Madhan Balaji Rao2 , Xuesu Xiao2 , Sören Pirk1 Abstract— Safely moving through environments affected by fire ",
+          "fusion_score": 0.030303030303030304,
+          "variant_ranks": {
+            "bm25": 6,
+            "dense": 6
+          },
+          "variant_scores": {
+            "bm25": 0.03007688828584351,
+            "dense": 0.045928030303030304
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            6,
+            15,
+            21
+          ]
+        },
+        {
+          "rank": 6,
+          "score": 0.030158730158730156,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00007__small_003",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00007",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 7,
+          "page_end": 7,
+          "heading": "4 m in diameter, typically convert about 30–40% of their total",
+          "text_preview": "V. DISCUSSION AND LIMITATIONS\n\nOur experiments indicate that explicitly modeling a thermal radiation field from thermal–depth perception enables robots to navigate safely in fire-affected environments. By localizing the fire source and leve",
+          "fusion_score": 0.030158730158730156,
+          "variant_ranks": {
+            "bm25": 10,
+            "dense": 3
+          },
+          "variant_scores": {
+            "bm25": 0.02919863597612958,
+            "dense": 0.04740305800756621
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            1,
+            16
+          ]
+        },
+        {
+          "rank": 7,
+          "score": 0.02967032967032967,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002__small_001",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00002",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 2,
+          "page_end": 2,
+          "heading": "II. RELATED WORK",
+          "text_preview": "A\n\nThermally Annotated Points\n\n(b)\n\n(a)\n\n(c) Estimate Surface\n\n(d) Stefan-Boltzmann Law\n\n(e) Fire-aware\n\nNavigation\n\nRobot\n\nFire Zone\n\nSensors\n\nStereo Depth\n\nThermal\n\n3D Point Cloud\n\nFire Location\n\nFire Model\n\nThermal Occupancy\n\nFig. 2: Ove",
+          "fusion_score": 0.02967032967032967,
+          "variant_ranks": {
+            "bm25": 5,
+            "dense": 10
+          },
+          "variant_scores": {
+            "bm25": 0.0304147465437788,
+            "dense": 0.04214949137549756
+          },
+          "child_hit_count": 2,
+          "child_ranks": [
+            2,
+            8
+          ]
+        },
+        {
+          "rank": 8,
+          "score": 0.029631255487269532,
+          "chunk_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00006__small_001",
+          "parent_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire__parent_00006",
+          "doc_id": "arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire",
+          "source_file": "raw/arxiv_2602_19108_thermal_radiation_fields_mobile_robots_fire.pdf",
+          "page_start": 6,
+          "page_end": 6,
+          "heading": "D. Algorithmics",
+          "text_preview": "Fig. 7: Thermal occlusion: In case of an obstacle blocks the fire source (e.g., a wall), our approach dynamically adjusts and computes a new path around the fire (a)-(d). Here we show the planned path (green) before the fire source was turn",
+          "fusion_score": 0.029631255487269532,
+          "variant_ranks": {
+            "bm25": 7,
+            "dense": 8
+          },
+          "variant_scores": {
+            "bm25": 0.029877369007803793,
+            "dense": 0.04390451832907076
+          },
+          "child_hit_count": 1,
+          "child_ranks": [
+            6
+          ]
+        },
+        {
+          "rank": 9,
+          "score": 0.029631255487269532,
+          "chunk_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00005__small_003",
+          "parent_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00005",
+          "doc_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics",
+          "source_file": "raw/arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics.pdf",
+          "page_start": 5,
+          "page_end": 5,
+          "heading": "D. Visual Compositing",
+          "text_preview": "This enables the human-in-the-loop teleoperation utilized in our subsequent data collection experiments.\n\nIV. DEMONSTRATION AND EXPERIMENTS\n\nWe demonstrate FaaS integration into multiple robot simulators and conduct experiments to show ther",
+          "fusion_score": 0.029631255487269532,
+          "variant_ranks": {
+            "bm25": 8,
+            "dense": 7
+          },
+          "variant_scores": {
+            "bm25": 0.029631255487269532,
+            "dense": 0.04434349989184512
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            10,
+            19,
+            22
+          ]
+        },
+        {
+          "rank": 10,
+          "score": 0.028985507246376812,
+          "chunk_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00007__small_002",
+          "parent_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00007",
+          "doc_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics",
+          "source_file": "raw/arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics.pdf",
+          "page_start": 7,
+          "page_end": 7,
+          "heading": "0 5 30",
+          "text_preview": "Specifically, we test whether a simple learned controller can use only heat flux readings to avoid a fire hazard that it cannot visually detect. b) Setup: The task consist of walking 7 meters straight forward from the starting position with",
+          "fusion_score": 0.028985507246376812,
+          "variant_ranks": {
+            "bm25": 9,
+            "dense": 9
+          },
+          "variant_scores": {
+            "bm25": 0.029437229437229435,
+            "dense": 0.04239391693061078
+          },
+          "child_hit_count": 3,
+          "child_ranks": [
+            9,
+            28,
+            36
+          ]
+        }
+      ],
+      "expected_evidence_summary": "该 parent 应支持热辐射路径规划证据：应把多火源周围的热暴露建模为代价图或风险场，再据此寻找避开高热辐射区、代价更低的机器人行进路线。",
+      "source_doc_id": "arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics",
+      "notes": "Evidence-first Chinese task query; selected from parent chunk arxiv_2603_19063_fire_as_a_service_robot_simulators_fire_dynamics__parent_00007.",
+      "query_variants": {
+        "dense:zh": "机器人要穿过有多个火源的区域时，怎样根据热辐射代价图规划一条更安全的路线？",
+        "dense:en": "When a robot must traverse an area with multiple fire sources, how can it plan a safer path using a thermal radiation cost map?",
+        "dense:terms": "thermal radiation cost map fire-aware navigation thermal occupancy grid heat flux path planning multiple fire sources safe robot navigation thermally aware path planning",
+        "bm25:en": "When a robot must traverse an area with multiple fire sources, how can it plan a safer path using a thermal radiation cost map?",
+        "bm25:terms": "thermal radiation cost map fire-aware navigation thermal occupancy grid heat flux path planning multiple fire sources safe robot navigation thermally aware path planning"
+      }
+    }
+  ],
+  "retrieval_config": {
+    "retrieval_method": "hybrid",
+    "dense_query_variants": [
+      "zh",
+      "en",
+      "terms"
+    ],
+    "bm25_query_variants": [
+      "en",
+      "terms"
+    ],
+    "fusion": "rrf",
+    "rrf_k": 60,
+    "ranking_view": "parent",
+    "parent_aggregation": "max",
+    "small_top_k": 50,
+    "final_top_k": 10,
+    "query_expansions_path": "data\\rag\\fire_rescue\\eval\\query_expansions_zh_v1.jsonl",
+    "require_reviewed_expansions": true
+  }
+}

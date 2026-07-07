@@ -3,3 +3,8 @@ Task 2: complete (uncommitted; controller verified dense eval + CLI tests 13 pas
 Task 3: complete (uncommitted; controller verified loader 10 cases and tests 13 passed; review approved)
 Task 4: complete (uncommitted; controller verified dense eval + CLI + dense retrieval tests 20 passed after review fix; real BGE-M3 eval exit 0 and report written)
 Final resume: complete (uncommitted; final review Critical/Important clean; fixed duplicate query variant Minor with RED/GREEN test; focused suite 36 passed; BGE-M3 strict/parent/expanded reports refreshed)
+BM25 Task 1: complete (uncommitted; review approved; focused retrieval+dense guard 11 passed per worker report)
+BM25 Task 2: complete (uncommitted; review approved; dense_eval+bm25_eval 17 passed per worker report)
+BM25 Task 3: complete (uncommitted; review approved; hybrid+dense regression 23 passed per worker report)
+BM25 Task 4: complete (uncommitted; review approved; bm25+dense CLI 7 passed per worker report)
+BM25 Task 5: complete (uncommitted; docs/index/reports generated; focused suite 40 passed; final review Critical/Important clean)

@@ -490,3 +490,33 @@ candidate 表示这些翻译和术语由 LLM/agent 辅助生成，还需要人�
 当前 v1 已经过 agent review，并把偏答案文档名或具体系统名的词从 reviewed 术语中移除。
 正式论文实验应记录 reviewer、review 时间、移除规则，以及是否使用 --require-reviewed-expansions。
 ```
+
+## 可选优化评估：BM25 和 Hybrid Retrieval
+
+BM25 是关键词检索，不使用 embedding。它更像是在问：“query 里的这些词，哪些 small chunk 里也出现了，而且这些词在整个语料里是不是比较稀有？”所以它对 `SCBA`、`NFPA 1584`、`TDLAS`、`hazmat`、`PPE` 这类精确术语通常比 dense-only 更敏感。
+
+第一版 BM25 index 建在 small chunk 上，输入仍然是：
+
+```text
+data/rag/fire_rescue/index_inputs/small_index_records.jsonl
+```
+
+BM25 主要使用 reviewed English query 和 reviewed terms query，因为当前消防救援语料主要是英文。如果直接拿中文 query 做 BM25，词面匹配会很弱。
+
+BM25-only 评估命令形态是：
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m fireclaw_core.rag.rag_cli eval-bm25-index --index-dir data/rag/fire_rescue/indexes/bm25/small_v1 --cases data/rag/fire_rescue/eval/dense_gold_cases_zh_v1.jsonl --query-expansions data/rag/fire_rescue/eval/query_expansions_zh_v1.jsonl --query-variants en,terms --ranking-view parent --small-top-k 50 --top-k 10 --require-reviewed-expansions --output data/rag/fire_rescue/eval/runs/bm25_small_v1_expanded_parent_report.json
+```
+
+Hybrid 使用 RRF 融合 dense parent list 和 BM25 parent list。这里不能把 BM25 score 和 dense score 直接相加，因为两个分数来自完全不同的计算空间：dense score 是向量相似度，BM25 score 是词频、文档长度和逆文档频率共同算出的词面匹配分数。第一版 hybrid 因此只融合“排序”，不融合原始分数。
+
+Hybrid 评估命令形态是：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv-bge-m3\Scripts\python.exe -m fireclaw_core.rag.rag_cli eval-hybrid-index --provider bge-m3 --model-path .cache/models/bge-m3 --dense-index-dir data/rag/fire_rescue/indexes/dense/bge-m3 --bm25-index-dir data/rag/fire_rescue/indexes/bm25/small_v1 --cases data/rag/fire_rescue/eval/dense_gold_cases_zh_v1.jsonl --query-expansions data/rag/fire_rescue/eval/query_expansions_zh_v1.jsonl --dense-query-variants zh,en,terms --bm25-query-variants en,terms --small-top-k 50 --top-k 10 --require-reviewed-expansions --output data/rag/fire_rescue/eval/runs/hybrid_bge_m3_bm25_v1_expanded_parent_report.json
+```
+
+这两个报告仍然使用同一套 strict `gold_parent_ids`，所以可以和 dense strict、dense parent、dense expanded-parent 结果直接做 ablation 对比。

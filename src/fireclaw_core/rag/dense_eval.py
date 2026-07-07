@@ -278,6 +278,7 @@ def evaluate_dense_retriever_with_expansion(
     rrf_k: int = 60,
     require_reviewed_expansions: bool = False,
     query_expansions_path: str | None = None,
+    retrieval_method: str = "dense",
 ) -> DenseEvalReport:
     from fireclaw_core.rag.dense_ranking import aggregate_hits_by_parent
     from fireclaw_core.rag.dense_ranking import reciprocal_rank_fuse
@@ -347,6 +348,7 @@ def evaluate_dense_retriever_with_expansion(
         gold_recall_at_10=report.gold_recall_at_10,
         results=enriched_results,
         retrieval_config={
+            "retrieval_method": retrieval_method,
             "query_variants": selected_variants,
             "fusion": fusion_method,
             "rrf_k": rrf_k,
@@ -357,6 +359,38 @@ def evaluate_dense_retriever_with_expansion(
             "query_expansions_path": query_expansions_path,
             "require_reviewed_expansions": require_reviewed_expansions,
         },
+    )
+
+
+def evaluate_bm25_retriever_with_expansion(
+    retriever: Any,
+    cases: list[DenseEvalCase],
+    *,
+    query_expansions: Mapping[str, QueryExpansion] | None = None,
+    query_variants: Sequence[str] = ("en", "terms"),
+    ranking_view: str = "parent",
+    top_k: int = 10,
+    small_top_k: int | None = None,
+    parent_aggregation: str = "max",
+    fusion: str | None = None,
+    rrf_k: int = 60,
+    require_reviewed_expansions: bool = False,
+    query_expansions_path: str | None = None,
+) -> DenseEvalReport:
+    return evaluate_dense_retriever_with_expansion(
+        retriever,
+        cases,
+        query_expansions=query_expansions,
+        query_variants=query_variants,
+        ranking_view=ranking_view,
+        top_k=top_k,
+        small_top_k=small_top_k,
+        parent_aggregation=parent_aggregation,
+        fusion=fusion,
+        rrf_k=rrf_k,
+        require_reviewed_expansions=require_reviewed_expansions,
+        query_expansions_path=query_expansions_path,
+        retrieval_method="bm25",
     )
 
 

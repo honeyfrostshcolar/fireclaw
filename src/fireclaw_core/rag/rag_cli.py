@@ -11,6 +11,9 @@ from fireclaw_core.rag.chunking import ChunkingConfig
 from fireclaw_core.rag.corpus_chunking import chunk_corpus_pages
 from fireclaw_core.rag.corpus_extraction import extract_corpus_pages
 from fireclaw_core.rag.extraction import PdfTextExtractionError
+from fireclaw_core.rag.bm25_retrieval import BM25Retriever
+from fireclaw_core.rag.bm25_retrieval import build_bm25_index
+from fireclaw_core.rag.dense_eval import evaluate_bm25_retriever_with_expansion
 from fireclaw_core.rag.dense_eval import evaluate_dense_retriever
 from fireclaw_core.rag.dense_eval import evaluate_dense_retriever_with_expansion
 from fireclaw_core.rag.dense_eval import load_dense_eval_cases
@@ -18,6 +21,7 @@ from fireclaw_core.rag.dense_retrieval import DenseRetriever
 from fireclaw_core.rag.dense_retrieval import FakeEmbeddingProvider
 from fireclaw_core.rag.dense_retrieval import build_dense_index
 from fireclaw_core.rag.dense_retrieval import expand_hits_to_parents
+from fireclaw_core.rag.hybrid_eval import evaluate_hybrid_retrievers_with_expansion
 from fireclaw_core.rag.index_preparation import IndexPreparationConfig
 from fireclaw_core.rag.index_preparation import prepare_index_records
 from fireclaw_core.rag.query_expansion import load_query_expansions
@@ -96,6 +100,50 @@ def main(argv: list[str] | None = None) -> int:
     dense_eval.add_argument("--rrf-k", type=int, default=60)
     dense_eval.add_argument("--require-reviewed-expansions", action="store_true")
 
+    bm25_build = subparsers.add_parser("build-bm25-index", help="Build a BM25 lexical index from prepared records.")
+    bm25_build.add_argument("--corpus-root", default="data/rag/fire_rescue")
+    bm25_build.add_argument("--records", default=None)
+    bm25_build.add_argument("--index-dir", default=None)
+    bm25_build.add_argument("--k1", type=float, default=1.5)
+    bm25_build.add_argument("--b", type=float, default=0.75)
+
+    bm25_query = subparsers.add_parser("query-bm25-index", help="Query a BM25 lexical index.")
+    bm25_query.add_argument("--corpus-root", default="data/rag/fire_rescue")
+    bm25_query.add_argument("--index-dir", default=None)
+    bm25_query.add_argument("--query", required=True)
+    bm25_query.add_argument("--top-k", type=int, default=5)
+
+    bm25_eval = subparsers.add_parser("eval-bm25-index", help="Evaluate BM25 retrieval against gold cases.")
+    bm25_eval.add_argument("--corpus-root", default="data/rag/fire_rescue")
+    bm25_eval.add_argument("--index-dir", default=None)
+    bm25_eval.add_argument("--cases", default=None)
+    bm25_eval.add_argument("--top-k", type=int, default=10)
+    bm25_eval.add_argument("--small-top-k", type=int, default=50)
+    bm25_eval.add_argument("--output", default=None)
+    bm25_eval.add_argument("--query-expansions", required=True)
+    bm25_eval.add_argument("--query-variants", default="en,terms")
+    bm25_eval.add_argument("--ranking-view", choices=["small", "parent"], default="parent")
+    bm25_eval.add_argument("--parent-aggregation", choices=["max"], default="max")
+    bm25_eval.add_argument("--fusion", choices=["none", "rrf"], default=None)
+    bm25_eval.add_argument("--rrf-k", type=int, default=60)
+    bm25_eval.add_argument("--require-reviewed-expansions", action="store_true")
+
+    hybrid_eval = subparsers.add_parser("eval-hybrid-index", help="Evaluate hybrid dense+BM25 retrieval against gold cases.")
+    hybrid_eval.add_argument("--corpus-root", default="data/rag/fire_rescue")
+    hybrid_eval.add_argument("--dense-index-dir", default=None)
+    hybrid_eval.add_argument("--bm25-index-dir", default=None)
+    hybrid_eval.add_argument("--provider", choices=["fake", "bge-m3"], default="fake")
+    hybrid_eval.add_argument("--model-path", default=None)
+    hybrid_eval.add_argument("--cases", default=None)
+    hybrid_eval.add_argument("--query-expansions", required=True)
+    hybrid_eval.add_argument("--dense-query-variants", default="zh,en,terms")
+    hybrid_eval.add_argument("--bm25-query-variants", default="en,terms")
+    hybrid_eval.add_argument("--small-top-k", type=int, default=50)
+    hybrid_eval.add_argument("--top-k", type=int, default=10)
+    hybrid_eval.add_argument("--rrf-k", type=int, default=60)
+    hybrid_eval.add_argument("--output", default=None)
+    hybrid_eval.add_argument("--require-reviewed-expansions", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "extract-pages":
         return _cmd_extract_pages(args)
@@ -109,6 +157,14 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_query_dense_index(args)
     if args.command == "eval-dense-index":
         return _cmd_eval_dense_index(args)
+    if args.command == "build-bm25-index":
+        return _cmd_build_bm25_index(args)
+    if args.command == "query-bm25-index":
+        return _cmd_query_bm25_index(args)
+    if args.command == "eval-bm25-index":
+        return _cmd_eval_bm25_index(args)
+    if args.command == "eval-hybrid-index":
+        return _cmd_eval_hybrid_index(args)
     return 1
 
 
@@ -252,6 +308,96 @@ def _cmd_eval_dense_index(args: argparse.Namespace) -> int:
         )
     else:
         report = evaluate_dense_retriever(retriever, cases, top_k=args.top_k)
+    payload = report.to_dict()
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_output(payload)
+    return 0
+
+
+def _bm25_index_dir(corpus_root: Path, value: str | None) -> Path:
+    return Path(value) if value else corpus_root / "indexes" / "bm25" / "small_v1"
+
+
+def _cmd_build_bm25_index(args: argparse.Namespace) -> int:
+    corpus_root = Path(args.corpus_root)
+    records_path = Path(args.records) if args.records else corpus_root / "index_inputs" / "small_index_records.jsonl"
+    index_dir = _bm25_index_dir(corpus_root, args.index_dir)
+    report = build_bm25_index(records_path, index_dir, k1=args.k1, b=args.b)
+    _write_json_output(report.to_dict())
+    return 0
+
+
+def _cmd_query_bm25_index(args: argparse.Namespace) -> int:
+    corpus_root = Path(args.corpus_root)
+    index_dir = _bm25_index_dir(corpus_root, args.index_dir)
+    retriever = BM25Retriever.load(index_dir)
+    hits = retriever.query(args.query, top_k=args.top_k)
+    _write_json_output({"query": args.query, "hits": [hit.to_dict() for hit in hits]})
+    return 0
+
+
+def _cmd_eval_bm25_index(args: argparse.Namespace) -> int:
+    corpus_root = Path(args.corpus_root)
+    index_dir = _bm25_index_dir(corpus_root, args.index_dir)
+    cases_path = Path(args.cases) if args.cases else corpus_root / "eval" / "dense_gold_cases_zh_v1.jsonl"
+    output_path = Path(args.output) if args.output else None
+    expansions_path = Path(args.query_expansions)
+    retriever = BM25Retriever.load(index_dir)
+    cases = load_dense_eval_cases(cases_path)
+    expansions = load_query_expansions(expansions_path)
+    report = evaluate_bm25_retriever_with_expansion(
+        retriever,
+        cases,
+        query_expansions=expansions,
+        query_variants=_parse_csv_arg(args.query_variants),
+        ranking_view=args.ranking_view,
+        top_k=args.top_k,
+        small_top_k=args.small_top_k,
+        parent_aggregation=args.parent_aggregation,
+        fusion=args.fusion,
+        rrf_k=args.rrf_k,
+        require_reviewed_expansions=args.require_reviewed_expansions,
+        query_expansions_path=str(expansions_path),
+    )
+    payload = report.to_dict()
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_output(payload)
+    return 0
+
+
+def _cmd_eval_hybrid_index(args: argparse.Namespace) -> int:
+    corpus_root = Path(args.corpus_root)
+    dense_index_dir = (
+        Path(args.dense_index_dir)
+        if args.dense_index_dir
+        else corpus_root / "indexes" / "dense" / _provider_index_name(args.provider)
+    )
+    bm25_index_dir = _bm25_index_dir(corpus_root, args.bm25_index_dir)
+    cases_path = Path(args.cases) if args.cases else corpus_root / "eval" / "dense_gold_cases_zh_v1.jsonl"
+    output_path = Path(args.output) if args.output else None
+    expansions_path = Path(args.query_expansions)
+    provider = _create_embedding_provider(args.provider, model_path=args.model_path)
+    dense_retriever = DenseRetriever.load(dense_index_dir, provider)
+    bm25_retriever = BM25Retriever.load(bm25_index_dir)
+    cases = load_dense_eval_cases(cases_path)
+    expansions = load_query_expansions(expansions_path)
+    report = evaluate_hybrid_retrievers_with_expansion(
+        dense_retriever,
+        bm25_retriever,
+        cases,
+        query_expansions=expansions,
+        dense_query_variants=_parse_csv_arg(args.dense_query_variants),
+        bm25_query_variants=_parse_csv_arg(args.bm25_query_variants),
+        small_top_k=args.small_top_k,
+        top_k=args.top_k,
+        rrf_k=args.rrf_k,
+        require_reviewed_expansions=args.require_reviewed_expansions,
+        query_expansions_path=str(expansions_path),
+    )
     payload = report.to_dict()
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
