@@ -1,3 +1,26 @@
+# Task 2 Review Package
+
+Base HEAD: aba951bd0ac6b7285c26bed4acdd2329cc260fa8
+
+Controller verification: tests/test_rag_dense_eval.py tests/test_rag_dense_cli.py => 13 passed in 0.29s (elevated rerun due known pytest basetemp sandbox issue).
+
+## git status
+
+```text
+## rag-dev...origin/rag-dev
+ M src/fireclaw_core/rag/rag_cli.py
+ M tests/test_rag_dense_cli.py
+?? .superpowers/
+?? docs/superpowers/plans/2026-07-07-fireclaw-dense-retrieval-evaluation.md
+?? docs/superpowers/specs/2026-07-07-fireclaw-dense-retrieval-evaluation-design.md
+?? memory/2026-07-07/
+?? src/fireclaw_core/rag/dense_eval.py
+?? tests/test_rag_dense_eval.py
+```
+
+## File: src/fireclaw_core/rag/rag_cli.py
+
+```python
 from __future__ import annotations
 
 import argparse
@@ -12,7 +35,6 @@ from fireclaw_core.rag.corpus_chunking import chunk_corpus_pages
 from fireclaw_core.rag.corpus_extraction import extract_corpus_pages
 from fireclaw_core.rag.extraction import PdfTextExtractionError
 from fireclaw_core.rag.dense_eval import evaluate_dense_retriever
-from fireclaw_core.rag.dense_eval import evaluate_dense_retriever_with_expansion
 from fireclaw_core.rag.dense_eval import load_dense_eval_cases
 from fireclaw_core.rag.dense_retrieval import DenseRetriever
 from fireclaw_core.rag.dense_retrieval import FakeEmbeddingProvider
@@ -20,7 +42,6 @@ from fireclaw_core.rag.dense_retrieval import build_dense_index
 from fireclaw_core.rag.dense_retrieval import expand_hits_to_parents
 from fireclaw_core.rag.index_preparation import IndexPreparationConfig
 from fireclaw_core.rag.index_preparation import prepare_index_records
-from fireclaw_core.rag.query_expansion import load_query_expansions
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,14 +108,6 @@ def main(argv: list[str] | None = None) -> int:
     dense_eval.add_argument("--cases", default=None)
     dense_eval.add_argument("--top-k", type=int, default=10)
     dense_eval.add_argument("--output", default=None)
-    dense_eval.add_argument("--query-expansions", default=None)
-    dense_eval.add_argument("--query-variants", default="zh")
-    dense_eval.add_argument("--ranking-view", choices=["small", "parent"], default="small")
-    dense_eval.add_argument("--small-top-k", type=int, default=None)
-    dense_eval.add_argument("--parent-aggregation", choices=["max"], default="max")
-    dense_eval.add_argument("--fusion", choices=["none", "rrf"], default=None)
-    dense_eval.add_argument("--rrf-k", type=int, default=60)
-    dense_eval.add_argument("--require-reviewed-expansions", action="store_true")
 
     args = parser.parse_args(argv)
     if args.command == "extract-pages":
@@ -224,34 +237,7 @@ def _cmd_eval_dense_index(args: argparse.Namespace) -> int:
     provider = _create_embedding_provider(args.provider, model_path=args.model_path)
     retriever = DenseRetriever.load(index_dir, provider)
     cases = load_dense_eval_cases(cases_path)
-    query_variants = _parse_csv_arg(args.query_variants)
-    use_expanded_eval = (
-        query_variants != ["zh"]
-        or args.ranking_view != "small"
-        or args.small_top_k is not None
-        or args.query_expansions is not None
-        or args.fusion is not None
-        or args.require_reviewed_expansions
-    )
-    if use_expanded_eval:
-        expansions_path = Path(args.query_expansions) if args.query_expansions else None
-        expansions = load_query_expansions(expansions_path) if expansions_path is not None else {}
-        report = evaluate_dense_retriever_with_expansion(
-            retriever,
-            cases,
-            query_expansions=expansions,
-            query_variants=query_variants,
-            ranking_view=args.ranking_view,
-            top_k=args.top_k,
-            small_top_k=args.small_top_k,
-            parent_aggregation=args.parent_aggregation,
-            fusion=args.fusion,
-            rrf_k=args.rrf_k,
-            require_reviewed_expansions=args.require_reviewed_expansions,
-            query_expansions_path=str(expansions_path) if expansions_path is not None else None,
-        )
-    else:
-        report = evaluate_dense_retriever(retriever, cases, top_k=args.top_k)
+    report = evaluate_dense_retriever(retriever, cases, top_k=args.top_k)
     payload = report.to_dict()
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,13 +262,6 @@ def _provider_index_name(provider_name: str) -> str:
     return provider_name
 
 
-def _parse_csv_arg(value: str) -> list[str]:
-    items = [item.strip() for item in value.split(",") if item.strip()]
-    if not items:
-        raise ValueError("CSV argument must contain at least one item")
-    return items
-
-
 def _write_json_output(payload: Any, *, stream: TextIO | None = None) -> None:
     stream = stream or sys.stdout
     text = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -296,3 +275,186 @@ def _write_json_output(payload: Any, *, stream: TextIO | None = None) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+```
+
+## File: tests/test_rag_dense_cli.py
+
+```python
+from __future__ import annotations
+
+from io import BytesIO
+from io import TextIOWrapper
+import json
+from pathlib import Path
+
+import pytest
+
+from fireclaw_core.rag.rag_cli import _write_json_output
+from fireclaw_core.rag.rag_cli import main
+
+
+def _write_jsonl(path, rows):
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _record(chunk_id: str, text: str) -> dict:
+    return {
+        "chunk_id": chunk_id,
+        "parent_id": f"{chunk_id}__parent",
+        "doc_id": "doc",
+        "source_file": "raw/doc.pdf",
+        "page_start": 1,
+        "page_end": 1,
+        "heading": "Heading",
+        "clean_text": text,
+        "clean_char_count": len(text),
+        "clean_word_count": len(text.split()),
+        "indexable": True,
+        "retrieval_weight": 1.0,
+        "cleaning_flags": [],
+        "title": "Manual",
+        "source_url": "https://example.test/doc.pdf",
+        "publisher": "Example",
+        "authority_level": "test",
+        "allowed_use": "unit_test",
+        "domain": "fireground",
+        "language": "en",
+    }
+
+
+def test_cli_build_and_query_dense_index_with_fake_provider(tmp_path, capsys):
+    records_path = tmp_path / "small_index_records.jsonl"
+    index_dir = tmp_path / "dense_index"
+    _write_jsonl(
+        records_path,
+        [
+            _record("chunk-rescue", "rescue victim search"),
+            _record("chunk-smoke", "smoke visibility"),
+        ],
+    )
+
+    build_code = main(
+        [
+            "build-dense-index",
+            "--provider",
+            "fake",
+            "--records",
+            str(records_path),
+            "--index-dir",
+            str(index_dir),
+        ]
+    )
+    assert build_code == 0
+    build_output = json.loads(capsys.readouterr().out)
+    assert build_output["status"] == "completed"
+    assert build_output["indexable_record_count"] == 2
+
+    query_code = main(
+        [
+            "query-dense-index",
+            "--provider",
+            "fake",
+            "--index-dir",
+            str(index_dir),
+            "--query",
+            "rescue",
+            "--top-k",
+            "1",
+        ]
+    )
+    assert query_code == 0
+    query_output = json.loads(capsys.readouterr().out)
+    assert query_output["query"] == "rescue"
+    assert query_output["hits"][0]["record"]["chunk_id"] == "chunk-rescue"
+
+
+def test_cli_eval_dense_index_writes_report_with_fake_provider(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fireclaw_core.rag.dense_retrieval import FakeEmbeddingProvider, build_dense_index
+
+    records_path = tmp_path / "records.jsonl"
+    records_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "chunk_id": "chunk_rescue",
+                        "parent_id": "parent_rescue",
+                        "doc_id": "doc_rescue",
+                        "clean_text": "rescue victim search",
+                        "indexable": True,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "chunk_id": "chunk_smoke",
+                        "parent_id": "parent_smoke",
+                        "doc_id": "doc_smoke",
+                        "clean_text": "smoke visibility",
+                        "indexable": True,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    index_dir = tmp_path / "dense_index"
+    build_dense_index(records_path, index_dir, FakeEmbeddingProvider(), batch_size=2)
+
+    cases_path = tmp_path / "cases.jsonl"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "case_id": "dense_zh_001",
+                "topic": "rescue",
+                "query": "rescue victim",
+                "gold_parent_ids": ["parent_rescue"],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "report.json"
+
+    exit_code = main(
+        [
+            "eval-dense-index",
+            "--provider",
+            "fake",
+            "--index-dir",
+            str(index_dir),
+            "--cases",
+            str(cases_path),
+            "--top-k",
+            "10",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["case_count"] == 1
+    assert report["hit_at_1"] == 1.0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["hit_at_1"] == 1.0
+
+
+def test_write_json_output_replaces_unencodable_characters_for_gbk_stream():
+    raw = BytesIO()
+    stream = TextIOWrapper(raw, encoding="gbk", errors="strict", newline="")
+
+    _write_json_output({"text": "private-use-\uf050"}, stream=stream)
+    stream.flush()
+
+    assert b"private-use-?" in raw.getvalue()
+
+```

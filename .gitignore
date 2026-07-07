@@ -18,6 +18,9 @@ openclaw-main/
 
 # Runtime logs and generated local traces.
 *.jsonl
+!data/rag/fire_rescue/eval/dense_gold_cases_zh_v1.jsonl
+!data/rag/fire_rescue/eval/query_expansions_zh_v1.jsonl
+!data/rag/fire_rescue/eval/glossary_candidates_zh_v1.jsonl
 logs/
 results/
 checkpoints/

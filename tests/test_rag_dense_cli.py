@@ -3,6 +3,9 @@ from __future__ import annotations
 from io import BytesIO
 from io import TextIOWrapper
 import json
+from pathlib import Path
+
+import pytest
 
 from fireclaw_core.rag.rag_cli import _write_json_output
 from fireclaw_core.rag.rag_cli import main
@@ -84,6 +87,170 @@ def test_cli_build_and_query_dense_index_with_fake_provider(tmp_path, capsys):
     query_output = json.loads(capsys.readouterr().out)
     assert query_output["query"] == "rescue"
     assert query_output["hits"][0]["record"]["chunk_id"] == "chunk-rescue"
+
+
+def test_cli_eval_dense_index_writes_report_with_fake_provider(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fireclaw_core.rag.dense_retrieval import FakeEmbeddingProvider, build_dense_index
+
+    records_path = tmp_path / "records.jsonl"
+    records_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "chunk_id": "chunk_rescue",
+                        "parent_id": "parent_rescue",
+                        "doc_id": "doc_rescue",
+                        "clean_text": "rescue victim search",
+                        "indexable": True,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "chunk_id": "chunk_smoke",
+                        "parent_id": "parent_smoke",
+                        "doc_id": "doc_smoke",
+                        "clean_text": "smoke visibility",
+                        "indexable": True,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    index_dir = tmp_path / "dense_index"
+    build_dense_index(records_path, index_dir, FakeEmbeddingProvider(), batch_size=2)
+
+    cases_path = tmp_path / "cases.jsonl"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "case_id": "dense_zh_001",
+                "topic": "rescue",
+                "query": "rescue victim",
+                "gold_parent_ids": ["parent_rescue"],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "report.json"
+
+    exit_code = main(
+        [
+            "eval-dense-index",
+            "--provider",
+            "fake",
+            "--index-dir",
+            str(index_dir),
+            "--cases",
+            str(cases_path),
+            "--top-k",
+            "10",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["case_count"] == 1
+    assert report["hit_at_1"] == 1.0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["hit_at_1"] == 1.0
+
+
+def test_cli_eval_dense_index_with_expansion_and_parent_view_writes_config(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fireclaw_core.rag.dense_retrieval import FakeEmbeddingProvider, build_dense_index
+
+    records_path = tmp_path / "records.jsonl"
+    records_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"chunk_id": "wrong_1", "parent_id": "parent_wrong", "doc_id": "doc", "clean_text": "wrong rescue", "indexable": True}),
+                json.dumps({"chunk_id": "wrong_2", "parent_id": "parent_wrong", "doc_id": "doc", "clean_text": "wrong victim", "indexable": True}),
+                json.dumps({"chunk_id": "gold_1", "parent_id": "parent_gold", "doc_id": "doc", "clean_text": "rescue victim search", "indexable": True}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    index_dir = tmp_path / "dense_index"
+    build_dense_index(records_path, index_dir, FakeEmbeddingProvider(), batch_size=2)
+
+    cases_path = tmp_path / "cases.jsonl"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "case_id": "dense_zh_001",
+                "topic": "rescue",
+                "query": "rescue victim",
+                "gold_parent_ids": ["parent_gold"],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    expansions_path = tmp_path / "query_expansions.jsonl"
+    expansions_path.write_text(
+        json.dumps(
+            {
+                "case_id": "dense_zh_001",
+                "query_zh": "rescue victim",
+                "llm_query_en": "rescue victim search",
+                "reviewed_query_en": "",
+                "term_query": "victim search",
+                "terms": ["victim search"],
+                "status": "candidate",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "expanded_report.json"
+
+    exit_code = main(
+        [
+            "eval-dense-index",
+            "--provider",
+            "fake",
+            "--index-dir",
+            str(index_dir),
+            "--cases",
+            str(cases_path),
+            "--query-expansions",
+            str(expansions_path),
+            "--query-variants",
+            "zh,en,terms",
+            "--ranking-view",
+            "parent",
+            "--small-top-k",
+            "10",
+            "--top-k",
+            "10",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["retrieval_config"]["query_variants"] == ["zh", "en", "terms"]
+    assert report["retrieval_config"]["ranking_view"] == "parent"
+    assert report["retrieval_config"]["small_top_k"] == 10
+    assert "query_variants" in report["results"][0]
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["retrieval_config"]["fusion"] == "rrf"
 
 
 def test_write_json_output_replaces_unencodable_characters_for_gbk_stream():

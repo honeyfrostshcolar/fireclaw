@@ -1,0 +1,5 @@
+﻿Task 1: complete (uncommitted; controller verified tests/test_rag_dense_eval.py 10 passed; review approved)
+Task 2: complete (uncommitted; controller verified dense eval + CLI tests 13 passed; review approved)
+Task 3: complete (uncommitted; controller verified loader 10 cases and tests 13 passed; review approved)
+Task 4: complete (uncommitted; controller verified dense eval + CLI + dense retrieval tests 20 passed after review fix; real BGE-M3 eval exit 0 and report written)
+Final resume: complete (uncommitted; final review Critical/Important clean; fixed duplicate query variant Minor with RED/GREEN test; focused suite 36 passed; BGE-M3 strict/parent/expanded reports refreshed)
