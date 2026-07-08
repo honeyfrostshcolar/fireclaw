@@ -1112,7 +1112,7 @@ rerank multi-query rrf: Hit@1=0.433333 Hit@5=0.766667 Hit@10=0.833333 MRR@10=0.5
 
 ### Conclusion
 
-Multi-query rerank RRF improved over `rerank:en` on all five metrics, but it did not beat `rerank:terms` on this 30-case dataset. `rerank:terms` remains the strongest rerank ablation overall here, with better `Hit@5`, `Hit@10`, `MRR@10`, and `Recall@10`, while `multi-query rrf` only matches its `Hit@1`. So `multi-query rrf` is a better alternative than `rerank:en`, but it is not the current best or recommended rerank setting for this benchmark.
+Multi-query rerank RRF improved over `rerank:en` on `Hit@1`, `Hit@5`, and `MRR@10`, while matching it on `Hit@10` and `Recall@10`. It did not beat `rerank:terms` on this 30-case dataset. `rerank:terms` remains the strongest rerank ablation overall here, with better `Hit@5`, `Hit@10`, `MRR@10`, and `Recall@10`, while `multi-query rrf` only matches its `Hit@1`. So `multi-query rrf` is a better alternative than `rerank:en`, but it is not the current best or recommended rerank setting for this benchmark.
 
 ### Remaining Questions
 
