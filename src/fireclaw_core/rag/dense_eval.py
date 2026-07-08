@@ -43,6 +43,11 @@ class DenseEvalRetrievedHit:
     variant_scores: dict[str, float] = field(default_factory=dict)
     child_hit_count: int | None = None
     child_ranks: list[int] = field(default_factory=list)
+    rerank_score: float | None = None
+    base_rank: int | None = None
+    base_score: float | None = None
+    base_fusion_score: float | None = None
+    reranker: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -56,6 +61,16 @@ class DenseEvalRetrievedHit:
             data.pop("child_hit_count")
         if not self.child_ranks:
             data.pop("child_ranks")
+        if self.rerank_score is None:
+            data.pop("rerank_score")
+        if self.base_rank is None:
+            data.pop("base_rank")
+        if self.base_score is None:
+            data.pop("base_score")
+        if self.base_fusion_score is None:
+            data.pop("base_fusion_score")
+        if not self.reranker:
+            data.pop("reranker")
         return data
 
 

@@ -1,25 +1,26 @@
-### Task 1: Dense Evaluation Core
+﻿### Task 1: Reranker Metadata and Core Reranking Utilities
 
 **Files:**
-- Create: `src/fireclaw_core/rag/dense_eval.py`
-- Create: `tests/test_rag_dense_eval.py`
+- Modify: `src/fireclaw_core/rag/dense_eval.py`
+- Create: `src/fireclaw_core/rag/reranking.py`
+- Create: `tests/test_rag_reranking.py`
 
 **Interfaces:**
 - Consumes:
-  - `fireclaw_core.rag.dense_retrieval.DenseHit`
+  - `DenseEvalRetrievedHit` from `fireclaw_core.rag.dense_eval`.
+  - Parent chunks JSONL rows with fields `parent_id` and `text`.
 - Produces:
-  - `DenseEvalCase`
-  - `DenseEvalRetrievedHit`
-  - `DenseEvalCaseResult`
-  - `DenseEvalReport`
-  - `load_dense_eval_cases(path: Path) -> list[DenseEvalCase]`
-  - `evaluate_ranked_hits(cases: list[DenseEvalCase], hits_by_case_id: dict[str, list[DenseEvalRetrievedHit]], *, top_k: int = 10) -> DenseEvalReport`
-  - `hits_from_dense_results(hits: list[DenseHit]) -> list[DenseEvalRetrievedHit]`
-  - `evaluate_dense_retriever(retriever: Any, cases: list[DenseEvalCase], *, top_k: int = 10) -> DenseEvalReport`
+  - `RerankerModelInfo`
+  - `RerankerProvider`
+  - `FakeRerankerProvider`
+  - `BGEFlagRerankerProvider`
+  - `load_parent_texts(path: Path) -> dict[str, str]`
+  - `select_rerank_query(query_variants: Mapping[str, str], fallback_query: str, variant: str = "en") -> str`
+  - `rerank_parent_hits(query: str, hits: list[DenseEvalRetrievedHit], parent_texts: Mapping[str, str], reranker: RerankerProvider, *, top_k: int = 10, max_passage_chars: int = 6000) -> list[DenseEvalRetrievedHit]`
 
-- [ ] **Step 1: Write failing tests for case loading and validation**
+- [ ] **Step 1: Write failing reranking tests**
 
-Add this to `tests/test_rag_dense_eval.py`:
+Create `tests/test_rag_reranking.py`:
 
 ```python
 from __future__ import annotations
@@ -29,75 +30,113 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.rag.dense_eval import (
-    DenseEvalCase,
-    DenseEvalRetrievedHit,
-    evaluate_ranked_hits,
-    load_dense_eval_cases,
-)
+from fireclaw_core.rag.dense_eval import DenseEvalRetrievedHit
+from fireclaw_core.rag.reranking import FakeRerankerProvider
+from fireclaw_core.rag.reranking import load_parent_texts
+from fireclaw_core.rag.reranking import rerank_parent_hits
+from fireclaw_core.rag.reranking import select_rerank_query
 
 
-def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+def _hit(rank: int, score: float, parent_id: str, chunk_id: str) -> DenseEvalRetrievedHit:
+    return DenseEvalRetrievedHit(
+        rank=rank,
+        score=score,
+        chunk_id=chunk_id,
+        parent_id=parent_id,
+        doc_id="doc",
+        text_preview=f"preview {chunk_id}",
+        fusion_score=score,
+        variant_ranks={"hybrid": rank},
+        variant_scores={"hybrid": score},
+    )
+
+
+def test_load_parent_texts_reads_parent_chunk_jsonl(tmp_path: Path) -> None:
+    path = tmp_path / "parent_chunks.jsonl"
     path.write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        json.dumps({"parent_id": "parent_a", "text": "alpha rescue text"}, ensure_ascii=False) + "\n"
+        + json.dumps({"parent_id": "parent_b", "text": "bravo SCBA text"}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
+    texts = load_parent_texts(path)
 
-def test_load_dense_eval_cases_accepts_valid_jsonl(tmp_path: Path) -> None:
-    path = tmp_path / "cases.jsonl"
-    _write_jsonl(
-        path,
-        [
-            {
-                "case_id": "dense_zh_001",
-                "topic": "smoke_victim_search",
-                "query": "鐑熼浘寰堝ぇ鐨勬埧闂撮噷濡備綍瀵绘壘琚洶浜哄憳锛?,
-                "gold_parent_ids": ["parent_a"],
-                "gold_chunk_ids": [],
-                "expected_evidence_summary": "Victim search under smoke.",
-                "source_doc_id": "doc_a",
-                "notes": "Chinese task-style query.",
-            }
-        ],
+    assert texts == {"parent_a": "alpha rescue text", "parent_b": "bravo SCBA text"}
+
+
+def test_load_parent_texts_rejects_duplicate_parent_id(tmp_path: Path) -> None:
+    path = tmp_path / "parent_chunks.jsonl"
+    path.write_text(
+        json.dumps({"parent_id": "dup", "text": "first"}, ensure_ascii=False) + "\n"
+        + json.dumps({"parent_id": "dup", "text": "second"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
 
-    cases = load_dense_eval_cases(path)
+    with pytest.raises(ValueError, match="duplicate parent_id in parent chunks: dup"):
+        load_parent_texts(path)
 
-    assert cases == [
-        DenseEvalCase(
-            case_id="dense_zh_001",
-            topic="smoke_victim_search",
-            query="鐑熼浘寰堝ぇ鐨勬埧闂撮噷濡備綍瀵绘壘琚洶浜哄憳锛?,
-            gold_parent_ids=["parent_a"],
-            gold_chunk_ids=[],
-            expected_evidence_summary="Victim search under smoke.",
-            source_doc_id="doc_a",
-            notes="Chinese task-style query.",
-        )
+
+def test_select_rerank_query_prefers_requested_english_variant() -> None:
+    query = select_rerank_query(
+        {
+            "dense:zh": "中文问题",
+            "dense:en": "When should firefighters enter SCBA rehabilitation?",
+            "bm25:terms": "SCBA rehabilitation NFPA 1584",
+        },
+        fallback_query="中文问题",
+        variant="en",
+    )
+
+    assert query == "When should firefighters enter SCBA rehabilitation?"
+
+
+def test_select_rerank_query_falls_back_to_original_query() -> None:
+    query = select_rerank_query({}, fallback_query="中文问题", variant="en")
+
+    assert query == "中文问题"
+
+
+def test_rerank_parent_hits_uses_parent_text_and_preserves_base_metadata() -> None:
+    parent_texts = {
+        "parent_generic": "generic firefighter health information",
+        "parent_gold": "SCBA rehabilitation medical evaluation NFPA 1584",
+    }
+    hits = [
+        _hit(1, 0.90, "parent_generic", "chunk_generic"),
+        _hit(2, 0.70, "parent_gold", "chunk_gold"),
     ]
+    reranker = FakeRerankerProvider()
 
-
-def test_load_dense_eval_cases_rejects_duplicate_case_ids(tmp_path: Path) -> None:
-    path = tmp_path / "cases.jsonl"
-    _write_jsonl(
-        path,
-        [
-            {"case_id": "dup", "topic": "a", "query": "q1", "gold_parent_ids": ["p1"]},
-            {"case_id": "dup", "topic": "b", "query": "q2", "gold_parent_ids": ["p2"]},
-        ],
+    reranked = rerank_parent_hits(
+        "When should firefighters enter SCBA rehabilitation?",
+        hits,
+        parent_texts,
+        reranker,
+        top_k=2,
     )
 
-    with pytest.raises(ValueError, match="duplicate case_id: dup"):
-        load_dense_eval_cases(path)
+    assert [hit.parent_id for hit in reranked] == ["parent_gold", "parent_generic"]
+    assert reranked[0].rank == 1
+    assert reranked[0].rerank_score > reranked[1].rerank_score
+    assert reranked[0].base_rank == 2
+    assert reranked[0].base_score == 0.70
+    assert reranked[0].base_fusion_score == 0.70
+    assert reranked[0].reranker == "fake-reranker"
+    assert reranked[0].score == reranked[0].rerank_score
+    assert reranked[0].variant_ranks == {"hybrid": 2}
 
 
-def test_load_dense_eval_cases_rejects_empty_gold_parent_ids(tmp_path: Path) -> None:
-    path = tmp_path / "cases.jsonl"
-    _write_jsonl(path, [{"case_id": "bad", "topic": "a", "query": "q", "gold_parent_ids": []}])
+def test_rerank_parent_hits_rejects_missing_parent_text() -> None:
+    reranker = FakeRerankerProvider()
 
-    with pytest.raises(ValueError, match="gold_parent_ids"):
-        load_dense_eval_cases(path)
+    with pytest.raises(ValueError, match="missing parent text for parent_id: parent_missing"):
+        rerank_parent_hits(
+            "SCBA rehabilitation",
+            [_hit(1, 0.5, "parent_missing", "chunk")],
+            {},
+            reranker,
+            top_k=1,
+        )
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -105,206 +144,19 @@ def test_load_dense_eval_cases_rejects_empty_gold_parent_ids(tmp_path: Path) -> 
 Run:
 
 ```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_core_red tests/test_rag_dense_eval.py -q
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_reranking_red tests/test_rag_reranking.py -q
 ```
 
 Expected:
 
 ```text
-ModuleNotFoundError: No module named 'fireclaw_core.rag.dense_eval'
+ModuleNotFoundError: No module named 'fireclaw_core.rag.reranking'
 ```
 
-- [ ] **Step 3: Implement minimal case dataclass and loader**
+- [ ] **Step 3: Add optional reranker metadata to `DenseEvalRetrievedHit`**
 
-Create `src/fireclaw_core/rag/dense_eval.py`:
-
-```python
-from __future__ import annotations
-
-from dataclasses import asdict, dataclass, field
-import json
-from pathlib import Path
-from typing import Any
-
-from fireclaw_core.rag.dense_retrieval import DenseHit
-
-
-@dataclass(frozen=True)
-class DenseEvalCase:
-    case_id: str
-    topic: str
-    query: str
-    gold_parent_ids: list[str]
-    gold_chunk_ids: list[str] = field(default_factory=list)
-    expected_evidence_summary: str = ""
-    source_doc_id: str = ""
-    notes: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-def load_dense_eval_cases(path: Path) -> list[DenseEvalCase]:
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Dense eval case file not found: {path}")
-
-    cases: list[DenseEvalCase] = []
-    seen_case_ids: set[str] = set()
-    with path.open("r", encoding="utf-8-sig") as handle:
-        for line_no, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSONL in {path}:{line_no}: {exc}") from exc
-
-            case_id = str(data.get("case_id") or "").strip()
-            topic = str(data.get("topic") or "").strip()
-            query = str(data.get("query") or "").strip()
-            gold_parent_ids = [str(value).strip() for value in data.get("gold_parent_ids", []) if str(value).strip()]
-            gold_chunk_ids = [str(value).strip() for value in data.get("gold_chunk_ids", []) if str(value).strip()]
-
-            if not case_id:
-                raise ValueError(f"Missing case_id in {path}:{line_no}")
-            if case_id in seen_case_ids:
-                raise ValueError(f"duplicate case_id: {case_id}")
-            if not query:
-                raise ValueError(f"Missing query for case_id: {case_id}")
-            if not gold_parent_ids:
-                raise ValueError(f"Missing gold_parent_ids for case_id: {case_id}")
-
-            seen_case_ids.add(case_id)
-            cases.append(
-                DenseEvalCase(
-                    case_id=case_id,
-                    topic=topic,
-                    query=query,
-                    gold_parent_ids=gold_parent_ids,
-                    gold_chunk_ids=gold_chunk_ids,
-                    expected_evidence_summary=str(data.get("expected_evidence_summary") or ""),
-                    source_doc_id=str(data.get("source_doc_id") or ""),
-                    notes=str(data.get("notes") or ""),
-                )
-            )
-
-    return cases
-```
-
-- [ ] **Step 4: Run tests to verify loader passes**
-
-Run:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_core_green tests/test_rag_dense_eval.py -q
-```
-
-Expected:
-
-```text
-3 passed
-```
-
-- [ ] **Step 5: Write failing tests for metrics**
-
-Append to `tests/test_rag_dense_eval.py`:
-
-```python
-def test_evaluate_ranked_hits_computes_hit_mrr_and_gold_recall() -> None:
-    cases = [
-        DenseEvalCase(
-            case_id="case_1",
-            topic="thermal",
-            query="鐑熼浘涓浣曠敤鐑垚鍍忔壘浜猴紵",
-            gold_parent_ids=["parent_gold"],
-        ),
-        DenseEvalCase(
-            case_id="case_2",
-            topic="mobility",
-            query="鏈哄櫒浜哄浣曢€氳繃纰庣煶鍦板舰锛?,
-            gold_parent_ids=["parent_missing"],
-        ),
-    ]
-    hits = {
-        "case_1": [
-            DenseEvalRetrievedHit(rank=1, score=0.9, chunk_id="c1", parent_id="parent_wrong", doc_id="d1"),
-            DenseEvalRetrievedHit(rank=2, score=0.8, chunk_id="c2", parent_id="parent_gold", doc_id="d2"),
-        ],
-        "case_2": [
-            DenseEvalRetrievedHit(rank=1, score=0.7, chunk_id="c3", parent_id="parent_other", doc_id="d3"),
-        ],
-    }
-
-    report = evaluate_ranked_hits(cases, hits, top_k=10)
-
-    assert report.case_count == 2
-    assert report.hit_at_1 == 0.0
-    assert report.hit_at_5 == 0.5
-    assert report.hit_at_10 == 0.5
-    assert report.mrr_at_10 == 0.25
-    assert report.gold_recall_at_10 == 0.5
-    assert report.results[0].first_gold_rank == 2
-    assert report.results[1].first_gold_rank is None
-
-
-def test_evaluate_ranked_hits_handles_multiple_gold_parents() -> None:
-    cases = [
-        DenseEvalCase(
-            case_id="case_multi",
-            topic="usar",
-            query="搴熷鎼滄晳鏈哄櫒浜洪渶瑕佸摢浜涜兘鍔涳紵",
-            gold_parent_ids=["parent_a", "parent_b"],
-        )
-    ]
-    hits = {
-        "case_multi": [
-            DenseEvalRetrievedHit(rank=1, score=0.9, chunk_id="c1", parent_id="parent_a", doc_id="d1"),
-            DenseEvalRetrievedHit(rank=2, score=0.8, chunk_id="c2", parent_id="parent_other", doc_id="d2"),
-        ]
-    }
-
-    report = evaluate_ranked_hits(cases, hits, top_k=10)
-
-    assert report.hit_at_1 == 1.0
-    assert report.gold_recall_at_10 == 0.5
-    assert report.results[0].retrieved_gold_parent_ids == ["parent_a"]
-
-
-def test_dense_eval_report_serializes_to_dict() -> None:
-    case = DenseEvalCase(
-        case_id="case_1",
-        topic="thermal",
-        query="鐑熼浘涓浣曠敤鐑垚鍍忔壘浜猴紵",
-        gold_parent_ids=["parent_gold"],
-    )
-    hit = DenseEvalRetrievedHit(rank=1, score=0.95, chunk_id="chunk_gold", parent_id="parent_gold", doc_id="doc")
-
-    report = evaluate_ranked_hits([case], {"case_1": [hit]}, top_k=10)
-    data = report.to_dict()
-
-    assert data["case_count"] == 1
-    assert data["hit_at_1"] == 1.0
-    assert data["results"][0]["top_hits"][0]["parent_id"] == "parent_gold"
-```
-
-- [ ] **Step 6: Run tests to verify metrics tests fail**
-
-Run:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_metrics_red tests/test_rag_dense_eval.py -q
-```
-
-Expected:
-
-```text
-ImportError: cannot import name 'DenseEvalRetrievedHit'
-```
-
-- [ ] **Step 7: Implement metrics and serialization**
-
-Extend `src/fireclaw_core/rag/dense_eval.py`:
+Modify `src/fireclaw_core/rag/dense_eval.py`:
 
 ```python
 @dataclass(frozen=True)
@@ -313,284 +165,302 @@ class DenseEvalRetrievedHit:
     score: float
     chunk_id: str
     parent_id: str
-    doc_id: str = ""
+    doc_id: str
     source_file: str = ""
     page_start: int | None = None
     page_end: int | None = None
     heading: str = ""
     text_preview: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class DenseEvalCaseResult:
-    case_id: str
-    topic: str
-    query: str
-    gold_parent_ids: list[str]
-    retrieved_parent_ids: list[str]
-    retrieved_gold_parent_ids: list[str]
-    first_gold_rank: int | None
-    hit_at_1: bool
-    hit_at_5: bool
-    hit_at_10: bool
-    mrr_at_10: float
-    gold_recall_at_10: float
-    top_hits: list[DenseEvalRetrievedHit]
+    fusion_score: float | None = None
+    variant_ranks: dict[str, int] = field(default_factory=dict)
+    variant_scores: dict[str, float] = field(default_factory=dict)
+    child_hit_count: int | None = None
+    child_ranks: list[int] = field(default_factory=list)
+    rerank_score: float | None = None
+    base_rank: int | None = None
+    base_score: float | None = None
+    base_fusion_score: float | None = None
+    reranker: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        data["top_hits"] = [hit.to_dict() for hit in self.top_hits]
+        if self.fusion_score is None:
+            data.pop("fusion_score")
+        if not self.variant_ranks:
+            data.pop("variant_ranks")
+        if not self.variant_scores:
+            data.pop("variant_scores")
+        if self.child_hit_count is None:
+            data.pop("child_hit_count")
+        if not self.child_ranks:
+            data.pop("child_ranks")
+        if self.rerank_score is None:
+            data.pop("rerank_score")
+        if self.base_rank is None:
+            data.pop("base_rank")
+        if self.base_score is None:
+            data.pop("base_score")
+        if self.base_fusion_score is None:
+            data.pop("base_fusion_score")
+        if not self.reranker:
+            data.pop("reranker")
         return data
+```
+
+- [ ] **Step 4: Implement core reranking module**
+
+Create `src/fireclaw_core/rag/reranking.py`:
+
+```python
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
+import os
+from pathlib import Path
+import re
+from typing import Protocol
+
+from fireclaw_core.rag.dense_eval import DenseEvalRetrievedHit
+from fireclaw_core.rag.dense_retrieval import load_jsonl
+
+
+TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 
 
 @dataclass(frozen=True)
-class DenseEvalReport:
-    case_count: int
-    hit_at_1: float
-    hit_at_5: float
-    hit_at_10: float
-    mrr_at_10: float
-    gold_recall_at_10: float
-    results: list[DenseEvalCaseResult]
+class RerankerModelInfo:
+    provider: str
+    model: str
+    backend: str
+    device: str | None = None
+    batch_size: int = 32
+    max_length: int = 512
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "case_count": self.case_count,
-            "hit_at_1": round(self.hit_at_1, 6),
-            "hit_at_5": round(self.hit_at_5, 6),
-            "hit_at_10": round(self.hit_at_10, 6),
-            "mrr_at_10": round(self.mrr_at_10, 6),
-            "gold_recall_at_10": round(self.gold_recall_at_10, 6),
-            "results": [result.to_dict() for result in self.results],
-        }
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
-def evaluate_ranked_hits(
-    cases: list[DenseEvalCase],
-    hits_by_case_id: dict[str, list[DenseEvalRetrievedHit]],
+class RerankerProvider(Protocol):
+    model_info: RerankerModelInfo
+
+    def score_pairs(self, pairs: Sequence[tuple[str, str]]) -> list[float]:
+        raise NotImplementedError
+
+
+class FakeRerankerProvider:
+    def __init__(self) -> None:
+        self.model_info = RerankerModelInfo(
+            provider="fake-reranker",
+            model="fake-token-overlap-v1",
+            backend="deterministic-token-overlap",
+            batch_size=32,
+            max_length=512,
+        )
+
+    def score_pairs(self, pairs: Sequence[tuple[str, str]]) -> list[float]:
+        scores: list[float] = []
+        for query, passage in pairs:
+            query_tokens = _token_set(query)
+            passage_tokens = _token_set(passage)
+            if not query_tokens:
+                scores.append(0.0)
+                continue
+            overlap = query_tokens & passage_tokens
+            scores.append(len(overlap) / len(query_tokens))
+        return scores
+
+
+class BGEFlagRerankerProvider:
+    def __init__(
+        self,
+        model_path: Path,
+        *,
+        device: str | None = None,
+        batch_size: int = 32,
+        max_length: int = 512,
+        use_fp16: bool | None = None,
+    ) -> None:
+        self.model_path = Path(model_path)
+        self.device = device
+        self.batch_size = batch_size
+        self.max_length = max_length
+        self.use_fp16 = use_fp16
+        self.model_info = RerankerModelInfo(
+            provider="bge-reranker",
+            model=str(self.model_path),
+            backend="FlagEmbedding.FlagReranker",
+            device=device or "auto",
+            batch_size=batch_size,
+            max_length=max_length,
+        )
+        self._model: object | None = None
+
+    def score_pairs(self, pairs: Sequence[tuple[str, str]]) -> list[float]:
+        model = self._load_model()
+        raw_scores = model.compute_score(list(pairs), batch_size=self.batch_size, max_length=self.max_length)
+        if isinstance(raw_scores, float):
+            return [float(raw_scores)]
+        return [float(score) for score in raw_scores]
+
+    def _load_model(self):
+        if self._model is None:
+            if not self.model_path.exists():
+                raise FileNotFoundError(f"BGE reranker model path not found: {self.model_path}")
+            cache_dir = _huggingface_cache_dir_for(self.model_path)
+            _set_huggingface_cache_env(cache_dir)
+            try:
+                import torch
+                from FlagEmbedding import FlagReranker
+            except ImportError as exc:
+                raise ImportError(
+                    "FlagEmbedding and torch are required for --reranker-provider bge-reranker. "
+                    "Use .\\.venv-bge-m3\\Scripts\\python.exe."
+                ) from exc
+
+            if self.device is not None:
+                devices: str | list[str] = [self.device]
+            else:
+                devices = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+            use_fp16 = self.use_fp16
+            if use_fp16 is None:
+                use_fp16 = bool(devices and str(devices[0]).startswith("cuda"))
+            self.model_info = replace(self.model_info, device=",".join(str(item) for item in devices))
+            self._model = FlagReranker(
+                str(self.model_path),
+                use_fp16=use_fp16,
+                devices=devices,
+                batch_size=self.batch_size,
+                max_length=self.max_length,
+                cache_dir=str(cache_dir),
+            )
+        return self._model
+
+
+def load_parent_texts(path: Path) -> dict[str, str]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Parent chunks JSONL not found: {path}")
+    texts: dict[str, str] = {}
+    for row in load_jsonl(path):
+        parent_id = str(row.get("parent_id") or "").strip()
+        if not parent_id:
+            raise ValueError(f"missing parent_id in parent chunks: {path}")
+        if parent_id in texts:
+            raise ValueError(f"duplicate parent_id in parent chunks: {parent_id}")
+        texts[parent_id] = str(row.get("text") or "")
+    return texts
+
+
+def select_rerank_query(
+    query_variants: Mapping[str, str],
+    *,
+    fallback_query: str,
+    variant: str = "en",
+) -> str:
+    if variant == "zh":
+        return fallback_query
+    preferred_keys = [f"dense:{variant}", f"bm25:{variant}", variant]
+    for key in preferred_keys:
+        text = str(query_variants.get(key) or "").strip()
+        if text:
+            return text
+    return fallback_query
+
+
+def rerank_parent_hits(
+    query: str,
+    hits: list[DenseEvalRetrievedHit],
+    parent_texts: Mapping[str, str],
+    reranker: RerankerProvider,
     *,
     top_k: int = 10,
-) -> DenseEvalReport:
+    max_passage_chars: int = 6000,
+) -> list[DenseEvalRetrievedHit]:
     if top_k <= 0:
         raise ValueError("top_k must be positive")
+    if max_passage_chars <= 0:
+        raise ValueError("max_passage_chars must be positive")
 
-    results: list[DenseEvalCaseResult] = []
-    for case in cases:
-        hits = sorted(hits_by_case_id.get(case.case_id, []), key=lambda hit: hit.rank)[:top_k]
-        gold_ids = set(case.gold_parent_ids)
-        retrieved_parent_ids = [hit.parent_id for hit in hits]
-        retrieved_gold_parent_ids = sorted({parent_id for parent_id in retrieved_parent_ids if parent_id in gold_ids})
-        first_gold_rank = next((hit.rank for hit in hits if hit.parent_id in gold_ids), None)
-        hit_at_1 = any(hit.parent_id in gold_ids for hit in hits[:1])
-        hit_at_5 = any(hit.parent_id in gold_ids for hit in hits[:5])
-        hit_at_10 = any(hit.parent_id in gold_ids for hit in hits[:10])
-        mrr_at_10 = (1.0 / first_gold_rank) if first_gold_rank is not None and first_gold_rank <= 10 else 0.0
-        gold_recall_at_10 = len(retrieved_gold_parent_ids) / len(gold_ids)
-        results.append(
-            DenseEvalCaseResult(
-                case_id=case.case_id,
-                topic=case.topic,
-                query=case.query,
-                gold_parent_ids=case.gold_parent_ids,
-                retrieved_parent_ids=retrieved_parent_ids,
-                retrieved_gold_parent_ids=retrieved_gold_parent_ids,
-                first_gold_rank=first_gold_rank,
-                hit_at_1=hit_at_1,
-                hit_at_5=hit_at_5,
-                hit_at_10=hit_at_10,
-                mrr_at_10=mrr_at_10,
-                gold_recall_at_10=gold_recall_at_10,
-                top_hits=hits,
-            )
-        )
-
-    case_count = len(results)
-    if case_count == 0:
-        return DenseEvalReport(
-            case_count=0,
-            hit_at_1=0.0,
-            hit_at_5=0.0,
-            hit_at_10=0.0,
-            mrr_at_10=0.0,
-            gold_recall_at_10=0.0,
-            results=[],
-        )
-
-    return DenseEvalReport(
-        case_count=case_count,
-        hit_at_1=sum(1 for result in results if result.hit_at_1) / case_count,
-        hit_at_5=sum(1 for result in results if result.hit_at_5) / case_count,
-        hit_at_10=sum(1 for result in results if result.hit_at_10) / case_count,
-        mrr_at_10=sum(result.mrr_at_10 for result in results) / case_count,
-        gold_recall_at_10=sum(result.gold_recall_at_10 for result in results) / case_count,
-        results=results,
-    )
-```
-
-- [ ] **Step 8: Run tests to verify metrics pass**
-
-Run:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_metrics_green tests/test_rag_dense_eval.py -q
-```
-
-Expected:
-
-```text
-6 passed
-```
-
-- [ ] **Step 9: Write failing tests for conversion from dense hits and retriever runner**
-
-Append to `tests/test_rag_dense_eval.py`:
-
-```python
-from fireclaw_core.rag.dense_eval import (
-    evaluate_dense_retriever,
-    hits_from_dense_results,
-)
-from fireclaw_core.rag.dense_retrieval import DenseHit
-
-
-def test_hits_from_dense_results_preserves_parent_id_and_preview() -> None:
-    dense_hit = DenseHit(
-        rank=1,
-        score=0.77,
-        record={
-            "chunk_id": "chunk_1",
-            "parent_id": "parent_1",
-            "doc_id": "doc_1",
-            "source_file": "raw/source.pdf",
-            "page_start": 3,
-            "page_end": 4,
-            "heading": "Victim Search",
-            "clean_text": "A" * 300,
-        },
-    )
-
-    converted = hits_from_dense_results([dense_hit])
-
-    assert converted[0].rank == 1
-    assert converted[0].score == 0.77
-    assert converted[0].chunk_id == "chunk_1"
-    assert converted[0].parent_id == "parent_1"
-    assert converted[0].text_preview == "A" * 240
-
-
-def test_evaluate_dense_retriever_runs_queries() -> None:
-    class FakeRetriever:
-        def query(self, query: str, *, top_k: int = 5) -> list[DenseHit]:
-            assert query == "鏈哄櫒浜哄浣曞湪鐑熼浘涓壘浜猴紵"
-            assert top_k == 10
-            return [
-                DenseHit(
-                    rank=1,
-                    score=0.5,
-                    record={"chunk_id": "chunk_gold", "parent_id": "parent_gold", "doc_id": "doc"},
-                )
-            ]
-
-    case = DenseEvalCase(
-        case_id="case_1",
-        topic="smoke",
-        query="鏈哄櫒浜哄浣曞湪鐑熼浘涓壘浜猴紵",
-        gold_parent_ids=["parent_gold"],
-    )
-
-    report = evaluate_dense_retriever(FakeRetriever(), [case], top_k=10)
-
-    assert report.hit_at_1 == 1.0
-    assert report.results[0].top_hits[0].chunk_id == "chunk_gold"
-```
-
-- [ ] **Step 10: Run tests to verify conversion tests fail**
-
-Run:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_runner_red tests/test_rag_dense_eval.py -q
-```
-
-Expected:
-
-```text
-ImportError: cannot import name 'evaluate_dense_retriever'
-```
-
-- [ ] **Step 11: Implement conversion and retriever runner**
-
-Append to `src/fireclaw_core/rag/dense_eval.py`:
-
-```python
-def hits_from_dense_results(hits: list[DenseHit]) -> list[DenseEvalRetrievedHit]:
-    converted: list[DenseEvalRetrievedHit] = []
+    pairs: list[tuple[str, str]] = []
     for hit in hits:
-        record = hit.record
-        text = str(record.get("clean_text") or record.get("text") or "")
-        converted.append(
-            DenseEvalRetrievedHit(
-                rank=hit.rank,
-                score=hit.score,
-                chunk_id=str(record.get("chunk_id") or ""),
-                parent_id=str(record.get("parent_id") or ""),
-                doc_id=str(record.get("doc_id") or ""),
-                source_file=str(record.get("source_file") or ""),
-                page_start=record.get("page_start"),
-                page_end=record.get("page_end"),
-                heading=str(record.get("heading") or ""),
-                text_preview=text[:240],
+        parent_text = parent_texts.get(hit.parent_id)
+        if parent_text is None:
+            raise ValueError(f"missing parent text for parent_id: {hit.parent_id}")
+        pairs.append((query, parent_text[:max_passage_chars]))
+
+    scores = reranker.score_pairs(pairs)
+    if len(scores) != len(hits):
+        raise ValueError(f"reranker returned {len(scores)} scores for {len(hits)} hits")
+
+    scored = list(zip(hits, scores, strict=True))
+    scored.sort(key=lambda item: (-float(item[1]), item[0].rank, item[0].parent_id))
+    reranked: list[DenseEvalRetrievedHit] = []
+    for new_rank, (hit, score) in enumerate(scored[:top_k], start=1):
+        reranked.append(
+            replace(
+                hit,
+                rank=new_rank,
+                score=float(score),
+                rerank_score=float(score),
+                base_rank=hit.rank,
+                base_score=hit.score,
+                base_fusion_score=hit.fusion_score,
+                reranker=reranker.model_info.provider,
             )
         )
-    return converted
+    return reranked
 
 
-def evaluate_dense_retriever(
-    retriever: Any,
-    cases: list[DenseEvalCase],
-    *,
-    top_k: int = 10,
-) -> DenseEvalReport:
-    hits_by_case_id: dict[str, list[DenseEvalRetrievedHit]] = {}
-    for case in cases:
-        hits = retriever.query(case.query, top_k=top_k)
-        hits_by_case_id[case.case_id] = hits_from_dense_results(hits)
-    return evaluate_ranked_hits(cases, hits_by_case_id, top_k=top_k)
+def _token_set(text: str) -> set[str]:
+    return {match.group(0).lower() for match in TOKEN_PATTERN.finditer(text)}
+
+
+def _huggingface_cache_dir_for(model_path: Path) -> Path:
+    model_path = Path(model_path)
+    if len(model_path.parents) >= 2:
+        return model_path.parents[1] / "huggingface"
+    return Path(".cache") / "huggingface"
+
+
+def _set_huggingface_cache_env(cache_dir: Path) -> None:
+    cache_dir = Path(cache_dir)
+    transformers_dir = cache_dir / "transformers"
+    hub_dir = cache_dir / "hub"
+    transformers_dir.mkdir(parents=True, exist_ok=True)
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(cache_dir))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(transformers_dir))
+    os.environ.setdefault("HF_HUB_CACHE", str(hub_dir))
 ```
 
-- [ ] **Step 12: Run all dense eval unit tests**
+- [ ] **Step 5: Run reranking tests**
 
 Run:
 
 ```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_core_final tests/test_rag_dense_eval.py -q
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_reranking_green tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
 ```
 
 Expected:
 
 ```text
-8 passed
+all selected tests pass
 ```
 
-- [ ] **Step 13: Checkpoint without commit**
+- [ ] **Step 6: Checkpoint without committing**
 
 Run:
 
 ```powershell
-git status --short --branch
+git diff -- src/fireclaw_core/rag/dense_eval.py src/fireclaw_core/rag/reranking.py tests/test_rag_reranking.py
 ```
 
 Expected:
 
 ```text
-## rag-dev...origin/rag-dev
-?? src/fireclaw_core/rag/dense_eval.py
-?? tests/test_rag_dense_eval.py
+diff output shows only reranker metadata, reranking utilities, and focused tests
 ```
-
-The existing untracked spec and memory files may also appear.
 
 ---

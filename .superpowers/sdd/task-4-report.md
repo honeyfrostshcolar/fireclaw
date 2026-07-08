@@ -1,80 +1,42 @@
-Status: DONE
+# Task 4 Report: Documentation and Focused Verification
 
-Task: Real BGE-M3 Evaluation Smoke Run
+## Status
 
-Files generated or updated:
+Completed without code changes to the reranker implementation.
 
-- `data/rag/fire_rescue/eval/runs/dense_bge_m3_zh_v1_report.json`
-- `memory/2026-07-07/fireclaw-dense-index-status-check.md`
-- `.superpowers/sdd/progress.md`
+## Files Updated
 
-Verification:
+- `docs/rag/dense-evaluation-walkthrough.zh-CN.md`
+- `memory/2026-07-08/fireclaw-rag-reranker-evaluation.md`
 
-```powershell
-$env:PYTHONPATH = '.deps;src'
-python -m pytest --basetemp=$env:TEMP\pytest_tmp_dense_eval_unit_resume_20260707_elevated tests/test_rag_dense_eval.py tests/test_rag_dense_cli.py tests/test_rag_dense_retrieval.py -q
-```
+## Documentation Change
 
-Result:
+Appended the required `Optional Evaluation: Hybrid Reranking` walkthrough section at the end of `docs/rag/dense-evaluation-walkthrough.zh-CN.md` without rewriting older existing content.
 
-- Initial Task 4 verification before review fix: `19 passed in 0.45s`
-- After review fix for `top_k > 10` metric semantics: `20 passed in 0.50s`
-
-Review fix:
-
-- Added regression coverage for `top_k > 10` where the gold parent appears after rank 10.
-- Changed `evaluate_ranked_hits()` so `top_hits` can still contain `top_k` results for inspection, while `Hit@10`, `MRR@10`, and `gold_recall@10` only use the first 10 hits.
-
-Real BGE-M3 evaluation:
+## Verification Commands
 
 ```powershell
-$env:PYTHONPATH = 'src'
-.\.venv-bge-m3\Scripts\python.exe -m fireclaw_core.rag.rag_cli eval-dense-index --provider bge-m3 --model-path .cache/models/bge-m3 --cases data/rag/fire_rescue/eval/dense_gold_cases_zh_v1.jsonl --top-k 10 --output data/rag/fire_rescue/eval/runs/dense_bge_m3_zh_v1_report.json
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_rerank_all tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py tests/test_rag_hybrid_eval.py tests/test_rag_dense_eval.py tests/test_rag_dense_ranking.py tests/test_rag_query_expansion.py -q
+git diff --check
 ```
 
-Result:
+## Verification Results
 
-- exit code: `0`
-- non-fatal Transformers tokenizer/cache warnings appeared
-- report written to `data/rag/fire_rescue/eval/runs/dense_bge_m3_zh_v1_report.json`
+- Sandboxed pytest run hit the known managed Windows cleanup issue:
+  - `PermissionError: [WinError 5] Access is denied: 'C:\Users\L\Desktop\lpp\fireclaw-master\.pytest_tmp_rerank_all'`
+- Established-style rerun succeeded:
+  - `42 passed in 0.67s`
+- `git diff --check`:
+  - first run was non-zero because `.superpowers/sdd/task-1-brief.md`, `.superpowers/sdd/task-2-brief.md`, `.superpowers/sdd/task-3-brief.md`, and `.superpowers/sdd/task-4-brief.md` contained `new blank line at EOF` findings
+  - after removing those brief-file EOF blank lines, full `git diff --check` exits `0` with only CRLF conversion warnings
 
-Observed metrics:
+## Concerns
 
-- `case_count`: `10`
-- `hit_at_1`: `0.2`
-- `hit_at_5`: `0.4`
-- `hit_at_10`: `0.6`
-- `mrr_at_10`: `0.323611`
-- `gold_recall_at_10`: `0.6`
+- No product-code concern from Task 4 itself.
+- The known Windows sandbox `basetemp` permission problem still affects direct pytest runs and should remain documented in future verification notes.
+- The brief-file EOF whitespace findings were corrected after the Task 4 worker report, so the current full `git diff --check` is clean.
 
-Per-case gold rank:
+## Next Suggested Step
 
-- `dense_zh_001`: rank `2`
-- `dense_zh_002`: not found in top 10
-- `dense_zh_003`: rank `1`
-- `dense_zh_004`: rank `1`
-- `dense_zh_005`: rank `2`
-- `dense_zh_006`: not found in top 10
-- `dense_zh_007`: rank `8`
-- `dense_zh_008`: not found in top 10
-- `dense_zh_009`: not found in top 10
-- `dense_zh_010`: rank `9`
-
-Self-review:
-
-- The report has 10 results and all required metrics.
-- Dense-only quality is uneven; the result should be treated as a baseline, not final RAG quality.
-- The next engineering step should inspect the four miss cases before changing retrieval algorithms.
-
-Final checkpoint:
-
-```powershell
-git status --short --branch
-```
-
-Result:
-
-- branch: `rag-dev...origin/rag-dev`
-- tracked modifications: `src/fireclaw_core/rag/rag_cli.py`, `tests/test_rag_dense_cli.py`
-- untracked dense-evaluation work: `.superpowers/`, `data/rag/fire_rescue/eval/`, `docs/superpowers/...2026-07-07...`, `memory/2026-07-07/`, `src/fireclaw_core/rag/dense_eval.py`, `tests/test_rag_dense_eval.py`
-- sandbox warning remained: `could not open directory '.pytest_tmp/': Permission denied`
+If the local reranker checkpoint exists, run a real hybrid rerank ablation report; otherwise confirm whether the user wants to provide or download one later.

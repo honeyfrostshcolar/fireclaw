@@ -1,108 +1,117 @@
-﻿### Task 4: Real BGE-M3 Evaluation Smoke Run
+﻿### Task 4: Documentation and Focused Verification
 
 **Files:**
-- Generate: `data/rag/fire_rescue/eval/runs/dense_bge_m3_zh_v1_report.json`
-- Modify: `memory/2026-07-07/fireclaw-dense-index-status-check.md`
+- Modify: `docs/rag/dense-evaluation-walkthrough.zh-CN.md`
+- Modify or create: `memory/2026-07-08/fireclaw-rag-reranker-evaluation.md`
 
 **Interfaces:**
 - Consumes:
-  - `eval-dense-index` CLI command
-  - `data/rag/fire_rescue/eval/dense_gold_cases_zh_v1.jsonl`
-  - existing BGE-M3 index at `data/rag/fire_rescue/indexes/dense/bge-m3`
-  - local model at `.cache/models/bge-m3`
+  - Completed Tasks 1-3.
+  - Existing v2 reports.
 - Produces:
-  - real evaluation report JSON
-  - memory update with commands and observed metrics.
+  - Documentation explaining rerank position in the retrieval pipeline.
+  - Memory record with implementation status and test commands.
 
-- [ ] **Step 1: Run all unit tests before manual smoke**
+- [ ] **Step 1: Add reranker walkthrough section**
 
-Run:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_unit_final tests/test_rag_dense_eval.py tests/test_rag_dense_cli.py tests/test_rag_dense_retrieval.py -q
-```
-
-Expected:
-
-```text
-All tests pass
-```
-
-If pytest hits the known sandbox temp directory permission issue, rerun the same command with approved elevated execution and a new `--basetemp`.
-
-- [ ] **Step 2: Run real BGE-M3 dense evaluation**
-
-Run:
-
-```powershell
-$env:PYTHONPATH = "src"; .\.venv-bge-m3\Scripts\python.exe -m fireclaw_core.rag.rag_cli eval-dense-index --provider bge-m3 --model-path .cache/models/bge-m3 --cases data/rag/fire_rescue/eval/dense_gold_cases_zh_v1.jsonl --top-k 10 --output data/rag/fire_rescue/eval/runs/dense_bge_m3_zh_v1_report.json
-```
-
-Expected:
-
-```text
-JSON output containing case_count, hit_at_1, hit_at_5, hit_at_10, mrr_at_10, gold_recall_at_10, and per-case results.
-```
-
-Non-fatal Transformers tokenizer/cache warnings are acceptable if the command exits with code `0`.
-
-- [ ] **Step 3: Inspect the generated report**
-
-Run:
-
-```powershell
-Get-Content -Raw -Encoding UTF8 -LiteralPath data\rag\fire_rescue\eval\runs\dense_bge_m3_zh_v1_report.json
-```
-
-Expected:
-
-```text
-Valid JSON with 10 results.
-```
-
-Read the metrics carefully before making any quality claim. A low score is a valid result and should be reported plainly.
-
-- [ ] **Step 4: Update memory**
-
-Append to `memory/2026-07-07/fireclaw-dense-index-status-check.md`:
+Append this section to `docs/rag/dense-evaluation-walkthrough.zh-CN.md`:
 
 ```markdown
-## Dense Evaluation Harness Update
+## Optional Evaluation: Hybrid Reranking
 
-Implemented evidence-first dense retrieval evaluation for 10 Chinese task-style cases.
+Reranking is a second-stage ranking step. It does not replace dense retrieval,
+BM25, query expansion, parent aggregation, or RRF. It first asks hybrid retrieval
+to produce a larger parent candidate pool, then scores each `(query, parent_text)`
+pair with a reranker model and sorts candidates by the reranker score.
 
-Commands:
+Default first-pass evaluation settings:
 
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_unit_final tests/test_rag_dense_eval.py tests/test_rag_dense_cli.py tests/test_rag_dense_retrieval.py -q
-$env:PYTHONPATH = "src"; .\.venv-bge-m3\Scripts\python.exe -m fireclaw_core.rag.rag_cli eval-dense-index --provider bge-m3 --model-path .cache/models/bge-m3 --cases data/rag/fire_rescue/eval/dense_gold_cases_zh_v1.jsonl --top-k 10 --output data/rag/fire_rescue/eval/runs/dense_bge_m3_zh_v1_report.json
+```text
+hybrid parent candidates: top 50
+rerank query variant: reviewed English query
+reranker input text: full parent text from parent_chunks.jsonl
+final report cutoff: top 10
 ```
 
-Observed metrics:
-
-- Copy the exact `case_count`, `hit_at_1`, `hit_at_5`, `hit_at_10`, `mrr_at_10`, and `gold_recall_at_10` values from `data/rag/fire_rescue/eval/runs/dense_bge_m3_zh_v1_report.json`.
-
-Current conclusion:
-
-- State whether the BGE-M3 dense index retrieved the selected gold parents well, poorly, or unevenly. Base the statement only on the observed metrics and per-case misses.
-
-Next recommended step:
-
-- State the next concrete retrieval-quality step based on the report, such as revising gold queries, adding Chinese sources, adding BM25, or introducing reranking.
+The first reranker experiment should be interpreted as a ranking-quality
+ablation. It can improve `Hit@1`, `Hit@5`, and `MRR@10` when the correct parent
+is already inside the candidate pool. It cannot recover a gold parent that
+hybrid retrieval did not retrieve into the rerank pool.
 ```
 
-- [ ] **Step 5: Final verification**
+- [ ] **Step 2: Run focused unit tests**
 
 Run:
 
 ```powershell
-git status --short --branch
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_rerank_all tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py tests/test_rag_hybrid_eval.py tests/test_rag_dense_eval.py tests/test_rag_dense_ranking.py tests/test_rag_query_expansion.py -q
 ```
 
 Expected:
 
 ```text
-Modified and untracked files only from the dense evaluation work, plus existing memory/spec files.
+all selected tests pass
 ```
 
-Do not claim the evaluation is complete until the unit tests and real smoke command have both been run and inspected.
+If managed Windows sandbox cleanup raises `PermissionError` for the pytest basetemp directory, rerun the same command with escalation and record both outcomes in memory.
+
+- [ ] **Step 3: Update memory after focused verification**
+
+Create or append `memory/2026-07-08/fireclaw-rag-reranker-evaluation.md`:
+
+```markdown
+# FireClaw RAG Hybrid Reranker Evaluation
+
+**Date:** 2026-07-08
+**Status:** Reranker evaluation implementation in progress.
+
+## Goal
+
+Add a pretrained cross-encoder reranker evaluation layer after hybrid Dense+BM25 parent retrieval.
+
+## User Decisions
+
+- Use a pretrained reranker first; do not train or fine-tune.
+- Keep the existing BM25 preservation concern as a known limitation for now.
+- Do not change retrieval algorithms without discussion.
+
+## Implementation Notes
+
+- Reranker is inserted after hybrid parent RRF.
+- Candidate pool size is 50 parents by default.
+- Final metric cutoff remains top 10.
+- Rerank query variant defaults to reviewed English.
+- Parent text comes from `data/rag/fire_rescue/chunks/parent_chunks.jsonl`.
+
+## Commands
+
+```powershell
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_rerank_all tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py tests/test_rag_hybrid_eval.py tests/test_rag_dense_eval.py tests/test_rag_dense_ranking.py tests/test_rag_query_expansion.py -q
+```
+
+## Results
+
+After execution, write one timestamped bullet containing the exact pytest result line, for example `7 passed in 0.42s`, or the exact sandbox `PermissionError` followed by the escalated rerun result.
+
+## Next Step
+
+Run a real BGE reranker report if a local reranker model exists, or ask the user whether to download/provide one.
+```
+
+- [ ] **Step 4: Run diff check**
+
+Run:
+
+```powershell
+git diff --check
+```
+
+Expected:
+
+```text
+exit code 0
+```
+
+---

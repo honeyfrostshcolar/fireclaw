@@ -1,212 +1,280 @@
-# Task 1 Report - FireClaw Dense Retrieval Evaluation Core
+# Task 1 Report - Reranker Metadata and Core Reranking Utilities
 
-Date: 2026-07-07
+Date: 2026-07-08
+Status: DONE
+Commits created: none
 
-## 实现内容
+## Scope
 
-完成 `FireClaw dense retrieval evaluation core`，仅修改允许范围内的三个文件：
-
-- `src/fireclaw_core/rag/dense_eval.py`
-- `tests/test_rag_dense_eval.py`
-- `.superpowers/sdd/task-1-report.md`
-
-本次实现包含：
-
-- `DenseEvalCase`
-- `DenseEvalRetrievedHit`
-- `DenseEvalCaseResult`
-- `DenseEvalReport`
-- `load_dense_eval_cases(path: Path) -> list[DenseEvalCase]`
-- `evaluate_ranked_hits(cases, hits_by_case_id, *, top_k=10) -> DenseEvalReport`
-- `hits_from_dense_results(hits: list[DenseHit]) -> list[DenseEvalRetrievedHit]`
-- `evaluate_dense_retriever(retriever, cases, *, top_k=10) -> DenseEvalReport`
-
-核心行为：
-
-- 支持 UTF-8 / UTF-8 BOM JSONL 读取
-- 校验 `case_id`、`query`、`gold_parent_ids`
-- 拒绝重复 `case_id`
-- 将 dense retriever 的 `DenseHit.record` 转成评估 hit 结构
-- 计算 `Hit@1`、`Hit@5`、`Hit@10`、`MRR@10`、`gold_recall@10`
-- 输出可序列化的 report / case result / hit 数据
-
-## RED / GREEN
-
-### RED 1: case loader
-
-Command:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_core_red tests/test_rag_dense_eval.py -q
-```
-
-Key output:
-
-```text
-ModuleNotFoundError: No module named 'fireclaw_core.rag.dense_eval'
-```
-
-### GREEN 1: case loader
-
-Command:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_core_green tests/test_rag_dense_eval.py -q
-```
-
-Key output:
-
-```text
-3 passed in 0.10s
-```
-
-### RED 2: metrics
-
-Command:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_metrics_red tests/test_rag_dense_eval.py -q
-```
-
-Key output:
-
-```text
-ImportError: cannot import name 'DenseEvalRetrievedHit' from 'fireclaw_core.rag.dense_eval'
-```
-
-### GREEN 2: metrics
-
-Command:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_metrics_green tests/test_rag_dense_eval.py -q
-```
-
-Key output:
-
-```text
-5 passed in 0.07s
-```
-
-### RED 3: conversion / runner
-
-Command:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_runner_red tests/test_rag_dense_eval.py -q
-```
-
-Key output:
-
-```text
-ImportError: cannot import name 'evaluate_dense_retriever' from 'fireclaw_core.rag.dense_eval'
-```
-
-### GREEN 3: full dense eval core
-
-Command:
-
-```powershell
-$env:PYTHONPATH = ".deps;src"; python -m pytest --basetemp=pytest_tmp_dense_eval_core_final tests/test_rag_dense_eval.py -q
-```
-
-Key output:
-
-```text
-8 passed in 2.04s
-```
-
-## 测试结果
-
-- `tests/test_rag_dense_eval.py`: `8 passed`
-- 运行期间出现过 Windows pytest basetemp 清理权限问题，已用提升权限重跑并确认绿灯
-
-## 改动文件
+Owned files for this task:
 
 - `src/fireclaw_core/rag/dense_eval.py`
-- `tests/test_rag_dense_eval.py`
+- `src/fireclaw_core/rag/reranking.py`
+- `tests/test_rag_reranking.py`
+
+Also updated:
+
 - `.superpowers/sdd/task-1-report.md`
 
-## 自检结论
+No other production files were modified.
 
-Task 1 的 dense retrieval evaluation core 已完成并通过单测。实现与 brief 的核心接口一致，支持 case 加载、结果转换、指标计算和 retriever 评估。
+## Requirements Implemented
 
-## 2026-07-07 Fix Note: top_k guardrail
+Implemented the Task 1 utility layer described in `.superpowers/sdd/task-1-brief.md`:
 
-Reviewer found that `top_k` could be set below 10 while the report still exposed fixed `Hit@10`, `MRR@10`, and `gold_recall@10` metrics. That is semantically inconsistent, so I added an explicit guard:
+- added optional reranker metadata fields to `DenseEvalRetrievedHit`
+- created `RerankerModelInfo`
+- created `RerankerProvider` protocol
+- created `FakeRerankerProvider`
+- created `BGEFlagRerankerProvider`
+- created `load_parent_texts(path: Path) -> dict[str, str]`
+- created `select_rerank_query(query_variants, fallback_query, variant="en") -> str`
+- created `rerank_parent_hits(...) -> list[DenseEvalRetrievedHit]`
 
-- `evaluate_ranked_hits(..., top_k < 10)` now raises `ValueError("top_k must be at least 10")`
-- `evaluate_dense_retriever(...)` now applies the same validation before querying the retriever
-- Added a unit test to pin the guardrail in `tests/test_rag_dense_eval.py`
+Behavior intentionally preserved:
+
+- no dense vector changes
+- no BM25 scoring changes
+- no hybrid fusion changes
+- no query expansion row changes
+- no chunking changes
+- no gold label changes
+- no silent model download
+
+## TDD Record
 
 ### RED
 
-Command:
+Test file written first:
+
+- `tests/test_rag_reranking.py`
+
+RED command:
 
 ```powershell
-python -m pytest --basetemp=pytest_tmp_dense_eval_topk_red tests/test_rag_dense_eval.py -q -k top_k_below_10
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_reranking_red tests/test_rag_reranking.py -q
 ```
 
-Key output:
+Observed failure:
 
 ```text
-Failed: DID NOT RAISE <class 'ValueError'>
+ModuleNotFoundError: No module named 'fireclaw_core.rag.reranking'
 ```
+
+This matched the brief's expected RED condition.
 
 ### GREEN
 
-Command:
+Implemented minimal production code in:
+
+- `src/fireclaw_core/rag/dense_eval.py`
+- `src/fireclaw_core/rag/reranking.py`
+
+Requested GREEN command from brief:
 
 ```powershell
-python -m pytest --basetemp="$env:TEMP\pytest_tmp_dense_eval_topk_green" tests/test_rag_dense_eval.py -q
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_reranking_green tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
 ```
 
-Key output:
+Initial sandbox run hit the known Windows pytest cleanup problem:
 
 ```text
-9 passed in 0.19s
+PermissionError: [WinError 5] Access is denied: '...\.pytest_tmp_reranking_green'
 ```
 
-## 2026-07-07 Fix Note: dense retriever guard test coverage
+Retry with a different `basetemp` hit the same environment issue. A diagnostic no-cleanup run showed:
 
-Reviewer noted that `evaluate_dense_retriever(..., top_k < 10)` was already guarded in production, but the test suite only pinned `evaluate_ranked_hits(..., top_k < 10)`.
+```text
+17 passed, 5 errors
+```
 
-I added a regression test in `tests/test_rag_dense_eval.py` that:
-- defines `FakeRetriever.query` to raise `AssertionError` if it is ever called;
-- calls `evaluate_dense_retriever(FakeRetriever(), [case], top_k=5)`;
-- asserts `ValueError("top_k must be at least 10")`.
+Those 5 errors were all `tmp_path` fixture setup failures caused by the same basetemp directory access problem, not assertion failures in reranking logic.
 
-### RED
-
-Command:
+To obtain a meaningful verification result, I reran the same GREEN suite unsandboxed:
 
 ```powershell
-& { $env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=pytest_tmp_dense_eval_topk_red tests/test_rag_dense_eval.py -q -k 'rejects_top_k_below_10_without_querying' }
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_reranking_green tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
 ```
 
-Key output:
+Verified result:
 
 ```text
-FAILED tests/test_rag_dense_eval.py::test_evaluate_dense_retriever_rejects_top_k_below_10_without_querying
-ValueError: top_k must be at least 10
+22 passed in 0.24s
 ```
 
-### GREEN
+## File-Level Change Summary
 
-Command:
+### `src/fireclaw_core/rag/dense_eval.py`
+
+Added optional reranking metadata fields to `DenseEvalRetrievedHit`:
+
+- `rerank_score`
+- `base_rank`
+- `base_score`
+- `base_fusion_score`
+- `reranker`
+
+Updated `to_dict()` so empty/`None` reranker metadata is omitted, matching existing serialization style for optional hit metadata.
+
+### `src/fireclaw_core/rag/reranking.py`
+
+Added the new reranking utility module with:
+
+- deterministic fake reranker for tests and offline utility work
+- lazy-loading `FlagEmbedding.FlagReranker` wrapper that requires an existing local model path
+- parent-chunk text loading with duplicate `parent_id` protection
+- rerank-query selection that prefers English variant keys when available
+- parent-hit reranking that:
+  - uses parent text, not chunk preview
+  - preserves original retrieval metadata
+  - records rerank/base fields on returned hits
+  - sorts by rerank score descending, then original rank, then parent id
+
+### `tests/test_rag_reranking.py`
+
+Added focused tests for:
+
+- parent chunk JSONL loading
+- duplicate `parent_id` rejection
+- rerank query selection
+- metadata-preserving parent reranking
+- missing parent text rejection
+
+## Verification Commands Run
 
 ```powershell
-& { $env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=pytest_tmp_dense_eval_topk_green tests/test_rag_dense_eval.py -q -k 'rejects_top_k_below_10_without_querying' }
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_reranking_red tests/test_rag_reranking.py -q
 ```
 
-Key output:
-
-```text
-1 passed, 9 deselected in 0.25s
+```powershell
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_reranking_green tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
 ```
+
+```powershell
+$env:PYTHONPATH = '.deps;src'; $bt = Join-Path $env:TEMP 'pytest_tmp_reranking_green_20260708'; python -m pytest --basetemp=$bt tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
+```
+
+```powershell
+$env:PYTHONPATH = '.deps;src'; python -c "import sys; import _pytest.pathlib as pathlib; pathlib.cleanup_dead_symlinks = lambda root: None; import pytest; sys.exit(pytest.main(['--basetemp=.tmp/pytest_tmp_reranking_green_nocleanup','tests/test_rag_reranking.py','tests/test_rag_dense_eval.py','-q']))"
+```
+
+```powershell
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_reranking_green tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
+```
+
+```powershell
+git diff -- src/fireclaw_core/rag/dense_eval.py src/fireclaw_core/rag/reranking.py tests/test_rag_reranking.py
+```
+
+## Diff Check
+
+Focused diff inspection confirmed the owned changes are limited to:
+
+- reranker metadata in `DenseEvalRetrievedHit`
+- new reranking utility module
+- new focused reranking tests
+
+No commits were created.
 
 ## Concerns
 
-- `gold_recall@10` 目前按去重后的 gold parent 计算，符合“distinct gold parents”语义，但后续若 gold 规范变化需要同步说明。
-- `page_start` / `page_end` 在转换层保留原值，当前没有强制归一化为整数；如果上游记录类型不稳定，后续可以补一层校验。
-- CLI 接入、gold cases 数据文件和更大范围验证属于后续任务，本次未触碰。
+- The known Windows pytest `basetemp` `PermissionError` is still present in this environment and required an unsandboxed rerun for trustworthy GREEN verification.
+- `BGEFlagRerankerProvider` is intentionally lazy and local-path-only; Task 1 does not verify a real reranker model is present, and does not download one.
+
+## Conclusion
+
+Task 1 is implemented and left uncommitted in the working tree, with RED observed first and GREEN verified on the requested suite after handling the known Windows pytest environment issue explicitly.
+
+---
+
+## 2026-07-08 Review Fix Update
+
+Status: DONE
+Commits created: none
+
+### Review Findings Addressed
+
+1. `select_rerank_query()` no longer special-cases `variant == "zh"` to return `fallback_query` early.
+   It now uses the same preferred-key order as other variants:
+   - `dense:{variant}`
+   - `bm25:{variant}`
+   - `{variant}`
+   - then `fallback_query`
+
+2. `load_parent_texts()` no longer silently coerces invalid text rows to `""`.
+   It now raises:
+   - `ValueError("missing text in parent chunks for parent_id: ...")` when the `text` key is absent
+   - `ValueError("empty text in parent chunks for parent_id: ...")` when the text is blank after stripping
+
+3. Added a regression test confirming a normal non-reranked `DenseEvalRetrievedHit.to_dict()` still omits unset rerank metadata keys.
+
+### TDD Record
+
+RED test additions were written first in `tests/test_rag_reranking.py`:
+
+- zh variant preference when `dense:zh` / `bm25:zh` / `zh` are present
+- missing `text` rejection in `load_parent_texts()`
+- empty `text` rejection in `load_parent_texts()`
+- unset rerank metadata omission in `DenseEvalRetrievedHit.to_dict()`
+
+Observed RED after adding tests:
+
+- `test_select_rerank_query_prefers_requested_zh_variant_when_present`
+- `test_load_parent_texts_rejects_missing_text`
+- `test_load_parent_texts_rejects_empty_text`
+
+These failures matched the review findings.
+
+### Verification Commands Run
+
+Requested command:
+
+```powershell
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_reranking_fix_green tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
+```
+
+Observed sandbox issue again:
+
+```text
+PermissionError: [WinError 5] Access is denied: '.pytest_tmp_reranking_fix_green'
+```
+
+Diagnostic no-cleanup rerun:
+
+```powershell
+$env:PYTHONPATH = ".deps;src"
+python -c "import sys; import _pytest.pathlib as pathlib; pathlib.cleanup_dead_symlinks = lambda root: None; import pytest; sys.exit(pytest.main(['--basetemp=.tmp/pytest_tmp_reranking_fix_green_nocleanup','tests/test_rag_reranking.py','tests/test_rag_dense_eval.py','-q']))"
+```
+
+Observed result:
+
+```text
+23 passed, 3 errors
+```
+
+Those 3 errors were the known `tmp_path` setup failures from `tests/test_rag_dense_eval.py`, not reranking assertion failures.
+
+Unsandboxed rerun of the exact requested suite:
+
+```powershell
+$env:PYTHONPATH = ".deps;src"
+python -m pytest --basetemp=.pytest_tmp_reranking_fix_green tests/test_rag_reranking.py tests/test_rag_dense_eval.py -q
+```
+
+Verified GREEN result:
+
+```text
+26 passed in 0.23s
+```
+
+### Files Modified For This Review Fix
+
+- `src/fireclaw_core/rag/reranking.py`
+- `tests/test_rag_reranking.py`
+- `.superpowers/sdd/task-1-report.md`
+
+No commit was created.

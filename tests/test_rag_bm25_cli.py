@@ -191,3 +191,104 @@ def test_cli_eval_hybrid_index_with_fake_dense_and_bm25(
     assert report["retrieval_config"]["require_reviewed_expansions"] is True
     assert "query_variants" in report["results"][0]
     assert json.loads(capsys.readouterr().out)["retrieval_config"]["retrieval_method"] == "hybrid"
+
+
+def test_cli_eval_hybrid_rerank_index_with_fake_reranker(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fireclaw_core.rag.dense_retrieval import FakeEmbeddingProvider
+    from fireclaw_core.rag.dense_retrieval import build_dense_index
+
+    records_path = tmp_path / "records.jsonl"
+    _write_jsonl(
+        records_path,
+        [
+            _record("generic", "generic firefighter health rescue"),
+            _record("gold", "SCBA rehabilitation medical evaluation NFPA 1584 rescue"),
+        ],
+    )
+    dense_index_dir = tmp_path / "dense_index"
+    build_dense_index(records_path, dense_index_dir, FakeEmbeddingProvider(), batch_size=2)
+
+    bm25_index_dir = tmp_path / "bm25_index"
+    assert main(["build-bm25-index", "--records", str(records_path), "--index-dir", str(bm25_index_dir)]) == 0
+    capsys.readouterr()
+
+    parent_chunks_path = tmp_path / "parent_chunks.jsonl"
+    _write_jsonl(
+        parent_chunks_path,
+        [
+            {"parent_id": "generic__parent", "text": "generic firefighter health information"},
+            {"parent_id": "gold__parent", "text": "SCBA rehabilitation medical evaluation NFPA 1584"},
+        ],
+    )
+
+    cases_path = tmp_path / "cases.jsonl"
+    _write_jsonl(
+        cases_path,
+        [
+            {
+                "case_id": "case",
+                "topic": "rehab",
+                "query": "generic rescue",
+                "gold_parent_ids": ["gold__parent"],
+            }
+        ],
+    )
+    expansions_path = tmp_path / "expansions.jsonl"
+    _write_jsonl(
+        expansions_path,
+        [
+            {
+                "case_id": "case",
+                "query_zh": "generic rescue",
+                "reviewed_query_en": "When should firefighters enter SCBA rehabilitation?",
+                "term_query": "generic firefighter health rescue",
+                "terms": ["generic", "firefighter", "health", "rescue"],
+                "status": "reviewed",
+            }
+        ],
+    )
+    output_path = tmp_path / "hybrid_rerank_report.json"
+
+    exit_code = main(
+        [
+            "eval-hybrid-rerank-index",
+            "--provider",
+            "fake",
+            "--dense-index-dir",
+            str(dense_index_dir),
+            "--bm25-index-dir",
+            str(bm25_index_dir),
+            "--reranker-provider",
+            "fake",
+            "--parent-chunks",
+            str(parent_chunks_path),
+            "--cases",
+            str(cases_path),
+            "--query-expansions",
+            str(expansions_path),
+            "--dense-query-variants",
+            "zh,en",
+            "--bm25-query-variants",
+            "terms",
+            "--require-reviewed-expansions",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["retrieval_config"]["retrieval_method"] == "hybrid_rerank"
+    assert report["retrieval_config"]["reranker"]["provider"] == "fake-reranker"
+    assert report["retrieval_config"]["rerank_query_variant"] == "en"
+    assert report["retrieval_config"]["rerank_pool_size"] == 50
+    assert report["retrieval_config"]["final_top_k"] == 10
+    assert report["hit_at_1"] == 1.0
+    assert report["results"][0]["top_hits"][0]["parent_id"] == "gold__parent"
+    assert report["results"][0]["top_hits"][0]["base_rank"] == 2
+    assert report["results"][0]["top_hits"][1]["parent_id"] == "generic__parent"
+    assert report["results"][0]["top_hits"][1]["base_rank"] == 1
+    assert json.loads(capsys.readouterr().out)["retrieval_config"]["retrieval_method"] == "hybrid_rerank"

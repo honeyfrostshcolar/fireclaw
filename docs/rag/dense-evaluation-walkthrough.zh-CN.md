@@ -520,3 +520,24 @@ $env:PYTHONPATH = "src"
 ```
 
 这两个报告仍然使用同一套 strict `gold_parent_ids`，所以可以和 dense strict、dense parent、dense expanded-parent 结果直接做 ablation 对比。
+
+## 可选评估：Hybrid Reranking
+
+Reranking 是第二阶段排序步骤。它不替代 dense retrieval、BM25、query expansion、
+parent aggregation 或 RRF。它先让 hybrid retrieval 产生更大的 parent 候选池，
+再用 reranker model 对每个 `(query, parent_text)` pair 打分，并按 reranker score
+重新排序。
+
+第一版默认评估设置：
+
+```text
+hybrid parent candidates: top 50
+rerank query variant: reviewed English query
+reranker input text: parent_chunks.jsonl 中的完整 parent text
+final report cutoff: top 10
+```
+
+第一版 reranker 实验应该被理解为 ranking-quality ablation。也就是说，当正确
+parent 已经在候选池里时，它可能提升 `Hit@1`、`Hit@5` 和 `MRR@10`；但如果
+hybrid retrieval 一开始就没有把 gold parent 召回到 rerank pool 里，reranker
+本身不能把它凭空找回来。

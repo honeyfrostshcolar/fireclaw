@@ -25,6 +25,10 @@ from fireclaw_core.rag.hybrid_eval import evaluate_hybrid_retrievers_with_expans
 from fireclaw_core.rag.index_preparation import IndexPreparationConfig
 from fireclaw_core.rag.index_preparation import prepare_index_records
 from fireclaw_core.rag.query_expansion import load_query_expansions
+from fireclaw_core.rag.rerank_eval import evaluate_hybrid_retrievers_with_rerank
+from fireclaw_core.rag.reranking import BGEFlagRerankerProvider
+from fireclaw_core.rag.reranking import FakeRerankerProvider
+from fireclaw_core.rag.reranking import load_parent_texts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -144,6 +148,34 @@ def main(argv: list[str] | None = None) -> int:
     hybrid_eval.add_argument("--output", default=None)
     hybrid_eval.add_argument("--require-reviewed-expansions", action="store_true")
 
+    hybrid_rerank_eval = subparsers.add_parser(
+        "eval-hybrid-rerank-index",
+        help="Evaluate hybrid dense+BM25 retrieval with parent-level reranking.",
+    )
+    hybrid_rerank_eval.add_argument("--corpus-root", default="data/rag/fire_rescue")
+    hybrid_rerank_eval.add_argument("--dense-index-dir", default=None)
+    hybrid_rerank_eval.add_argument("--bm25-index-dir", default=None)
+    hybrid_rerank_eval.add_argument("--provider", choices=["fake", "bge-m3"], default="fake")
+    hybrid_rerank_eval.add_argument("--model-path", default=None)
+    hybrid_rerank_eval.add_argument("--reranker-provider", choices=["fake", "bge-reranker"], default="fake")
+    hybrid_rerank_eval.add_argument("--reranker-model-path", default=None)
+    hybrid_rerank_eval.add_argument("--reranker-device", default=None)
+    hybrid_rerank_eval.add_argument("--reranker-batch-size", type=int, default=32)
+    hybrid_rerank_eval.add_argument("--reranker-max-length", type=int, default=512)
+    hybrid_rerank_eval.add_argument("--parent-chunks", default=None)
+    hybrid_rerank_eval.add_argument("--cases", default=None)
+    hybrid_rerank_eval.add_argument("--query-expansions", required=True)
+    hybrid_rerank_eval.add_argument("--dense-query-variants", default="zh,en,terms")
+    hybrid_rerank_eval.add_argument("--bm25-query-variants", default="en,terms")
+    hybrid_rerank_eval.add_argument("--rerank-query-variant", choices=["zh", "en", "terms"], default="en")
+    hybrid_rerank_eval.add_argument("--small-top-k", type=int, default=50)
+    hybrid_rerank_eval.add_argument("--rerank-pool-size", type=int, default=50)
+    hybrid_rerank_eval.add_argument("--top-k", type=int, default=10)
+    hybrid_rerank_eval.add_argument("--rrf-k", type=int, default=60)
+    hybrid_rerank_eval.add_argument("--max-passage-chars", type=int, default=6000)
+    hybrid_rerank_eval.add_argument("--output", default=None)
+    hybrid_rerank_eval.add_argument("--require-reviewed-expansions", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "extract-pages":
         return _cmd_extract_pages(args)
@@ -165,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_eval_bm25_index(args)
     if args.command == "eval-hybrid-index":
         return _cmd_eval_hybrid_index(args)
+    if args.command == "eval-hybrid-rerank-index":
+        return _cmd_eval_hybrid_rerank_index(args)
     return 1
 
 
@@ -406,6 +440,59 @@ def _cmd_eval_hybrid_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval_hybrid_rerank_index(args: argparse.Namespace) -> int:
+    corpus_root = Path(args.corpus_root)
+    dense_index_dir = (
+        Path(args.dense_index_dir)
+        if args.dense_index_dir
+        else corpus_root / "indexes" / "dense" / _provider_index_name(args.provider)
+    )
+    bm25_index_dir = _bm25_index_dir(corpus_root, args.bm25_index_dir)
+    cases_path = Path(args.cases) if args.cases else corpus_root / "eval" / "dense_gold_cases_zh_v1.jsonl"
+    output_path = Path(args.output) if args.output else None
+    expansions_path = Path(args.query_expansions)
+    parent_chunks_path = Path(args.parent_chunks) if args.parent_chunks else corpus_root / "chunks" / "parent_chunks.jsonl"
+
+    provider = _create_embedding_provider(args.provider, model_path=args.model_path)
+    dense_retriever = DenseRetriever.load(dense_index_dir, provider)
+    bm25_retriever = BM25Retriever.load(bm25_index_dir)
+    reranker = _create_reranker_provider(
+        args.reranker_provider,
+        model_path=args.reranker_model_path,
+        device=args.reranker_device,
+        batch_size=args.reranker_batch_size,
+        max_length=args.reranker_max_length,
+    )
+    cases = load_dense_eval_cases(cases_path)
+    expansions = load_query_expansions(expansions_path)
+    parent_texts = load_parent_texts(parent_chunks_path)
+    report = evaluate_hybrid_retrievers_with_rerank(
+        dense_retriever,
+        bm25_retriever,
+        reranker,
+        cases,
+        query_expansions=expansions,
+        parent_texts=parent_texts,
+        dense_query_variants=_parse_csv_arg(args.dense_query_variants),
+        bm25_query_variants=_parse_csv_arg(args.bm25_query_variants),
+        rerank_query_variant=args.rerank_query_variant,
+        rerank_pool_size=args.rerank_pool_size,
+        top_k=args.top_k,
+        small_top_k=args.small_top_k,
+        rrf_k=args.rrf_k,
+        max_passage_chars=args.max_passage_chars,
+        require_reviewed_expansions=args.require_reviewed_expansions,
+        query_expansions_path=str(expansions_path),
+        parent_chunks_path=str(parent_chunks_path),
+    )
+    payload = report.to_dict()
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_output(payload)
+    return 0
+
+
 def _create_embedding_provider(provider_name: str, *, model_path: str | None = None):
     if provider_name == "fake":
         return FakeEmbeddingProvider()
@@ -414,6 +501,27 @@ def _create_embedding_provider(provider_name: str, *, model_path: str | None = N
 
         return BGEM3EmbeddingProvider(model_path=Path(model_path) if model_path else Path(".cache/models/bge-m3"))
     raise ValueError(f"Unsupported dense embedding provider: {provider_name}")
+
+
+def _create_reranker_provider(
+    provider_name: str,
+    *,
+    model_path: str | None = None,
+    device: str | None = None,
+    batch_size: int = 32,
+    max_length: int = 512,
+):
+    if provider_name == "fake":
+        return FakeRerankerProvider()
+    if provider_name == "bge-reranker":
+        path = Path(model_path) if model_path else Path(".cache/models/bge-reranker-v2-m3")
+        return BGEFlagRerankerProvider(
+            path,
+            device=device,
+            batch_size=batch_size,
+            max_length=max_length,
+        )
+    raise ValueError(f"Unsupported reranker provider: {provider_name}")
 
 
 def _provider_index_name(provider_name: str) -> str:
