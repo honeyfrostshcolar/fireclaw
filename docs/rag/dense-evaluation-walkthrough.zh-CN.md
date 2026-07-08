@@ -541,3 +541,28 @@ final report cutoff: top 10
 parent 已经在候选池里时，它可能提升 `Hit@1`、`Hit@5` 和 `MRR@10`；但如果
 hybrid retrieval 一开始就没有把 gold parent 召回到 rerank pool 里，reranker
 本身不能把它凭空找回来。
+
+### Multi-Query Rerank RRF
+
+`hybrid` 阶段的 RRF 和 `rerank` 阶段的 RRF 是两层不同的融合。
+第一层仍然负责召回候选：
+
+```text
+dense: zh + en + terms
+bm25: en + terms
+-> RRF
+-> top50 parent candidates
+```
+
+第二层只在这些候选内部重新排序：
+
+```text
+rerank: zh
+rerank: en
+rerank: terms
+-> per-query cross-encoder ranks
+-> RRF
+-> final top10 parent candidates
+```
+
+这避免直接相加不同 query 下的 cross-encoder 原始分数，也保留中文意图、英文语义和专业术语三种信号。

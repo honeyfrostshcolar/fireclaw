@@ -12,7 +12,9 @@ from fireclaw_core.rag.reranking import BGEFlagRerankerProvider
 from fireclaw_core.rag.reranking import FakeRerankerProvider
 from fireclaw_core.rag.reranking import load_parent_texts
 from fireclaw_core.rag.reranking import rerank_parent_hits
+from fireclaw_core.rag.reranking import rerank_parent_hits_with_rrf
 from fireclaw_core.rag.reranking import select_rerank_query
+from fireclaw_core.rag.reranking import select_rerank_queries
 
 
 def _hit(rank: int, score: float, parent_id: str, chunk_id: str) -> DenseEvalRetrievedHit:
@@ -160,6 +162,82 @@ def test_rerank_parent_hits_uses_parent_text_and_preserves_base_metadata() -> No
     assert reranked[0].reranker == "fake-reranker"
     assert reranked[0].score == reranked[0].rerank_score
     assert reranked[0].variant_ranks == {"hybrid": 2}
+
+
+def test_select_rerank_queries_returns_requested_variants() -> None:
+    queries = select_rerank_queries(
+        {
+            "dense:zh": "SCBA 涓枃闂",
+            "dense:en": "When should firefighters enter SCBA rehabilitation?",
+            "bm25:terms": "SCBA rehabilitation NFPA 1584",
+        },
+        fallback_query="fallback original query",
+        variants=["zh", "en", "terms"],
+    )
+
+    assert queries == {
+        "zh": "SCBA 涓枃闂",
+        "en": "When should firefighters enter SCBA rehabilitation?",
+        "terms": "SCBA rehabilitation NFPA 1584",
+    }
+
+
+def test_select_rerank_queries_rejects_duplicate_variants() -> None:
+    with pytest.raises(ValueError, match="duplicate rerank query variant: zh"):
+        select_rerank_queries(
+            {"dense:zh": "SCBA duplicate variant"},
+            fallback_query="fallback original query",
+            variants=["zh", "zh"],
+        )
+
+
+def test_select_rerank_queries_rejects_unsupported_variants() -> None:
+    with pytest.raises(ValueError, match="Unsupported rerank query variant: bad"):
+        select_rerank_queries(
+            {"dense:zh": "SCBA unsupported variant"},
+            fallback_query="fallback original query",
+            variants=["zh", "bad"],
+        )
+
+
+def test_rerank_parent_hits_with_rrf_fuses_variant_rankings() -> None:
+    parent_texts = {
+        "parent_en": "ventilation natural language explanation",
+        "parent_terms": "LOAD3DSMOKE HRRPUV smokeview command",
+        "parent_both": "ventilation LOAD3DSMOKE smokeview",
+    }
+    hits = [
+        _hit(1, 0.90, "parent_en", "chunk_en"),
+        _hit(2, 0.80, "parent_terms", "chunk_terms"),
+        _hit(3, 0.70, "parent_both", "chunk_both"),
+    ]
+
+    reranked = rerank_parent_hits_with_rrf(
+        {
+            "en": "ventilation explanation",
+            "terms": "LOAD3DSMOKE HRRPUV",
+            "zh": "ventilation LOAD3DSMOKE",
+        },
+        hits,
+        parent_texts,
+        FakeRerankerProvider(),
+        top_k=3,
+        rrf_k=60,
+    )
+
+    assert [hit.parent_id for hit in reranked] == ["parent_both", "parent_en", "parent_terms"]
+    assert reranked[0].rank == 1
+    assert reranked[0].base_rank == 3
+    assert reranked[0].base_score == 0.70
+    assert reranked[0].base_fusion_score == 0.70
+    assert reranked[0].reranker == "fake-reranker:rrf"
+    assert reranked[0].variant_ranks["rerank:en"] == 2
+    assert reranked[0].variant_ranks["rerank:terms"] == 2
+    assert reranked[0].variant_ranks["rerank:zh"] == 1
+    assert reranked[0].variant_scores["rerank:en"] == 0.5
+    assert reranked[0].variant_scores["rerank:terms"] == 0.5
+    assert reranked[0].variant_scores["rerank:zh"] == 1.0
+    assert reranked[0].score == reranked[0].rerank_score
 
 
 def test_rerank_parent_hits_rejects_missing_parent_text() -> None:

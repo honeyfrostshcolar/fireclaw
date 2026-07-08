@@ -14,3 +14,8 @@ Reranker Task 3: complete (uncommitted; review approved after test fix; focused 
 Reranker Task 4: complete (uncommitted; review approved; focused suite 42 passed per worker report; git diff --check exits 0 after EOF whitespace cleanup)
 Reranker Task 5: complete-blocked-by-missing-model (uncommitted; .cache/models/bge-reranker-v2-m3 absent; no download; real v2 report not generated)
 Reranker final review fix: complete (uncommitted; added missing-model no-download guard test; translated reranker doc section; focused suite 16 passed; git diff --check exits 0)
+Multi-query Rerank Task 1: complete (uncommitted; review approved; tests/test_rag_reranking.py 13 passed per worker report; minor note: add error-branch tests later if needed)
+Multi-query Rerank Task 2: complete (uncommitted; review approved; tests/test_rag_rerank_eval.py + tests/test_rag_reranking.py 15 passed per worker report; minor note: consider asserting rerank variant_ranks later)
+Multi-query Rerank Task 3: complete (uncommitted; review approved; focused suite 20 passed in escalated rerun after sandbox basetemp PermissionError)
+Multi-query Rerank Task 4: complete (uncommitted; review approved after conclusion wording fix; focused suite 47 passed in established-style rerun after sandbox basetemp PermissionError; git diff --check exits 0)
+Multi-query Rerank final review fix: complete (uncommitted; variant validation added after final review; fix review approved; tests/test_rag_reranking.py 15 passed, focused rerank/CLI suite 22 passed, and final focused RAG/rerank suite 49 passed in escalated rerun after sandbox basetemp PermissionError)

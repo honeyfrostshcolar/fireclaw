@@ -684,3 +684,506 @@ Test-Path .cache/models/bge-reranker-v2-m3: False
 ### Final Conclusion
 
 The evaluation-only hybrid reranker implementation is complete and reviewed. The fake-provider regression suite passes, whitespace checks pass, and the real BGE reranker report remains intentionally blocked by the absent local reranker checkpoint.
+
+## 2026-07-08 Real BGE Reranker Download and v2 Report
+
+### Task Goal
+
+Download a local pretrained reranker model and run the real hybrid rerank v2 evaluation that was previously blocked by the missing checkpoint.
+
+### Model Choice
+
+Recommended and downloaded:
+
+```text
+BAAI/bge-reranker-v2-m3
+local path: .cache/models/bge-reranker-v2-m3
+```
+
+Reason:
+
+- current FireClaw CLI default already points to `.cache/models/bge-reranker-v2-m3`
+- `BGEFlagRerankerProvider` uses `FlagEmbedding.FlagReranker`, which supports this model
+- `v2-m3` is multilingual and fits the current Chinese query + English corpus setting better than English-only reranker defaults
+
+Other reasonable options discussed:
+
+```text
+BAAI/bge-reranker-base
+BAAI/bge-reranker-large
+BAAI/bge-reranker-v2-gemma
+BAAI/bge-reranker-v2-minicpm-layerwise
+```
+
+The LLM/layerwise reranker options may be stronger but are heavier and were not chosen for the first local evaluation.
+
+### Commands and Results
+
+Initial official Hugging Face Hub API download attempt:
+
+```powershell
+.\.venv-bge-m3\Scripts\python.exe -c "from huggingface_hub import snapshot_download; p=snapshot_download(repo_id='BAAI/bge-reranker-v2-m3', local_dir='.cache/models/bge-reranker-v2-m3', local_dir_use_symlinks=False); print(p)"
+```
+
+Result:
+
+```text
+failed with requests.exceptions.SSLError / SSLEOFError when connecting to huggingface.co
+```
+
+Mirror attempt:
+
+```powershell
+$env:HF_ENDPOINT='https://hf-mirror.com'
+```
+
+Result:
+
+```text
+blocked by safety review because hf-mirror.com is not an official trusted source and the user had not explicitly accepted that supply-chain risk
+```
+
+Successful official Git/LFS download:
+
+```powershell
+git clone https://huggingface.co/BAAI/bge-reranker-v2-m3 .cache/models/bge-reranker-v2-m3
+```
+
+Result:
+
+```text
+Filtering content: 100% (3/3), 2.13 GiB, done.
+```
+
+Local file verification:
+
+```text
+.cache/models/bge-reranker-v2-m3/config.json = present
+.cache/models/bge-reranker-v2-m3/model.safetensors = present
+model.safetensors size = 2271071852 bytes
+```
+
+Minimal provider scoring check:
+
+```powershell
+cmd /c "set PYTHONPATH=src&& .\.venv-bge-m3\Scripts\python.exe -c ""from pathlib import Path; from fireclaw_core.rag.reranking import BGEFlagRerankerProvider; r=BGEFlagRerankerProvider(Path('.cache/models/bge-reranker-v2-m3'), batch_size=1, max_length=128); scores=r.score_pairs([('firefighter rehabilitation threshold', 'NFPA 1584 rehabilitation recommends monitoring firefighter heat stress and vital signs.'), ('firefighter rehabilitation threshold', 'Smokeview can display simulation slices and rendered smoke output.')]); print(r.model_info.to_dict()); print([round(s, 4) for s in scores])"""
+```
+
+Result:
+
+```text
+device = cuda:0
+scores = [-0.5283, -11.0391]
+```
+
+The relevant firefighter-rehab passage scored much higher than the unrelated Smokeview passage, confirming the model loads and the project provider can execute real scores.
+
+Real v2 hybrid rerank command:
+
+```powershell
+cmd /c "set PYTHONPATH=src&& .\.venv-bge-m3\Scripts\python.exe -m fireclaw_core.rag.rag_cli eval-hybrid-rerank-index --provider bge-m3 --model-path .cache/models/bge-m3 --dense-index-dir data/rag/fire_rescue/indexes/dense/bge-m3 --bm25-index-dir data/rag/fire_rescue/indexes/bm25/small_v1 --reranker-provider bge-reranker --reranker-model-path .cache/models/bge-reranker-v2-m3 --reranker-batch-size 8 --reranker-max-length 512 --cases data/rag/fire_rescue/eval/dense_gold_cases_zh_v2.jsonl --query-expansions data/rag/fire_rescue/eval/query_expansions_zh_v2.jsonl --dense-query-variants zh,en,terms --bm25-query-variants en,terms --rerank-query-variant en --small-top-k 50 --rerank-pool-size 50 --top-k 10 --require-reviewed-expansions --output data/rag/fire_rescue/eval/runs/hybrid_bge_m3_bm25_v2_rerank_bge_reranker_v2_m3_report.json"
+```
+
+Generated report:
+
+```text
+data/rag/fire_rescue/eval/runs/hybrid_bge_m3_bm25_v2_rerank_bge_reranker_v2_m3_report.json
+```
+
+Metrics:
+
+```text
+hybrid baseline v2:
+case_count=30 hit_at_1=0.366667 hit_at_5=0.766667 hit_at_10=0.966667 mrr_at_10=0.55504 gold_recall_at_10=0.966667
+
+hybrid rerank bge-reranker-v2-m3 v2:
+case_count=30 hit_at_1=0.333333 hit_at_5=0.7 hit_at_10=0.833333 mrr_at_10=0.517778 gold_recall_at_10=0.833333
+```
+
+Case-rank changes:
+
+```text
+improved:
+dense_zh_005 3->1
+dense_zh_013 8->2
+dense_zh_015 4->3
+dense_zh_017 3->2
+dense_zh_019 6->2
+dense_zh_020 2->1
+dense_zh_028 5->1
+dense_zh_030 None->10
+
+worse:
+dense_zh_006 1->None
+dense_zh_007 1->2
+dense_zh_008 7->None
+dense_zh_011 3->6
+dense_zh_014 3->None
+dense_zh_018 2->None
+dense_zh_021 1->2
+dense_zh_022 6->None
+dense_zh_023 2->3
+dense_zh_029 1->3
+```
+
+### Current Conclusion
+
+The model is downloaded and operational. However, the zero-shot `bge-reranker-v2-m3` rerank setting is not an immediate improvement on the current 30-case v2 evaluation. It improves several hard cases, including `dense_zh_030`, but hurts more already-good cases and lowers aggregate Hit@5, Hit@10, MRR@10, and gold recall.
+
+This suggests the next analysis should focus on why the reranker demotes known gold parents:
+
+- possible query phrasing mismatch in `rerank:en`
+- long parent passages truncated to 512 tokens may hide the evidence span
+- strict single `gold_parent_id` labels may penalize semantically valid neighboring parent chunks
+- cross-encoder is scoring parent text directly, not the best child evidence span
+- zero-shot reranker may need child-level rerank before parent aggregation, or a keep-gold-method-candidates/fusion guard in the evaluation design
+
+Do not claim reranking improves the system based on this first real run. Treat it as a useful negative ablation and inspect the worsened cases before changing code.
+
+## 2026-07-08 Reranker Drop Investigation
+
+### Task Goal
+
+Investigate why the real `bge-reranker-v2-m3` hybrid rerank report underperformed the hybrid baseline.
+
+### Current Progress
+
+- 当前进展：
+  - confirmed this is not a model availability problem
+  - confirmed this is not simply a CLI/reporting issue
+  - isolated the strongest factor so far: rerank query choice has a large effect
+- 已完成：
+  - inspected `hybrid_eval.py`, `rerank_eval.py`, `reranking.py`, and `dense_eval.py`
+  - reconstructed top-50 hybrid candidates and full rerank positions for representative improved/worsened cases
+  - ran two extra full v2 ablations with `--rerank-query-variant terms` and `--rerank-query-variant zh`
+- 当前问题：
+  - parent-level zero-shot rerank still loses some gold parents at top10, especially `dense_zh_006` and `dense_zh_018`
+- 下一步：
+  - discuss whether to analyze gold-label breadth / multi-gold parent labels before changing code
+  - likely next design direction is child-level rerank or multi-query rerank fusion, not blindly keeping `rerank:en`
+- 需要运行的命令：
+  - none required before discussion; generated report files are already available
+
+### Evidence: Query Variant Ablation
+
+Baseline and real rerank reports:
+
+```text
+hybrid_bge_m3_bm25_v2_expanded_parent_report.json
+hybrid_bge_m3_bm25_v2_rerank_bge_reranker_v2_m3_report.json
+hybrid_bge_m3_bm25_v2_rerank_bge_reranker_v2_m3_terms_report.json
+hybrid_bge_m3_bm25_v2_rerank_bge_reranker_v2_m3_zh_report.json
+```
+
+Metrics:
+
+```text
+hybrid baseline:
+Hit@1=0.366667 Hit@5=0.766667 Hit@10=0.966667 MRR@10=0.55504  Recall@10=0.966667
+
+rerank query=en:
+Hit@1=0.333333 Hit@5=0.7      Hit@10=0.833333 MRR@10=0.517778 Recall@10=0.833333
+
+rerank query=terms:
+Hit@1=0.433333 Hit@5=0.8      Hit@10=0.933333 MRR@10=0.585317 Recall@10=0.933333
+
+rerank query=zh:
+Hit@1=0.433333 Hit@5=0.666667 Hit@10=0.866667 MRR@10=0.553783 Recall@10=0.866667
+```
+
+Interpretation:
+
+- `rerank:en` is clearly the worst of the tested rerank query variants.
+- `rerank:terms` improves ranking quality at the top (`Hit@1`, `Hit@5`, `MRR@10`) over the hybrid baseline.
+- `rerank:terms` still loses one top10 hit relative to baseline, so it is not a clean all-metric improvement.
+- `rerank:zh` improves `Hit@1` but hurts `Hit@5`/`Hit@10`, so multilingual reranking alone is not enough.
+
+### Evidence: Full Top-50 Diagnostic
+
+Representative case diagnostic with `rerank:en`:
+
+```text
+case_id      topic                               hybrid_rank rerank_rank gold_score rank10_score gap_to_rank10 top1_parent
+dense_zh_005 usar_void_entry_risk               3           1           2.2559     -4.4141      +6.6699       gold
+dense_zh_006 response_robot_test_methods         1           19          -3.0156    -2.1797      -0.8359       nist_response_robot_test_methods_guide__parent_00016
+dense_zh_008 firefighter_rehab_thresholds        7           41          -4.1797    -1.0234      -3.1563       usfa_emergency_incident_rehabilitation_fa_314__parent_00068
+dense_zh_013 fire360_degraded_video_understanding 8          2           3.7012     -1.1260      +4.8271       arxiv_2506_02167_fire360_firefighting_perception_memory__parent_00001
+dense_zh_014 fire360_degraded_object_retrieval   3           16          -4.3984    -4.1289      -0.2695       arxiv_2506_02167_fire360_firefighting_perception_memory__parent_00001
+dense_zh_018 industrial_robot_communication_limits 2         35          -5.9805    -3.7539      -2.2266       arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00006
+dense_zh_022 usar_robot_deployment_categories    6           18          -0.8149    -0.1714      -0.6436       nist_usar_robot_performance_requirements__parent_00002
+dense_zh_028 standpipe_fire_hose_connection_risk 5           1           1.6748     -1.7217      +3.3965       gold
+dense_zh_030 smokeview_load_smoke_slice_outputs  13          10          1.2275      1.2275       0.0          nist_smv_6_11_0_user_guide__parent_00097
+```
+
+Important observation:
+
+- The dropped gold parents are usually present in the hybrid top50.
+- The reranker is deliberately assigning them low scores; this is not an evaluation serialization bug.
+- Gold evidence is not simply beyond the loaded parent text: the gold offsets begin at word 0 for the inspected cases, so the main issue is not just `max_passage_chars`.
+
+### Case-Level Findings
+
+`dense_zh_006 response_robot_test_methods`:
+
+- hybrid placed gold parent rank 1
+- `rerank:en` moved gold to rank 19
+- `rerank:terms` still missed top10
+- `rerank:zh` recovered it at rank 7
+- top reranked parents are other NIST response robot test-method pages that appear semantically close and may contain more direct standardized test-method content
+- likely issue: strict single gold parent is too narrow, and parent-level rerank prefers a neighboring section with stronger lexical/evidence match
+
+`dense_zh_018 industrial_robot_communication_limits`:
+
+- hybrid placed gold parent rank 2
+- all tested rerank variants missed top10
+- top reranked parent for `rerank:en` is `arxiv_2606_23246_robotic_intervention_industrial_emergency__parent_00006`
+- that top parent text directly mentions that brick walls reinforced with steel severely attenuated signal and reduced communication reliability
+- likely issue: the current gold parent may be too narrow; parent 00006 is arguably highly relevant for the query, maybe more direct than the selected gold
+
+`dense_zh_008 firefighter_rehab_thresholds`:
+
+- hybrid rank 7
+- `rerank:en` missed top10, but `rerank:terms` recovered it at rank 10
+- top reranked parents are closely related rehab/NFPA/SCBA parent chunks
+- likely issue: terms are essential for reranking this case; natural-language `en` query is too broad
+
+`dense_zh_022 usar_robot_deployment_categories`:
+
+- hybrid rank 6
+- `rerank:en` missed top10
+- `rerank:terms` promoted gold to rank 1
+- likely issue: exact deployment/category terminology is important
+
+### Current Conclusion
+
+Root cause is not "reranker model unusable." It is a combination of:
+
+1. `rerank:en` natural-language query is unstable for technical/firefighting cases.
+2. Parent-level rerank lets a cross-encoder prefer semantically nearby parent chunks over the single strict gold parent.
+3. Some current gold labels are likely too narrow for parent-level RAG evaluation, especially `dense_zh_018`.
+4. Cross-encoder reranking over whole parent text is not the same as reranking the best evidence-bearing small chunk.
+
+Best current ablation is `rerank:terms`, not `rerank:en`. It improves top-rank quality but still hurts `Hit@10` compared with hybrid baseline.
+
+Do not change production code until discussed. The likely next design options are:
+
+- use `terms` as rerank query variant by default for this dataset
+- rerank small chunks first, then aggregate to parent
+- rerank with multiple query variants and fuse reranker scores
+- allow carefully reviewed multiple `gold_parent_ids` for cases where neighboring parent chunks are genuinely relevant
+
+## 2026-07-08 Multi-Query Rerank RRF Planning
+
+### Task Goal
+
+Plan the next reranker optimization after discussing why the current `hybrid_rerank` run still used only one rerank query variant at the second stage.
+
+### Current Progress
+
+- 当前进展：
+  - clarified that current hybrid retrieval already uses RRF over dense `zh,en,terms` and BM25 `en,terms`
+  - clarified that current rerank stage is single-query unless separately rerun as `rerank:en`, `rerank:terms`, or `rerank:zh`
+  - agreed that `terms default rerank` and `multi-query rerank fusion` target the same issue
+- 已完成：
+  - selected multi-query rerank RRF as the next implementation direction
+  - decided RRF is preferred over raw weighted score addition for this first multi-query rerank experiment because cross-encoder raw scores can have different scales across query variants
+  - wrote the implementation plan
+- 当前问题：
+  - no code has been changed for multi-query rerank RRF yet
+  - existing uncommitted real rerank report artifacts remain in the working tree
+- 下一步：
+  - execute the plan task-by-task using Subagent-Driven or Inline Execution after user choice
+- 需要运行的命令：
+  - none before the user chooses execution mode
+
+### Plan File
+
+```text
+docs/superpowers/plans/2026-07-08-fireclaw-multi-query-rerank-rrf.md
+```
+
+### Plan Scope
+
+The plan implements only the first optimization layer:
+
+```text
+hybrid top50 parent candidates
+-> rerank with zh query
+-> rerank with en query
+-> rerank with terms query
+-> RRF over rerank ranks
+-> final top10 parents
+```
+
+The plan explicitly leaves these as later separate experiments:
+
+- expanded `gold_parent_ids` or graded relevance labels
+- small-chunk rerank followed by parent aggregation
+- hybrid-score plus rerank-score joint sorting or high-confidence candidate protection
+
+### Self-Review Results
+
+Commands:
+
+```powershell
+rg -n "TBD|TODO|implement later|fill in details|Similar to|appropriate error|Write tests for the above|Record .* here|\.\.\." docs\superpowers\plans\2026-07-08-fireclaw-multi-query-rerank-rrf.md
+git diff --check -- docs\superpowers\plans\2026-07-08-fireclaw-multi-query-rerank-rrf.md
+```
+
+Results:
+
+```text
+placeholder scan: no matches
+git diff --check: exit code 0
+```
+
+## 2026-07-08 Multi-Query Rerank RRF
+
+### Goal
+
+Evaluate whether `zh + en + terms` rerank RRF improves over single-query rerank.
+
+### Commands
+
+Focused regression suite in the managed sandbox:
+
+```powershell
+$env:PYTHONPATH = '.deps;src'
+python -m pytest --basetemp=.pytest_tmp_multi_rerank_final tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py tests/test_rag_hybrid_eval.py tests/test_rag_dense_eval.py tests/test_rag_dense_ranking.py tests/test_rag_query_expansion.py -q
+```
+
+Sandbox result:
+
+```text
+PermissionError: [WinError 5] Access is denied: 'C:\Users\L\Desktop\lpp\fireclaw-master\.pytest_tmp_multi_rerank_final'
+```
+
+Established-style rerun:
+
+```powershell
+$env:PYTHONPATH = '.deps;src'
+python -m pytest --basetemp=.pytest_tmp_multi_rerank_final tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py tests/test_rag_hybrid_eval.py tests/test_rag_dense_eval.py tests/test_rag_dense_ranking.py tests/test_rag_query_expansion.py -q
+```
+
+Established-style rerun result:
+
+```text
+47 passed in 0.81s
+```
+
+Whitespace/diff check:
+
+```powershell
+git diff --check
+```
+
+Result:
+
+```text
+exit code 0
+```
+
+Real multi-query BGE reranker report:
+
+```powershell
+cmd /c "set PYTHONPATH=src&& .\.venv-bge-m3\Scripts\python.exe -m fireclaw_core.rag.rag_cli eval-hybrid-rerank-index --provider bge-m3 --model-path .cache/models/bge-m3 --dense-index-dir data/rag/fire_rescue/indexes/dense/bge-m3 --bm25-index-dir data/rag/fire_rescue/indexes/bm25/small_v1 --reranker-provider bge-reranker --reranker-model-path .cache/models/bge-reranker-v2-m3 --reranker-batch-size 8 --reranker-max-length 512 --cases data/rag/fire_rescue/eval/dense_gold_cases_zh_v2.jsonl --query-expansions data/rag/fire_rescue/eval/query_expansions_zh_v2.jsonl --dense-query-variants zh,en,terms --bm25-query-variants en,terms --rerank-query-variants zh,en,terms --small-top-k 50 --rerank-pool-size 50 --top-k 10 --require-reviewed-expansions --output data/rag/fire_rescue/eval/runs/hybrid_bge_m3_bm25_v2_rerank_bge_reranker_v2_m3_multi_rrf_report.json"
+```
+
+Real report result:
+
+```text
+generated: data/rag/fire_rescue/eval/runs/hybrid_bge_m3_bm25_v2_rerank_bge_reranker_v2_m3_multi_rrf_report.json
+retrieval_method=hybrid_rerank
+rerank_fusion=rrf
+rerank_query_variants=zh,en,terms
+reranker backend=FlagEmbedding.FlagReranker
+device=cuda:0
+```
+
+### Results
+
+```text
+hybrid baseline: Hit@1=0.366667 Hit@5=0.766667 Hit@10=0.966667 MRR@10=0.555040 Recall@10=0.966667
+rerank en: Hit@1=0.333333 Hit@5=0.700000 Hit@10=0.833333 MRR@10=0.517778 Recall@10=0.833333
+rerank terms: Hit@1=0.433333 Hit@5=0.800000 Hit@10=0.933333 MRR@10=0.585317 Recall@10=0.933333
+rerank zh: Hit@1=0.433333 Hit@5=0.666667 Hit@10=0.866667 MRR@10=0.553783 Recall@10=0.866667
+rerank multi-query rrf: Hit@1=0.433333 Hit@5=0.766667 Hit@10=0.833333 MRR@10=0.583981 Recall@10=0.833333
+```
+
+### Conclusion
+
+Multi-query rerank RRF improved over `rerank:en` on all five metrics, but it did not beat `rerank:terms` on this 30-case dataset. `rerank:terms` remains the strongest rerank ablation overall here, with better `Hit@5`, `Hit@10`, `MRR@10`, and `Recall@10`, while `multi-query rrf` only matches its `Hit@1`. So `multi-query rrf` is a better alternative than `rerank:en`, but it is not the current best or recommended rerank setting for this benchmark.
+
+### Remaining Questions
+
+- whether strict single gold parent labels still undercount genuinely relevant neighbors;
+- whether child-level rerank would recover evidence-bearing small chunks better than parent-level rerank;
+- whether hybrid-score protection is needed if Hit@10 still drops.
+
+## 2026-07-08 Multi-Rerank Final Review Fix
+
+### Task Goal
+
+Fix the final review finding that multi-query rerank CSV variants accepted unsupported or duplicate values without validation.
+
+### Commands
+
+```powershell
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_multi_rerank_variant_validation_red tests/test_rag_reranking.py::test_select_rerank_queries_rejects_duplicate_variants tests/test_rag_reranking.py::test_select_rerank_queries_rejects_unsupported_variants -q
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_multi_rerank_variant_validation_green tests/test_rag_reranking.py -q
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_multi_rerank_variant_validation_suite tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py -q
+git diff --check -- src/fireclaw_core/rag/reranking.py tests/test_rag_reranking.py
+```
+
+### Results
+
+- RED failed as intended with two `Failed: DID NOT RAISE <class 'ValueError'>` assertions.
+- GREEN passed: `15 passed in 0.21s`.
+- Managed-sandbox regression run hit the known Windows cleanup issue:
+
+```text
+PermissionError: [WinError 5] Access is denied: '.pytest_tmp_multi_rerank_variant_validation_suite'
+```
+
+- Established-style unsandboxed rerun of the same regression suite passed: `22 passed in 0.68s`.
+- `git diff --check` exited 0 with only existing LF/CRLF warnings.
+
+### Files Modified
+
+- `src/fireclaw_core/rag/reranking.py`
+- `tests/test_rag_reranking.py`
+- `.superpowers/sdd/multi-rerank-final-review-fix-report.md`
+
+### Conclusion
+
+`select_rerank_queries(...)` now rejects empty, duplicate, and unsupported multi-rerank variants while preserving `select_rerank_query(...)` fallback behavior for the single-query path.
+
+## 2026-07-08 Multi-Rerank Final Verification
+
+### Commands
+
+```powershell
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_multi_rerank_final_verify_after_fix tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py tests/test_rag_hybrid_eval.py tests/test_rag_dense_eval.py tests/test_rag_dense_ranking.py tests/test_rag_query_expansion.py -q
+$env:PYTHONPATH = '.deps;src'; python -m pytest --basetemp=.pytest_tmp_multi_rerank_final_verify_after_fix_escalated tests/test_rag_reranking.py tests/test_rag_rerank_eval.py tests/test_rag_bm25_cli.py tests/test_rag_hybrid_eval.py tests/test_rag_dense_eval.py tests/test_rag_dense_ranking.py tests/test_rag_query_expansion.py -q
+git diff --check
+```
+
+### Results
+
+- Managed-sandbox pytest run hit the known Windows cleanup problem:
+
+```text
+PermissionError: [WinError 5] Access is denied: '.pytest_tmp_multi_rerank_final_verify_after_fix'
+```
+
+- Escalated rerun of the same focused suite passed:
+
+```text
+49 passed in 0.65s
+```
+
+- `git diff --check` exited 0 with only LF/CRLF warnings.
+
+### Current Conclusion
+
+The multi-query rerank RRF implementation and final variant-validation fix are verified. Final review and fix review found no remaining Critical or Important issues.

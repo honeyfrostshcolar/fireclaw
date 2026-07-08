@@ -9,6 +9,7 @@ from typing import Protocol
 
 from fireclaw_core.rag.dense_eval import DenseEvalRetrievedHit
 from fireclaw_core.rag.dense_retrieval import load_jsonl
+from fireclaw_core.rag.query_expansion import SUPPORTED_QUERY_VARIANTS
 
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
@@ -195,6 +196,101 @@ def rerank_parent_hits(
                 base_score=hit.score,
                 base_fusion_score=hit.fusion_score,
                 reranker=reranker.model_info.provider,
+            )
+        )
+    return reranked
+
+
+def select_rerank_queries(
+    query_variants: Mapping[str, str],
+    fallback_query: str,
+    variants: Sequence[str],
+) -> dict[str, str]:
+    selected: dict[str, str] = {}
+    for variant in variants:
+        name = str(variant).strip()
+        if not name:
+            raise ValueError("rerank query variants must not contain empty values")
+        if name not in SUPPORTED_QUERY_VARIANTS:
+            raise ValueError(f"Unsupported rerank query variant: {name}")
+        if name in selected:
+            raise ValueError(f"duplicate rerank query variant: {name}")
+        selected[name] = select_rerank_query(query_variants, fallback_query, variant=name)
+    if not selected:
+        raise ValueError("at least one rerank query variant is required")
+    return selected
+
+
+def rerank_parent_hits_with_rrf(
+    queries_by_variant: Mapping[str, str],
+    hits: list[DenseEvalRetrievedHit],
+    parent_texts: Mapping[str, str],
+    reranker: RerankerProvider,
+    *,
+    top_k: int = 10,
+    rrf_k: int = 60,
+    max_passage_chars: int = 6000,
+) -> list[DenseEvalRetrievedHit]:
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+    if rrf_k <= 0:
+        raise ValueError("rrf_k must be positive")
+    if max_passage_chars <= 0:
+        raise ValueError("max_passage_chars must be positive")
+
+    selected_queries = {
+        str(variant).strip(): str(query).strip()
+        for variant, query in queries_by_variant.items()
+        if str(variant).strip() and str(query).strip()
+    }
+    if not selected_queries:
+        raise ValueError("at least one non-empty rerank query is required")
+
+    parent_passages: dict[str, str] = {}
+    for hit in hits:
+        parent_text = parent_texts.get(hit.parent_id)
+        if parent_text is None:
+            raise ValueError(f"missing parent text for parent_id: {hit.parent_id}")
+        parent_passages[hit.parent_id] = parent_text[:max_passage_chars]
+
+    rrf_scores: dict[str, float] = {hit.parent_id: 0.0 for hit in hits}
+    per_variant_ranks: dict[str, dict[str, int]] = {hit.parent_id: {} for hit in hits}
+    per_variant_scores: dict[str, dict[str, float]] = {hit.parent_id: {} for hit in hits}
+
+    for variant, query in selected_queries.items():
+        pairs = [(query, parent_passages[hit.parent_id]) for hit in hits]
+        scores = reranker.score_pairs(pairs)
+        if len(scores) != len(hits):
+            raise ValueError(f"reranker returned {len(scores)} scores for {len(hits)} hits")
+
+        scored = list(zip(hits, scores, strict=True))
+        scored.sort(key=lambda item: (-float(item[1]), item[0].rank, item[0].parent_id))
+        rank_key = f"rerank:{variant}"
+        for rank, (hit, score) in enumerate(scored, start=1):
+            rrf_scores[hit.parent_id] += 1.0 / (rrf_k + rank)
+            per_variant_ranks[hit.parent_id][rank_key] = rank
+            per_variant_scores[hit.parent_id][rank_key] = float(score)
+
+    ranked_hits = sorted(
+        hits,
+        key=lambda hit: (-rrf_scores[hit.parent_id], hit.rank, hit.parent_id),
+    )
+
+    reranked: list[DenseEvalRetrievedHit] = []
+    for new_rank, hit in enumerate(ranked_hits[:top_k], start=1):
+        parent_id = hit.parent_id
+        reranked.append(
+            replace(
+                hit,
+                rank=new_rank,
+                score=rrf_scores[parent_id],
+                rerank_score=rrf_scores[parent_id],
+                base_rank=hit.rank,
+                base_score=hit.score,
+                base_fusion_score=hit.fusion_score,
+                variant_ranks={**hit.variant_ranks, **per_variant_ranks[parent_id]},
+                variant_scores={**hit.variant_scores, **per_variant_scores[parent_id]},
+                reranker=f"{reranker.model_info.provider}:rrf",
             )
         )
     return reranked

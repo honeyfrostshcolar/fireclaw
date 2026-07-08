@@ -292,3 +292,95 @@ def test_cli_eval_hybrid_rerank_index_with_fake_reranker(
     assert report["results"][0]["top_hits"][1]["parent_id"] == "generic__parent"
     assert report["results"][0]["top_hits"][1]["base_rank"] == 1
     assert json.loads(capsys.readouterr().out)["retrieval_config"]["retrieval_method"] == "hybrid_rerank"
+
+
+def test_cli_eval_hybrid_rerank_index_with_multi_query_rrf(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fireclaw_core.rag.dense_retrieval import FakeEmbeddingProvider
+    from fireclaw_core.rag.dense_retrieval import build_dense_index
+
+    records_path = tmp_path / "records.jsonl"
+    _write_jsonl(
+        records_path,
+        [
+            _record("en", "ventilation explanation rescue"),
+            _record("terms", "LOAD3DSMOKE HRRPUV rescue"),
+            _record("both", "ventilation LOAD3DSMOKE rescue"),
+        ],
+    )
+    dense_index_dir = tmp_path / "dense_index"
+    build_dense_index(records_path, dense_index_dir, FakeEmbeddingProvider(), batch_size=2)
+
+    bm25_index_dir = tmp_path / "bm25_index"
+    assert main(["build-bm25-index", "--records", str(records_path), "--index-dir", str(bm25_index_dir)]) == 0
+    capsys.readouterr()
+
+    parent_chunks_path = tmp_path / "parent_chunks.jsonl"
+    _write_jsonl(
+        parent_chunks_path,
+        [
+            {"parent_id": "en__parent", "text": "ventilation natural language explanation"},
+            {"parent_id": "terms__parent", "text": "LOAD3DSMOKE HRRPUV smokeview command"},
+            {"parent_id": "both__parent", "text": "ventilation LOAD3DSMOKE smokeview"},
+        ],
+    )
+    cases_path = tmp_path / "cases.jsonl"
+    _write_jsonl(
+        cases_path,
+        [{"case_id": "case", "topic": "smokeview", "query": "rescue", "gold_parent_ids": ["both__parent"]}],
+    )
+    expansions_path = tmp_path / "expansions.jsonl"
+    _write_jsonl(
+        expansions_path,
+        [
+            {
+                "case_id": "case",
+                "query_zh": "ventilation LOAD3DSMOKE",
+                "reviewed_query_en": "ventilation explanation",
+                "term_query": "LOAD3DSMOKE HRRPUV",
+                "terms": ["LOAD3DSMOKE", "HRRPUV"],
+                "status": "reviewed",
+            }
+        ],
+    )
+    output_path = tmp_path / "multi_rerank_report.json"
+
+    exit_code = main(
+        [
+            "eval-hybrid-rerank-index",
+            "--provider",
+            "fake",
+            "--dense-index-dir",
+            str(dense_index_dir),
+            "--bm25-index-dir",
+            str(bm25_index_dir),
+            "--reranker-provider",
+            "fake",
+            "--parent-chunks",
+            str(parent_chunks_path),
+            "--cases",
+            str(cases_path),
+            "--query-expansions",
+            str(expansions_path),
+            "--dense-query-variants",
+            "zh,en,terms",
+            "--bm25-query-variants",
+            "en,terms",
+            "--rerank-query-variants",
+            "zh,en,terms",
+            "--require-reviewed-expansions",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["retrieval_config"]["retrieval_method"] == "hybrid_rerank"
+    assert report["retrieval_config"]["rerank_query_variants"] == ["zh", "en", "terms"]
+    assert report["retrieval_config"]["rerank_fusion"] == "rrf"
+    assert report["results"][0]["top_hits"][0]["parent_id"] == "both__parent"
+    assert report["results"][0]["top_hits"][0]["reranker"] == "fake-reranker:rrf"
+    assert json.loads(capsys.readouterr().out)["retrieval_config"]["rerank_fusion"] == "rrf"

@@ -168,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     hybrid_rerank_eval.add_argument("--dense-query-variants", default="zh,en,terms")
     hybrid_rerank_eval.add_argument("--bm25-query-variants", default="en,terms")
     hybrid_rerank_eval.add_argument("--rerank-query-variant", choices=["zh", "en", "terms"], default="en")
+    hybrid_rerank_eval.add_argument("--rerank-query-variants", default=None)
     hybrid_rerank_eval.add_argument("--small-top-k", type=int, default=50)
     hybrid_rerank_eval.add_argument("--rerank-pool-size", type=int, default=50)
     hybrid_rerank_eval.add_argument("--top-k", type=int, default=10)
@@ -476,6 +477,7 @@ def _cmd_eval_hybrid_rerank_index(args: argparse.Namespace) -> int:
         dense_query_variants=_parse_csv_arg(args.dense_query_variants),
         bm25_query_variants=_parse_csv_arg(args.bm25_query_variants),
         rerank_query_variant=args.rerank_query_variant,
+        rerank_query_variants=_parse_csv_arg(args.rerank_query_variants) if args.rerank_query_variants else None,
         rerank_pool_size=args.rerank_pool_size,
         top_k=args.top_k,
         small_top_k=args.small_top_k,
