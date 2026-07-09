@@ -25,10 +25,12 @@ from fireclaw_core.rag.hybrid_eval import evaluate_hybrid_retrievers_with_expans
 from fireclaw_core.rag.index_preparation import IndexPreparationConfig
 from fireclaw_core.rag.index_preparation import prepare_index_records
 from fireclaw_core.rag.query_expansion import load_query_expansions
+from fireclaw_core.rag.relevance_eval import load_relevance_judgments
 from fireclaw_core.rag.rerank_eval import evaluate_hybrid_retrievers_with_rerank
 from fireclaw_core.rag.reranking import BGEFlagRerankerProvider
 from fireclaw_core.rag.reranking import FakeRerankerProvider
 from fireclaw_core.rag.reranking import load_parent_texts
+from fireclaw_core.rag.reranking import load_small_texts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -140,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     hybrid_eval.add_argument("--model-path", default=None)
     hybrid_eval.add_argument("--cases", default=None)
     hybrid_eval.add_argument("--query-expansions", required=True)
+    hybrid_eval.add_argument("--relevance-judgments", default=None)
+    hybrid_eval.add_argument("--relevance-threshold", type=int, default=2)
     hybrid_eval.add_argument("--dense-query-variants", default="zh,en,terms")
     hybrid_eval.add_argument("--bm25-query-variants", default="en,terms")
     hybrid_eval.add_argument("--small-top-k", type=int, default=50)
@@ -163,12 +167,17 @@ def main(argv: list[str] | None = None) -> int:
     hybrid_rerank_eval.add_argument("--reranker-batch-size", type=int, default=32)
     hybrid_rerank_eval.add_argument("--reranker-max-length", type=int, default=512)
     hybrid_rerank_eval.add_argument("--parent-chunks", default=None)
+    hybrid_rerank_eval.add_argument("--small-chunks", default=None)
     hybrid_rerank_eval.add_argument("--cases", default=None)
     hybrid_rerank_eval.add_argument("--query-expansions", required=True)
+    hybrid_rerank_eval.add_argument("--relevance-judgments", default=None)
+    hybrid_rerank_eval.add_argument("--relevance-threshold", type=int, default=2)
     hybrid_rerank_eval.add_argument("--dense-query-variants", default="zh,en,terms")
     hybrid_rerank_eval.add_argument("--bm25-query-variants", default="en,terms")
     hybrid_rerank_eval.add_argument("--rerank-query-variant", choices=["zh", "en", "terms"], default="en")
     hybrid_rerank_eval.add_argument("--rerank-query-variants", default=None)
+    hybrid_rerank_eval.add_argument("--rerank-level", choices=["parent", "small"], default="parent")
+    hybrid_rerank_eval.add_argument("--joint-fusion", choices=["none", "rrf"], default="none")
     hybrid_rerank_eval.add_argument("--small-top-k", type=int, default=50)
     hybrid_rerank_eval.add_argument("--rerank-pool-size", type=int, default=50)
     hybrid_rerank_eval.add_argument("--top-k", type=int, default=10)
@@ -415,11 +424,17 @@ def _cmd_eval_hybrid_index(args: argparse.Namespace) -> int:
     cases_path = Path(args.cases) if args.cases else corpus_root / "eval" / "dense_gold_cases_zh_v1.jsonl"
     output_path = Path(args.output) if args.output else None
     expansions_path = Path(args.query_expansions)
+    relevance_judgments_path = Path(args.relevance_judgments) if args.relevance_judgments else None
     provider = _create_embedding_provider(args.provider, model_path=args.model_path)
     dense_retriever = DenseRetriever.load(dense_index_dir, provider)
     bm25_retriever = BM25Retriever.load(bm25_index_dir)
     cases = load_dense_eval_cases(cases_path)
     expansions = load_query_expansions(expansions_path)
+    relevance_judgments = (
+        load_relevance_judgments(relevance_judgments_path)
+        if relevance_judgments_path is not None
+        else None
+    )
     report = evaluate_hybrid_retrievers_with_expansion(
         dense_retriever,
         bm25_retriever,
@@ -432,6 +447,9 @@ def _cmd_eval_hybrid_index(args: argparse.Namespace) -> int:
         rrf_k=args.rrf_k,
         require_reviewed_expansions=args.require_reviewed_expansions,
         query_expansions_path=str(expansions_path),
+        relevance_judgments=relevance_judgments,
+        relevance_threshold=args.relevance_threshold,
+        relevance_judgments_path=str(relevance_judgments_path) if relevance_judgments_path is not None else None,
     )
     payload = report.to_dict()
     if output_path is not None:
@@ -453,6 +471,12 @@ def _cmd_eval_hybrid_rerank_index(args: argparse.Namespace) -> int:
     output_path = Path(args.output) if args.output else None
     expansions_path = Path(args.query_expansions)
     parent_chunks_path = Path(args.parent_chunks) if args.parent_chunks else corpus_root / "chunks" / "parent_chunks.jsonl"
+    small_chunks_path = (
+        Path(args.small_chunks)
+        if args.small_chunks
+        else corpus_root / "chunks" / "small_chunks.jsonl"
+    )
+    relevance_judgments_path = Path(args.relevance_judgments) if args.relevance_judgments else None
 
     provider = _create_embedding_provider(args.provider, model_path=args.model_path)
     dense_retriever = DenseRetriever.load(dense_index_dir, provider)
@@ -467,6 +491,12 @@ def _cmd_eval_hybrid_rerank_index(args: argparse.Namespace) -> int:
     cases = load_dense_eval_cases(cases_path)
     expansions = load_query_expansions(expansions_path)
     parent_texts = load_parent_texts(parent_chunks_path)
+    small_texts = load_small_texts(small_chunks_path) if args.rerank_level == "small" else None
+    relevance_judgments = (
+        load_relevance_judgments(relevance_judgments_path)
+        if relevance_judgments_path is not None
+        else None
+    )
     report = evaluate_hybrid_retrievers_with_rerank(
         dense_retriever,
         bm25_retriever,
@@ -474,10 +504,15 @@ def _cmd_eval_hybrid_rerank_index(args: argparse.Namespace) -> int:
         cases,
         query_expansions=expansions,
         parent_texts=parent_texts,
+        small_texts=small_texts,
+        relevance_judgments=relevance_judgments,
+        relevance_threshold=args.relevance_threshold,
         dense_query_variants=_parse_csv_arg(args.dense_query_variants),
         bm25_query_variants=_parse_csv_arg(args.bm25_query_variants),
+        rerank_level=args.rerank_level,
         rerank_query_variant=args.rerank_query_variant,
         rerank_query_variants=_parse_csv_arg(args.rerank_query_variants) if args.rerank_query_variants else None,
+        joint_fusion=None if args.joint_fusion == "none" else args.joint_fusion,
         rerank_pool_size=args.rerank_pool_size,
         top_k=args.top_k,
         small_top_k=args.small_top_k,
@@ -486,6 +521,8 @@ def _cmd_eval_hybrid_rerank_index(args: argparse.Namespace) -> int:
         require_reviewed_expansions=args.require_reviewed_expansions,
         query_expansions_path=str(expansions_path),
         parent_chunks_path=str(parent_chunks_path),
+        small_chunks_path=str(small_chunks_path) if args.rerank_level == "small" else None,
+        relevance_judgments_path=str(relevance_judgments_path) if relevance_judgments_path is not None else None,
     )
     payload = report.to_dict()
     if output_path is not None:

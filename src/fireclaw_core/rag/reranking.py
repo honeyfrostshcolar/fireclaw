@@ -144,6 +144,29 @@ def load_parent_texts(path: Path) -> dict[str, str]:
     return texts
 
 
+def load_small_texts(path: Path) -> dict[str, str]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Small chunks JSONL not found: {path}")
+    texts: dict[str, str] = {}
+    for row in load_jsonl(path):
+        chunk_id = str(row.get("chunk_id") or "").strip()
+        if not chunk_id:
+            raise ValueError(f"missing chunk_id in small chunks: {path}")
+        if chunk_id in texts:
+            raise ValueError(f"duplicate chunk_id in small chunks: {chunk_id}")
+        if "clean_text" in row:
+            text = str(row.get("clean_text") or "")
+        elif "text" in row:
+            text = str(row.get("text") or "")
+        else:
+            raise ValueError(f"missing text in small chunks for chunk_id: {chunk_id}")
+        if not text.strip():
+            raise ValueError(f"empty text in small chunks for chunk_id: {chunk_id}")
+        texts[chunk_id] = text
+    return texts
+
+
 def select_rerank_query(
     query_variants: Mapping[str, str],
     fallback_query: str,
@@ -184,6 +207,50 @@ def rerank_parent_hits(
 
     scored = list(zip(hits, scores, strict=True))
     scored.sort(key=lambda item: (-float(item[1]), item[0].rank, item[0].parent_id))
+    reranked: list[DenseEvalRetrievedHit] = []
+    for new_rank, (hit, score) in enumerate(scored[:top_k], start=1):
+        reranked.append(
+            replace(
+                hit,
+                rank=new_rank,
+                score=float(score),
+                rerank_score=float(score),
+                base_rank=hit.rank,
+                base_score=hit.score,
+                base_fusion_score=hit.fusion_score,
+                reranker=reranker.model_info.provider,
+            )
+        )
+    return reranked
+
+
+def rerank_small_hits(
+    query: str,
+    hits: list[DenseEvalRetrievedHit],
+    small_texts: Mapping[str, str],
+    reranker: RerankerProvider,
+    *,
+    top_k: int,
+    max_passage_chars: int = 2000,
+) -> list[DenseEvalRetrievedHit]:
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+    if max_passage_chars <= 0:
+        raise ValueError("max_passage_chars must be positive")
+
+    pairs: list[tuple[str, str]] = []
+    for hit in hits:
+        small_text = small_texts.get(hit.chunk_id)
+        if small_text is None:
+            raise ValueError(f"missing small text for chunk_id: {hit.chunk_id}")
+        pairs.append((query, small_text[:max_passage_chars]))
+
+    scores = reranker.score_pairs(pairs)
+    if len(scores) != len(hits):
+        raise ValueError(f"reranker returned {len(scores)} scores for {len(hits)} hits")
+
+    scored = list(zip(hits, scores, strict=True))
+    scored.sort(key=lambda item: (-float(item[1]), item[0].rank, item[0].parent_id, item[0].chunk_id))
     reranked: list[DenseEvalRetrievedHit] = []
     for new_rank, (hit, score) in enumerate(scored[:top_k], start=1):
         reranked.append(
@@ -294,6 +361,175 @@ def rerank_parent_hits_with_rrf(
             )
         )
     return reranked
+
+
+def rerank_small_hits_with_rrf(
+    queries_by_variant: Mapping[str, str],
+    hits: list[DenseEvalRetrievedHit],
+    small_texts: Mapping[str, str],
+    reranker: RerankerProvider,
+    *,
+    top_k: int,
+    rrf_k: int = 60,
+    max_passage_chars: int = 2000,
+) -> list[DenseEvalRetrievedHit]:
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+    if rrf_k <= 0:
+        raise ValueError("rrf_k must be positive")
+    if max_passage_chars <= 0:
+        raise ValueError("max_passage_chars must be positive")
+
+    selected_queries = {
+        str(variant).strip(): str(query).strip()
+        for variant, query in queries_by_variant.items()
+        if str(variant).strip() and str(query).strip()
+    }
+    if not selected_queries:
+        raise ValueError("at least one non-empty rerank query is required")
+
+    small_passages: dict[str, str] = {}
+    for hit in hits:
+        small_text = small_texts.get(hit.chunk_id)
+        if small_text is None:
+            raise ValueError(f"missing small text for chunk_id: {hit.chunk_id}")
+        small_passages[hit.chunk_id] = small_text[:max_passage_chars]
+
+    rrf_scores: dict[str, float] = {hit.chunk_id: 0.0 for hit in hits}
+    per_variant_ranks: dict[str, dict[str, int]] = {hit.chunk_id: {} for hit in hits}
+    per_variant_scores: dict[str, dict[str, float]] = {hit.chunk_id: {} for hit in hits}
+
+    for variant, query in selected_queries.items():
+        pairs = [(query, small_passages[hit.chunk_id]) for hit in hits]
+        scores = reranker.score_pairs(pairs)
+        if len(scores) != len(hits):
+            raise ValueError(f"reranker returned {len(scores)} scores for {len(hits)} hits")
+
+        scored = list(zip(hits, scores, strict=True))
+        scored.sort(key=lambda item: (-float(item[1]), item[0].rank, item[0].parent_id, item[0].chunk_id))
+        rank_key = f"rerank:{variant}"
+        for rank, (hit, score) in enumerate(scored, start=1):
+            rrf_scores[hit.chunk_id] += 1.0 / (rrf_k + rank)
+            per_variant_ranks[hit.chunk_id][rank_key] = rank
+            per_variant_scores[hit.chunk_id][rank_key] = float(score)
+
+    ranked_hits = sorted(
+        hits,
+        key=lambda hit: (-rrf_scores[hit.chunk_id], hit.rank, hit.parent_id, hit.chunk_id),
+    )
+
+    reranked: list[DenseEvalRetrievedHit] = []
+    for new_rank, hit in enumerate(ranked_hits[:top_k], start=1):
+        chunk_id = hit.chunk_id
+        reranked.append(
+            replace(
+                hit,
+                rank=new_rank,
+                score=rrf_scores[chunk_id],
+                rerank_score=rrf_scores[chunk_id],
+                base_rank=hit.rank,
+                base_score=hit.score,
+                base_fusion_score=hit.fusion_score,
+                variant_ranks={**hit.variant_ranks, **per_variant_ranks[chunk_id]},
+                variant_scores={**hit.variant_scores, **per_variant_scores[chunk_id]},
+                reranker=f"{reranker.model_info.provider}:rrf",
+            )
+        )
+    return reranked
+
+
+def fuse_hybrid_and_rerank_hits(
+    hybrid_hits: list[DenseEvalRetrievedHit],
+    reranked_hits: list[DenseEvalRetrievedHit],
+    *,
+    top_k: int = 10,
+    rrf_k: int = 60,
+) -> list[DenseEvalRetrievedHit]:
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+    if rrf_k <= 0:
+        raise ValueError("rrf_k must be positive")
+
+    hybrid_by_parent = _first_hit_by_parent_rank(hybrid_hits)
+    reranked_by_parent = _first_hit_by_parent_rank(reranked_hits)
+    parent_ids = sorted(
+        hybrid_by_parent.keys() & reranked_by_parent.keys(),
+        key=lambda parent_id: (
+            -(
+                (1.0 / (rrf_k + hybrid_by_parent[parent_id].rank))
+                + (1.0 / (rrf_k + reranked_by_parent[parent_id].rank))
+            ),
+            hybrid_by_parent[parent_id].rank,
+            reranked_by_parent[parent_id].rank,
+            parent_id,
+        ),
+    )
+
+    fused: list[DenseEvalRetrievedHit] = []
+    for rank, parent_id in enumerate(parent_ids[:top_k], start=1):
+        hybrid_hit = hybrid_by_parent[parent_id]
+        reranked_hit = reranked_by_parent[parent_id]
+        joint_score = (1.0 / (rrf_k + hybrid_hit.rank)) + (1.0 / (rrf_k + reranked_hit.rank))
+        rerank_score = _reranked_score(reranked_hit)
+        fused.append(
+            replace(
+                reranked_hit,
+                rank=rank,
+                score=joint_score,
+                fusion_score=joint_score,
+                variant_ranks={
+                    **hybrid_hit.variant_ranks,
+                    **reranked_hit.variant_ranks,
+                    "hybrid": hybrid_hit.rank,
+                    "rerank": reranked_hit.rank,
+                },
+                variant_scores={
+                    **hybrid_hit.variant_scores,
+                    **reranked_hit.variant_scores,
+                    "hybrid": hybrid_hit.score,
+                    "rerank": rerank_score,
+                },
+            )
+        )
+    return fused
+
+
+def aggregate_reranked_small_hits_by_parent(
+    hits: list[DenseEvalRetrievedHit],
+    *,
+    top_k: int,
+) -> list[DenseEvalRetrievedHit]:
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+
+    grouped: dict[str, list[DenseEvalRetrievedHit]] = {}
+    for hit in sorted(hits, key=lambda item: item.rank):
+        grouped.setdefault(hit.parent_id, []).append(hit)
+
+    representatives: list[DenseEvalRetrievedHit] = []
+    for parent_hits in grouped.values():
+        best = max(parent_hits, key=lambda item: (_reranked_score(item), -item.rank))
+        representatives.append(
+            replace(
+                best,
+                child_hit_count=len(parent_hits),
+                child_ranks=[hit.rank for hit in parent_hits],
+            )
+        )
+
+    representatives.sort(key=lambda item: (-_reranked_score(item), item.rank, item.parent_id))
+    return [replace(hit, rank=rank) for rank, hit in enumerate(representatives[:top_k], start=1)]
+
+
+def _reranked_score(hit: DenseEvalRetrievedHit) -> float:
+    return float(hit.rerank_score if hit.rerank_score is not None else hit.score)
+
+
+def _first_hit_by_parent_rank(hits: list[DenseEvalRetrievedHit]) -> dict[str, DenseEvalRetrievedHit]:
+    by_parent: dict[str, DenseEvalRetrievedHit] = {}
+    for hit in sorted(hits, key=lambda item: (item.rank, item.parent_id)):
+        by_parent.setdefault(hit.parent_id, hit)
+    return by_parent
 
 
 def _token_set(text: str) -> set[str]:

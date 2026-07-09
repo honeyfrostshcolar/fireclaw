@@ -566,3 +566,73 @@ rerank: terms
 ```
 
 这避免直接相加不同 query 下的 cross-encoder 原始分数，也保留中文意图、英文语义和专业术语三种信号。
+
+## 下一层消融怎么看
+
+到 `next rerank ablations` 这一步，评估里多了三组很容易混在一起的开关。这里把它们拆开说清楚。
+
+### 1. strict v2 vs agent-reviewed graded v3
+
+`strict v2` 仍然是当前最保守、最适合做主结论的基线视角。它只认 case 文件里原始的 strict `gold_parent_ids`，所以更接近“系统有没有把那条预先指定的标准证据找回来”。
+
+`graded v3` 则是额外加的一层评估标注文件：`data/rag/fire_rescue/eval/relevance_judgments_zh_v3_agent_reviewed.jsonl`。它允许一个 case 对多个 parent 给出 `grade`，并把 `grade >= 2` 视为相关，同时额外计算 `nDCG@10`。
+
+但这里要非常克制地解释结果：
+
+- `v3` 是 **agent-reviewed evaluation labels**，不是 human gold。
+- 它适合回答“strict 单一 gold 会不会漏算了一些其实可用的证据”。
+- 它不等于“系统真实能力就一定更强了”，所以研究主结论仍应优先看 `strict v2`，把 `graded v3` 当成补充审计视角。
+
+### 2. parent rerank vs small-chunk rerank
+
+`parent rerank` 是当前默认路径：
+
+```text
+hybrid small hits
+-> aggregate to parent
+-> rerank parent text
+-> final top10 parents
+```
+
+它的优点是流程简单，reranker 直接看完整 parent 上下文；缺点是 parent 往往更长，真正的证据句可能被大段无关文本稀释。
+
+`small-chunk rerank` 是新加的可选消融：
+
+```text
+hybrid small hits
+-> rerank full small chunk text
+-> aggregate reranked small hits to parent
+-> final top10 parents
+```
+
+它不是只看 `text_preview`，而是显式读取 `small_chunks.jsonl` 里的完整 small chunk 文本后再 rerank。它测试的是：当证据只落在 parent 的某个局部片段里时，先在更细粒度上排序，再回聚到 parent，会不会更稳。
+
+所以这两条路径的差别，不在于最终都输出 parent，而在于 **reranker 是先看长 parent，还是先看短证据块再回到 parent**。
+
+### 3. rerank-only vs joint hybrid+rerank rank fusion
+
+`rerank-only` 的意思是：先让 hybrid 负责召回一个 parent 候选池，然后最后的前十名完全按 reranker 排序决定。
+
+```text
+hybrid parent ranking
+-> reranker reorders candidates
+-> final top10 = rerank ranking
+```
+
+这条路通常更有机会提升 `Hit@1`、`MRR@10`，但如果 reranker 把某些本来由 hybrid 召回得不错的相关 parent 压下去，`Hit@10` / `Recall@10` 也可能掉。
+
+`joint hybrid+rerank` 则不是把 hybrid score 和 reranker score 直接相加，而是只在“名次”层面做一次额外 RRF：
+
+```text
+hybrid parent ranking
++ rerank parent ranking
+-> rank-level RRF
+-> final top10
+```
+
+这里要注意两点：
+
+- 融合的是 `rank`，不是原始分数。
+- 目的不是替代 rerank，而是尽量保住 hybrid 的召回覆盖，同时吸收 reranker 的前排排序能力。
+
+如果 `joint fusion` 在 `strict v2` 上提升了 `Hit@10` / `Recall@10`，更像是在说明“保留 hybrid 排名记忆”有帮助；如果它在 `graded v3` 上也提升 `nDCG@10`，才更能说明这种保守融合没有只是机械保 recall，而是连整体相关性排序也更好。

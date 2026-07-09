@@ -15,6 +15,7 @@ from fireclaw_core.rag.dense_eval import (
     load_dense_eval_cases,
 )
 from fireclaw_core.rag.dense_retrieval import DenseHit
+from fireclaw_core.rag.relevance_eval import RelevanceJudgment
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -202,6 +203,116 @@ def test_dense_eval_report_serializes_to_dict() -> None:
     assert payload["case_count"] == 1
     assert payload["hit_at_1"] == 1.0
     assert payload["results"][0]["top_hits"][0]["parent_id"] == "parent_gold"
+    assert "ndcg_at_10" not in payload
+    assert "ndcg_at_10" not in payload["results"][0]
+
+
+def test_evaluate_ranked_hits_uses_graded_relevance_threshold_for_binary_metrics() -> None:
+    case = DenseEvalCase(
+        case_id="case_graded",
+        topic="smoke",
+        query="query",
+        gold_parent_ids=["strict_gold_only"],
+    )
+    hits = {
+        "case_graded": [
+            DenseEvalRetrievedHit(rank=1, score=0.9, chunk_id="c1", parent_id="graded_relevant", doc_id="d1"),
+            DenseEvalRetrievedHit(rank=2, score=0.8, chunk_id="c2", parent_id="strict_gold_only", doc_id="d2"),
+        ]
+    }
+    judgments = {
+        "case_graded": {
+            "graded_relevant": RelevanceJudgment(case_id="case_graded", parent_id="graded_relevant", grade=2),
+            "strict_gold_only": RelevanceJudgment(case_id="case_graded", parent_id="strict_gold_only", grade=1),
+        }
+    }
+
+    report = evaluate_ranked_hits(
+        [case],
+        hits,
+        top_k=10,
+        relevance_judgments=judgments,
+        relevance_threshold=2,
+    )
+
+    assert report.hit_at_1 == 1.0
+    assert report.hit_at_5 == 1.0
+    assert report.hit_at_10 == 1.0
+    assert report.gold_recall_at_10 == 1.0
+    assert report.results[0].retrieved_gold_parent_ids == ["graded_relevant"]
+    assert report.results[0].first_gold_rank == 1
+
+
+def test_evaluate_ranked_hits_includes_ndcg_when_graded_relevance_is_provided() -> None:
+    case = DenseEvalCase(
+        case_id="case_ndcg",
+        topic="smoke",
+        query="query",
+        gold_parent_ids=["parent_high"],
+    )
+    hits = {
+        "case_ndcg": [
+            DenseEvalRetrievedHit(rank=1, score=0.9, chunk_id="c1", parent_id="parent_mid", doc_id="d1"),
+            DenseEvalRetrievedHit(rank=2, score=0.8, chunk_id="c2", parent_id="parent_high", doc_id="d2"),
+        ]
+    }
+    judgments = {
+        "case_ndcg": {
+            "parent_high": RelevanceJudgment(case_id="case_ndcg", parent_id="parent_high", grade=3),
+            "parent_mid": RelevanceJudgment(case_id="case_ndcg", parent_id="parent_mid", grade=2),
+        }
+    }
+
+    report = evaluate_ranked_hits([case], hits, top_k=10, relevance_judgments=judgments)
+    payload = report.to_dict()
+
+    assert report.ndcg_at_10 is not None
+    assert report.results[0].ndcg_at_10 is not None
+    assert payload["ndcg_at_10"] == pytest.approx(report.ndcg_at_10)
+    assert payload["results"][0]["ndcg_at_10"] == pytest.approx(report.results[0].ndcg_at_10)
+
+
+def test_evaluate_ranked_hits_omits_unjudged_cases_from_ndcg_average_and_serialization() -> None:
+    judged_case = DenseEvalCase(
+        case_id="case_judged",
+        topic="smoke",
+        query="query judged",
+        gold_parent_ids=["parent_high"],
+    )
+    unjudged_case = DenseEvalCase(
+        case_id="case_unjudged",
+        topic="thermal",
+        query="query unjudged",
+        gold_parent_ids=["strict_gold"],
+    )
+    hits = {
+        "case_judged": [
+            DenseEvalRetrievedHit(rank=1, score=0.9, chunk_id="c1", parent_id="parent_high", doc_id="d1"),
+        ],
+        "case_unjudged": [
+            DenseEvalRetrievedHit(rank=1, score=0.8, chunk_id="c2", parent_id="strict_gold", doc_id="d2"),
+        ],
+    }
+    judgments = {
+        "case_judged": {
+            "parent_high": RelevanceJudgment(case_id="case_judged", parent_id="parent_high", grade=3),
+        }
+    }
+
+    report = evaluate_ranked_hits(
+        [judged_case, unjudged_case],
+        hits,
+        top_k=10,
+        relevance_judgments=judgments,
+    )
+    payload = report.to_dict()
+
+    assert report.results[0].ndcg_at_10 == pytest.approx(1.0)
+    assert report.results[1].ndcg_at_10 is None
+    assert report.ndcg_at_10 == pytest.approx(1.0)
+    assert "ndcg_at_10" in payload
+    assert "ndcg_at_10" in payload["results"][0]
+    assert "ndcg_at_10" not in payload["results"][1]
 
 
 def test_hits_from_dense_results_preserves_parent_id_and_preview() -> None:

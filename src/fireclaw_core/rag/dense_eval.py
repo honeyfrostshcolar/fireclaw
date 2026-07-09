@@ -9,6 +9,9 @@ from typing import Any
 from fireclaw_core.rag.dense_retrieval import DenseHit
 from fireclaw_core.rag.query_expansion import QueryExpansion
 from fireclaw_core.rag.query_expansion import build_query_variants
+from fireclaw_core.rag.relevance_eval import RelevanceJudgment
+from fireclaw_core.rag.relevance_eval import ndcg_at_k
+from fireclaw_core.rag.relevance_eval import relevant_parent_ids
 
 
 @dataclass(frozen=True)
@@ -93,12 +96,15 @@ class DenseEvalCaseResult:
     source_doc_id: str = ""
     notes: str = ""
     query_variants: dict[str, str] = field(default_factory=dict)
+    ndcg_at_10: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["top_hits"] = [hit.to_dict() for hit in self.top_hits]
         if not self.query_variants:
             data.pop("query_variants")
+        if self.ndcg_at_10 is None:
+            data.pop("ndcg_at_10")
         return data
 
 
@@ -112,6 +118,7 @@ class DenseEvalReport:
     gold_recall_at_10: float
     results: list[DenseEvalCaseResult]
     retrieval_config: dict[str, Any] | None = None
+    ndcg_at_10: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -125,6 +132,8 @@ class DenseEvalReport:
         }
         if self.retrieval_config is not None:
             data["retrieval_config"] = self.retrieval_config
+        if self.ndcg_at_10 is not None:
+            data["ndcg_at_10"] = round(self.ndcg_at_10, 6)
         return data
 
 
@@ -181,6 +190,8 @@ def evaluate_ranked_hits(
     hits_by_case_id: dict[str, list[DenseEvalRetrievedHit]],
     *,
     top_k: int = 10,
+    relevance_judgments: Mapping[str, Mapping[str, RelevanceJudgment]] | None = None,
+    relevance_threshold: int = 2,
 ) -> DenseEvalReport:
     _require_min_top_k(top_k)
 
@@ -188,7 +199,13 @@ def evaluate_ranked_hits(
     for case in cases:
         hits = sorted(hits_by_case_id.get(case.case_id, []), key=lambda hit: hit.rank)[:top_k]
         metric_hits = hits[:10]
-        gold_parent_ids = list(dict.fromkeys(case.gold_parent_ids))
+        case_judgments = relevance_judgments.get(case.case_id, {}) if relevance_judgments is not None else {}
+        case_has_judgments = bool(case_judgments)
+        gold_parent_ids = (
+            relevant_parent_ids(case_judgments, threshold=relevance_threshold)
+            if case_has_judgments
+            else list(dict.fromkeys(case.gold_parent_ids))
+        )
         gold_parent_set = set(gold_parent_ids)
         retrieved_parent_ids = [hit.parent_id for hit in hits]
         metric_parent_ids = [hit.parent_id for hit in metric_hits]
@@ -198,7 +215,8 @@ def evaluate_ranked_hits(
         hit_at_5 = any(hit.parent_id in gold_parent_set for hit in metric_hits[:5])
         hit_at_10 = any(hit.parent_id in gold_parent_set for hit in metric_hits)
         mrr_at_10 = (1.0 / first_gold_rank) if first_gold_rank is not None and first_gold_rank <= 10 else 0.0
-        gold_recall_at_10 = len(retrieved_gold_parent_ids) / len(gold_parent_ids)
+        gold_recall_at_10 = len(retrieved_gold_parent_ids) / len(gold_parent_ids) if gold_parent_ids else 0.0
+        ndcg_value = ndcg_at_k(metric_parent_ids, case_judgments, k=10) if case_has_judgments else None
         results.append(
             DenseEvalCaseResult(
                 case_id=case.case_id,
@@ -217,10 +235,12 @@ def evaluate_ranked_hits(
                 expected_evidence_summary=case.expected_evidence_summary,
                 source_doc_id=case.source_doc_id,
                 notes=case.notes,
+                ndcg_at_10=ndcg_value,
             )
         )
 
     case_count = len(results)
+    judged_ndcg_values = [result.ndcg_at_10 for result in results if result.ndcg_at_10 is not None]
     if case_count == 0:
         return DenseEvalReport(
             case_count=0,
@@ -230,6 +250,7 @@ def evaluate_ranked_hits(
             mrr_at_10=0.0,
             gold_recall_at_10=0.0,
             results=[],
+            ndcg_at_10=None,
         )
 
     return DenseEvalReport(
@@ -240,6 +261,11 @@ def evaluate_ranked_hits(
         mrr_at_10=sum(result.mrr_at_10 for result in results) / case_count,
         gold_recall_at_10=sum(result.gold_recall_at_10 for result in results) / case_count,
         results=results,
+        ndcg_at_10=(
+            sum(judged_ndcg_values) / len(judged_ndcg_values)
+            if judged_ndcg_values
+            else None
+        ),
     )
 
 
