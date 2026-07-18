@@ -1,0 +1,10 @@
+[
+  {
+    "scenario_id": "gazebo-navigate-floor-2",
+    "command": "去二楼救人",
+    "expected_floor": 2,
+    "expected_capability": "search_for_victims",
+    "min_memory_records": 1,
+    "requires_terminal_status": true
+  }
+]

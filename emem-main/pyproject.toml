@@ -1,0 +1,133 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emem"
+version = "0.3.0"
+description = "Hybrid graph-based spatio-temporal memory system for embodied agents"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Automatika Robotics"},
+]
+maintainers = [
+    {name = "Automatika Robotics"},
+]
+keywords = [
+    "memory",
+    "spatio-temporal",
+    "embodied-ai",
+    "robotics",
+    "llm",
+    "vector-search",
+    "semantic-search",
+    "episodic-memory",
+    "ros2",
+    "emos",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "numpy>=1.24",
+    "hnswlib>=0.8",
+    "Rtree>=1.0",
+    "scikit-learn>=1.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/automatika-robotics/emem"
+Repository = "https://github.com/automatika-robotics/emem"
+Documentation = "https://emos.automatikarobotics.com"
+Issues = "https://github.com/automatika-robotics/emem/issues"
+"EMOS Ecosystem" = "https://github.com/automatika-robotics/emos"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+embeddings = [
+    "sentence-transformers>=2.2",
+]
+benchmarks = [
+    # ProcTHOR-10K scene dataset loader (AllenAI).
+    "prior>=1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["emem*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ollama: requires running Ollama server",
+    "gemini: requires GEMINI_API_KEY env var",
+    "minigrid: requires minigrid installed",
+    "ai2thor: requires ai2thor installed",
+    "slow: tests taking >30s",
+]
+
+[tool.interrogate]
+ignore-init-method = true
+ignore-init-module = true
+ignore-magic = false
+ignore-semiprivate = false
+ignore-private = false
+ignore-property-decorators = false
+ignore-module = true
+ignore-nested-functions = false
+ignore-nested-classes = true
+ignore-setters = false
+exclude = ["setup.py", "docs", "build", "log", "install", "examples", "tests", "harness"]
+ignore-regex = ["^get$", "^mock_.*", ".*BaseClass.*", "^main"]
+quiet = false
+whitelist-regex = []
+color = true
+generate-badge = "."
+badge-format = "svg"
+
+[tool.ruff]
+extend-exclude = [".mypy_cache", ".tox", ".venv", "buck-out", "build", ".pytest_cache"]
+fix = true
+line-length = 88
+preview = true
+[tool.ruff.lint]
+ignore = ["E203", "E266", "E501", "F403", "F401"]
+select = ["B","C","E","F","W","B9"]
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.bumpver]
+current_version = "0.3.0"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit_message = "(chore) Bump version {old_version} -> {new_version}"
+tag_message = "{new_version}"
+tag_scope = "default"
+pre_commit_hook = ""
+post_commit_hook = ""
+commit = true
+tag = true
+push = true
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'version = "{version}"',
+]

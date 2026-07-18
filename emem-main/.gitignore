@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# eMEM data files
+*.db
+*.db-journal
+*.hnsw.bin
+data/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Technical report (not tracked)
+TECHNICAL_REPORT.md
+
+# preprint sources (not tracked)
+paper/
+
+# Benchmark run artifacts (not tracked)
+runs/
+nohup.out
+
+# Default HNSW path uses
+memory_hnsw.bin

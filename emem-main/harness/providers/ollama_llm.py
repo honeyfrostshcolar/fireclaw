@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from typing import Any
+
+from emem.consolidation import _parse_entities
+from harness.providers.http import post_json, strip_think_tags
+from harness.providers.ollama_vlm import _is_thinking_model
+
+
+class OllamaLLMClient:
+    """LLM client backed by an Ollama chat model.
+
+    Implements the :class:`~emem.consolidation.LLMClient` protocol
+    (required: ``summarize``; optional: ``synthesize``, ``extract_entities``).
+    """
+
+    def __init__(
+        self,
+        model: str = "qwen3.6:latest",
+        base_url: str = "http://localhost:11434",
+        seed: int | None = None,
+    ):
+        self._model = model
+        self._url = f"{base_url.rstrip('/')}/api/chat"
+        self._thinks = _is_thinking_model(model)
+        self._seed = seed
+
+    def summarize(self, texts: list[str]) -> str:
+        numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+        return self._chat(
+            "Summarize the following observations into a concise paragraph. "
+            "Preserve spatial and temporal details.\n\n" + numbered
+        )
+
+    def synthesize(self, layer_texts: dict[str, list[str]]) -> str:
+        block = "\n".join(
+            f"[{layer}]: {'; '.join(texts)}" for layer, texts in layer_texts.items()
+        )
+        return self._chat(
+            "Synthesize the following observations grouped by perception layer "
+            "into a coherent summary. Highlight agreements and contradictions.\n\n"
+            + block
+        )
+
+    def extract_entities(self, texts: list[str]) -> list[dict[str, Any]]:
+        numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+        raw = self._chat(
+            "Extract named entities (objects, places, people) from these "
+            "observations. Return ONLY a JSON array where each element has "
+            'keys: "name" (string), "entity_type" (string or null), '
+            '"confidence" (float 0-1), "observation_index" (integer, '
+            "1-based, indicating which numbered observation below this "
+            "entity came from). If the same entity appears in multiple "
+            "observations, emit one record per observation.\n\n" + numbered
+        )
+        return _parse_entities(raw)
+
+    def _chat(
+        self,
+        prompt: str,
+        max_tokens: int | None = None,
+    ) -> str:
+        body: dict = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        options: dict = {}
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
+        if self._seed is not None:
+            options["seed"] = self._seed
+        if options:
+            body["options"] = options
+        if self._thinks:
+            body["think"] = False
+        data = post_json(self._url, body, timeout=1800)
+        return strip_think_tags(data["message"]["content"])

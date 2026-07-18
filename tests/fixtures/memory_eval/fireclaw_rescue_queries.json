@@ -1,0 +1,14 @@
+[
+  {
+    "query": "去二楼救人",
+    "expected_record_ids": ["successful-rescue-floor-2"],
+    "min_score": 0.4,
+    "record_type": "mission_outcome"
+  },
+  {
+    "query": "热成像误报",
+    "expected_record_ids": ["thermal-false-positive-correction"],
+    "min_score": 0.35,
+    "record_type": "operator_correction"
+  }
+]

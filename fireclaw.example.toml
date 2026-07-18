@@ -1,0 +1,41 @@
+# FireClaw 配置文件示例
+# 复制为 fireclaw.toml 并填入你的实际值
+# CLI 参数会覆盖配置文件中的值
+
+[server]
+host = "0.0.0.0"
+port = 8766
+data_dir = "./data/mission"
+
+[planner]
+type = "deterministic"         # deterministic | llm
+
+# LLM Provider 配置（当 planner.type = "llm" 或 robot_agent.planner = "llm" 时使用）
+[provider]
+base_url = ""
+api_key = ""
+model = ""
+
+[mission]
+robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
+
+# Robot-Local Gateway 配置
+[robot_gateway]
+host = "127.0.0.1"
+port = 8765
+profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
+workspace_skills_dir = "skills"
+dry_run = true
+default_session_id = "default"
+max_active_execution_tasks = 1
+
+# Robot-Local Agent 配置
+[robot_agent]
+enabled = true
+planner = "llm"                # deterministic | llm
+
+# Robot Agent 的 LLM 配置（不填则复用 [provider]）
+[robot_agent.provider]
+# base_url = "https://api.deepseek.com/v1"
+# api_key = "sk-your-key-here"
+# model = "deepseek-chat"
