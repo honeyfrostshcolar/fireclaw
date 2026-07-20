@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fireclaw_core.agent.robot import EnvironmentState, RobotState
 from fireclaw_core.memory.embodied_memory import (
@@ -14,6 +14,9 @@ from fireclaw_core.memory.embodied_memory import (
 
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from fireclaw_core.memory.entity_extraction import EntityExtractionPipeline
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,7 @@ class RobotMemoryRecorder:
         robot_producer: EmbodiedMemoryProducer,
         sensor_producer: EmbodiedMemoryProducer,
         runtime_mode: str,
+        entity_extraction_pipeline: EntityExtractionPipeline | None = None,
     ) -> None:
         if robot_producer.producer_type != "robot_adapter":
             raise ValueError("robot_producer must use producer_type robot_adapter")
@@ -57,6 +61,7 @@ class RobotMemoryRecorder:
         self._robot_producer = robot_producer
         self._sensor_producer = sensor_producer
         self._runtime_mode = runtime_mode
+        self._entity_extraction_pipeline = entity_extraction_pipeline
 
     def record_snapshot(
         self,
@@ -209,7 +214,24 @@ class RobotMemoryRecorder:
 
     def _safe_record(self, producer: EmbodiedMemoryProducer, **kwargs: Any):
         try:
-            return producer.record_event(runtime_mode=self._runtime_mode, **kwargs)
+            event = producer.record_event(runtime_mode=self._runtime_mode, **kwargs)
         except Exception:
             logger.warning("Failed to write robot embodied-memory event", exc_info=True)
             return None
+        if event.event_type == "observation" and self._entity_extraction_pipeline is not None:
+            try:
+                report = self._entity_extraction_pipeline.process_observation(event)
+                if report.issues:
+                    logger.warning(
+                        "Entity extraction reported %d issue(s) for observation %s: %s",
+                        len(report.issues),
+                        event.event_id,
+                        [issue.message for issue in report.issues],
+                    )
+            except Exception:
+                logger.warning(
+                    "Entity extraction failed for persisted observation %s",
+                    event.event_id,
+                    exc_info=True,
+                )
+        return event
