@@ -9,6 +9,10 @@ from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 from fireclaw_core.memory.memory_retrieval import MemoryRetriever
 from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer, EmbodiedMemoryStore
+from fireclaw_core.memory.entity_memory import EntityMemoryService
+from fireclaw_core.memory.mission_memory_facade import MissionMemoryFacade
+from fireclaw_core.memory.mission_memory_tools import MissionMemoryTools
+from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
 from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_memory import MissionMemoryStore
@@ -35,6 +39,9 @@ class MissionRuntimePaths:
     task_flow: Path | None = None
     approvals: Path | None = None
     mission_planning_audit: Path | None = None
+    memory_lifecycle: Path | None = None
+    memory_audit_dir: Path | None = None
+    reusable_knowledge: Path | None = None
     embodied_runtime_mode: str | None = None
 
 
@@ -66,6 +73,7 @@ def build_mission_agent_from_paths(
     embodied_memory_producer = None
     approval_memory_producer = None
     embodied_working_memory = None
+    embodied_store = None
     if paths.embodied_runtime_mode is not None:
         if paths.mission_memory is None:
             raise ValueError("embodied_runtime_mode requires mission_memory")
@@ -120,6 +128,56 @@ def build_mission_agent_from_paths(
         profile_skill_chains_by_robot = {}
         primitive_skills_by_robot = {}
 
+    mission_memory_tools = None
+    memory_lifecycle = None
+    if embodied_store is not None and paths.embodied_runtime_mode is not None:
+        if any(
+            value is not None
+            for value in (
+                paths.memory_lifecycle,
+                paths.memory_audit_dir,
+                paths.reusable_knowledge,
+            )
+        ):
+            if not all(
+                value is not None
+                for value in (
+                    paths.memory_lifecycle,
+                    paths.memory_audit_dir,
+                    paths.reusable_knowledge,
+                )
+            ):
+                raise ValueError(
+                    "memory_lifecycle, memory_audit_dir, and reusable_knowledge "
+                    "must be configured together"
+                )
+            memory_lifecycle = MissionMemoryLifecycleStore(
+                store=embodied_store,
+                lifecycle_path=paths.memory_lifecycle,
+                audit_dir=paths.memory_audit_dir,
+                knowledge_path=paths.reusable_knowledge,
+                runtime_mode=paths.embodied_runtime_mode,
+            )
+        entity_memory = EntityMemoryService(
+            store=embodied_store,
+            resolver_producer=EmbodiedMemoryProducer(
+                embodied_store,
+                producer_type="entity_resolver",
+                producer_id="mission-memory-facade:entity-reader",
+                working_memory=embodied_working_memory,
+            ),
+            runtime_mode=paths.embodied_runtime_mode,
+        )
+        facade = MissionMemoryFacade(
+            store=embodied_store,
+            runtime_mode=paths.embodied_runtime_mode,
+            working_memory=embodied_working_memory,
+            entity_memory=entity_memory,
+            robot_state_provider=lambda: _registry_state(registry),
+            lifecycle=memory_lifecycle,
+        )
+        mission_memory_tools = MissionMemoryTools(facade)
+
     return MissionAgent(
         registry=registry,
         mission_registry=JsonlMissionRegistry(paths.mission_registry),
@@ -141,7 +199,26 @@ def build_mission_agent_from_paths(
         approval_memory_producer=approval_memory_producer,
         embodied_runtime_mode=paths.embodied_runtime_mode,
         embodied_working_memory=embodied_working_memory,
+        mission_memory_tools=mission_memory_tools,
+        memory_lifecycle=memory_lifecycle,
     )
+
+
+def _registry_state(registry: Any) -> dict[str, Any]:
+    return {
+        "entries": [
+            {
+                "robot_id": entry.robot_id,
+                "capabilities": list(entry.capabilities),
+                "zone": entry.zone,
+                "enabled": entry.enabled,
+                "is_online": registry.is_online(entry.robot_id),
+                "is_stale": registry.is_stale(entry.robot_id),
+                "last_seen_at": registry.get_last_seen_at(entry.robot_id),
+            }
+            for entry in registry.enabled_entries(include_stale=True)
+        ]
+    }
 
 
 def build_validation_sidecar(

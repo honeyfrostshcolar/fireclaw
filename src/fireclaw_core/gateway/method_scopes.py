@@ -10,6 +10,11 @@ WRITE_SCOPE = "task.submit"
 APPROVALS_SCOPE = "mission.approve"
 PAIRING_SCOPE = "robot.pairing"
 EMERGENCY_SCOPE = "emergency.stop"
+MEMORY_AUDIT_SCOPE = "memory.audit.read"
+MEMORY_LIFECYCLE_SCOPE = "memory.lifecycle.manage"
+MEMORY_DELETE_SCOPE = "memory.delete"
+MEMORY_KNOWLEDGE_APPROVE_SCOPE = "memory.knowledge.approve"
+MEMORY_REPLICATION_SCOPE = "memory.replication.read"
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,9 @@ _register(MethodDescriptor("GET /health", READ_SCOPE, "read", "Health check"))
 _register(MethodDescriptor("GET /state", READ_SCOPE, "read", "Robot state"))
 _register(MethodDescriptor("GET /skills", READ_SCOPE, "read", "List skills"))
 _register(MethodDescriptor("GET /memory/recent", READ_SCOPE, "read", "Recent memory"))
+_register(MethodDescriptor("GET /memory/replication", MEMORY_REPLICATION_SCOPE, "read", "Export embodied memory incrementally"))
+_register(MethodDescriptor("GET /entity-memory/tools", READ_SCOPE, "read", "List entity memory tools"))
+_register(MethodDescriptor("POST /entity-memory/tools/call", READ_SCOPE, "read", "Call a read-only entity memory tool"))
 _register(MethodDescriptor("GET /events/recent", READ_SCOPE, "read", "Recent events"))
 _register(MethodDescriptor("GET /events", READ_SCOPE, "read", "Event ledger"))
 _register(MethodDescriptor("GET /tasks/{id}", READ_SCOPE, "read", "Task trace"))
@@ -59,6 +67,16 @@ _register(MethodDescriptor("GET /events/stream", READ_SCOPE, "read", "SSE event 
 _register(MethodDescriptor("POST /missions", WRITE_SCOPE, "write", "Submit mission"))
 _register(MethodDescriptor("GET /missions/{id}/trace", READ_SCOPE, "read", "Mission trace"))
 _register(MethodDescriptor("GET /missions/{id}/events", READ_SCOPE, "read", "Mission events"))
+_register(MethodDescriptor("GET /missions/{id}/memory/tools", READ_SCOPE, "read", "List mission memory tools"))
+_register(MethodDescriptor("POST /missions/{id}/memory/tools/call", READ_SCOPE, "read", "Call a read-only mission memory tool"))
+_register(MethodDescriptor("POST /missions/{id}/memory/sync", WRITE_SCOPE, "write", "Synchronize robot evidence"))
+_register(MethodDescriptor("GET /missions/{id}/memory/lifecycle", MEMORY_AUDIT_SCOPE, "read", "Read memory lifecycle and tombstones"))
+_register(MethodDescriptor("GET /missions/{id}/memory/audit", MEMORY_AUDIT_SCOPE, "read", "Read archived mission evidence"))
+_register(MethodDescriptor("POST /missions/{id}/memory/archive", MEMORY_LIFECYCLE_SCOPE, "write", "Seal mission memory for audit"))
+_register(MethodDescriptor("POST /missions/{id}/memory/delete", MEMORY_DELETE_SCOPE, "delete", "Delete archived evidence and retain tombstone"))
+_register(MethodDescriptor("GET /memory/knowledge", READ_SCOPE, "read", "Read approved reusable knowledge"))
+_register(MethodDescriptor("POST /memory/knowledge/approve", MEMORY_KNOWLEDGE_APPROVE_SCOPE, "approve", "Approve cross-mission knowledge"))
+_register(MethodDescriptor("POST /memory/knowledge/{id}/revoke", MEMORY_KNOWLEDGE_APPROVE_SCOPE, "approve", "Revoke cross-mission knowledge"))
 _register(MethodDescriptor("POST /missions/{id}/cancel", WRITE_SCOPE, "write", "Cancel mission"))
 _register(MethodDescriptor("POST /missions/{id}/approvals", APPROVALS_SCOPE, "approve", "Mission approval"))
 _register(MethodDescriptor("GET /fleet/state", READ_SCOPE, "read", "Fleet state"))

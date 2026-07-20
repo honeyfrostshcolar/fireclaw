@@ -11,9 +11,16 @@ logger = logging.getLogger(__name__)
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
 from fireclaw_core.infra.log_redaction import redact_dict
+from fireclaw_core.memory.mission_memory_facade import MemoryAccessContext
+from fireclaw_core.memory.mission_memory_tools import (
+    CURRENT_CONTEXT_TOOL,
+    MissionMemoryTools,
+)
+from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
 from fireclaw_core.memory.embodied_memory import (
     MEMORY_RUNTIME_MODES,
     EmbodiedMemoryProducer,
+    EmbodiedMemoryStore,
 )
 from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
@@ -88,6 +95,8 @@ class MissionAgent:
         approval_memory_producer: EmbodiedMemoryProducer | None = None,
         embodied_runtime_mode: str | None = None,
         embodied_working_memory: EmbodiedWorkingMemory | None = None,
+        mission_memory_tools: MissionMemoryTools | None = None,
+        memory_lifecycle: MissionMemoryLifecycleStore | None = None,
     ) -> None:
         self.registry = registry
         self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
@@ -133,10 +142,46 @@ class MissionAgent:
         self.approval_memory_producer = approval_memory_producer
         self.embodied_runtime_mode = embodied_runtime_mode
         self.embodied_working_memory = embodied_working_memory
+        self.mission_memory_tools = mission_memory_tools
+        self.memory_lifecycle = memory_lifecycle
 
     @property
     def session_lineage_store(self) -> JsonlSessionLineageStore | None:
         return self._session_lineage_store
+
+    @property
+    def embodied_memory_store(self) -> EmbodiedMemoryStore | None:
+        if self.embodied_memory_producer is None:
+            return None
+        return self.embodied_memory_producer.store
+
+    def memory_tool_definitions(self) -> list[dict[str, Any]]:
+        if self.mission_memory_tools is None:
+            return []
+        return self.mission_memory_tools.tool_schemas()
+
+    def call_memory_tool(
+        self,
+        *,
+        mission_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        requester_id: str,
+        scopes: frozenset[str],
+    ) -> dict[str, Any]:
+        if self.mission_memory_tools is None or self.embodied_runtime_mode is None:
+            return {
+                "status": "not_configured",
+                "mission_id": mission_id,
+                "advisory_only": True,
+            }
+        access = MemoryAccessContext(
+            mission_id=mission_id,
+            runtime_mode=self.embodied_runtime_mode,
+            requester_id=requester_id,
+            scopes=scopes,
+        )
+        return self.mission_memory_tools.execute(name, arguments, access=access)
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -654,6 +699,25 @@ class MissionAgent:
                 memories = memories[-max_memories:]
             except Exception:
                 logger.warning("Failed to project working memory into planner context", exc_info=True)
+
+        if mission_id is not None and self.mission_memory_tools is not None:
+            try:
+                operator_scopes = frozenset(
+                    self.operator.control_scopes if self.operator is not None else {"state.read"}
+                )
+                context_memory = self.call_memory_tool(
+                    mission_id=mission_id,
+                    name=CURRENT_CONTEXT_TOOL,
+                    arguments={"limit": max_memories},
+                    requester_id=(
+                        self.operator.operator_id if self.operator is not None else "mission-agent"
+                    ),
+                    scopes=operator_scopes,
+                )
+                memories.append({"memory_tier": "mission_facade", **context_memory})
+                memories = memories[-max_memories:]
+            except Exception:
+                logger.warning("Failed to read planner context through memory facade", exc_info=True)
 
         try:
             if self.mission_memory is not None:

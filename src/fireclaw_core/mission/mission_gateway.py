@@ -24,6 +24,10 @@ from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore, valida
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
 from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
+from fireclaw_core.memory.reconciliation import (
+    EmbodiedMemoryReconciler,
+    ReplicationBatch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,14 @@ MISSION_EVENTS_RE = re.compile(r"^/missions/([^/]+)/events$")
 MISSION_CANCEL_RE = re.compile(r"^/missions/([^/]+)/cancel$")
 MISSION_APPROVALS_RE = re.compile(r"^/missions/([^/]+)/approvals$")
 MISSION_EVENTS_STREAM_RE = re.compile(r"^/missions/([^/]+)/events/stream$")
+MISSION_MEMORY_SYNC_RE = re.compile(r"^/missions/([^/]+)/memory/sync$")
+MISSION_MEMORY_TOOLS_RE = re.compile(r"^/missions/([^/]+)/memory/tools$")
+MISSION_MEMORY_TOOL_CALL_RE = re.compile(r"^/missions/([^/]+)/memory/tools/call$")
+MISSION_MEMORY_LIFECYCLE_RE = re.compile(r"^/missions/([^/]+)/memory/lifecycle$")
+MISSION_MEMORY_AUDIT_RE = re.compile(r"^/missions/([^/]+)/memory/audit$")
+MISSION_MEMORY_ARCHIVE_RE = re.compile(r"^/missions/([^/]+)/memory/archive$")
+MISSION_MEMORY_DELETE_RE = re.compile(r"^/missions/([^/]+)/memory/delete$")
+MEMORY_KNOWLEDGE_REVOKE_RE = re.compile(r"^/memory/knowledge/([^/]+)/revoke$")
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,7 @@ class MissionGateway:
         task_registry: JsonlTaskRegistryStore | None = None,
         subagent_registry: JsonlSubagentRegistry | None = None,
         session_lineage_store: JsonlSessionLineageStore | None = None,
+        memory_reconciler: EmbodiedMemoryReconciler | None = None,
     ) -> None:
         self.config = config
         self.mission_agent = mission_agent
@@ -70,6 +83,7 @@ class MissionGateway:
         self.task_registry = task_registry
         self.subagent_registry = subagent_registry
         self._session_lineage_store = session_lineage_store
+        self.memory_reconciler = memory_reconciler
         self._approval_relays: dict[str, dict[str, Any]] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -186,6 +200,266 @@ class MissionGateway:
             event_type=event_type,
             limit=limit,
         )
+
+    def get_memory_tool_definitions(self, mission_id: str) -> dict[str, Any]:
+        tools = self.mission_agent.memory_tool_definitions()
+        lifecycle = self.mission_agent.memory_lifecycle
+        lifecycle_state = lifecycle.state(mission_id).to_dict() if lifecycle else None
+        if lifecycle_state is not None and not lifecycle_state["operational"]:
+            tools = []
+        return {
+            "mission_id": mission_id,
+            "runtime_mode": self.mission_agent.embodied_runtime_mode,
+            "tools": tools,
+            "count": len(tools),
+            "read_only": True,
+            "advisory_only": True,
+            "memory_lifecycle": lifecycle_state,
+        }
+
+    def call_memory_tool(
+        self,
+        mission_id: str,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        requester_id: str,
+        scopes: frozenset[str],
+    ) -> dict[str, Any]:
+        return self.mission_agent.call_memory_tool(
+            mission_id=mission_id,
+            name=name,
+            arguments=arguments,
+            requester_id=requester_id,
+            scopes=scopes,
+        )
+
+    def get_memory_lifecycle(self, mission_id: str) -> dict[str, Any]:
+        lifecycle = self.mission_agent.memory_lifecycle
+        if lifecycle is None:
+            return {"status": "not_configured", "mission_id": mission_id}
+        return {
+            "status": "ok",
+            "lifecycle": lifecycle.state(mission_id).to_dict(),
+            "history": lifecycle.lifecycle_history(mission_id),
+        }
+
+    def get_memory_audit(
+        self,
+        mission_id: str,
+        *,
+        include_restricted: bool,
+        limit: int,
+    ) -> dict[str, Any]:
+        lifecycle = self.mission_agent.memory_lifecycle
+        if lifecycle is None:
+            return {"status": "not_configured", "mission_id": mission_id}
+        return lifecycle.read_audit(
+            mission_id,
+            include_restricted=include_restricted,
+            limit=limit,
+        )
+
+    def archive_memory(
+        self,
+        mission_id: str,
+        *,
+        actor_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        lifecycle = self.mission_agent.memory_lifecycle
+        if lifecycle is None:
+            return {"status": "not_configured", "mission_id": mission_id}
+        trace = self.get_mission_trace(mission_id)
+        if trace.get("status") == "not_found":
+            return {"status": "not_found", "mission_id": mission_id}
+        return lifecycle.archive_mission(
+            mission_id,
+            actor_id=actor_id,
+            reason=reason,
+            mission_status=str(trace.get("status") or "unknown"),
+        )
+
+    def delete_memory_audit(
+        self,
+        mission_id: str,
+        *,
+        actor_id: str,
+        reason: str,
+        confirmation: str,
+    ) -> dict[str, Any]:
+        lifecycle = self.mission_agent.memory_lifecycle
+        if lifecycle is None:
+            return {"status": "not_configured", "mission_id": mission_id}
+        return lifecycle.delete_audit(
+            mission_id,
+            actor_id=actor_id,
+            reason=reason,
+            confirmation=confirmation,
+        )
+
+    def list_reusable_knowledge(
+        self,
+        *,
+        knowledge_type: str | None,
+        tags: list[str],
+        limit: int,
+    ) -> dict[str, Any]:
+        lifecycle = self.mission_agent.memory_lifecycle
+        if lifecycle is None:
+            return {"status": "not_configured", "knowledge": [], "count": 0}
+        records = lifecycle.list_knowledge(
+            knowledge_type=knowledge_type,
+            tags=tags,
+            limit=limit,
+        )
+        return {
+            "status": "ok",
+            "knowledge": [record.to_dict() for record in records],
+            "count": len(records),
+            "advisory_only": True,
+        }
+
+    def approve_reusable_knowledge(
+        self,
+        payload: dict[str, Any],
+        *,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        lifecycle = self.mission_agent.memory_lifecycle
+        if lifecycle is None:
+            return {"status": "not_configured"}
+        source_event_ids = payload.get("source_event_ids")
+        content = payload.get("content")
+        tags = payload.get("tags", [])
+        applicable_runtime_modes = payload.get("applicable_runtime_modes")
+        if not isinstance(source_event_ids, list):
+            raise ValueError("Field 'source_event_ids' must be an array")
+        if not isinstance(content, dict):
+            raise ValueError("Field 'content' must be an object")
+        if not isinstance(tags, list):
+            raise ValueError("Field 'tags' must be an array")
+        if applicable_runtime_modes is not None and not isinstance(
+            applicable_runtime_modes, list
+        ):
+            raise ValueError("Field 'applicable_runtime_modes' must be an array")
+        record = lifecycle.approve_knowledge(
+            source_mission_id=str(payload.get("source_mission_id") or ""),
+            source_event_ids=source_event_ids,
+            knowledge_type=str(payload.get("knowledge_type") or ""),
+            title=str(payload.get("title") or ""),
+            content=content,
+            tags=tags,
+            applicable_runtime_modes=applicable_runtime_modes,
+            actor_id=actor_id,
+            reason=str(payload.get("reason") or ""),
+        )
+        return {"status": "approved", "knowledge": record.to_dict()}
+
+    def revoke_reusable_knowledge(
+        self,
+        knowledge_id: str,
+        *,
+        actor_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        lifecycle = self.mission_agent.memory_lifecycle
+        if lifecycle is None:
+            return {"status": "not_configured"}
+        record = lifecycle.revoke_knowledge(
+            knowledge_id,
+            actor_id=actor_id,
+            reason=reason,
+        )
+        return {"status": "revoked", "knowledge": record.to_dict()}
+
+    def sync_robot_memory(
+        self,
+        mission_id: str,
+        *,
+        robot_id: str | None = None,
+        batch_limit: int = 200,
+        max_batches: int = 10,
+    ) -> dict[str, Any]:
+        if self.memory_reconciler is None:
+            return {"status": "not_configured", "mission_id": mission_id, "robots": []}
+        if not 1 <= batch_limit <= 1000:
+            raise ValueError("batch_limit must be between 1 and 1000")
+        if not 1 <= max_batches <= 100:
+            raise ValueError("max_batches must be between 1 and 100")
+        if robot_id is not None:
+            entry = self.registry.get(robot_id)
+            entries = [entry] if entry is not None and entry.enabled else []
+        else:
+            entries = self.registry.enabled_entries(include_stale=True)
+        if not entries:
+            return {
+                "status": "not_found",
+                "mission_id": mission_id,
+                "robot_id": robot_id,
+                "robots": [],
+            }
+
+        robot_results: list[dict[str, Any]] = []
+        for entry in entries:
+            expected_store_id = f"robot:{entry.robot_id}"
+            cursor = self.memory_reconciler.checkpoint(
+                expected_store_id,
+                mission_id=mission_id,
+            )
+            reports: list[dict[str, Any]] = []
+            has_more = False
+            error: str | None = None
+            for _ in range(max_batches):
+                try:
+                    payload = self.subagent_client.get_memory_replication(
+                        entry,
+                        cursor=cursor,
+                        limit=batch_limit,
+                        mission_id=mission_id,
+                        runtime_mode=self.memory_reconciler.runtime_mode,
+                    )
+                    batch = ReplicationBatch.from_dict(payload)
+                    if batch.source_store_id != expected_store_id:
+                        raise ValueError("robot replication store identity mismatch")
+                    if batch.cursor != cursor:
+                        raise ValueError("robot replication cursor mismatch")
+                    report = self.memory_reconciler.ingest_batch(
+                        batch,
+                        expected_robot_id=entry.robot_id,
+                        expected_mission_id=mission_id,
+                    )
+                except Exception as exc:
+                    error = str(exc)
+                    break
+                reports.append(report.to_dict())
+                if batch.next_cursor == cursor and batch.has_more:
+                    error = "robot replication cursor made no progress"
+                    break
+                cursor = batch.next_cursor
+                has_more = batch.has_more
+                if not has_more:
+                    break
+            robot_results.append({
+                "robot_id": entry.robot_id,
+                "source_store_id": expected_store_id,
+                "cursor": cursor,
+                "has_more": has_more,
+                "reports": reports,
+                "status": "error" if error is not None else ("partial" if has_more else "synced"),
+                "error": error,
+            })
+        return {
+            "status": (
+                "error"
+                if all(item["status"] == "error" for item in robot_results)
+                else "partial"
+                if any(item["status"] != "synced" for item in robot_results)
+                else "synced"
+            ),
+            "mission_id": mission_id,
+            "robots": robot_results,
+        }
 
     def cancel_mission(
         self,
@@ -529,6 +803,18 @@ class MissionGateway:
         if path == "/fleet/doctor":
             self._write_json(handler, HTTPStatus.OK, self.fleet_doctor())
             return
+        if path == "/memory/knowledge":
+            try:
+                result = self.list_reusable_knowledge(
+                    knowledge_type=_first(query, "knowledge_type"),
+                    tags=[value for value in query.get("tag", []) if value],
+                    limit=_int_query(query, "limit", 100),
+                )
+            except ValueError as exc:
+                self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            self._write_json(handler, HTTPStatus.OK, result)
+            return
 
         trace_match = MISSION_TRACE_RE.match(path)
         if trace_match:
@@ -551,6 +837,44 @@ class MissionGateway:
             )
             return
 
+        tools_match = MISSION_MEMORY_TOOLS_RE.match(path)
+        if tools_match:
+            mission_id = tools_match.group(1)
+            self._write_json(
+                handler,
+                HTTPStatus.OK,
+                self.get_memory_tool_definitions(mission_id),
+            )
+            return
+
+        lifecycle_match = MISSION_MEMORY_LIFECYCLE_RE.match(path)
+        if lifecycle_match:
+            mission_id = lifecycle_match.group(1)
+            self._write_json(
+                handler,
+                HTTPStatus.OK,
+                self.get_memory_lifecycle(mission_id),
+            )
+            return
+
+        audit_match = MISSION_MEMORY_AUDIT_RE.match(path)
+        if audit_match:
+            mission_id = audit_match.group(1)
+            scopes = _extract_scopes_from_header(handler)
+            try:
+                result = self.get_memory_audit(
+                    mission_id,
+                    include_restricted=(
+                        "admin" in scopes or "memory.restricted.read" in scopes
+                    ),
+                    limit=_int_query(query, "limit", 200),
+                )
+            except (ValueError, RuntimeError) as exc:
+                self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            self._write_json(handler, HTTPStatus.OK, result)
+            return
+
         self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {path}")
 
     def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
@@ -571,6 +895,120 @@ class MissionGateway:
                     use_scheduler=payload.get("use_scheduler", True),
                 )
                 status = _mission_submit_status(result)
+                self._write_json(handler, status, result)
+                return
+
+            if path == "/memory/knowledge/approve":
+                try:
+                    result = self.approve_reusable_knowledge(
+                        payload,
+                        actor_id=_requester_id_from_header(handler),
+                    )
+                except ValueError as exc:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                self._write_json(handler, HTTPStatus.OK, result)
+                return
+
+            knowledge_revoke_match = MEMORY_KNOWLEDGE_REVOKE_RE.match(path)
+            if knowledge_revoke_match:
+                try:
+                    result = self.revoke_reusable_knowledge(
+                        knowledge_revoke_match.group(1),
+                        actor_id=_requester_id_from_header(handler),
+                        reason=str(payload.get("reason") or ""),
+                    )
+                except KeyError as exc:
+                    self._write_error(handler, HTTPStatus.NOT_FOUND, str(exc))
+                    return
+                except ValueError as exc:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                self._write_json(handler, HTTPStatus.OK, result)
+                return
+
+            archive_match = MISSION_MEMORY_ARCHIVE_RE.match(path)
+            if archive_match:
+                mission_id = archive_match.group(1)
+                try:
+                    result = self.archive_memory(
+                        mission_id,
+                        actor_id=_requester_id_from_header(handler),
+                        reason=str(payload.get("reason") or ""),
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                status = HTTPStatus.NOT_FOUND if result.get("status") == "not_found" else HTTPStatus.OK
+                self._write_json(handler, status, result)
+                return
+
+            delete_match = MISSION_MEMORY_DELETE_RE.match(path)
+            if delete_match:
+                mission_id = delete_match.group(1)
+                try:
+                    result = self.delete_memory_audit(
+                        mission_id,
+                        actor_id=_requester_id_from_header(handler),
+                        reason=str(payload.get("reason") or ""),
+                        confirmation=str(payload.get("confirmation") or ""),
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                self._write_json(handler, HTTPStatus.OK, result)
+                return
+
+            sync_match = MISSION_MEMORY_SYNC_RE.match(path)
+            if sync_match:
+                mission_id = sync_match.group(1)
+                try:
+                    result = self.sync_robot_memory(
+                        mission_id,
+                        robot_id=_optional_string(payload, "robot_id"),
+                        batch_limit=_optional_positive_int(payload, "batch_limit", 200),
+                        max_batches=_optional_positive_int(payload, "max_batches", 10),
+                    )
+                except ValueError as exc:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                status = (
+                    HTTPStatus.SERVICE_UNAVAILABLE
+                    if result.get("status") == "not_configured"
+                    else HTTPStatus.NOT_FOUND
+                    if result.get("status") == "not_found"
+                    else HTTPStatus.OK
+                )
+                self._write_json(handler, status, result)
+                return
+
+            tool_call_match = MISSION_MEMORY_TOOL_CALL_RE.match(path)
+            if tool_call_match:
+                mission_id = tool_call_match.group(1)
+                name = payload.get("name")
+                arguments = payload.get("arguments", {})
+                if not isinstance(name, str) or not name.strip():
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'name' is required.")
+                    return
+                if not isinstance(arguments, dict):
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'arguments' must be an object.")
+                    return
+                try:
+                    result = self.call_memory_tool(
+                        mission_id,
+                        name=name.strip(),
+                        arguments=arguments,
+                        requester_id=_requester_id_from_header(handler),
+                        scopes=frozenset(_extract_scopes_from_header(handler)),
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                status = (
+                    HTTPStatus.SERVICE_UNAVAILABLE
+                    if result.get("status") == "not_configured"
+                    else HTTPStatus.OK
+                )
                 self._write_json(handler, status, result)
                 return
 
@@ -669,6 +1107,13 @@ def _optional_string(payload: dict[str, Any], key: str) -> str | None:
     return None
 
 
+def _optional_positive_int(payload: dict[str, Any], key: str, default: int) -> int:
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"Field '{key}' must be a positive integer.")
+    return value
+
+
 def _derive_action_from_command(command: str) -> str:
     """Derive a short semantic action label from a natural-language command."""
     if not command:
@@ -700,3 +1145,8 @@ def _extract_scopes_from_header(handler: BaseHTTPRequestHandler) -> set[str]:
     if scopes_header:
         return {s.strip() for s in scopes_header.split(",") if s.strip()}
     return {"state.read"}
+
+
+def _requester_id_from_header(handler: BaseHTTPRequestHandler) -> str:
+    value = handler.headers.get("X-Operator-Id", "").strip()
+    return value or "mission-gateway-reader"
