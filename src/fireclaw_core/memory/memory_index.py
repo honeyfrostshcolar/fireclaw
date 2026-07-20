@@ -130,6 +130,31 @@ class SqliteMemoryIndex:
                 metadata_json   TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS entity_projection_meta (
+                mission_id      TEXT NOT NULL,
+                runtime_mode    TEXT NOT NULL,
+                source_token    TEXT NOT NULL,
+                entity_count    INTEGER NOT NULL,
+                rebuilt_at      TEXT NOT NULL,
+                PRIMARY KEY (mission_id, runtime_mode)
+            );
+
+            CREATE TABLE IF NOT EXISTS entity_projection (
+                mission_id      TEXT NOT NULL,
+                runtime_mode    TEXT NOT NULL,
+                entity_id       TEXT NOT NULL,
+                entity_kind     TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                last_seen_at    TEXT NOT NULL,
+                frame_id        TEXT,
+                floor           TEXT,
+                position_x      REAL,
+                position_y      REAL,
+                uncertainty_radius_m REAL,
+                payload_json    TEXT NOT NULL,
+                PRIMARY KEY (mission_id, runtime_mode, entity_id)
+            );
+
             """
         )
         _ensure_columns(
@@ -160,6 +185,16 @@ class SqliteMemoryIndex:
                 ON memory_relations(runtime_mode, source_record_id, relation_type);
             CREATE INDEX IF NOT EXISTS memory_relations_target_idx
                 ON memory_relations(runtime_mode, target_record_id, relation_type);
+            CREATE INDEX IF NOT EXISTS memory_records_entity_source_idx
+                ON memory_records(mission_id, runtime_mode, record_type);
+            CREATE INDEX IF NOT EXISTS entity_projection_filter_idx
+                ON entity_projection(
+                    mission_id, runtime_mode, entity_kind, status, last_seen_at
+                );
+            CREATE INDEX IF NOT EXISTS entity_projection_spatial_idx
+                ON entity_projection(
+                    mission_id, runtime_mode, frame_id, floor, position_x, position_y
+                );
             """
         )
 
@@ -593,7 +628,130 @@ class SqliteMemoryIndex:
         conn.execute("DELETE FROM memory_records")
         conn.execute("DELETE FROM memory_fts")
         conn.execute("DELETE FROM memory_embeddings")
+        conn.execute("DELETE FROM entity_projection")
+        conn.execute("DELETE FROM entity_projection_meta")
         conn.commit()
+
+    def entity_source_token(self, *, mission_id: str, runtime_mode: str) -> str:
+        """Return a stable token for Entity mention/resolution source rows."""
+        _require_query_text("mission_id", mission_id)
+        _require_query_text("runtime_mode", runtime_mode)
+        row = self._get_conn().execute(
+            """
+            SELECT COUNT(*) AS source_count, COALESCE(MAX(rowid), 0) AS max_rowid
+            FROM memory_records
+            WHERE mission_id = ? AND runtime_mode = ?
+              AND record_type IN ('entity_mention', 'entity_resolution')
+            """,
+            (mission_id, runtime_mode),
+        ).fetchone()
+        return f"entity-events-v2:{int(row['source_count'])}:{int(row['max_rowid'])}"
+
+    def load_entity_projection(
+        self,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        source_token: str,
+    ) -> list[dict[str, Any]] | None:
+        """Load a complete Entity projection only when its source token matches."""
+        conn = self._get_conn()
+        meta = conn.execute(
+            """
+            SELECT source_token, entity_count
+            FROM entity_projection_meta
+            WHERE mission_id = ? AND runtime_mode = ?
+            """,
+            (mission_id, runtime_mode),
+        ).fetchone()
+        if meta is None or meta["source_token"] != source_token:
+            return None
+        rows = conn.execute(
+            """
+            SELECT payload_json
+            FROM entity_projection
+            WHERE mission_id = ? AND runtime_mode = ?
+            ORDER BY entity_id ASC
+            """,
+            (mission_id, runtime_mode),
+        ).fetchall()
+        if len(rows) != int(meta["entity_count"]):
+            return None
+        payloads: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                value = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                return None
+            if not isinstance(value, dict):
+                return None
+            payloads.append(value)
+        return payloads
+
+    def replace_entity_projection(
+        self,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        source_token: str,
+        entities: Iterable[dict[str, Any]],
+    ) -> int:
+        """Atomically replace one mission/runtime Entity derived projection."""
+        _require_query_text("mission_id", mission_id)
+        _require_query_text("runtime_mode", runtime_mode)
+        _require_query_text("source_token", source_token)
+        payloads = [dict(entity) for entity in entities]
+        conn = self._get_conn()
+        with conn:
+            conn.execute(
+                "DELETE FROM entity_projection WHERE mission_id = ? AND runtime_mode = ?",
+                (mission_id, runtime_mode),
+            )
+            for payload in payloads:
+                entity_id = str(payload.get("entity_id") or "")
+                if not entity_id:
+                    raise ValueError("Entity projection payload requires entity_id")
+                pose = payload.get("current_pose")
+                if not isinstance(pose, dict):
+                    pose = {}
+                conn.execute(
+                    """
+                    INSERT INTO entity_projection (
+                        mission_id, runtime_mode, entity_id, entity_kind, status,
+                        last_seen_at, frame_id, floor, position_x, position_y,
+                        uncertainty_radius_m, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        mission_id,
+                        runtime_mode,
+                        entity_id,
+                        str(payload.get("entity_kind") or "unknown"),
+                        str(payload.get("status") or "candidate"),
+                        str(payload.get("last_seen_at") or ""),
+                        pose.get("frame_id"),
+                        pose.get("floor"),
+                        _optional_float(pose.get("x")),
+                        _optional_float(pose.get("y")),
+                        _optional_float(pose.get("uncertainty_radius_m")),
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO entity_projection_meta (
+                    mission_id, runtime_mode, source_token, entity_count, rebuilt_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    mission_id,
+                    runtime_mode,
+                    source_token,
+                    len(payloads),
+                    datetime.now().astimezone().isoformat(),
+                ),
+            )
+        return len(payloads)
 
     def store_embedding(
         self, record_id: str, embedding: list[float]

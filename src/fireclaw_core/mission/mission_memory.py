@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from fireclaw_core.memory.memory_index import SqliteMemoryIndex
@@ -19,6 +22,9 @@ MEMORY_RECORD_TYPES = {
     "observation",
     "outcome",
     "correction",
+    "entity_mention",
+    "entity_resolution",
+    "episode",
     "lesson",
     "relation",
     "safety_decision",
@@ -93,6 +99,12 @@ class MissionMemoryStore:
         self._index: SqliteMemoryIndex | None = None
         self._index_path: Path | None = Path(index_path) if index_path else None
         self._indexing_policy = indexing_policy or TranscriptIndexingPolicy()
+        self._lock = threading.RLock()
+        self._write_guard: Callable[[str], None] | None = None
+
+    def set_write_guard(self, guard: Callable[[str], None] | None) -> None:
+        """Install a mission-level lifecycle guard for future appends."""
+        self._write_guard = guard
 
     @property
     def index(self) -> SqliteMemoryIndex | None:
@@ -104,18 +116,83 @@ class MissionMemoryStore:
             self._index = SqliteMemoryIndex(self._index_path)
         return self._index
 
+    def snapshot_token(self) -> str:
+        """Return an O(1) token that changes when the JSONL authority changes."""
+        with self._lock:
+            try:
+                stat = self.path.stat()
+            except FileNotFoundError:
+                return "missing"
+            return ":".join(str(value) for value in (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            ))
+
     def append(self, record: MissionMemoryRecord) -> None:
         if record.record_type not in MEMORY_RECORD_TYPES:
             raise ValueError(
                 f"Invalid record type: {record.record_type}. "
                 f"Must be one of: {sorted(MEMORY_RECORD_TYPES)}"
             )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
-            handle.write("\n")
-        if self.index is not None and self._indexing_policy.should_index(record.record_type):
-            self.index.upsert(record.to_dict())
+        with self._lock:
+            if self._write_guard is not None:
+                self._write_guard(record.mission_id)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+            if self.index is not None and self._indexing_policy.should_index(record.record_type):
+                self.index.upsert(record.to_dict())
+
+    def purge_mission(self, mission_id: str) -> int:
+        """Atomically remove one mission from the hot JSONL store.
+
+        Lifecycle audit data must be written before this method is called. Any
+        malformed or unrelated JSONL lines are preserved byte-for-byte.
+        """
+        if not mission_id.strip():
+            raise ValueError("mission_id must not be empty")
+        with self._lock:
+            if not self.path.exists():
+                return 0
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            removed = 0
+            fd, temporary_name = tempfile.mkstemp(
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+                dir=self.path.parent,
+            )
+            temporary_path = Path(temporary_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as output, self.path.open(
+                    "r", encoding="utf-8"
+                ) as source:
+                    for line in source:
+                        try:
+                            value = json.loads(line)
+                        except json.JSONDecodeError:
+                            output.write(line)
+                            continue
+                        if isinstance(value, dict) and value.get("mission_id") == mission_id:
+                            removed += 1
+                            continue
+                        output.write(line)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary_path, self.path)
+            except Exception:
+                temporary_path.unlink(missing_ok=True)
+                raise
+            if self.index is not None:
+                records = self._read_all_unlocked()
+                self.index.clear()
+                for record in records:
+                    if self._indexing_policy.should_index(record.record_type):
+                        self.index.upsert(record.to_dict())
+            return removed
 
     def ingest_transcript(
         self,
@@ -261,6 +338,10 @@ class MissionMemoryStore:
         }
 
     def _read_all(self) -> list[MissionMemoryRecord]:
+        with self._lock:
+            return self._read_all_unlocked()
+
+    def _read_all_unlocked(self) -> list[MissionMemoryRecord]:
         if not self.path.exists():
             return []
         records: list[MissionMemoryRecord] = []

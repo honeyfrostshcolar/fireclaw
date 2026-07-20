@@ -34,6 +34,8 @@ EMBODIED_EVENT_TYPES: frozenset[str] = frozenset({
     "command",
     "correction",
     "episode",
+    "entity_mention",
+    "entity_resolution",
     "gist",
     "lesson",
     "mission",
@@ -49,6 +51,7 @@ MEMORY_RELATION_TYPES: frozenset[str] = frozenset({
     "belongs_to",
     "caused_by",
     "corrects",
+    "co_observed_with",
     "follows",
     "observed_in",
     "subtask_of",
@@ -76,7 +79,8 @@ MEMORY_EVIDENCE_KINDS: frozenset[str] = frozenset({
 })
 
 MEMORY_PRODUCER_EVENT_TYPES: dict[str, frozenset[str]] = {
-    "approval_runtime": frozenset({"correction", "safety_decision"}),
+    "approval_runtime": frozenset({"correction", "entity_resolution", "safety_decision"}),
+    "entity_resolver": frozenset({"entity_mention", "entity_resolution"}),
     "memory_consolidator": frozenset({"episode", "gist", "lesson"}),
     "mission_agent": frozenset({
         "command",
@@ -98,6 +102,7 @@ MEMORY_PRODUCER_EVENT_TYPES: dict[str, frozenset[str]] = {
 
 MEMORY_PRODUCER_EVIDENCE_KINDS: dict[str, frozenset[str]] = {
     "approval_runtime": frozenset({"operator_assertion", "runtime_evidence"}),
+    "entity_resolver": frozenset({"cognitive_artifact", "runtime_evidence"}),
     "memory_consolidator": frozenset({"derived_summary"}),
     "mission_agent": frozenset({
         "cognitive_artifact",
@@ -115,11 +120,17 @@ MEMORY_PRODUCER_EVIDENCE_KINDS: dict[str, frozenset[str]] = {
 }
 
 MEMORY_EVIDENCE_EVENT_TYPES: dict[str, frozenset[str]] = {
-    "cognitive_artifact": frozenset({"mission", "outcome", "plan", "subtask"}),
+    "cognitive_artifact": frozenset({"entity_mention", "mission", "outcome", "plan", "subtask"}),
     "derived_summary": frozenset({"episode", "gist", "lesson"}),
-    "operator_assertion": frozenset({"command", "correction", "safety_decision"}),
+    "operator_assertion": frozenset({
+        "command",
+        "correction",
+        "entity_resolution",
+        "safety_decision",
+    }),
     "runtime_evidence": frozenset({
         "body_state",
+        "entity_resolution",
         "mission",
         "observation",
         "outcome",
@@ -802,6 +813,10 @@ class EmbodiedMemoryProducer:
     @property
     def producer_id(self) -> str:
         return self._producer_id
+
+    @property
+    def store(self) -> EmbodiedMemoryStore:
+        return self._store
 
     def record_event(
         self,
