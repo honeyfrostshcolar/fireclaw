@@ -13,6 +13,7 @@ from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mis
 from fireclaw_core.planner.planner_builder import build_planner
 from fireclaw_core.agent.robot_registry import load_robot_registry
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
+from fireclaw_core.memory.reconciliation import EmbodiedMemoryReconciler
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ def start_server(
     robot_agent_provider_api_key: str | None = None,
     robot_agent_model: str | None = None,
     robot_profiles: tuple[str, ...] | None = None,
+    embodied_runtime_mode: str | None = None,
 ) -> MissionGateway:
     """Assemble and start the MissionGateway HTTP server.
 
@@ -104,6 +106,10 @@ def start_server(
         task_flow=data_dir / "flows.jsonl",
         approvals=data_dir / "approvals.jsonl",
         mission_planning_audit=data_dir / "mission-planning-audit.jsonl",
+        memory_lifecycle=data_dir / "memory-lifecycle.jsonl",
+        memory_audit_dir=data_dir / "memory-audit",
+        reusable_knowledge=data_dir / "reusable-knowledge.jsonl",
+        embodied_runtime_mode=embodied_runtime_mode,
     )
 
     agent = build_mission_agent_from_paths(
@@ -121,6 +127,13 @@ def start_server(
     else:
         registry = load_robot_registry(paths.robot_registry)
     config = MissionGatewayConfig(host=host, port=port)
+    memory_reconciler = None
+    if embodied_runtime_mode is not None and agent.embodied_memory_store is not None:
+        memory_reconciler = EmbodiedMemoryReconciler(
+            destination=agent.embodied_memory_store,
+            state_path=data_dir / "memory-reconciliation.jsonl",
+            runtime_mode=embodied_runtime_mode,
+        )
     gw = MissionGateway(
         config,
         mission_agent=agent,
@@ -129,6 +142,7 @@ def start_server(
         task_registry=agent.task_registry,
         subagent_registry=agent.subagent_registry,
         session_lineage_store=agent.session_lineage_store,
+        memory_reconciler=memory_reconciler,
     )
     gw.start()
     logger.info("FireClaw MissionGateway started at %s", gw.base_url)
@@ -153,6 +167,7 @@ def run_server_blocking(
     robot_agent_provider_api_key: str | None = None,
     robot_agent_model: str | None = None,
     robot_profiles: tuple[str, ...] | None = None,
+    embodied_runtime_mode: str | None = None,
 ) -> None:
     """Start the server and block until interrupted (Ctrl+C)."""
     gw = start_server(
@@ -172,6 +187,7 @@ def run_server_blocking(
         robot_agent_provider_api_key=robot_agent_provider_api_key,
         robot_agent_model=robot_agent_model,
         robot_profiles=robot_profiles,
+        embodied_runtime_mode=embodied_runtime_mode,
     )
 
     shutdown_requested = False

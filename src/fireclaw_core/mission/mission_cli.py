@@ -128,6 +128,12 @@ def main() -> int:
     serve.add_argument("--host", default=None, help="Host to bind.")
     serve.add_argument("--port", type=int, default=None, help="Port to bind.")
     serve.add_argument("--data-dir", type=Path, default=None, help="Persistent data directory.")
+    serve.add_argument(
+        "--embodied-runtime-mode",
+        choices=("real", "simulation", "replay"),
+        default=None,
+        help="Enable embodied memory in an explicit runtime domain.",
+    )
     serve.add_argument("--planner", choices=["deterministic", "llm"], default=None, help="Planner backend.")
     serve.add_argument("--provider-base-url", default=None, help="LLM provider base URL.")
     serve.add_argument("--provider-api-key", default=None, help="LLM provider API key.")
@@ -261,6 +267,7 @@ def main() -> int:
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
             "robot_agent_model": args.robot_agent_model,
             "mission_robot_profiles": args.robot_profile,
+            "embodied_runtime_mode": args.embodied_runtime_mode,
         })
         run_server_blocking(
             adapter=str(merged.get("adapter", "simulator")),
@@ -279,6 +286,11 @@ def main() -> int:
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
             robot_agent_model=merged.get("robot_agent_model"),
             robot_profiles=tuple(merged["mission_robot_profiles"]) if merged.get("mission_robot_profiles") else None,
+            embodied_runtime_mode=(
+                str(merged["embodied_runtime_mode"])
+                if merged.get("embodied_runtime_mode") is not None
+                else None
+            ),
         )
         return 0
     if args.command_name == "mission":
@@ -593,6 +605,12 @@ def _add_shared_paths(parser: argparse.ArgumentParser) -> None:
 def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--memory-path", default=None, help="Path to mission memory JSONL.")
     parser.add_argument("--memory-index", default=None, help="Path to SQLite memory index.")
+    parser.add_argument(
+        "--embodied-runtime-mode",
+        choices=("real", "simulation", "replay"),
+        default=None,
+        help="Enable policy-checked embodied memory in the explicit runtime domain.",
+    )
     parser.add_argument("--task-registry", default=None, help="Path to task registry JSONL.")
     parser.add_argument("--subagent-registry", default=None, help="Path to subagent registry JSONL.")
     parser.add_argument("--session-lineage", default=None, help="Path to session lineage JSONL.")
@@ -615,6 +633,7 @@ def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePath
         mission_registry=args.mission_registry,
         mission_memory=getattr(args, "memory_path", None),
         memory_index=getattr(args, "memory_index", None),
+        embodied_runtime_mode=getattr(args, "embodied_runtime_mode", None),
         task_registry=getattr(args, "task_registry", None),
         subagent_registry=getattr(args, "subagent_registry", None),
         session_lineage=getattr(args, "session_lineage", None),

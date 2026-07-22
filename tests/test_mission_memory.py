@@ -167,7 +167,22 @@ def test_mission_memory_store_returns_newest_first(tmp_path):
 
 def test_mission_memory_record_types_constant():
     assert MEMORY_RECORD_TYPES == {
-        "command", "plan", "observation", "outcome", "correction", "lesson",
+        "body_state",
+        "command",
+        "correction",
+        "entity_mention",
+        "entity_resolution",
+        "episode",
+        "gist",
+        "lesson",
+        "mission",
+        "observation",
+        "outcome",
+        "plan",
+        "relation",
+        "safety_decision",
+        "skill_invocation",
+        "subtask",
     }
 
 

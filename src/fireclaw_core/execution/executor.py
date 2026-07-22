@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Callable, Dict
 
+from fireclaw_core.infra.log_redaction import redact_dict
+from fireclaw_core.memory.embodied_memory import (
+    MEMORY_RUNTIME_MODES,
+    EmbodiedMemoryProducer,
+)
 from fireclaw_core.monitoring.monitor import FailurePolicy
 from fireclaw_core.planner.planner import Plan
 from fireclaw_core.agent.robot import RobotActionResult
 from fireclaw_core.execution.skills import SkillRegistry
+
+
+logger = logging.getLogger(__name__)
 
 
 ExecutionEventSink = Callable[[str, Dict[str, Any]], None]
@@ -47,13 +56,40 @@ class PlanExecutor:
         failure_policy: FailurePolicy | None = None,
         event_sink: ExecutionEventSink | None = None,
         cancellation_requested: CancellationCheck | None = None,
+        memory_producer: EmbodiedMemoryProducer | None = None,
+        runtime_mode: str | None = None,
+        mission_id: str | None = None,
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
     ) -> None:
+        if memory_producer is not None:
+            if memory_producer.producer_type != "skill_runtime":
+                raise ValueError("PlanExecutor requires a skill_runtime memory producer")
+            if runtime_mode not in MEMORY_RUNTIME_MODES:
+                raise ValueError(
+                    "PlanExecutor requires runtime_mode to be one of: "
+                    f"{sorted(MEMORY_RUNTIME_MODES)}"
+                )
+            if mission_id is None or not mission_id.strip():
+                raise ValueError("PlanExecutor requires mission_id when memory is enabled")
         self._registry = registry
         self._failure_policy = failure_policy or FailurePolicy()
         self._event_sink = event_sink
         self._cancellation_requested = cancellation_requested or (lambda: False)
+        self._memory_producer = memory_producer
+        self._runtime_mode = runtime_mode
+        self._mission_id = mission_id
+        self._robot_id = robot_id
+        self._subtask_id = subtask_id
+        self._last_memory_event_id: str | None = None
 
-    def execute(self, plan: Plan) -> ExecutionResult:
+    def execute(
+        self,
+        plan: Plan,
+        *,
+        parent_memory_event_id: str | None = None,
+    ) -> ExecutionResult:
+        self._last_memory_event_id = parent_memory_event_id
         step_results: list[StepExecutionResult] = []
         for step in plan.steps:
             if self._cancellation_requested():
@@ -200,9 +236,76 @@ class PlanExecutor:
         }
 
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
-        if self._event_sink is None:
+        self._record_skill_memory(event_type, payload)
+        if self._event_sink is not None:
+            try:
+                self._event_sink(event_type, payload)
+            except Exception:
+                return
+
+    def _record_skill_memory(self, event_type: str, payload: dict[str, Any]) -> None:
+        if (
+            self._memory_producer is None
+            or self._runtime_mode is None
+            or self._mission_id is None
+        ):
             return
+        phase = _skill_lifecycle_phase(event_type, payload)
+        if phase is None:
+            return
+        memory_payload = redact_dict({
+            **payload,
+            "lifecycle_phase": phase,
+            "runtime_event_type": event_type,
+        })
+        output = payload.get("output")
+        observed_at = output.get("timestamp") if isinstance(output, dict) else None
+        output_robot_id = output.get("robot_id") if isinstance(output, dict) else None
         try:
-            self._event_sink(event_type, payload)
+            memory_event = self._memory_producer.record_event(
+                mission_id=self._mission_id,
+                event_type="skill_invocation",
+                evidence_kind="runtime_evidence",
+                payload=memory_payload,
+                runtime_mode=self._runtime_mode,
+                source_type="skill_runtime",
+                robot_id=(
+                    str(output_robot_id)
+                    if isinstance(output_robot_id, str) and output_robot_id
+                    else self._robot_id
+                ),
+                subtask_id=self._subtask_id,
+                observed_at=(
+                    str(observed_at)
+                    if isinstance(observed_at, str) and observed_at
+                    else None
+                ),
+            )
+            if self._last_memory_event_id is not None:
+                self._memory_producer.add_relation(
+                    mission_id=self._mission_id,
+                    source_record_id=memory_event.event_id,
+                    target_record_id=self._last_memory_event_id,
+                    relation_type="follows",
+                    runtime_mode=self._runtime_mode,
+                )
+            self._last_memory_event_id = memory_event.event_id
         except Exception:
-            return
+            logger.warning("Failed to write embodied skill lifecycle event", exc_info=True)
+
+
+def _skill_lifecycle_phase(event_type: str, payload: dict[str, Any]) -> str | None:
+    if event_type == "skill.started":
+        return "start"
+    if event_type == "skill.succeeded":
+        return "result"
+    if event_type == "skill.failed":
+        return "failure"
+    if event_type != "skill.attempted":
+        return None
+    if payload.get("status") == "cancelled":
+        return "cancellation"
+    error = payload.get("error")
+    if isinstance(error, str) and "timed out" in error.lower():
+        return "timeout"
+    return "progress"

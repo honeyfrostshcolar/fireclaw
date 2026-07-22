@@ -22,6 +22,13 @@ from fireclaw_core.agent.agent import FireClawAgent
 from fireclaw_core.gateway.control import AuthorizationRequest, ControlPolicy, OperatorContext, operator_from_payload
 from fireclaw_core.monitoring.event_ledger import EventLedger
 from fireclaw_core.memory.memory import JsonlMemoryStore
+from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer, EmbodiedMemoryStore
+from fireclaw_core.memory.robot_memory import RobotMemoryRecorder
+from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory
+from fireclaw_core.memory.entity_memory import EntityMemoryService
+from fireclaw_core.memory.entity_extraction import EntityExtractionPipeline
+from fireclaw_core.memory.entity_tools import EntityMemoryTools
+from fireclaw_core.memory.reconciliation import EmbodiedMemoryReplicationExporter
 from fireclaw_core.planner.planner_builder import build_provider_runtime
 from fireclaw_core.agent.robot_agent import (
     DeterministicRobotAgentPlanner,
@@ -59,6 +66,9 @@ class GatewayConfig:
     robot_agent_provider_api_key: str | None = None
     robot_agent_model: str | None = None
     robot_profile_path: str | None = None
+    embodied_memory_path: str | None = None
+    embodied_memory_index_path: str | None = None
+    embodied_runtime_mode: str | None = None
 
 
 @dataclass
@@ -141,6 +151,78 @@ class FireClawGateway:
         attach_profile_sensor_discovery(self.robot, self.robot_profile)
         self._validate_robot_profile()
         self.memory = JsonlMemoryStore(resolved_config.memory_path)
+        self.embodied_memory: EmbodiedMemoryStore | None = None
+        self.embodied_working_memory: EmbodiedWorkingMemory | None = None
+        self._safety_memory_producer: EmbodiedMemoryProducer | None = None
+        self._skill_memory_producer: EmbodiedMemoryProducer | None = None
+        self.robot_memory_recorder: RobotMemoryRecorder | None = None
+        self.entity_memory: EntityMemoryService | None = None
+        self.entity_extraction_pipeline: EntityExtractionPipeline | None = None
+        self.entity_memory_tools: EntityMemoryTools | None = None
+        self.memory_replication_exporter: EmbodiedMemoryReplicationExporter | None = None
+        if resolved_config.embodied_runtime_mode is not None:
+            if resolved_config.embodied_memory_path is None:
+                raise ValueError("embodied_runtime_mode requires embodied_memory_path")
+            self.embodied_memory = EmbodiedMemoryStore(
+                resolved_config.embodied_memory_path,
+                index_path=resolved_config.embodied_memory_index_path,
+            )
+            self.embodied_working_memory = EmbodiedWorkingMemory()
+            self._safety_memory_producer = EmbodiedMemoryProducer(
+                self.embodied_memory,
+                producer_type="safety_gate",
+                producer_id=f"{resolved_config.robot_id}:safety-gate",
+                working_memory=self.embodied_working_memory,
+            )
+            self._skill_memory_producer = EmbodiedMemoryProducer(
+                self.embodied_memory,
+                producer_type="skill_runtime",
+                producer_id=f"{resolved_config.robot_id}:skill-runtime",
+                working_memory=self.embodied_working_memory,
+            )
+            self.entity_memory = EntityMemoryService(
+                store=self.embodied_memory,
+                resolver_producer=EmbodiedMemoryProducer(
+                    self.embodied_memory,
+                    producer_type="entity_resolver",
+                    producer_id=f"{resolved_config.robot_id}:entity-resolver",
+                    working_memory=self.embodied_working_memory,
+                ),
+                operator_producer=EmbodiedMemoryProducer(
+                    self.embodied_memory,
+                    producer_type="approval_runtime",
+                    producer_id=f"{resolved_config.robot_id}:entity-approval",
+                    working_memory=self.embodied_working_memory,
+                ),
+                runtime_mode=resolved_config.embodied_runtime_mode,
+            )
+            self.entity_extraction_pipeline = EntityExtractionPipeline(
+                store=self.embodied_memory,
+                entity_memory=self.entity_memory,
+                runtime_mode=resolved_config.embodied_runtime_mode,
+            )
+            self.entity_memory_tools = EntityMemoryTools(self.entity_memory)
+            self.memory_replication_exporter = EmbodiedMemoryReplicationExporter(
+                store=self.embodied_memory,
+                source_store_id=f"robot:{resolved_config.robot_id}",
+                source_robot_id=resolved_config.robot_id,
+            )
+            self.robot_memory_recorder = RobotMemoryRecorder(
+                robot_producer=EmbodiedMemoryProducer(
+                    self.embodied_memory,
+                    producer_type="robot_adapter",
+                    producer_id=f"{resolved_config.robot_id}:robot-adapter",
+                    working_memory=self.embodied_working_memory,
+                ),
+                sensor_producer=EmbodiedMemoryProducer(
+                    self.embodied_memory,
+                    producer_type="sensor_adapter",
+                    producer_id=f"{resolved_config.robot_id}:sensor-adapter",
+                    working_memory=self.embodied_working_memory,
+                ),
+                runtime_mode=resolved_config.embodied_runtime_mode,
+                entity_extraction_pipeline=self.entity_extraction_pipeline,
+            )
         self.events = EventLedger(resolved_config.event_path)
         self.task_queue = JsonlTaskQueue(resolved_config.task_queue_path)
         self._server: ThreadingHTTPServer | None = None
@@ -560,7 +642,16 @@ class FireClawGateway:
                 provider_api_key=self.config.robot_agent_provider_api_key,
                 model=self.config.robot_agent_model,
             )
-            return RobotAgentRuntime(planner=LLMRobotAgentPlanner(runtime))
+            return RobotAgentRuntime(
+                planner=LLMRobotAgentPlanner(
+                    runtime,
+                    memory_tool_executor=(
+                        self.entity_memory_tools.execute
+                        if self.entity_memory_tools is not None
+                        else None
+                    ),
+                )
+            )
         raise ValueError(f"unsupported robot_agent_planner: {self.config.robot_agent_planner}")
 
     def _run_robot_agent_structured_task(
@@ -621,6 +712,8 @@ class FireClawGateway:
                 verified_sensors=set(runtime_sensors if runtime_sensors is not None else agent.available_sensors),
             ),
         }
+        if self.entity_memory_tools is not None and task_object.mission_id:
+            context["memory_tools"] = self.entity_memory_tools.tool_schemas()
         planning_result = self.robot_agent_runtime.plan_structured_task(
             task_object,
             fallback_robot_id=self.config.robot_id,
@@ -998,6 +1091,10 @@ class FireClawGateway:
             event_sink=event_sink,
             cancellation_requested=cancellation_requested,
             task_id=task_id,
+            safety_memory_producer=self._safety_memory_producer,
+            skill_memory_producer=self._skill_memory_producer,
+            embodied_runtime_mode=self.config.embodied_runtime_mode,
+            robot_memory_recorder=self.robot_memory_recorder,
         )
 
     def _task_status(
@@ -1255,6 +1352,32 @@ class FireClawGateway:
                 ),
             )
             return
+        if parsed.path == "/memory/replication":
+            if self.memory_replication_exporter is None:
+                self._write_error(handler, HTTPStatus.NOT_FOUND, "Embodied memory is not configured.")
+                return
+            try:
+                batch = self.memory_replication_exporter.export_batch(
+                    cursor=_int_query(query, "cursor", 0),
+                    limit=_int_query(query, "limit", 200),
+                    mission_id=_first(query, "mission_id"),
+                    runtime_mode=_first(query, "runtime_mode"),
+                )
+            except ValueError as exc:
+                self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            self._write_json(handler, HTTPStatus.OK, batch.to_dict())
+            return
+        if parsed.path == "/entity-memory/tools":
+            if self.entity_memory_tools is None:
+                self._write_error(handler, HTTPStatus.NOT_FOUND, "Entity memory is not configured.")
+                return
+            self._write_json(
+                handler,
+                HTTPStatus.OK,
+                {"tools": self.entity_memory_tools.tool_schemas()},
+            )
+            return
         if parsed.path == "/events/recent":
             self._write_json(
                 handler,
@@ -1339,6 +1462,33 @@ class FireClawGateway:
                 )
                 status = _submission_status(result)
                 self._write_json(handler, status, result)
+                return
+            if parsed.path == "/entity-memory/tools/call":
+                if self.entity_memory_tools is None:
+                    self._write_error(handler, HTTPStatus.NOT_FOUND, "Entity memory is not configured.")
+                    return
+                mission_id = payload.get("mission_id")
+                name = payload.get("name")
+                arguments = payload.get("arguments", {})
+                if not isinstance(mission_id, str) or not mission_id.strip():
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'mission_id' is required.")
+                    return
+                if not isinstance(name, str) or not name.strip():
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'name' is required.")
+                    return
+                if not isinstance(arguments, dict):
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'arguments' must be an object.")
+                    return
+                try:
+                    result = self.entity_memory_tools.execute(
+                        name.strip(),
+                        arguments,
+                        mission_id=mission_id.strip(),
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                self._write_json(handler, HTTPStatus.OK, result)
                 return
             if parsed.path == "/emergency-stop":
                 result = self.emergency_stop(
@@ -1528,6 +1678,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--robot-agent-provider-api-key", default=None)
     parser.add_argument("--robot-agent-model", default=None)
     parser.add_argument("--robot-profile", default=None, help="Path to robot capability profile TOML.")
+    parser.add_argument("--embodied-memory-path", default=None)
+    parser.add_argument("--embodied-memory-index", default=None)
+    parser.add_argument(
+        "--embodied-runtime-mode",
+        choices=("real", "simulation", "replay"),
+        default=None,
+    )
     args = parser.parse_args(argv)
 
     from fireclaw_core.gateway.config import find_config, load_config, merge_config
@@ -1558,6 +1715,9 @@ def main(argv: list[str] | None = None) -> int:
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
             "robot_agent_model": args.robot_agent_model,
             "robot_gateway_profile_path": args.robot_profile,
+            "robot_gateway_embodied_memory_path": args.embodied_memory_path,
+            "robot_gateway_embodied_memory_index": args.embodied_memory_index,
+            "robot_gateway_embodied_runtime_mode": args.embodied_runtime_mode,
         },
     )
 
@@ -1588,6 +1748,9 @@ def main(argv: list[str] | None = None) -> int:
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
             robot_agent_model=merged.get("robot_agent_model"),
             robot_profile_path=merged.get("robot_gateway_profile_path"),
+            embodied_memory_path=merged.get("robot_gateway_embodied_memory_path"),
+            embodied_memory_index_path=merged.get("robot_gateway_embodied_memory_index"),
+            embodied_runtime_mode=merged.get("robot_gateway_embodied_runtime_mode"),
         )
     )
     print(

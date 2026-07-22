@@ -9,6 +9,8 @@ from typing import Any, Protocol
 from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
 from fireclaw_core.execution.executor import CancellationCheck, ExecutionEventSink, ExecutionResult, PlanExecutor
 from fireclaw_core.memory.memory import JsonlMemoryStore
+from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer
+from fireclaw_core.memory.robot_memory import RobotMemoryRecorder, RobotMemorySnapshot
 from fireclaw_core.planner.planner import (
     CHINESE_DIGITS,
     Plan,
@@ -59,6 +61,10 @@ class FireClawAgent:
         event_sink: ExecutionEventSink | None = None,
         cancellation_requested: CancellationCheck | None = None,
         task_id: str | None = None,
+        safety_memory_producer: EmbodiedMemoryProducer | None = None,
+        skill_memory_producer: EmbodiedMemoryProducer | None = None,
+        embodied_runtime_mode: str | None = None,
+        robot_memory_recorder: RobotMemoryRecorder | None = None,
     ) -> None:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
@@ -76,6 +82,7 @@ class FireClawAgent:
         self._event_sink = event_sink
         self._cancellation_requested = cancellation_requested
         self.task_id = task_id
+        self._robot_memory_recorder = robot_memory_recorder
         action_runtime = RobotActionRuntime(
             backend=RobotAdapterActionBackend(self.robot),
             event_sink=event_sink,
@@ -87,17 +94,37 @@ class FireClawAgent:
             workspace_result = load_workspace_skills(workspace_skills_dir)
             self.registry.extend(workspace_result.skills)
             self.skill_load_errors = workspace_result.errors
-        self.safety = SafetyGate()
+        self.safety = SafetyGate(
+            memory_producer=safety_memory_producer,
+            runtime_mode=embodied_runtime_mode,
+        )
         self.executor = PlanExecutor(
             self.registry,
             event_sink=event_sink,
             cancellation_requested=cancellation_requested,
+            memory_producer=skill_memory_producer,
+            runtime_mode=embodied_runtime_mode,
+            mission_id=session_id,
+            robot_id=getattr(self.robot, "robot_id", None),
+            subtask_id=task_id,
         )
 
     def _safety_available_sensors(self) -> set[str] | None:
         if self._available_sensors_override:
             return self.available_sensors
         return None
+
+    def _record_robot_snapshot(
+        self, robot_state: Any, environment_state: Any
+    ) -> RobotMemorySnapshot:
+        if self._robot_memory_recorder is None:
+            return RobotMemorySnapshot()
+        return self._robot_memory_recorder.record_snapshot(
+            mission_id=self.session_id,
+            robot_state=robot_state,
+            environment_state=environment_state,
+            subtask_id=self.task_id,
+        )
 
     def run(self, command: str) -> dict[str, Any]:
         if self._is_confirmation_command(command):
@@ -117,22 +144,29 @@ class FireClawAgent:
         planning_result = self.planner.plan(resolved_command, context=planner_context)
         robot_state_object = self._get_robot_state()
         environment_state_object = self._get_environment_state()
+        memory_snapshot = self._record_robot_snapshot(robot_state_object, environment_state_object)
         robot_state = self._state_snapshot(robot_state_object)
         environment_state = self._state_snapshot(environment_state_object)
-        safety_decision = self.safety.evaluate(
+        safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
             planning_result,
             self.registry,
             dry_run=self.dry_run,
             available_sensors=self._safety_available_sensors(),
             robot_state=robot_state_object,
             environment_state=environment_state_object,
+            mission_id=self.session_id,
+            subtask_id=self.task_id,
+            evidence_event_ids=memory_snapshot.evidence_event_ids,
         )
         self._emit_event("task.planned", self._planning_to_dict(planning_result))
         self._emit_event("safety.decided", asdict(safety_decision))
 
         execution_result: ExecutionResult | None = None
         if safety_decision.status == "allow" and planning_result.plan is not None:
-            execution_result = self.executor.execute(planning_result.plan)
+            execution_result = self.executor.execute(
+                planning_result.plan,
+                parent_memory_event_id=safety_event_id,
+            )
 
         status = self._resolve_status(safety_decision, execution_result)
         result = {
@@ -175,9 +209,10 @@ class FireClawAgent:
     ) -> dict[str, Any]:
         robot_state_object = self._get_robot_state()
         environment_state_object = self._get_environment_state()
+        memory_snapshot = self._record_robot_snapshot(robot_state_object, environment_state_object)
         robot_state = self._state_snapshot(robot_state_object)
         environment_state = self._state_snapshot(environment_state_object)
-        safety_decision = self.safety.evaluate(
+        safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
             planning_result,
             self.registry,
             dry_run=self.dry_run,
@@ -185,6 +220,9 @@ class FireClawAgent:
             operator_confirmed=True,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
+            mission_id=self.session_id,
+            subtask_id=self.task_id,
+            evidence_event_ids=memory_snapshot.evidence_event_ids,
         )
         if structured_task is not None:
             self._emit_event("task.structured_received", structured_task.to_dict())
@@ -193,7 +231,10 @@ class FireClawAgent:
 
         execution_result: ExecutionResult | None = None
         if safety_decision.status == "allow" and planning_result.plan is not None:
-            execution_result = self.executor.execute(planning_result.plan)
+            execution_result = self.executor.execute(
+                planning_result.plan,
+                parent_memory_event_id=safety_event_id,
+            )
 
         status = self._resolve_status(safety_decision, execution_result)
         result = {
@@ -545,9 +586,10 @@ class FireClawAgent:
         planning_result = self._planning_result_from_record(pending)
         robot_state_object = self._get_robot_state()
         environment_state_object = self._get_environment_state()
+        memory_snapshot = self._record_robot_snapshot(robot_state_object, environment_state_object)
         robot_state = self._state_snapshot(robot_state_object)
         environment_state = self._state_snapshot(environment_state_object)
-        safety_decision = self.safety.evaluate(
+        safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
             planning_result,
             self.registry,
             dry_run=self.dry_run,
@@ -555,13 +597,19 @@ class FireClawAgent:
             operator_confirmed=True,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
+            mission_id=self.session_id,
+            subtask_id=self.task_id,
+            evidence_event_ids=memory_snapshot.evidence_event_ids,
         )
         self._emit_event("task.planned", self._planning_to_dict(planning_result))
         self._emit_event("safety.decided", asdict(safety_decision))
 
         execution_result: ExecutionResult | None = None
         if safety_decision.status == "allow" and planning_result.plan is not None:
-            execution_result = self.executor.execute(planning_result.plan)
+            execution_result = self.executor.execute(
+                planning_result.plan,
+                parent_memory_event_id=safety_event_id,
+            )
 
         status = self._resolve_status(safety_decision, execution_result)
         result = {

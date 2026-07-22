@@ -196,9 +196,16 @@ def build_robot_agent_messages(
     *,
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    memory_instruction = ""
+    if context.get("memory_tools"):
+        memory_instruction = (
+            "需要现场历史实体信息时，可以先调用一轮只读实体记忆工具，再生成计划。"
+            "实体记忆是可能过时的建议性证据，不能替代当前传感器或绕过 SafetyGate。"
+        )
     system = (
         "你是消防机器人本地子 agent。"
         "你只能在 allowed_skills 内规划，不能改变 target，不能扩大任务权限。"
+        f"{memory_instruction}"
         "请调用 create_robot_local_plan 工具返回结构化局部执行计划。"
     )
     planning_rules = [
@@ -233,8 +240,14 @@ def build_robot_agent_messages(
 
 
 class LLMRobotAgentPlanner:
-    def __init__(self, provider_runtime: ProviderRuntime) -> None:
+    def __init__(
+        self,
+        provider_runtime: ProviderRuntime,
+        *,
+        memory_tool_executor: Any | None = None,
+    ) -> None:
         self._provider_runtime = provider_runtime
+        self._memory_tool_executor = memory_tool_executor
 
     def plan(
         self,
@@ -246,12 +259,18 @@ class LLMRobotAgentPlanner:
         if cancellation_requested is not None and cancellation_requested():
             raise RobotAgentPlannerError("planning cancelled before provider call")
         skill_tools = context.get("skill_tools") if isinstance(context, dict) else None
-        tools = [ROBOT_LOCAL_PLAN_TOOL]
+        action_tools = [ROBOT_LOCAL_PLAN_TOOL]
         if isinstance(skill_tools, list):
-            tools.extend(tool for tool in skill_tools if isinstance(tool, dict))
+            action_tools.extend(tool for tool in skill_tools if isinstance(tool, dict))
+        memory_tools = context.get("memory_tools") if isinstance(context, dict) else None
+        exposed_memory_tools = [
+            tool for tool in memory_tools or [] if isinstance(tool, dict)
+        ]
+        tools = [*action_tools, *exposed_memory_tools]
+        messages = build_robot_agent_messages(envelope, context=context)
         try:
             response = self._provider_runtime.chat_completion(
-                messages=build_robot_agent_messages(envelope, context=context),
+                messages=messages,
                 tools=tools,
                 temperature=0.0,
                 max_tokens=2048,
@@ -262,12 +281,79 @@ class LLMRobotAgentPlanner:
             raise RobotAgentPlannerError("planning cancelled after provider call")
         if not response.tool_calls:
             raise RobotAgentPlannerError("LLM did not return a robot-local plan tool call")
+        memory_tool_names = {
+            tool["function"]["name"]
+            for tool in exposed_memory_tools
+            if isinstance(tool.get("function"), dict)
+            and isinstance(tool["function"].get("name"), str)
+        }
+        called_names = {call.name for call in response.tool_calls}
+        if called_names & memory_tool_names:
+            if not called_names.issubset(memory_tool_names):
+                raise RobotAgentPlannerError(
+                    "memory queries and action planning cannot be mixed in one tool-call round"
+                )
+            if self._memory_tool_executor is None or not envelope.mission_id:
+                raise RobotAgentPlannerError("entity memory tools are unavailable for this task")
+            messages.append({
+                "role": "assistant",
+                "content": response.content,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                        },
+                    }
+                    for call in response.tool_calls
+                ],
+            })
+            for call in response.tool_calls:
+                try:
+                    result = self._memory_tool_executor(
+                        call.name,
+                        call.arguments,
+                        mission_id=envelope.mission_id,
+                    )
+                except (TypeError, ValueError) as exc:
+                    result = {"status": "error", "message": str(exc), "advisory_only": True}
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+            messages.append({
+                "role": "system",
+                "content": (
+                    "实体记忆结果仅供参考，可能过时或存在冲突。"
+                    "现在必须调用 create_robot_local_plan 或一个允许的动作 skill；"
+                    "任何动作仍须服从当前传感器状态、任务约束和 SafetyGate。"
+                ),
+            })
+            if cancellation_requested is not None and cancellation_requested():
+                raise RobotAgentPlannerError("planning cancelled after memory query")
+            try:
+                response = self._provider_runtime.chat_completion(
+                    messages=messages,
+                    tools=action_tools,
+                    temperature=0.0,
+                    max_tokens=2048,
+                )
+            except (ProviderError, FallbackSummaryError) as exc:
+                raise RobotAgentPlannerError(str(exc)) from exc
+            if cancellation_requested is not None and cancellation_requested():
+                raise RobotAgentPlannerError("planning cancelled after final provider call")
+            if not response.tool_calls:
+                raise RobotAgentPlannerError("LLM did not return a plan after entity memory query")
         tool_call = response.tool_calls[0]
         if tool_call.name == "create_robot_local_plan":
             return _local_plan_from_arguments(tool_call.arguments)
         allowed_direct = {
             tool["function"]["name"]
-            for tool in tools[1:]
+            for tool in action_tools[1:]
             if isinstance(tool.get("function"), dict) and isinstance(tool["function"].get("name"), str)
         }
         direct_calls = [

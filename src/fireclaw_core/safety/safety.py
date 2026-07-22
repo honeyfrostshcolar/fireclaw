@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 
+from fireclaw_core.memory.embodied_memory import (
+    MEMORY_RUNTIME_MODES,
+    EmbodiedMemoryProducer,
+)
 from fireclaw_core.planner.planner import PlanningResult
 from fireclaw_core.agent.robot import EnvironmentState, RobotState
 from fireclaw_core.execution.skills import SkillRegistry
 from fireclaw_core.safety.sensor_policy import evaluate_sensor_policy
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -16,7 +24,88 @@ class SafetyDecision:
 
 
 class SafetyGate:
+    def __init__(
+        self,
+        *,
+        memory_producer: EmbodiedMemoryProducer | None = None,
+        runtime_mode: str | None = None,
+    ) -> None:
+        if memory_producer is not None:
+            if memory_producer.producer_type != "safety_gate":
+                raise ValueError("SafetyGate requires a safety_gate embodied-memory producer")
+            if runtime_mode not in MEMORY_RUNTIME_MODES:
+                raise ValueError(
+                    "SafetyGate requires runtime_mode to be one of: "
+                    f"{sorted(MEMORY_RUNTIME_MODES)}"
+                )
+        self._memory_producer = memory_producer
+        self._runtime_mode = runtime_mode
+
     def evaluate(
+        self,
+        planning_result: PlanningResult,
+        registry: SkillRegistry,
+        *,
+        dry_run: bool,
+        available_sensors: set[str] | None = None,
+        operator_confirmed: bool = False,
+        robot_state: RobotState | None = None,
+        environment_state: EnvironmentState | None = None,
+        mission_id: str | None = None,
+        subtask_id: str | None = None,
+        evidence_event_ids: tuple[str, ...] = (),
+    ) -> SafetyDecision:
+        decision, _ = self.evaluate_with_memory_event(
+            planning_result,
+            registry,
+            dry_run=dry_run,
+            available_sensors=available_sensors,
+            operator_confirmed=operator_confirmed,
+            robot_state=robot_state,
+            environment_state=environment_state,
+            mission_id=mission_id,
+            subtask_id=subtask_id,
+            evidence_event_ids=evidence_event_ids,
+        )
+        return decision
+
+    def evaluate_with_memory_event(
+        self,
+        planning_result: PlanningResult,
+        registry: SkillRegistry,
+        *,
+        dry_run: bool,
+        available_sensors: set[str] | None = None,
+        operator_confirmed: bool = False,
+        robot_state: RobotState | None = None,
+        environment_state: EnvironmentState | None = None,
+        mission_id: str | None = None,
+        subtask_id: str | None = None,
+        evidence_event_ids: tuple[str, ...] = (),
+    ) -> tuple[SafetyDecision, str | None]:
+        decision = self._evaluate(
+            planning_result,
+            registry,
+            dry_run=dry_run,
+            available_sensors=available_sensors,
+            operator_confirmed=operator_confirmed,
+            robot_state=robot_state,
+            environment_state=environment_state,
+        )
+        memory_event_id = self._record_decision(
+            decision,
+            planning_result=planning_result,
+            dry_run=dry_run,
+            operator_confirmed=operator_confirmed,
+            robot_state=robot_state,
+            environment_state=environment_state,
+            mission_id=mission_id,
+            subtask_id=subtask_id,
+            evidence_event_ids=evidence_event_ids,
+        )
+        return decision, memory_event_id
+
+    def _evaluate(
         self,
         planning_result: PlanningResult,
         registry: SkillRegistry,
@@ -152,6 +241,64 @@ class SafetyGate:
 
         return SafetyDecision(status="allow", reasons=[], warnings=state_warnings)
 
+    def _record_decision(
+        self,
+        decision: SafetyDecision,
+        *,
+        planning_result: PlanningResult,
+        dry_run: bool,
+        operator_confirmed: bool,
+        robot_state: RobotState | None,
+        environment_state: EnvironmentState | None,
+        mission_id: str | None,
+        subtask_id: str | None,
+        evidence_event_ids: tuple[str, ...],
+    ) -> str | None:
+        if (
+            self._memory_producer is None
+            or self._runtime_mode is None
+            or mission_id is None
+        ):
+            return None
+        payload = {
+            "decision": decision.status,
+            "reasons": list(decision.reasons),
+            "warnings": list(decision.warnings),
+            "dry_run": dry_run,
+            "operator_confirmed": operator_confirmed,
+            "planning_status": planning_result.status,
+            "intent": planning_result.intent,
+            "target_floor": planning_result.target_floor,
+            "robot_state": _robot_state_summary(robot_state),
+            "environment_state": _environment_state_summary(environment_state),
+        }
+        try:
+            decision_event = self._memory_producer.record_event(
+                mission_id=mission_id,
+                event_type="safety_decision",
+                evidence_kind="runtime_evidence",
+                payload=payload,
+                runtime_mode=self._runtime_mode,
+                source_type="safety_gate",
+                robot_id=robot_state.robot_id if robot_state is not None else None,
+                subtask_id=subtask_id,
+            )
+        except Exception:
+            logger.warning("Failed to write embodied safety decision", exc_info=True)
+            return None
+        for evidence_event_id in dict.fromkeys(evidence_event_ids):
+            try:
+                self._memory_producer.add_relation(
+                    mission_id=mission_id,
+                    source_record_id=evidence_event_id,
+                    target_record_id=decision_event.event_id,
+                    relation_type="supports",
+                    runtime_mode=self._runtime_mode,
+                )
+            except Exception:
+                logger.warning("Failed to link safety evidence event", exc_info=True)
+        return decision_event.event_id
+
     def _evaluate_state(
         self,
         planning_result: PlanningResult,
@@ -202,3 +349,33 @@ def _sensor_findings_by_name(robot_state: RobotState | None) -> dict[str, dict[s
         if isinstance(sensor, str) and sensor not in result:
             result[sensor] = finding
     return result
+
+
+def _robot_state_summary(robot_state: RobotState | None) -> dict[str, object] | None:
+    if robot_state is None:
+        return None
+    return {
+        "robot_id": robot_state.robot_id,
+        "online": robot_state.online,
+        "battery_percent": robot_state.battery_percent,
+        "mode": robot_state.mode,
+        "available_sensors": (
+            sorted(robot_state.available_sensors)
+            if robot_state.available_sensors is not None
+            else None
+        ),
+    }
+
+
+def _environment_state_summary(
+    environment_state: EnvironmentState | None,
+) -> dict[str, object] | None:
+    if environment_state is None:
+        return None
+    return {
+        "reachable_floors": (
+            sorted(environment_state.reachable_floors)
+            if environment_state.reachable_floors is not None
+            else None
+        ),
+    }

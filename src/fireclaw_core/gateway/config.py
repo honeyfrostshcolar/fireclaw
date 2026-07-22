@@ -125,6 +125,9 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_gateway_max_active_execution_tasks"] = rg.get("max_active_execution_tasks")
     cfg["robot_gateway_api_token"] = rg.get("api_token")
     cfg["robot_gateway_profile_path"] = rg.get("profile_path")
+    cfg["robot_gateway_embodied_memory_path"] = rg.get("embodied_memory_path")
+    cfg["robot_gateway_embodied_memory_index"] = rg.get("embodied_memory_index")
+    cfg["robot_gateway_embodied_runtime_mode"] = rg.get("embodied_runtime_mode")
 
     # [mission]
     mission = raw.get("mission", {})

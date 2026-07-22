@@ -6,7 +6,7 @@ urllib.request (stdlib). Supports Bearer token auth and X-Operator-Scopes header
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any
 from urllib import request
 from urllib.error import HTTPError
@@ -21,10 +21,18 @@ class MissionGatewayClient:
         *,
         api_token: str | None = None,
         timeout: float = 10.0,
+        operator_id: str = "mission-gateway-client",
+        scopes: Iterable[str] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_token = api_token
         self._timeout = timeout
+        self._operator_id = operator_id
+        self._scopes = frozenset(
+            scopes
+            if scopes is not None
+            else {"state.read", "task.submit", "mission.approve"}
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -42,6 +50,96 @@ class MissionGatewayClient:
     def get_mission_events(self, mission_id: str) -> dict[str, Any]:
         """GET /missions/{id}/events"""
         return self._get(f"/missions/{mission_id}/events")
+
+    def get_memory_tool_definitions(self, mission_id: str) -> dict[str, Any]:
+        """GET /missions/{id}/memory/tools"""
+        return self._get(f"/missions/{mission_id}/memory/tools")
+
+    def call_memory_tool(
+        self,
+        mission_id: str,
+        *,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """POST /missions/{id}/memory/tools/call"""
+        return self._post(
+            f"/missions/{mission_id}/memory/tools/call",
+            {"name": name, "arguments": arguments or {}},
+        )
+
+    def get_memory_lifecycle(self, mission_id: str) -> dict[str, Any]:
+        """GET /missions/{id}/memory/lifecycle"""
+        return self._get(f"/missions/{mission_id}/memory/lifecycle")
+
+    def get_memory_audit(self, mission_id: str, *, limit: int = 200) -> dict[str, Any]:
+        """GET /missions/{id}/memory/audit"""
+        return self._get(f"/missions/{mission_id}/memory/audit?limit={limit}")
+
+    def archive_memory(self, mission_id: str, *, reason: str) -> dict[str, Any]:
+        """POST /missions/{id}/memory/archive"""
+        return self._post(f"/missions/{mission_id}/memory/archive", {"reason": reason})
+
+    def delete_memory_audit(
+        self,
+        mission_id: str,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        """POST /missions/{id}/memory/delete with an exact-ID confirmation."""
+        return self._post(
+            f"/missions/{mission_id}/memory/delete",
+            {"reason": reason, "confirmation": mission_id},
+        )
+
+    def list_reusable_knowledge(
+        self,
+        *,
+        knowledge_type: str | None = None,
+        tags: Iterable[str] = (),
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """GET /memory/knowledge with exact structured filters."""
+        from urllib.parse import urlencode
+
+        params: list[tuple[str, str]] = [("limit", str(limit))]
+        if knowledge_type is not None:
+            params.append(("knowledge_type", knowledge_type))
+        params.extend(("tag", tag) for tag in tags)
+        return self._get(f"/memory/knowledge?{urlencode(params)}")
+
+    def approve_reusable_knowledge(self, **kwargs: Any) -> dict[str, Any]:
+        """POST /memory/knowledge/approve"""
+        return self._post("/memory/knowledge/approve", kwargs)
+
+    def revoke_reusable_knowledge(
+        self,
+        knowledge_id: str,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        """POST /memory/knowledge/{id}/revoke"""
+        return self._post(
+            f"/memory/knowledge/{knowledge_id}/revoke",
+            {"reason": reason},
+        )
+
+    def sync_robot_memory(
+        self,
+        mission_id: str,
+        *,
+        robot_id: str | None = None,
+        batch_limit: int = 200,
+        max_batches: int = 10,
+    ) -> dict[str, Any]:
+        """POST /missions/{id}/memory/sync"""
+        body: dict[str, Any] = {
+            "batch_limit": batch_limit,
+            "max_batches": max_batches,
+        }
+        if robot_id is not None:
+            body["robot_id"] = robot_id
+        return self._post(f"/missions/{mission_id}/memory/sync", body)
 
     def cancel_mission(self, mission_id: str) -> dict[str, Any]:
         """POST /missions/{id}/cancel"""
@@ -165,7 +263,8 @@ class MissionGatewayClient:
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "X-Operator-Scopes": "admin",
+            "X-Operator-Id": self._operator_id,
+            "X-Operator-Scopes": ",".join(sorted(self._scopes)),
         }
         if self._api_token is not None:
             headers["Authorization"] = f"Bearer {self._api_token}"

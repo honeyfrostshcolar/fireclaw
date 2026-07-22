@@ -46,6 +46,13 @@ class MissionSchedulerConfig:
     group_timeout_seconds: float = 300.0
 
 
+@dataclass(frozen=True)
+class _SubmittedAttempt:
+    logical_subtask_key: str
+    subtask: MissionSubtask
+    task_id: str
+
+
 @dataclass
 class MissionScheduler:
     mission_agent: MissionAgent
@@ -63,6 +70,8 @@ class MissionScheduler:
         mission_id: str,
         session_id: str | None = None,
         operator: dict[str, Any] | None = None,
+        memory_command_event_id: str | None = None,
+        memory_plan_event_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a mission plan by scheduling execution groups in order."""
         groups: dict[int, list[MissionSubtask]] = {}
@@ -74,11 +83,18 @@ class MissionScheduler:
         failure_decisions: list[dict[str, Any]] = []
         retry_counts: dict[str, int] = defaultdict(int)
         reassign_counts: dict[str, int] = defaultdict(int)
+        memory_lineage_kwargs: dict[str, str] = {}
+        if memory_command_event_id is not None:
+            memory_lineage_kwargs["memory_command_event_id"] = memory_command_event_id
+        if memory_plan_event_id is not None:
+            memory_lineage_kwargs["memory_plan_event_id"] = memory_plan_event_id
 
         for group_index in sorted_group_indices:
             group_subtasks = groups[group_index]
             subtask_results: list[dict[str, Any]] = []
-            for subtask in group_subtasks:
+            current_attempts: list[_SubmittedAttempt] = []
+            terminal_states: list[dict[str, Any]] = []
+            for subtask_index, subtask in enumerate(group_subtasks):
                 result = self.mission_agent.submit_subtask(
                     subtask.robot_id,
                     subtask.command,
@@ -87,35 +103,54 @@ class MissionScheduler:
                     operator=operator,
                     mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
                     mission_subtask=subtask,
+                    **memory_lineage_kwargs,
                 )
                 subtask_results.append(result)
+                attempt = self._submitted_attempt(
+                    result=result,
+                    logical_subtask_key=f"{group_index}:{subtask_index}",
+                    subtask=subtask,
+                )
+                if attempt is not None:
+                    current_attempts.append(attempt)
 
             # Poll + failure handling loop for this group
-            group_terminal = self._poll_group_terminal(mission_id, group_subtasks)
+            group_terminal = self._poll_group_terminal(mission_id, current_attempts)
+            terminal_states.extend(group_terminal)
 
             # Evaluate failures and execute decisions
             actions = self._evaluate_group_failures(
-                group_terminal, group_subtasks, plan,
+                group_terminal, current_attempts, plan,
                 retry_counts, reassign_counts, failure_decisions,
             )
 
             # Execute retry/reassign actions
             while actions:
+                next_attempts: list[_SubmittedAttempt] = []
                 for action in actions:
+                    previous_attempt = action["attempt"]
                     if action["action"] == "retry":
-                        subtask = action["subtask"]
+                        subtask = previous_attempt.subtask
                         result = self.mission_agent.submit_subtask(
                             subtask.robot_id,
                             subtask.command,
                             session_id=mission_id,
-                            dedupe_key=f"{mission_id}-{subtask.robot_id}-{subtask.floor}-retry{retry_counts[subtask.robot_id]}",
+                            dedupe_key=f"{mission_id}-{subtask.robot_id}-{subtask.floor}-retry{retry_counts[previous_attempt.logical_subtask_key]}",
                             operator=operator,
                             mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
                             mission_subtask=subtask,
+                            **memory_lineage_kwargs,
                         )
                         subtask_results.append(result)
+                        attempt = self._submitted_attempt(
+                            result=result,
+                            logical_subtask_key=previous_attempt.logical_subtask_key,
+                            subtask=subtask,
+                        )
+                        if attempt is not None:
+                            next_attempts.append(attempt)
                     elif action["action"] == "reassign":
-                        subtask = action["subtask"]
+                        subtask = previous_attempt.subtask
                         new_robot = action["new_robot"]
                         reassigned_subtask = MissionSubtask(
                             robot_id=new_robot,
@@ -128,24 +163,34 @@ class MissionScheduler:
                             new_robot,
                             subtask.command,
                             session_id=mission_id,
-                            dedupe_key=f"{mission_id}-{new_robot}-{subtask.floor}-reassign{reassign_counts[subtask.robot_id]}",
+                            dedupe_key=f"{mission_id}-{new_robot}-{subtask.floor}-reassign{reassign_counts[previous_attempt.logical_subtask_key]}",
                             operator=operator,
                             mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
                             mission_subtask=reassigned_subtask,
+                            **memory_lineage_kwargs,
                         )
                         subtask_results.append(result)
+                        attempt = self._submitted_attempt(
+                            result=result,
+                            logical_subtask_key=previous_attempt.logical_subtask_key,
+                            subtask=reassigned_subtask,
+                        )
+                        if attempt is not None:
+                            next_attempts.append(attempt)
 
                 # Poll again for the retried/reassigned subtasks
-                group_terminal = self._poll_group_terminal(mission_id, group_subtasks)
+                current_attempts = next_attempts
+                group_terminal = self._poll_group_terminal(mission_id, current_attempts)
+                terminal_states.extend(group_terminal)
                 actions = self._evaluate_group_failures(
-                    group_terminal, group_subtasks, plan,
+                    group_terminal, current_attempts, plan,
                     retry_counts, reassign_counts, failure_decisions,
                 )
 
             group_result: dict[str, Any] = {
                 "group_index": group_index,
                 "subtask_results": subtask_results,
-                "terminal_states": group_terminal,
+                "terminal_states": terminal_states,
             }
             group_results.append(group_result)
 
@@ -175,7 +220,7 @@ class MissionScheduler:
     def _evaluate_group_failures(
         self,
         group_terminal: list[dict[str, Any]],
-        group_subtasks: list[MissionSubtask],
+        attempts: list[_SubmittedAttempt],
         plan: MissionPlan,
         retry_counts: dict[str, int],
         reassign_counts: dict[str, int],
@@ -184,7 +229,10 @@ class MissionScheduler:
         """Evaluate failed subtasks and return actions to take."""
         actions: list[dict[str, Any]] = []
         policy = self.config.failure_policy
-        subtask_by_robot = {s.robot_id: s for s in group_subtasks}
+        attempts_by_execution = {
+            (attempt.subtask.robot_id, attempt.task_id): attempt
+            for attempt in attempts
+        }
 
         for terminal in group_terminal:
             status = terminal.get("status")
@@ -192,62 +240,69 @@ class MissionScheduler:
                 continue
 
             robot_id = terminal.get("robot_id", "")
+            task_id = terminal.get("task_id", "")
+            attempt = attempts_by_execution.get((robot_id, task_id))
+            if attempt is None:
+                continue
+            logical_subtask_key = attempt.logical_subtask_key
             decision = policy.decision_for(status)
 
             if decision == "abort":
                 failure_decisions.append({
                     "robot_id": robot_id,
+                    "task_id": task_id,
                     "status": status,
                     "decision": "abort",
                 })
                 return []  # Abort immediately
 
             elif decision == "retry":
-                if retry_counts[robot_id] < policy.max_retries:
-                    retry_counts[robot_id] += 1
-                    subtask = subtask_by_robot.get(robot_id)
-                    if subtask:
-                        failure_decisions.append({
-                            "robot_id": robot_id,
-                            "status": status,
-                            "decision": "retry",
-                            "attempt": retry_counts[robot_id],
-                        })
-                        actions.append({"action": "retry", "subtask": subtask})
+                if retry_counts[logical_subtask_key] < policy.max_retries:
+                    retry_counts[logical_subtask_key] += 1
+                    failure_decisions.append({
+                        "robot_id": robot_id,
+                        "task_id": task_id,
+                        "status": status,
+                        "decision": "retry",
+                        "attempt": retry_counts[logical_subtask_key],
+                    })
+                    actions.append({"action": "retry", "attempt": attempt})
                 else:
                     # Max retries exceeded — skip
                     failure_decisions.append({
                         "robot_id": robot_id,
+                        "task_id": task_id,
                         "status": status,
                         "decision": "skipped",
                         "reason": "max_retries_exceeded",
                     })
 
             elif decision == "reassign":
-                if reassign_counts[robot_id] < policy.max_reassigns:
-                    subtask = subtask_by_robot.get(robot_id)
-                    if subtask:
-                        new_robot = self._find_reassign_robot(subtask, plan)
-                        if new_robot:
-                            reassign_counts[robot_id] += 1
-                            failure_decisions.append({
-                                "robot_id": robot_id,
-                                "status": status,
-                                "decision": "reassign",
-                                "new_robot": new_robot,
-                                "attempt": reassign_counts[robot_id],
-                            })
-                            actions.append({"action": "reassign", "subtask": subtask, "new_robot": new_robot})
-                        else:
-                            failure_decisions.append({
-                                "robot_id": robot_id,
-                                "status": status,
-                                "decision": "skipped",
-                                "reason": "no_alternative_robot",
-                            })
+                if reassign_counts[logical_subtask_key] < policy.max_reassigns:
+                    new_robot = self._find_reassign_robot(attempt.subtask, plan)
+                    if new_robot:
+                        reassign_counts[logical_subtask_key] += 1
+                        failure_decisions.append({
+                            "robot_id": robot_id,
+                            "task_id": task_id,
+                            "status": status,
+                            "decision": "reassign",
+                            "new_robot": new_robot,
+                            "attempt": reassign_counts[logical_subtask_key],
+                        })
+                        actions.append({"action": "reassign", "attempt": attempt, "new_robot": new_robot})
+                    else:
+                        failure_decisions.append({
+                            "robot_id": robot_id,
+                            "task_id": task_id,
+                            "status": status,
+                            "decision": "skipped",
+                            "reason": "no_alternative_robot",
+                        })
                 else:
                     failure_decisions.append({
                         "robot_id": robot_id,
+                        "task_id": task_id,
                         "status": status,
                         "decision": "skipped",
                         "reason": "max_reassigns_exceeded",
@@ -256,6 +311,7 @@ class MissionScheduler:
             elif decision == "escalate":
                 failure_decisions.append({
                     "robot_id": robot_id,
+                    "task_id": task_id,
                     "status": status,
                     "decision": "escalated",
                 })
@@ -263,6 +319,7 @@ class MissionScheduler:
             elif decision == "skip":
                 failure_decisions.append({
                     "robot_id": robot_id,
+                    "task_id": task_id,
                     "status": status,
                     "decision": "skipped",
                 })
@@ -286,22 +343,47 @@ class MissionScheduler:
     def _poll_group_terminal(
         self,
         mission_id: str,
-        group_subtasks: list[MissionSubtask],
+        attempts: list[_SubmittedAttempt],
     ) -> list[dict[str, Any]]:
-        """Poll until all subtasks in group reach terminal state or timeout."""
+        """Poll until the concrete executions from this dispatch round terminate."""
+        if not attempts:
+            return []
         deadline = time.monotonic() + self.config.group_timeout_seconds
-        robot_ids = {s.robot_id for s in group_subtasks}
+        execution_keys = {
+            (attempt.subtask.robot_id, attempt.task_id)
+            for attempt in attempts
+        }
 
         while time.monotonic() < deadline:
             trace = self.mission_agent.mission_trace(mission_id)
             terminal = [
                 s for s in trace.get("subtasks", [])
-                if s.get("robot_id") in robot_ids and s.get("status") in TERMINAL_SUBTASK_STATUSES
+                if (s.get("robot_id"), s.get("task_id")) in execution_keys
+                and s.get("status") in TERMINAL_SUBTASK_STATUSES
             ]
-            if len(terminal) >= len(group_subtasks):
+            if len(terminal) >= len(execution_keys):
                 return terminal
             time.sleep(self.config.poll_interval_seconds)
 
         # Timeout — return whatever state we have
         trace = self.mission_agent.mission_trace(mission_id)
-        return [s for s in trace.get("subtasks", []) if s.get("robot_id") in robot_ids]
+        return [
+            s for s in trace.get("subtasks", [])
+            if (s.get("robot_id"), s.get("task_id")) in execution_keys
+        ]
+
+    @staticmethod
+    def _submitted_attempt(
+        *,
+        result: dict[str, Any],
+        logical_subtask_key: str,
+        subtask: MissionSubtask,
+    ) -> _SubmittedAttempt | None:
+        task_id = result.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return None
+        return _SubmittedAttempt(
+            logical_subtask_key=logical_subtask_key,
+            subtask=subtask,
+            task_id=task_id,
+        )

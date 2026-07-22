@@ -11,6 +11,18 @@ logger = logging.getLogger(__name__)
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
 from fireclaw_core.infra.log_redaction import redact_dict
+from fireclaw_core.memory.mission_memory_facade import MemoryAccessContext
+from fireclaw_core.memory.mission_memory_tools import (
+    CURRENT_CONTEXT_TOOL,
+    MissionMemoryTools,
+)
+from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
+from fireclaw_core.memory.embodied_memory import (
+    MEMORY_RUNTIME_MODES,
+    EmbodiedMemoryProducer,
+    EmbodiedMemoryStore,
+)
+from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission.mission_planning_audit import (
     GuardDecision,
@@ -26,7 +38,7 @@ from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore, MissionSessionLineage
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.mission.mission_plan_validator import MissionPlanValidator
-from fireclaw_core.task.task_contract import structured_task_from_mission_subtask
+from fireclaw_core.task.task_contract import MemoryLineage, structured_task_from_mission_subtask
 from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
 
@@ -79,6 +91,12 @@ class MissionAgent:
         profile_skill_chains_by_robot: dict[str, dict[str, tuple[str, ...]]] | None = None,
         primitive_skills_by_robot: dict[str, tuple[str, ...]] | None = None,
         mission_planning_audit_sink: MissionPlanningAuditSink | None = None,
+        embodied_memory_producer: EmbodiedMemoryProducer | None = None,
+        approval_memory_producer: EmbodiedMemoryProducer | None = None,
+        embodied_runtime_mode: str | None = None,
+        embodied_working_memory: EmbodiedWorkingMemory | None = None,
+        mission_memory_tools: MissionMemoryTools | None = None,
+        memory_lifecycle: MissionMemoryLifecycleStore | None = None,
     ) -> None:
         self.registry = registry
         self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
@@ -104,10 +122,66 @@ class MissionAgent:
         self._session_lineage_store = session_lineage_store
         self._task_flow_store = task_flow_store
         self.mission_planning_audit_sink = mission_planning_audit_sink
+        if embodied_memory_producer is not None:
+            if embodied_memory_producer.producer_type != "mission_agent":
+                raise ValueError("MissionAgent requires a mission_agent embodied-memory producer")
+            if embodied_runtime_mode not in MEMORY_RUNTIME_MODES:
+                raise ValueError(
+                    "MissionAgent requires embodied_runtime_mode to be one of: "
+                    f"{sorted(MEMORY_RUNTIME_MODES)}"
+                )
+        if approval_memory_producer is not None:
+            if approval_memory_producer.producer_type != "approval_runtime":
+                raise ValueError("MissionAgent requires an approval_runtime memory producer")
+            if embodied_runtime_mode not in MEMORY_RUNTIME_MODES:
+                raise ValueError(
+                    "MissionAgent requires embodied_runtime_mode to be one of: "
+                    f"{sorted(MEMORY_RUNTIME_MODES)}"
+                )
+        self.embodied_memory_producer = embodied_memory_producer
+        self.approval_memory_producer = approval_memory_producer
+        self.embodied_runtime_mode = embodied_runtime_mode
+        self.embodied_working_memory = embodied_working_memory
+        self.mission_memory_tools = mission_memory_tools
+        self.memory_lifecycle = memory_lifecycle
 
     @property
     def session_lineage_store(self) -> JsonlSessionLineageStore | None:
         return self._session_lineage_store
+
+    @property
+    def embodied_memory_store(self) -> EmbodiedMemoryStore | None:
+        if self.embodied_memory_producer is None:
+            return None
+        return self.embodied_memory_producer.store
+
+    def memory_tool_definitions(self) -> list[dict[str, Any]]:
+        if self.mission_memory_tools is None:
+            return []
+        return self.mission_memory_tools.tool_schemas()
+
+    def call_memory_tool(
+        self,
+        *,
+        mission_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        requester_id: str,
+        scopes: frozenset[str],
+    ) -> dict[str, Any]:
+        if self.mission_memory_tools is None or self.embodied_runtime_mode is None:
+            return {
+                "status": "not_configured",
+                "mission_id": mission_id,
+                "advisory_only": True,
+            }
+        access = MemoryAccessContext(
+            mission_id=mission_id,
+            runtime_mode=self.embodied_runtime_mode,
+            requester_id=requester_id,
+            scopes=scopes,
+        )
+        return self.mission_memory_tools.execute(name, arguments, access=access)
 
     def _authorize(self, action: str) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
@@ -130,9 +204,10 @@ class MissionAgent:
         *,
         robot_id: str | None = None,
         subtask_id: str | None = None,
+        force: bool = False,
     ) -> None:
         """Record a memory entry if mission_memory is configured."""
-        if self.mission_memory is None:
+        if self.mission_memory is None or (self.embodied_memory_producer is not None and not force):
             return
         record = MissionMemoryRecord(
             record_id=uuid4().hex[:12],
@@ -147,6 +222,123 @@ class MissionAgent:
             self.mission_memory.append(record)
         except Exception:
             logger.warning("Failed to write mission memory record", exc_info=True)
+
+    def _record_embodied_memory(
+        self,
+        mission_id: str,
+        event_type: str,
+        evidence_kind: str,
+        content: dict[str, Any],
+        *,
+        source_type: str,
+        source_id: str | None = None,
+        method_id: str | None = None,
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
+        derived_from: tuple[str, ...] = (),
+        observed_at: str | None = None,
+    ) -> str | None:
+        """Record a policy-checked embodied event without blocking mission execution."""
+        if self.embodied_memory_producer is None or self.embodied_runtime_mode is None:
+            return None
+        try:
+            event = self.embodied_memory_producer.record_event(
+                mission_id=mission_id,
+                event_type=event_type,
+                evidence_kind=evidence_kind,
+                payload=content,
+                runtime_mode=self.embodied_runtime_mode,
+                source_type=source_type,
+                source_id=source_id,
+                method_id=method_id,
+                robot_id=robot_id,
+                subtask_id=subtask_id,
+                derived_from=derived_from,
+                observed_at=observed_at,
+            )
+        except Exception:
+            logger.warning("Failed to write embodied mission memory event", exc_info=True)
+            self._record_mission_memory(
+                mission_id,
+                event_type,
+                content,
+                robot_id=robot_id,
+                subtask_id=subtask_id,
+                force=True,
+            )
+            return None
+        return event.event_id
+
+    def _add_embodied_relation(
+        self,
+        mission_id: str,
+        source_event_id: str | None,
+        target_event_id: str | None,
+        relation_type: str,
+    ) -> None:
+        if (
+            self.embodied_memory_producer is None
+            or self.embodied_runtime_mode is None
+            or source_event_id is None
+            or target_event_id is None
+        ):
+            return
+        try:
+            self.embodied_memory_producer.add_relation(
+                mission_id=mission_id,
+                source_record_id=source_event_id,
+                target_record_id=target_event_id,
+                relation_type=relation_type,
+                runtime_mode=self.embodied_runtime_mode,
+            )
+        except Exception:
+            logger.warning("Failed to write embodied mission memory relation", exc_info=True)
+
+    def _operator_source_id(self, operator: dict[str, Any] | None = None) -> str:
+        if isinstance(operator, dict):
+            value = operator.get("operator_id")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if self.operator is not None and self.operator.operator_id.strip():
+            return self.operator.operator_id.strip()
+        return "unknown-operator"
+
+    def _planner_method_id(self) -> str:
+        planner_type = type(self.planner)
+        return f"{planner_type.__module__}.{planner_type.__qualname__}"
+
+    def _record_approval_memory(
+        self,
+        mission_id: str,
+        content: dict[str, Any],
+        *,
+        evidence_kind: str,
+        source_id: str | None = None,
+        observed_at: str | None = None,
+    ) -> str | None:
+        if self.approval_memory_producer is None or self.embodied_runtime_mode is None:
+            return None
+        try:
+            event = self.approval_memory_producer.record_event(
+                mission_id=mission_id,
+                event_type="safety_decision",
+                evidence_kind=evidence_kind,
+                payload=content,
+                runtime_mode=self.embodied_runtime_mode,
+                source_type="approval_runtime",
+                source_id=source_id,
+                observed_at=observed_at,
+            )
+        except Exception:
+            logger.warning("Failed to write embodied approval memory event", exc_info=True)
+            self._record_mission_memory(
+                mission_id,
+                "safety_decision",
+                content,
+                force=True,
+            )
+            return None
+        return event.event_id
 
     def _record_mission_planning_audit(
         self,
@@ -221,6 +413,8 @@ class MissionAgent:
         operator: dict[str, Any] | None = None,
         mission: dict[str, Any] | None = None,
         mission_subtask: MissionSubtask | None = None,
+        memory_command_event_id: str | None = None,
+        memory_plan_event_id: str | None = None,
     ) -> dict[str, Any]:
         deny = self._authorize("mission.submit")
         if deny is not None:
@@ -277,6 +471,34 @@ class MissionAgent:
                     capability_skill_chains=self.profile_skill_chains_by_robot.get(robot_id),
                 ).to_dict()
 
+        subtask_event_id = self._record_embodied_memory(
+            mission_id,
+            "subtask",
+            "cognitive_artifact",
+            {
+                "command": command,
+                "robot_id": robot_id,
+                "structured_task": structured_task,
+            },
+            source_type="mission_dispatch",
+            method_id="fireclaw.mission_agent.submit_subtask:v1",
+            robot_id=robot_id,
+            observed_at=created_at,
+        )
+        self._add_embodied_relation(
+            mission_id,
+            subtask_event_id,
+            memory_plan_event_id,
+            "subtask_of",
+        )
+        if structured_task is not None and self.embodied_runtime_mode is not None:
+            structured_task["memory_lineage"] = MemoryLineage(
+                runtime_mode=self.embodied_runtime_mode,
+                command_event_id=memory_command_event_id,
+                plan_event_id=memory_plan_event_id,
+                subtask_event_id=subtask_event_id,
+            ).to_dict()
+
         subagent_result = self.subagent_client.submit_task(
             entry,
             command=command,
@@ -327,6 +549,22 @@ class MissionAgent:
             {"robot_id": robot_id, "task_id": task_id, "command": command, "status": status},
             robot_id=robot_id,
             subtask_id=task_id if isinstance(task_id, str) else None,
+        )
+        dispatch_outcome_event_id = self._record_embodied_memory(
+            mission_id,
+            "outcome",
+            "runtime_evidence",
+            {"robot_id": robot_id, "task_id": task_id, "command": command, "status": status},
+            source_type="subagent_dispatch",
+            robot_id=robot_id,
+            subtask_id=task_id if isinstance(task_id, str) else None,
+            derived_from=(subtask_event_id,) if subtask_event_id is not None else (),
+        )
+        self._add_embodied_relation(
+            mission_id,
+            dispatch_outcome_event_id,
+            subtask_event_id,
+            "caused_by",
         )
         return {
             "status": status,
@@ -404,6 +642,7 @@ class MissionAgent:
         self,
         command: str,
         *,
+        mission_id: str | None = None,
         max_memories: int = 5,
         max_corrections: int = 3,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -431,6 +670,54 @@ class MissionAgent:
                 ]
         except Exception:
             logger.warning("Failed to retrieve planner memories", exc_info=True)
+
+        if (
+            mission_id is not None
+            and self.embodied_working_memory is not None
+            and self.embodied_runtime_mode is not None
+        ):
+            try:
+                snapshot = self.embodied_working_memory.snapshot(
+                    runtime_mode=self.embodied_runtime_mode,
+                    mission_id=mission_id,
+                    event_types=frozenset({
+                        "correction",
+                        "observation",
+                        "outcome",
+                        "safety_decision",
+                    }),
+                    limit=max_memories,
+                )
+                memories.extend(
+                    {
+                        "memory_tier": "working",
+                        "fresh_at": snapshot.reference_at,
+                        "event": redact_dict(event.to_mission_record().to_dict()),
+                    }
+                    for event in snapshot.events
+                )
+                memories = memories[-max_memories:]
+            except Exception:
+                logger.warning("Failed to project working memory into planner context", exc_info=True)
+
+        if mission_id is not None and self.mission_memory_tools is not None:
+            try:
+                operator_scopes = frozenset(
+                    self.operator.control_scopes if self.operator is not None else {"state.read"}
+                )
+                context_memory = self.call_memory_tool(
+                    mission_id=mission_id,
+                    name=CURRENT_CONTEXT_TOOL,
+                    arguments={"limit": max_memories},
+                    requester_id=(
+                        self.operator.operator_id if self.operator is not None else "mission-agent"
+                    ),
+                    scopes=operator_scopes,
+                )
+                memories.append({"memory_tier": "mission_facade", **context_memory})
+                memories = memories[-max_memories:]
+            except Exception:
+                logger.warning("Failed to read planner context through memory facade", exc_info=True)
 
         try:
             if self.mission_memory is not None:
@@ -477,6 +764,15 @@ class MissionAgent:
         deny = self._authorize("mission.plan")
         if deny is not None:
             return {**deny, "subtask_results": []}
+        mission_id = _mission_id(session_id)
+        command_event_id = self._record_embodied_memory(
+            mission_id,
+            "command",
+            "operator_assertion",
+            {"command": command},
+            source_type="operator",
+            source_id=self._operator_source_id(operator),
+        )
         if self.planner is None:
             return {
                 "status": "no_planner",
@@ -488,7 +784,10 @@ class MissionAgent:
         online_robot_ids = {rid for rid, info in presence.items() if info.get("online")}
 
         # Retrieve memories and corrections for planner context
-        memories, corrections = self._retrieve_planner_context(command)
+        memories, corrections = self._retrieve_planner_context(
+            command,
+            mission_id=mission_id,
+        )
 
         # Apply provider context hooks from plugin runtime
         if self.plugin_runtime is not None:
@@ -513,7 +812,12 @@ class MissionAgent:
 
         # Primitive fallback: when planner returns "clarify", try primitive composition
         if planning_result.status == "clarify" and planning_result.plan is None:
-            fallback = self._try_primitive_fallback(command, online_robot_ids, session_id)
+            fallback = self._try_primitive_fallback(
+                command,
+                online_robot_ids,
+                mission_id,
+                memory_command_event_id=command_event_id,
+            )
             if fallback is not None:
                 return fallback
 
@@ -527,8 +831,27 @@ class MissionAgent:
             if audit_error is not None:
                 response["audit_warning"] = audit_error
             return response
+        plan_event_id = self._record_embodied_memory(
+            mission_id,
+            "plan",
+            "cognitive_artifact",
+            {
+                "status": planning_result.status,
+                "message": planning_result.message,
+                "intent": planning_result.intent,
+                "plan": planning_result.plan.to_dict(),
+            },
+            source_type="planner",
+            method_id=self._planner_method_id(),
+            derived_from=(command_event_id,) if command_event_id is not None else (),
+        )
+        self._add_embodied_relation(
+            mission_id,
+            plan_event_id,
+            command_event_id,
+            "caused_by",
+        )
         validation_errors = MissionPlanValidator().validate(planning_result.plan, self.registry)
-        mission_id = _mission_id(session_id)
         if validation_errors:
             audit_record = self._with_validator_decision(
                 planning_result.audit_record,
@@ -608,6 +931,8 @@ class MissionAgent:
                 planning_result.plan,
                 mission_id=mission_id,
                 operator=operator,
+                memory_command_event_id=command_event_id,
+                memory_plan_event_id=plan_event_id,
             )
             # Flatten group subtask results into a top-level list for API consistency
             subtask_results: list[dict[str, Any]] = []
@@ -628,6 +953,25 @@ class MissionAgent:
                     "robot_assignments": robot_assignments,
                     "status": scheduler_result.get("status", planning_result.status),
                 },
+            )
+            mission_outcome_event_id = self._record_embodied_memory(
+                mission_id,
+                "outcome",
+                "runtime_evidence",
+                {
+                    "command": command,
+                    "subtask_count": len(subtask_results),
+                    "robot_assignments": robot_assignments,
+                    "status": scheduler_result.get("status", planning_result.status),
+                },
+                source_type="mission_scheduler",
+                derived_from=(plan_event_id,) if plan_event_id is not None else (),
+            )
+            self._add_embodied_relation(
+                mission_id,
+                mission_outcome_event_id,
+                plan_event_id,
+                "caused_by",
             )
 
             # Project task-flow summary
@@ -657,6 +1001,8 @@ class MissionAgent:
                 operator=operator,
                 mission={"mission_id": mission_id, "execution_group": subtask.execution_group},
                 mission_subtask=subtask,
+                memory_command_event_id=command_event_id,
+                memory_plan_event_id=plan_event_id,
             )
             subtask_results.append(result)
 
@@ -674,6 +1020,25 @@ class MissionAgent:
                 "robot_assignments": robot_assignments,
                 "status": planning_result.status,
             },
+        )
+        mission_outcome_event_id = self._record_embodied_memory(
+            mission_id,
+            "outcome",
+            "runtime_evidence",
+            {
+                "command": command,
+                "subtask_count": len(subtask_results),
+                "robot_assignments": robot_assignments,
+                "status": planning_result.status,
+            },
+            source_type="mission_agent",
+            derived_from=(plan_event_id,) if plan_event_id is not None else (),
+        )
+        self._add_embodied_relation(
+            mission_id,
+            mission_outcome_event_id,
+            plan_event_id,
+            "caused_by",
         )
 
         # Project task-flow summary
@@ -697,6 +1062,8 @@ class MissionAgent:
         command: str,
         online_robot_ids: set[str],
         session_id: str | None,
+        *,
+        memory_command_event_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Try to dispatch a primitive composition task when no composite matches."""
         # Safety check: block high-risk commands
@@ -733,6 +1100,33 @@ class MissionAgent:
                 "risk_level": "low",
                 "constraints": {"source": "mission_primitive_fallback"},
             }
+            subtask_event_id = self._record_embodied_memory(
+                mission_id,
+                "subtask",
+                "cognitive_artifact",
+                {
+                    "command": command,
+                    "robot_id": entry.robot_id,
+                    "structured_task": structured_task,
+                    "dispatch_mode": "primitive_fallback",
+                },
+                source_type="mission_primitive_fallback",
+                method_id="fireclaw.mission_agent.primitive_fallback:v1",
+                robot_id=entry.robot_id,
+                observed_at=created_at,
+            )
+            self._add_embodied_relation(
+                mission_id,
+                subtask_event_id,
+                memory_command_event_id,
+                "caused_by",
+            )
+            if self.embodied_runtime_mode is not None:
+                structured_task["memory_lineage"] = MemoryLineage(
+                    runtime_mode=self.embodied_runtime_mode,
+                    command_event_id=memory_command_event_id,
+                    subtask_event_id=subtask_event_id,
+                ).to_dict()
 
             # Submit to robot-gateway
             try:
@@ -773,6 +1167,28 @@ class MissionAgent:
                         "dispatch_mode": "primitive_fallback",
                     },
                     robot_id=entry.robot_id,
+                )
+                outcome_event_id = self._record_embodied_memory(
+                    mission_id,
+                    "outcome",
+                    "runtime_evidence",
+                    {
+                        "robot_id": entry.robot_id,
+                        "task_id": result.get("task_id", task_id),
+                        "command": command,
+                        "status": status,
+                        "dispatch_mode": "primitive_fallback",
+                    },
+                    source_type="subagent_dispatch",
+                    robot_id=entry.robot_id,
+                    subtask_id=str(result.get("task_id", task_id)),
+                    derived_from=(subtask_event_id,) if subtask_event_id is not None else (),
+                )
+                self._add_embodied_relation(
+                    mission_id,
+                    outcome_event_id,
+                    subtask_event_id,
+                    "caused_by",
                 )
 
                 return {
@@ -848,6 +1264,16 @@ class MissionAgent:
             robot_id=robot_id,
             subtask_id=subtask_id,
         )
+        self._record_embodied_memory(
+            mission_id,
+            "correction",
+            "operator_assertion",
+            content,
+            source_type="operator",
+            source_id=self._operator_source_id(),
+            robot_id=robot_id,
+            subtask_id=subtask_id,
+        )
         return {"status": "recorded", "mission_id": mission_id, "correction": correction}
 
     def cancel_mission(
@@ -920,6 +1346,18 @@ class MissionAgent:
                 "skipped_subtask_count": len(skipped_subtasks),
             },
         )
+        self._record_embodied_memory(
+            mission_id,
+            "outcome",
+            "runtime_evidence",
+            {
+                "status": status,
+                "cancelled_subtask_count": len(cancelled_subtasks),
+                "skipped_subtask_count": len(skipped_subtasks),
+            },
+            source_type="mission_cancel",
+            observed_at=now,
+        )
         return {
             "mission_id": mission_id,
             "status": status,
@@ -948,6 +1386,19 @@ class MissionAgent:
             command=command,
             requested_by=operator_id,
             created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._record_approval_memory(
+            mission_id,
+            {
+                "decision": "require_confirmation",
+                "approval_status": request.status,
+                "request_id": request.request_id,
+                "action": request.action,
+                "risk_level": request.risk_level,
+                "requested_by": request.requested_by,
+            },
+            evidence_kind="runtime_evidence",
+            observed_at=request.created_at,
         )
         return {"status": "pending", "request": request.to_dict()}
 
@@ -985,6 +1436,20 @@ class MissionAgent:
             return {"status": "error", "message": f"Invalid decision: {decision}"}
         if result is None:
             return {"status": "not_found", "request_id": request_id}
+        self._record_approval_memory(
+            result.mission_id,
+            {
+                "decision": result.status,
+                "approval_status": result.status,
+                "request_id": result.request_id,
+                "action": result.action,
+                "risk_level": result.risk_level,
+                "reason": result.reason,
+            },
+            evidence_kind="operator_assertion",
+            source_id=operator_id,
+            observed_at=result.decided_at,
+        )
         return {"status": "decided", "request": result.to_dict()}
 
 

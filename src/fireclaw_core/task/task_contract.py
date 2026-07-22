@@ -13,6 +13,28 @@ FLOOR_SKILLS = {"navigate_to_floor", "search_for_victims", "assess_victim", "rep
 
 
 @dataclass(frozen=True)
+class MemoryLineage:
+    """Control-plane event IDs carried across memory-store boundaries."""
+
+    runtime_mode: str
+    command_event_id: str | None = None
+    plan_event_id: str | None = None
+    subtask_event_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "MemoryLineage":
+        return cls(
+            runtime_mode=str(payload.get("runtime_mode") or ""),
+            command_event_id=_optional_str(payload.get("command_event_id")),
+            plan_event_id=_optional_str(payload.get("plan_event_id")),
+            subtask_event_id=_optional_str(payload.get("subtask_event_id")),
+        )
+
+
+@dataclass(frozen=True)
 class StructuredRobotTask:
     task_id: str
     task_type: str
@@ -26,9 +48,13 @@ class StructuredRobotTask:
     mission_id: str | None = None
     robot_id: str | None = None
     command: str | None = None
+    memory_lineage: MemoryLineage | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.memory_lineage is None:
+            payload.pop("memory_lineage")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StructuredRobotTask":
@@ -45,6 +71,11 @@ class StructuredRobotTask:
             mission_id=_optional_str(payload.get("mission_id")),
             robot_id=_optional_str(payload.get("robot_id")),
             command=_optional_str(payload.get("command")),
+            memory_lineage=(
+                MemoryLineage.from_dict(payload["memory_lineage"])
+                if isinstance(payload.get("memory_lineage"), dict)
+                else None
+            ),
         )
 
 
@@ -55,6 +86,7 @@ def structured_task_from_mission_subtask(
     operator_id: str | None = None,
     task_id: str | None = None,
     capability_skill_chains: dict[str, list[str]] | None = None,
+    memory_lineage: MemoryLineage | None = None,
 ) -> StructuredRobotTask:
     task_type = _task_type_from_capability(subtask.capability_required)
     required_skills = skills_from_capability(
@@ -73,6 +105,7 @@ def structured_task_from_mission_subtask(
         mission_id=mission_id,
         robot_id=subtask.robot_id,
         command=subtask.command,
+        memory_lineage=memory_lineage,
     )
 
 
@@ -100,6 +133,15 @@ def validate_structured_robot_task(task: StructuredRobotTask) -> list[str]:
         for skill_name in task.required_skills:
             if skill_name not in allowed:
                 errors.append(f"required skill {skill_name!r} is not in allowed_skills")
+    if task.memory_lineage is not None:
+        if task.memory_lineage.runtime_mode not in {"real", "replay", "simulation"}:
+            errors.append("memory_lineage.runtime_mode must be real, replay, or simulation")
+        if not any((
+            task.memory_lineage.command_event_id,
+            task.memory_lineage.plan_event_id,
+            task.memory_lineage.subtask_event_id,
+        )):
+            errors.append("memory_lineage must contain at least one event id")
     return errors
 
 

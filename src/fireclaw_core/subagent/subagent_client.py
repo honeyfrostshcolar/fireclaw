@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 from urllib import request
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+from fireclaw_core.gateway.method_scopes import MEMORY_REPLICATION_SCOPE
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry, TERMINAL_SUBAGENT_STATUSES
 
 
@@ -125,6 +128,27 @@ class RobotSubagentClient:
         result = self._request_json("GET", entry.base_url, path)
         return result.get("events", [])
 
+    def get_memory_replication(
+        self,
+        entry: RobotRegistryEntry,
+        *,
+        cursor: int,
+        limit: int = 200,
+        mission_id: str | None = None,
+        runtime_mode: str | None = None,
+    ) -> dict[str, Any]:
+        query: dict[str, str | int] = {"cursor": cursor, "limit": limit}
+        if mission_id is not None:
+            query["mission_id"] = mission_id
+        if runtime_mode is not None:
+            query["runtime_mode"] = runtime_mode
+        return self._request_json(
+            "GET",
+            entry.base_url,
+            f"/memory/replication?{urlencode(query)}",
+            scopes={MEMORY_REPLICATION_SCOPE},
+        )
+
     def check_presence(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         try:
             state = self.get_state(entry)
@@ -148,11 +172,14 @@ class RobotSubagentClient:
         base_url: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        *,
+        scopes: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
+        request_scopes = {"admin"} if scopes is None else {str(scope) for scope in scopes}
         headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "X-Operator-Scopes": "admin",
+            "X-Operator-Scopes": ",".join(sorted(request_scopes)),
         }
         if self.api_token is not None:
             headers["Authorization"] = f"Bearer {self.api_token}"
