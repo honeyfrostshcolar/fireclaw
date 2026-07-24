@@ -152,6 +152,23 @@ class PlannerMemoryContextBuilder:
         return ("standard",)
 
     @staticmethod
+    def _canonical_knowledge(record: Any) -> dict[str, Any]:
+        return {
+            "memory_scope": "reusable_knowledge",
+            "knowledge_id": record.knowledge_id,
+            "knowledge_type": record.knowledge_type,
+            "title": record.title,
+            "tags": list(record.tags),
+            "source_mission_id": record.source_mission_id,
+            "runtime_mode": record.source_runtime_mode,
+            "applicable_runtime_modes": list(record.applicable_runtime_modes),
+            "content": redact_dict(dict(record.content)),
+            "advisory_only": True,
+            "can_authorize_action": False,
+            "requires_current_state_revalidation": True,
+        }
+
+    @staticmethod
     def _canonical_record(
         record: MissionMemoryRecord,
         request: PlannerMemoryContextRequest,
@@ -386,8 +403,33 @@ class PlannerMemoryContextBuilder:
             except Exception as exc:
                 omit("corrections_query_failed", "corrections", exception=exc)
 
+        # Step 5: Query reusable knowledge via MissionMemoryLifecycleStore
+        reusable_memories: list[dict[str, Any]] = []
+        if self._lifecycle is not None:
+            try:
+                knowledge = self._lifecycle.list_knowledge(
+                    include_revoked=False,
+                    limit=MAX_PLANNER_MEMORIES,
+                )
+                # Reverse for newest-first deterministic ordering
+                knowledge = list(reversed(knowledge))
+                for record in knowledge:
+                    # Defensive recheck
+                    if record.status != "approved":
+                        continue
+                    if request.runtime_mode not in record.applicable_runtime_modes:
+                        continue
+                    reusable_memories.append(self._canonical_knowledge(record))
+            except Exception as exc:
+                omit("reusable_knowledge_unavailable", "lifecycle", exception=exc)
+
+        # Merge: current-mission items consume quota first, then reusable knowledge
+        remaining = max(0, request.max_memories - len(memories))
+        selected_memories = memories[:request.max_memories]
+        selected_memories.extend(reusable_memories[:remaining])
+
         return PlannerMemoryContextResult(
-            memories=tuple(memories),
+            memories=tuple(selected_memories),
             corrections=tuple(corrections),
             warnings=tuple(warnings),
             omitted_counts=omitted_counts,

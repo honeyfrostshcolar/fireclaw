@@ -829,6 +829,331 @@ def test_facade_events_checked_against_authority_map(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 5: Approval-gated reusable knowledge tests
+# ---------------------------------------------------------------------------
+
+
+def _lifecycle(tmp_path: Path, store: EmbodiedMemoryStore, runtime_mode: str = "real"):
+    from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
+    return MissionMemoryLifecycleStore(
+        store=store,
+        lifecycle_path=tmp_path / "lifecycle.jsonl",
+        audit_dir=tmp_path / "audit",
+        knowledge_path=tmp_path / "knowledge.jsonl",
+        runtime_mode=runtime_mode,
+    )
+
+
+def _approve_knowledge(
+    lifecycle,
+    *,
+    knowledge_id: str = "k-1",
+    source_mission_id: str = "mission-beta",
+    knowledge_type: str = "operator_preference",
+    title: str = "prefer stairwell route",
+    content: dict | None = None,
+    tags: list[str] | None = None,
+    applicable_runtime_modes: list[str] | None = None,
+    source_event_ids: list[str] | None = None,
+    actor_id: str = "reviewer-1",
+    reason: str = "validated in field",
+):
+    """Helper to approve reusable knowledge backed by a real source event."""
+    from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
+
+    # If source_event_ids not provided, create a backing event so approval passes validation
+    if source_event_ids is None:
+        backing_event = lifecycle._store.record_event(
+            event_id=f"src-{knowledge_id}",
+            mission_id=source_mission_id,
+            event_type="outcome",
+            payload={"note": "backing event"},
+            runtime_mode="real",
+            source_type="test",
+            observed_at="2026-07-24T10:00:00+00:00",
+        )
+        source_event_ids = [backing_event.event_id]
+
+    return lifecycle.approve_knowledge(
+        source_mission_id=source_mission_id,
+        source_event_ids=source_event_ids,
+        knowledge_type=knowledge_type,
+        title=title,
+        content=content or {"guidance": "use stairwell route B"},
+        tags=tags or ["routing"],
+        applicable_runtime_modes=applicable_runtime_modes,
+        actor_id=actor_id,
+        reason=reason,
+        knowledge_id=knowledge_id,
+    )
+
+
+def test_approved_operator_preference_from_other_mission_is_admitted(tmp_path: Path) -> None:
+    """An approved operator_preference from another mission crosses the mission boundary."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store)
+    _approve_knowledge(lifecycle, source_mission_id="mission-beta")
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 1
+    assert reusable[0]["knowledge_id"] == "k-1"
+    assert reusable[0]["source_mission_id"] == "mission-beta"
+
+
+def test_raw_correction_not_admitted_across_missions(tmp_path: Path) -> None:
+    """The original raw correction record must not leak across mission boundaries.
+
+    Only the approved knowledge payload should appear, not the underlying
+    correction event from the source mission.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-current")
+    # Record a correction in mission-beta
+    store.record_event(
+        event_id="corr-beta",
+        mission_id="mission-beta",
+        event_type="correction",
+        payload={"note": "raw correction from beta"},
+        runtime_mode="real",
+        source_type="test",
+        observed_at="2026-07-24T10:00:00+00:00",
+    )
+    lifecycle = _lifecycle(tmp_path, store)
+    # Approve knowledge from mission-beta using the correction event as source
+    _approve_knowledge(
+        lifecycle,
+        source_mission_id="mission-beta",
+        source_event_ids=["corr-beta"],
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request())
+
+    # The raw correction must not appear as a current_mission memory
+    assert all(m.get("record_id") != "corr-beta" for m in result.memories)
+    # The approved knowledge should appear as reusable_knowledge
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 1
+
+
+def test_revoked_knowledge_is_absent(tmp_path: Path) -> None:
+    """Revoked knowledge must not appear in the planner context."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store)
+    knowledge = _approve_knowledge(lifecycle)
+    lifecycle.revoke_knowledge(
+        knowledge.knowledge_id,
+        actor_id="reviewer-2",
+        reason="outdated guidance",
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 0
+
+
+def test_simulation_knowledge_absent_in_real_mode(tmp_path: Path) -> None:
+    """Simulation-derived knowledge is absent in real mode unless approval includes real."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    # Create a simulation-mode lifecycle store to approve sim-only knowledge
+    sim_lifecycle = _lifecycle(tmp_path, store, runtime_mode="simulation")
+    _approve_knowledge(
+        sim_lifecycle,
+        knowledge_id="k-sim",
+        applicable_runtime_modes=["simulation"],
+    )
+
+    # Build with real-mode lifecycle (does not have simulation in applicable modes)
+    real_lifecycle = _lifecycle(tmp_path, store, runtime_mode="real")
+    # The knowledge.jsonl is shared; real_lifecycle.list_knowledge() will filter
+    # by real mode which is NOT in applicable_runtime_modes
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=real_lifecycle,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 0
+
+
+def test_simulation_knowledge_admitted_when_real_included(tmp_path: Path) -> None:
+    """Simulation knowledge that also includes real mode should be admitted."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    sim_lifecycle = _lifecycle(tmp_path, store, runtime_mode="simulation")
+    _approve_knowledge(
+        sim_lifecycle,
+        knowledge_id="k-both",
+        applicable_runtime_modes=["real", "simulation"],
+    )
+
+    real_lifecycle = _lifecycle(tmp_path, store, runtime_mode="real")
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=real_lifecycle,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 1
+    assert reusable[0]["knowledge_id"] == "k-both"
+
+
+def test_current_mission_consumes_quota_before_reusable(tmp_path: Path) -> None:
+    """Current-mission items fill the quota; reusable knowledge gets only the remainder."""
+    store = _embodied_store(tmp_path)
+    # Record 3 current-mission events
+    for i in range(3):
+        _record_event(store, event_id=f"obs-{i}")
+    lifecycle = _lifecycle(tmp_path, store)
+    _approve_knowledge(lifecycle, knowledge_id="k-1")
+    _approve_knowledge(
+        lifecycle,
+        knowledge_id="k-2",
+        title="another preference",
+        source_event_ids=None,  # will create backing event
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+    )
+    # max_memories=3 should fit all current-mission items, leaving 0 for reusable
+    result = builder.build(_request(max_memories=3))
+
+    current = [m for m in result.memories if m.get("memory_scope") == "current_mission"]
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(current) >= 1
+    assert len(current) + len(reusable) <= 3
+    # All current-mission items should come before reusable
+    if reusable:
+        last_current_idx = max(i for i, m in enumerate(result.memories) if m.get("memory_scope") == "current_mission")
+        first_reusable_idx = min(i for i, m in enumerate(result.memories) if m.get("memory_scope") == "reusable_knowledge")
+        assert last_current_idx < first_reusable_idx
+
+
+def test_lifecycle_failure_leaves_current_mission_intact(tmp_path: Path) -> None:
+    """When the lifecycle store fails, current-mission items survive and a warning is emitted."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+
+    class BrokenLifecycle:
+        def list_knowledge(self, **kwargs):
+            raise RuntimeError("lifecycle storage unavailable")
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=BrokenLifecycle(),
+    )
+    result = builder.build(_request())
+
+    # Current-mission items should still be present
+    current = [m for m in result.memories if m.get("memory_scope") == "current_mission"]
+    assert len(current) >= 1
+    # A warning about lifecycle failure should be emitted
+    codes = [w.code for w in result.warnings]
+    assert "reusable_knowledge_unavailable" in codes
+    # No reusable knowledge should appear
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 0
+
+
+def test_knowledge_content_uses_approved_redacted_payload(tmp_path: Path) -> None:
+    """Returned knowledge content must be the separately approved redacted payload,
+    never follow source_event_ids."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    # Create a backing event with different content
+    store.record_event(
+        event_id="src-event",
+        mission_id="mission-beta",
+        event_type="outcome",
+        payload={"raw_detail": "full unredacted details from source event"},
+        runtime_mode="real",
+        source_type="test",
+        observed_at="2026-07-24T10:00:00+00:00",
+    )
+    lifecycle = _lifecycle(tmp_path, store)
+    _approve_knowledge(
+        lifecycle,
+        source_mission_id="mission-beta",
+        source_event_ids=["src-event"],
+        content={"guidance": "use stairwell route B"},
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 1
+    # The content should be the approved payload, not the source event's payload
+    assert reusable[0]["content"] == {"guidance": "use stairwell route B"}
+    assert "raw_detail" not in reusable[0]["content"]
+    # source_event_ids should NOT appear in the returned dict
+    assert "source_event_ids" not in reusable[0]
+
+
+def test_knowledge_dict_has_required_safety_fields(tmp_path: Path) -> None:
+    """Reusable knowledge entries must carry advisory_only, can_authorize_action,
+    and requires_current_state_revalidation."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store)
+    _approve_knowledge(lifecycle)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 1
+    assert reusable[0]["advisory_only"] is True
+    assert reusable[0]["can_authorize_action"] is False
+    assert reusable[0]["requires_current_state_revalidation"] is True
+
+
+# ---------------------------------------------------------------------------
 # Lightweight test runner (no pytest dependency)
 # ---------------------------------------------------------------------------
 
@@ -869,6 +1194,16 @@ if __name__ == "__main__":
         test_authority_lookup_failed_warning_when_list_records_raises,
         test_authority_lookup_failed_when_mission_memory_is_none,
         test_facade_events_checked_against_authority_map,
+        # Task 5: Approval-gated reusable knowledge
+        test_approved_operator_preference_from_other_mission_is_admitted,
+        test_raw_correction_not_admitted_across_missions,
+        test_revoked_knowledge_is_absent,
+        test_simulation_knowledge_absent_in_real_mode,
+        test_simulation_knowledge_admitted_when_real_included,
+        test_current_mission_consumes_quota_before_reusable,
+        test_lifecycle_failure_leaves_current_mission_intact,
+        test_knowledge_content_uses_approved_redacted_payload,
+        test_knowledge_dict_has_required_safety_fields,
     ]
 
     passed = 0
