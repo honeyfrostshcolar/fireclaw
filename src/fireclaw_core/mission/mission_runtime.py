@@ -13,6 +13,7 @@ from fireclaw_core.memory.entity_memory import EntityMemoryService
 from fireclaw_core.memory.mission_memory_facade import MissionMemoryFacade
 from fireclaw_core.memory.mission_memory_tools import MissionMemoryTools
 from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
+from fireclaw_core.memory.planner_memory_context import PlannerMemoryContextBuilder
 from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_memory import MissionMemoryStore
@@ -74,6 +75,7 @@ def build_mission_agent_from_paths(
     approval_memory_producer = None
     embodied_working_memory = None
     embodied_store = None
+    facade = None
     if paths.embodied_runtime_mode is not None:
         if paths.mission_memory is None:
             raise ValueError("embodied_runtime_mode requires mission_memory")
@@ -178,6 +180,14 @@ def build_mission_agent_from_paths(
         )
         mission_memory_tools = MissionMemoryTools(facade)
 
+    planner_memory_context_builder = PlannerMemoryContextBuilder(
+        memory_retriever=memory_retriever,
+        mission_memory=memory_store,
+        facade=facade,
+        lifecycle=memory_lifecycle,
+        plugin_runtime=plugin_runtime,
+    )
+
     return MissionAgent(
         registry=registry,
         mission_registry=JsonlMissionRegistry(paths.mission_registry),
@@ -201,6 +211,7 @@ def build_mission_agent_from_paths(
         embodied_working_memory=embodied_working_memory,
         mission_memory_tools=mission_memory_tools,
         memory_lifecycle=memory_lifecycle,
+        planner_memory_context_builder=planner_memory_context_builder,
     )
 
 

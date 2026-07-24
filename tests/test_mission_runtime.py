@@ -142,3 +142,61 @@ def test_runtime_mission_agent_persists_planning_audit_on_plan_and_submit(tmp_pa
     assert len(records) == 1
     assert records[0].mission_id == "mission-1"
     assert records[0].decisions[-1].reason == "mission_plan_valid"
+
+
+def test_build_mission_agent_wires_planner_memory_context_builder(tmp_path: Path):
+    """The runtime must explicitly construct and inject a PlannerMemoryContextBuilder
+    when embodied_runtime_mode is configured with lifecycle paths."""
+    registry_path = tmp_path / "robots.json"
+    _write_robot_registry(registry_path, [
+        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["search_for_victims"]},
+    ])
+    paths = MissionRuntimePaths(
+        robot_registry=registry_path,
+        mission_registry=tmp_path / "missions.jsonl",
+        mission_memory=tmp_path / "memory.jsonl",
+        memory_index=tmp_path / "memory.sqlite",
+        memory_lifecycle=tmp_path / "lifecycle.jsonl",
+        memory_audit_dir=tmp_path / "audit",
+        reusable_knowledge=tmp_path / "knowledge.jsonl",
+        embodied_runtime_mode="real",
+    )
+    agent = build_mission_agent_from_paths(paths, operator_id="op-a", role="operator")
+
+    # Builder must be injected
+    assert agent.planner_memory_context_builder is not None
+
+    # Status method reports configured sources
+    status = agent.planner_memory_context_builder.status()
+    assert status["has_memory_retriever"] is True
+    assert status["has_mission_memory"] is True
+    assert status["has_facade"] is True
+    assert status["has_lifecycle"] is True
+
+    # Verify same instances as agent-level attributes
+    assert agent.planner_memory_context_builder._memory_retriever is agent.memory_retriever
+    assert agent.planner_memory_context_builder._mission_memory is agent.mission_memory
+    assert agent.planner_memory_context_builder._facade is agent.mission_memory_tools.facade
+    assert agent.planner_memory_context_builder._lifecycle is agent.memory_lifecycle
+
+
+def test_build_mission_agent_wires_builder_without_embodied_mode(tmp_path: Path):
+    """Legacy runtime mode still receives a Builder, but with no facade or lifecycle."""
+    registry_path = tmp_path / "robots.json"
+    _write_robot_registry(registry_path, [
+        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["search_for_victims"]},
+    ])
+    paths = MissionRuntimePaths(
+        robot_registry=registry_path,
+        mission_registry=tmp_path / "missions.jsonl",
+        mission_memory=tmp_path / "memory.jsonl",
+        memory_index=tmp_path / "memory.sqlite",
+    )
+    agent = build_mission_agent_from_paths(paths, operator_id="op-a", role="operator")
+
+    assert agent.planner_memory_context_builder is not None
+    status = agent.planner_memory_context_builder.status()
+    assert status["has_memory_retriever"] is True
+    assert status["has_mission_memory"] is True
+    assert status["has_facade"] is False
+    assert status["has_lifecycle"] is False

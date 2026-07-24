@@ -158,6 +158,20 @@ class PlannerMemoryContextBuilder:
         self._lifecycle = lifecycle
         self._plugin_runtime = plugin_runtime
 
+    def status(self) -> dict[str, bool]:
+        """Return boolean flags indicating which memory sources are configured.
+
+        This is a content-free diagnostic method suitable for runtime wiring
+        assertions without exposing source instances.
+        """
+        return {
+            "has_memory_retriever": self._memory_retriever is not None,
+            "has_mission_memory": self._mission_memory is not None,
+            "has_facade": self._facade is not None,
+            "has_lifecycle": self._lifecycle is not None,
+            "has_plugin_runtime": self._plugin_runtime is not None,
+        }
+
     @staticmethod
     def _allowed_sensitivities(request: PlannerMemoryContextRequest) -> tuple[str, ...]:
         if (
@@ -429,6 +443,9 @@ class PlannerMemoryContextBuilder:
 
         # Step 5: Query reusable knowledge via MissionMemoryLifecycleStore
         reusable_memories: list[dict[str, Any]] = []
+        # Cache raw knowledge records keyed by knowledge_id to avoid
+        # redundant list_knowledge() calls during enrichment resolution.
+        knowledge_by_id: dict[str, Any] = {}
         if self._lifecycle is not None:
             try:
                 knowledge = self._lifecycle.list_knowledge(
@@ -438,6 +455,7 @@ class PlannerMemoryContextBuilder:
                 # Reverse for newest-first deterministic ordering
                 knowledge = list(reversed(knowledge))
                 for record in knowledge:
+                    knowledge_by_id[record.knowledge_id] = record
                     # Defensive recheck
                     if record.status != "approved":
                         continue
@@ -568,7 +586,7 @@ class PlannerMemoryContextBuilder:
                                     )
                                 elif key[0] == "reusable_knowledge":
                                     canonical = self._resolve_enrichment_knowledge(
-                                        key[1], request,
+                                        key[1], request, knowledge_by_id,
                                     )
                             if canonical is None:
                                 omit("plugin_record_unverified", "plugin")
@@ -686,27 +704,19 @@ class PlannerMemoryContextBuilder:
         self,
         knowledge_id: str,
         request: PlannerMemoryContextRequest,
+        knowledge_by_id: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Resolve an enrichment knowledge_id against the lifecycle store.
+        """Resolve an enrichment knowledge_id against the cached knowledge dict.
 
         Returns a canonical dict if the knowledge is approved and applicable,
-        or None.
+        or None.  Uses ``knowledge_by_id`` (populated in ``build()`` Step 5)
+        to avoid a redundant ``list_knowledge()`` call.
         """
-        if self._lifecycle is None:
+        record = knowledge_by_id.get(knowledge_id)
+        if record is None:
             return None
-        try:
-            knowledge_list = self._lifecycle.list_knowledge(
-                include_revoked=False,
-                limit=MAX_PLANNER_MEMORIES,
-            )
-            for record in knowledge_list:
-                if record.knowledge_id != knowledge_id:
-                    continue
-                if record.status != "approved":
-                    return None
-                if request.runtime_mode not in record.applicable_runtime_modes:
-                    return None
-                return self._canonical_knowledge(record)
-        except Exception:
-            pass
-        return None
+        if record.status != "approved":
+            return None
+        if request.runtime_mode not in record.applicable_runtime_modes:
+            return None
+        return self._canonical_knowledge(record)

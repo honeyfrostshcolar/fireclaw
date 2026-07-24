@@ -174,3 +174,84 @@ needed by EmbodiedMemoryStore and MissionMemoryFacade from previous tasks.
 
 Continue with Task 5 (reusable knowledge gating) or Task 6 (mission agent
 integration) from the implementation plan.
+
+## 2026-07-24 23:10 +08 - Task 8 Complete: Runtime Wiring And End-to-End Verification
+
+### What was done
+
+- Added `status()` method to `PlannerMemoryContextBuilder` returning boolean
+  flags for configured memory sources (content-free diagnostic).
+- Modified `build_mission_agent_from_paths()` in `mission_runtime.py` to
+  explicitly construct `PlannerMemoryContextBuilder` with the same source
+  instances used by the agent, then pass it to `MissionAgent`.
+- Initialized `facade = None` before embodied-memory setup to ensure the
+  variable is always defined when the Builder is constructed.
+- Added 2 new tests to `tests/test_mission_runtime.py`:
+  - `test_build_mission_agent_wires_planner_memory_context_builder` — verifies
+    embodied runtime mode wires the Builder with all four sources.
+  - `test_build_mission_agent_wires_builder_without_embodied_mode` — verifies
+    legacy runtime mode still receives a Builder (with facade=None, lifecycle=None).
+- All 60 tests in `test_planner_memory_context.py` pass.
+- All tests in `test_mission_agent.py` pass.
+- All tests in `test_mission_runtime.py` pass.
+
+### Commands
+
+**RED step (verification that test structure is correct):**
+The test passes from the start because `MissionAgent.__init__` already creates
+a fallback Builder when none is provided. The explicit wiring in the runtime
+ensures the Builder is constructed with the correct source instances and passed
+directly, rather than relying on the agent's fallback.
+
+**GREEN step:**
+```bash
+PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 tests/test_planner_memory_context.py
+# 60 passed, 0 failed
+
+PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 tests/test_mission_agent.py
+# passed (no output = success)
+
+PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 tests/test_mission_runtime.py
+# passed (no output = success)
+```
+
+**Static checks:**
+```bash
+PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 -m compileall -q \
+  src/fireclaw_core/memory src/fireclaw_core/mission src/fireclaw_core/plugin \
+  tests/test_planner_memory_context.py tests/test_memory_retrieval.py \
+  tests/test_memory_eval.py tests/test_plugin_runtime.py \
+  tests/test_memory_learning_loop.py tests/test_mission_agent.py \
+  tests/test_mission_runtime.py
+# exit 0
+
+rg -n '\.retrieve\(' src tests
+# All calls include scope=
+
+git diff --check
+# clean
+```
+
+### Files Modified
+
+- `src/fireclaw_core/memory/planner_memory_context.py` — added `status()` method
+- `src/fireclaw_core/mission/mission_runtime.py` — explicit Builder construction and injection
+- `tests/test_mission_runtime.py` — 2 new wiring tests
+
+### Safety Invariant Verification
+
+From the final diff:
+- No global or wildcard retrieval scope exists.
+- No plugin payload becomes canonical content (reauthorization enforced).
+- No raw historical correction crosses missions (mission_id and runtime_mode filtered).
+- No source event is loaded when reusable knowledge is read (only approved knowledge).
+- No warning or audit detail contains record content or exception messages (exception_class only).
+- No memory result changes action authorization or bypasses safety gates (advisory_only=True).
+- Memory dependency failure cannot block an otherwise valid plan (fail-open for planning).
+
+### Remaining Gaps
+
+- Official Python 3.11/pytest suite was not run by user choice.
+- Independent dense retrieval remains a separate subproject.
+- The `__init__` fallback in `MissionAgent` still creates a Builder when none
+  is passed, providing backward compatibility for manually constructed agents.
