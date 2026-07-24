@@ -287,6 +287,7 @@ def test_nearest_query_uses_frame_floor_and_uncertainty_boundaries(tmp_path):
 
     result_ids = [item["record_id"] for item in result["results"]]
     assert result_ids == ["multi-area-gist", "hazard-center-six"]
+    assert result["candidate_backend"] == "sqlite_rtree"
     hazard = result["results"][1]
     assert hazard["center_distance_m"] == pytest.approx(6.0)
     assert hazard["distance_to_uncertainty_m"] == pytest.approx(4.0)
@@ -294,6 +295,25 @@ def test_nearest_query_uses_frame_floor_and_uncertainty_boundaries(tmp_path):
     assert "wrong-floor" not in result_ids
     assert result["results"][0]["spatial_match"]["source"] == "conservative_geometry"
     assert result["results"][0]["matched_spatial_geometry"]["center_x"] == 1.0
+
+    assert store.index is not None
+    store.index._rtree_available = False
+    scan_result = facade.query_nearest(
+        _access(),
+        frame_id="building-map",
+        floor="2",
+        x=0.0,
+        y=0.0,
+        max_distance_m=5.0,
+        memory_types=["observation", "gist"],
+        limit=10,
+        reference_at=T2,
+    )
+    assert scan_result["candidate_backend"] == "linear_scan"
+    assert scan_result["results"] == result["results"]
+    assert scan_result["restricted_records_omitted"] == result[
+        "restricted_records_omitted"
+    ]
 
 
 def test_cross_robot_identity_proposal_is_advisory_and_rejectable(tmp_path):

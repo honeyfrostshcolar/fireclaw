@@ -144,8 +144,15 @@ class MissionMemoryStore:
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
                 handle.write("\n")
-            if self.index is not None and self._indexing_policy.should_index(record.record_type):
-                self.index.upsert(record.to_dict())
+            if self.index is not None:
+                authority_token = self.snapshot_token()
+                if self._indexing_policy.should_index(record.record_type):
+                    self.index.upsert(
+                        record.to_dict(),
+                        authority_token=authority_token,
+                    )
+                else:
+                    self.index.sync_spatial_authority_token(authority_token)
 
     def purge_mission(self, mission_id: str) -> int:
         """Atomically remove one mission from the hot JSONL store.
@@ -189,9 +196,18 @@ class MissionMemoryStore:
             if self.index is not None:
                 records = self._read_all_unlocked()
                 self.index.clear()
+                authority_token = self.snapshot_token()
                 for record in records:
                     if self._indexing_policy.should_index(record.record_type):
-                        self.index.upsert(record.to_dict())
+                        self.index.upsert(
+                            record.to_dict(),
+                            authority_token=authority_token,
+                            finalize_spatial=False,
+                            commit=False,
+                        )
+                self.index.finalize_spatial_projection(
+                    authority_token=authority_token
+                )
             return removed
 
     def ingest_transcript(

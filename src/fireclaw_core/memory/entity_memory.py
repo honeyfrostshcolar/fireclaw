@@ -795,6 +795,7 @@ class EntityMemoryService:
                     runtime_mode=self._runtime_mode,
                     source_token=source_token,
                     entities=(_entity_to_projection_payload(entity) for entity in projected),
+                    authority_token=self._store.evidence_store.snapshot_token(),
                 )
             self._projection_cache[mission_id] = (source_token, projected)
             return list(projected)

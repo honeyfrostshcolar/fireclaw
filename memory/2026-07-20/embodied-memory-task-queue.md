@@ -542,3 +542,336 @@ PYTHONPATH=src python -m pytest tests/test_entity_memory.py tests/test_embodied_
 ```
 
 The pytest command still requires an environment with `pytest` installed.
+
+## 2026-07-20T21:26:00+08:00
+
+### Minimal End-To-End Demo Added
+
+Task goal: add a visible, runnable dry-run demo so the user can inspect the
+Entity Memory flow rather than only reading architecture summaries.
+
+Added:
+
+- `examples/embodied_memory/entity_memory_flow_demo.py`
+
+The demo has no new third-party dependency. It uses a temporary directory,
+`EmbodiedMemoryStore`, SQLite projection, `EntityExtractionPipeline`,
+`EntityMemoryService`, `MissionMemoryFacade`, and `MissionMemoryTools`.
+
+Demo flow:
+
+1. robot-A writes a structured victim Observation with `payload.entities`.
+2. `EntityExtractionPipeline` creates one idempotent `entity_mention`.
+3. Mission memory tools query the second-floor victim Entity.
+4. robot-B writes a nearby same-name victim Observation with a robot-local
+   tracker ID.
+5. The system emits one advisory cross-robot identity proposal with
+   `automatic_merge=false` and operator confirmation required.
+6. A simulated operator `merge` resolution is appended.
+7. Entity projection is queried again and shows both mentions/Observations under
+   one current victim Entity with robot-namespaced tracker identities.
+8. A hazard Observation and multi-area Gist are added; nearest memory query
+   returns Gist, Observation, Entity, and hazard results ranked by conservative
+   uncertainty-aware distance.
+9. The script prints a planner-context example showing that memory is advisory
+   and cannot authorize robot action.
+
+Run command:
+
+```bash
+PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 examples/embodied_memory/entity_memory_flow_demo.py
+```
+
+Validation passed:
+
+- the demo ran successfully end-to-end through all nine printed steps;
+- `PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 -m compileall -q examples/embodied_memory/entity_memory_flow_demo.py src/fireclaw_core/memory src/fireclaw_core/mission src/fireclaw_core/gateway`;
+- `git diff --check`.
+
+Current git note: the demo file is uncommitted because this environment still
+has `.git` mounted read-only. `git status --short` shows only:
+
+```text
+?? examples/embodied_memory/
+```
+
+## 2026-07-20T21:39:00+08:00
+
+### Demo Readability Update
+
+User requested only step 1 of the next plan: make the demo output easier to
+read; do not add the automated test yet.
+
+Updated `examples/embodied_memory/entity_memory_flow_demo.py`:
+
+- default output is now a nine-step human-readable Chinese summary rather than
+  full nested JSON;
+- each step prints the key operational meaning: robot observation, generated
+  mention, current Entity, identity proposal, operator merge, merged projection,
+  nearest memory results, and planner context;
+- IDs are shortened in the default output to keep the flow readable;
+- safety fields are summarized as
+  `advisory_only`, `requires_revalidation`, and `can_authorize_action`;
+- `--json` remains available for full detailed payloads:
+
+```bash
+PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 examples/embodied_memory/entity_memory_flow_demo.py --json
+```
+
+Validation passed:
+
+- default demo mode ran successfully and printed the readable nine-step flow;
+- `--json` mode ran successfully;
+- `PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python3.10 -m compileall -q examples/embodied_memory/entity_memory_flow_demo.py`;
+- `git diff --check`.
+
+Current uncommitted files remain:
+
+```text
+M memory/2026-07-20/embodied-memory-task-queue.md
+?? examples/embodied_memory/
+```
+
+## 2026-07-20T22:32:44+08:00
+
+### `payload.entities` Contract Documentation
+
+Task goal: turn the implicit structured entity extraction contract into a
+standalone document that a perception/robot-adapter developer can implement
+without reading Entity Memory internals.
+
+Starting state reviewed:
+
+- the latest records in `memory/2026-07-19/` and `memory/2026-07-20/`;
+- current git status, preserving the existing uncommitted readable demo and
+  this task record;
+- `StructuredObservationEntityExtractor`, `ExtractedEntityMention`,
+  `SpatialMemoryContext`, `ENTITY_KINDS`, focused entity-memory tests, and the
+  existing structured-extraction architecture section;
+- CodeGraph tools were not exposed in this environment, so the already-known
+  local implementation was inspected directly. This documentation-only change
+  does not introduce a new OpenClaw-analogue module or API shape.
+
+Added `docs/architecture/payload-entities-schema.md` as a Chinese, v1 producer
+contract. It defines:
+
+- the optional top-level `entities` array and `spatial_frame_scope` assertion;
+- required `name`, `entity_kind`, and finite `[0, 1]` `confidence` fields;
+- the complete current `ENTITY_KINDS` enum;
+- optional entity-owned pose, tracker identity, and attributes contracts;
+- exact pose fields, frame/floor semantics, 3D fail-closed behaviour, and
+  conservative uncertainty meaning;
+- robot-namespaced tracker identity and the boundary between a local track and
+  a confirmed cross-robot physical identity;
+- item-isolated validation, original-Observation retention, and idempotent
+  replay behaviour;
+- valid/invalid payload examples and a concrete perception-adapter mapping
+  sequence;
+- the advisory-only memory boundary and schema-version compatibility rule.
+
+The document explicitly distinguishes `Observation.pose` (observer position)
+from `payload.entities[i].pose` (observed object position), and distinguishes a
+single detector confidence from operator confirmation or physical-action
+authority.
+
+Updated `docs/architecture/embodied-memory-event-production.md` to link to the
+standalone normative contract rather than leaving the short example as the
+only producer guidance.
+
+No runtime code or dependency was changed. The next practical integration step
+is to implement one real perception adapter that maps its detector/tracker
+output into this contract and to validate representative valid/invalid samples
+at the adapter boundary.
+
+## 2026-07-20T22:49:10+08:00
+
+### eMEM R-Tree Analogue Review
+
+Task goal: inspect eMEM's actual R-tree implementation before deciding the
+FireClaw spatial-index shape. This was a read-only design review; no FireClaw
+runtime code was changed.
+
+Inspected:
+
+- `emem-main/emem/spatial.py::SpatialIndex`;
+- `emem-main/emem/store.py::MemoryStore._load_spatial_index`;
+- `emem-main/emem/store.py::MemoryStore.spatial_query`;
+- `emem-main/emem/store.py::MemoryStore.spatial_nearest`;
+- `emem-main/emem/store.py::MemoryStore.search_gists_by_area`;
+- Entity insert/update/matching paths in `emem-main/emem/store.py`;
+- `emem-main/emem/types.py`, `emem-main/pyproject.toml`, and focused store tests.
+
+eMEM uses the Python `Rtree>=1.0` dependency (libspatialindex binding) with a
+three-dimensional in-memory index rebuilt from SQLite observations and
+entities at startup. A radius query first asks the R-tree for points inside a
+bounding cube, then `SpatialIndex.query_radius` computes exact Euclidean
+distance in Python. The store subsequently fetches matching Observation rows,
+applies layer/time/source filters, sorts by exact centre distance, and limits
+the result. This confirms the reusable high-level pattern: index candidate
+generation followed by authoritative exact filtering.
+
+Important eMEM limitations that FireClaw must not copy:
+
+- absent 2D `z` is normalized to `0.0`, whereas FireClaw 3D queries must fail
+  closed when vertical information is absent;
+- there is no mission/runtime/frame/floor isolation;
+- points have no uncertainty radius, so eMEM indexes centres and uses ordinary
+  Euclidean distance only;
+- Observation and Entity IDs share one R-tree; `spatial_nearest(k * 2)` filters
+  down to Observation rows afterwards, so a dense population of another node
+  type can crowd out valid nearest Observations;
+- Gists are not indexed by the R-tree; `search_gists_by_area` performs a SQL
+  centre-distance scan and does not use the Gist radius despite its name/doc
+  wording;
+- one Gist has only one centre/radius, unlike FireClaw's multiple conservative
+  `spatial_geometries`;
+- the index is maintained as mutable process state and does not expose a source
+  token, corruption/staleness validation, or an explicit linear-scan fallback.
+
+Recommended FireClaw adaptation:
+
+1. Reuse only the two-stage shape: conservative bounding-box candidate lookup,
+   then the existing exact frame/floor/3D/uncertainty-aware matcher.
+2. Keep JSONL as authority and make the spatial projection rebuildable and
+   source-tokened, matching the existing Entity projection boundary.
+3. Store uncertainty-expanded bounding boxes, not centre points only.
+4. Represent every Gist geometry as a separate index entry linked to the same
+   Gist event.
+5. Avoid mixed-type nearest-neighbour truncation; either partition index rows
+   by memory type or fetch candidates without a pre-filter `k` that can hide
+   requested types.
+6. Retain deterministic linear scan as fallback and as an equivalence oracle.
+7. Require indexed and scan paths to return identical IDs, ordering, distance
+   fields, restricted-omission counts, and fail-closed decisions before using
+   the index by default.
+
+Engineering conclusion: eMEM is useful evidence for the candidate-plus-exact
+filter architecture, but FireClaw needs a stricter projection due to mission
+isolation, coordinate frames, floors, missing-z handling, uncertainty, multiple
+Gist geometries, and safety-sensitive access control.
+
+Research conclusion: R-tree integration is scalability infrastructure rather
+than a standalone research contribution. Its evaluation should report latency,
+candidate reduction, rebuild cost, and exact recall/equivalence under realistic
+mission sizes; any research claim should remain focused on uncertainty-aware,
+auditable embodied retrieval and its effect on safe planning.
+
+## 2026-07-20T23:14:39+08:00
+
+### SQLite R-Tree Runtime Capability Check
+
+Task goal: verify whether the locally available Python `sqlite3` runtimes can
+use SQLite R-Tree virtual tables before designing FireClaw's spatial
+projection. This was an environment-only check; no runtime source was changed.
+
+Checked `/usr/bin/python3`:
+
+- Python `3.8.10`;
+- linked SQLite `3.31.1`;
+- `PRAGMA compile_options` contains `ENABLE_RTREE`;
+- successfully created an in-memory 2D R-Tree virtual table and ran an
+  intersection query, returning expected IDs `[1, 3]`.
+
+Checked `/home/lpp/miniconda3/envs/py310/bin/python3.10`:
+
+- Python `3.10.4`;
+- linked SQLite `3.38.2`;
+- `PRAGMA compile_options` contains `ENABLE_RTREE`;
+- successfully created the same 2D R-Tree and returned `[1, 3]`;
+- successfully created a 3D R-Tree with x/y/z min/max bounds; a query whose z
+  range intersected only the first row returned expected ID `[1]`.
+
+Environment caveat:
+
+- root `pyproject.toml` declares `requires-python = ">=3.11"`;
+- no `python3.11`, `python3.12`, or `python3.13` executable was available in
+  PATH or the local Conda environments, so the declared production Python
+  runtime could not be checked here;
+- no SQLite CLI was installed, but this does not block FireClaw because its
+  database access uses Python's standard-library `sqlite3` module.
+
+Conclusion: SQLite R-Tree is available and operational in both locally usable
+development/demo interpreters, including the required 3D virtual-table shape.
+No third-party `Rtree`/libspatialindex dependency is required for those
+interpreters. FireClaw should still perform a runtime capability probe and
+retain deterministic linear-scan fallback because the untested Python 3.11+
+deployment build may link a differently compiled SQLite library.
+
+Next recommended step: design the source-tokened spatial metadata/projection
+and R-Tree row contract before implementation. The design must represent
+Observation poses, Entity current locations, multiple Gist geometries,
+uncertainty-expanded bounds, explicit z availability, mission/runtime/frame/
+floor isolation, and exact indexed-versus-linear result equivalence.
+
+## 2026-07-20T23:32:36+08:00
+
+### SQLite R-Tree Spatial Projection Design Completed
+
+Task goal: design FireClaw's spatial metadata/R-Tree projection before runtime
+implementation, grounded in the current `SqliteMemoryIndex`, exact facade
+matcher, Entity projection, and Gist geometry contracts.
+
+Inspected:
+
+- `SqliteMemoryIndex` schema, `upsert`, `search_spatial`, clear/rebuild, and
+  atomic Entity projection replacement;
+- `EmbodiedMemoryStore` evidence-first append and index rebuild paths;
+- `EntityMemoryService` token-validated current projection lifecycle;
+- `MissionMemoryFacade.query_nearest`, visibility filtering, restricted
+  omission accounting, exact distance/ranking helpers, and payload hydration;
+- `build_spatial_geometries` and focused spatial tests;
+- `MissionMemoryRecord` and SQLite `content_json` round-trip capability.
+
+Added:
+
+- `docs/architecture/spatial-rtree-projection-design.md`;
+- a link from `docs/architecture/embodied-memory-event-production.md` to the
+  new implementation design.
+
+Key design decisions:
+
+- use ordinary `spatial_projection_meta` and `spatial_projection` tables plus
+  separate `spatial_rtree_2d` and `spatial_rtree_3d` virtual tables;
+- every x/y geometry enters 2D, while only genuinely z-comparable geometries
+  enter 3D, preserving missing-z fail-closed semantics without fake `z=0`;
+- use uncertainty-expanded candidate bounds, then retain the existing exact
+  circle/sphere/envelope matcher as semantic authority;
+- project each Gist `spatial_geometries` item independently and deduplicate by
+  source ID before exact full-source evaluation;
+- keep event pose and Gist payload geometry as separate rows because the exact
+  matcher considers both;
+- update Observation/Gist spatial rows atomically with index `upsert`, and
+  update Entity spatial rows in the same transaction as
+  `replace_entity_projection`;
+- never apply public result `LIMIT` to bounding-box candidates before exact
+  filtering, preventing false positives or duplicate geometries from crowding
+  out true matches;
+- keep authorization, restricted-evidence filtering, omission counts, evidence,
+  freshness, and advisory state in `MissionMemoryFacade`, not R-Tree;
+- add strict candidate/event/evidence batch hydration from SQLite. Calling the
+  existing full JSONL `list_events()` after R-Tree candidate lookup would retain
+  O(n) file scanning and undermine the intended acceleration;
+- invalidate indexed use on unsupported R-Tree, schema/token/count mismatch,
+  failed `rtreecheck`, malformed/missing candidate rows, or database errors;
+  discard partial candidates and run the complete linear fallback;
+- require deterministic indexed-versus-linear equivalence before enabling the
+  indexed backend by default.
+
+Temporary SQLite validation passed:
+
+- created the complete ordinary metadata plus 2D/3D R-Tree schema in memory;
+- a second-floor/shared-frame 2D query returned spatial IDs `[201, 202, 501]`;
+- two Gist geometry rows deduplicated to source IDs
+  `['gist-smoke', 'entity-victim']`;
+- a 3D query returned only z-capable Entity spatial ID `[501]`, excluding
+  missing-z Gist rows;
+- system Python and Conda Python SQLite both returned `ok` from `rtreecheck()`.
+
+The design includes required boundary/failure/equivalence tests and benchmark
+targets at 1k/10k/100k spatial rows. It explicitly classifies R-Tree as
+scalability infrastructure; publication-level value must come from the
+uncertainty-aware, auditable retrieval/planning method and evaluation.
+
+Next recommended step: review the design diff, then implement capability/schema
+and pure projection helpers first. Do not integrate the facade or enable indexed
+queries until atomic write/rebuild behaviour and linear equivalence tests pass.

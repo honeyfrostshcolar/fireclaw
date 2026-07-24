@@ -138,7 +138,11 @@ query boundary only and does not expose entity resolution or robot actuation.
 
 `EntityExtractionPipeline` automatically processes each Observation persisted
 by `RobotMemoryRecorder`. The default extractor accepts only an explicit
-`payload.entities` array:
+`payload.entities` array. The normative producer contract, field semantics,
+invalid examples, and adapter guidance are documented in
+[`payload-entities-schema.md`](payload-entities-schema.md).
+
+Example:
 
 ```json
 {
@@ -393,7 +397,9 @@ mission/runtime-isolated records and projected Entities. Query distance and
 result count are bounded. This is intentionally the correctness baseline before
 an R*Tree projection: any future spatial index must preserve uncertainty-region
 intersection, multi-geometry Gists, sensitivity omission, and deterministic
-ordering exactly.
+ordering exactly. The implemented SQLite schema, lifecycle, fallback, candidate
+hydration, and equivalence contract are specified in
+[`spatial-rtree-projection-design.md`](spatial-rtree-projection-design.md).
 
 All responses carry source evidence IDs and a common safety envelope. Memory is
 always `advisory_only`; `can_authorize_action` is always false; stale, derived,

@@ -598,6 +598,7 @@ class EmbodiedMemoryStore:
             self._index.upsert(
                 record.to_dict(),
                 index_text=self._indexing_policy.should_index_text(event),
+                authority_token=self._evidence.snapshot_token(),
             )
 
     def add_relation(
@@ -631,6 +632,9 @@ class EmbodiedMemoryStore:
         self._evidence.append(relation.to_mission_record())
         if self._index is not None:
             self._index.upsert_relation(relation.to_index_dict())
+            self._index.sync_spatial_authority_token(
+                self._evidence.snapshot_token()
+            )
 
     def list_events(
         self,
@@ -648,6 +652,60 @@ class EmbodiedMemoryStore:
                 continue
             if event_type is None or event.event_type == event_type:
                 events.append(event)
+        return events
+
+    def load_indexed_events_by_ids(
+        self,
+        event_ids: list[str] | tuple[str, ...],
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        event_types: frozenset[str] | None = None,
+    ) -> list[EmbodiedMemoryEvent] | None:
+        """Strictly hydrate indexed event candidates without scanning JSONL."""
+        if self._index is None:
+            return None
+        records = self._index.load_records_by_ids(
+            event_ids,
+            mission_id=mission_id,
+            runtime_mode=runtime_mode,
+            record_types=event_types,
+        )
+        if records is None:
+            return None
+        events: list[EmbodiedMemoryEvent] = []
+        try:
+            for value in records:
+                content = value.get("content")
+                if not isinstance(content, dict):
+                    return None
+                record = MissionMemoryRecord(
+                    record_id=str(value.get("record_id") or ""),
+                    mission_id=str(value.get("mission_id") or ""),
+                    record_type=str(value.get("record_type") or ""),
+                    content=content,
+                    robot_id=(
+                        str(value["robot_id"])
+                        if value.get("robot_id") is not None
+                        else None
+                    ),
+                    subtask_id=(
+                        str(value["subtask_id"])
+                        if value.get("subtask_id") is not None
+                        else None
+                    ),
+                    created_at=str(value.get("created_at") or ""),
+                )
+                event = EmbodiedMemoryEvent.from_mission_record(record)
+                if (
+                    event.mission_id != mission_id
+                    or event.runtime_mode != runtime_mode
+                    or (event_types is not None and event.event_type not in event_types)
+                ):
+                    return None
+                events.append(event)
+        except (KeyError, TypeError, ValueError):
+            return None
         return events
 
     def list_relations(self, *, mission_id: str | None = None) -> list[EmbodiedMemoryRelation]:
@@ -736,6 +794,7 @@ class EmbodiedMemoryStore:
     def rebuild_index(self) -> int:
         index = self._require_index()
         records = self._evidence.list_records()
+        authority_token = self._evidence.snapshot_token()
         relations: list[EmbodiedMemoryRelation] = []
         index.clear()
         count = 0
@@ -749,16 +808,25 @@ class EmbodiedMemoryStore:
             try:
                 event = EmbodiedMemoryEvent.from_mission_record(record)
             except ValueError:
-                index.upsert(record.to_dict())
+                index.upsert(
+                    record.to_dict(),
+                    authority_token=authority_token,
+                    finalize_spatial=False,
+                    commit=False,
+                )
             else:
                 index.upsert(
                     record.to_dict(),
                     index_text=self._indexing_policy.should_index_text(event),
+                    authority_token=authority_token,
+                    finalize_spatial=False,
+                    commit=False,
                 )
             count += 1
         for relation in relations:
             index.upsert_relation(relation.to_index_dict())
             count += 1
+        index.finalize_spatial_projection(authority_token=authority_token)
         return count
 
     def _require_index(self) -> SqliteMemoryIndex:

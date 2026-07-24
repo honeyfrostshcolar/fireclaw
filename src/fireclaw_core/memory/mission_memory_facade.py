@@ -55,6 +55,15 @@ class _SpatialMatch:
         }
 
 
+@dataclass
+class _IndexedSpatialResult:
+    ranked: list[
+        tuple[_SpatialMatch, str, str, EmbodiedMemoryEvent | FireClawEntity]
+    ]
+    restricted_records_omitted: int
+    restricted_entities_omitted: int
+
+
 @dataclass(frozen=True)
 class MemoryAccessContext:
     """Server-bound identity and isolation context for one memory read."""
@@ -543,27 +552,10 @@ class MissionMemoryFacade:
                 "entity_kinds and entity_statuses require entity in memory_types"
             )
         reference = _parse_timestamp(reference_at) if reference_at else datetime.now(timezone.utc)
-        ranked: list[
-            tuple[_SpatialMatch, str, str, EmbodiedMemoryEvent | FireClawEntity]
-        ] = []
         selected_event_types = frozenset(
             selected_memory_types & {"gist", "observation"}
         )
-        if selected_event_types:
-            for event in self._visible_events(access, event_types=selected_event_types):
-                match = _spatial_match(
-                    event,
-                    frame_id=frame_id,
-                    x=x,
-                    y=y,
-                    z=z,
-                    radius_m=search_radius,
-                    floor=floor,
-                )
-                if match is not None:
-                    ranked.append((match, event.event_type, event.event_id, event))
-
-        restricted_entities_omitted = 0
+        entities: list[FireClawEntity] = []
         if "entity" in selected_memory_types:
             service = self._require_entity_memory()
             entities = service.list_entities(mission_id=access.mission_id)
@@ -577,28 +569,78 @@ class MissionMemoryFacade:
                     entity for entity in entities
                     if entity.status in selected_entity_statuses
                 ]
-            positioned: list[tuple[_SpatialMatch, FireClawEntity]] = []
-            for entity in entities:
-                match = _pose_spatial_match(
-                    entity.current_pose,
-                    frame_id=frame_id,
-                    x=x,
-                    y=y,
-                    z=z,
-                    radius_m=search_radius,
-                    floor=floor,
-                    source="entity_current_pose",
+
+        indexed = self._indexed_spatial_candidates(
+            access,
+            frame_id=frame_id,
+            x=x,
+            y=y,
+            z=z,
+            radius_m=search_radius,
+            floor=floor,
+            selected_memory_types=selected_memory_types,
+            selected_event_types=selected_event_types,
+            selected_entity_kinds=selected_entity_kinds,
+            selected_entity_statuses=selected_entity_statuses,
+            entities=entities,
+        )
+        if indexed is not None:
+            ranked = indexed.ranked
+            restricted_records_omitted = indexed.restricted_records_omitted
+            restricted_entities_omitted = indexed.restricted_entities_omitted
+            candidate_backend = "sqlite_rtree"
+        else:
+            ranked = []
+            if selected_event_types:
+                for event in self._visible_events(access, event_types=selected_event_types):
+                    match = _spatial_match(
+                        event,
+                        frame_id=frame_id,
+                        x=x,
+                        y=y,
+                        z=z,
+                        radius_m=search_radius,
+                        floor=floor,
+                    )
+                    if match is not None:
+                        ranked.append((match, event.event_type, event.event_id, event))
+
+            restricted_entities_omitted = 0
+            if "entity" in selected_memory_types:
+                positioned: list[tuple[_SpatialMatch, FireClawEntity]] = []
+                for entity in entities:
+                    match = _pose_spatial_match(
+                        entity.current_pose,
+                        frame_id=frame_id,
+                        x=x,
+                        y=y,
+                        z=z,
+                        radius_m=search_radius,
+                        floor=floor,
+                        source="entity_current_pose",
+                    )
+                    if match is not None:
+                        positioned.append((match, entity))
+                visible_entities, restricted_entities_omitted = self._filter_entities(
+                    access,
+                    [entity for _, entity in positioned],
                 )
-                if match is not None:
-                    positioned.append((match, entity))
-            visible_entities, restricted_entities_omitted = self._filter_entities(
+                visible_entity_ids = {entity.entity_id for entity in visible_entities}
+                for match, entity in positioned:
+                    if entity.entity_id in visible_entity_ids:
+                        ranked.append((match, "entity", entity.entity_id, entity))
+            restricted_records_omitted = self._restricted_spatial_event_count(
                 access,
-                [entity for _, entity in positioned],
+                event_types=selected_event_types,
+                robot_id=None,
+                frame_id=frame_id,
+                x=x,
+                y=y,
+                z=z,
+                radius_m=search_radius,
+                floor=floor,
             )
-            visible_entity_ids = {entity.entity_id for entity in visible_entities}
-            for match, entity in positioned:
-                if entity.entity_id in visible_entity_ids:
-                    ranked.append((match, "entity", entity.entity_id, entity))
+            candidate_backend = "linear_scan"
 
         ranked.sort(key=lambda item: (item[0].sort_key(), item[1], item[2]))
         ranked = ranked[:self._bounded_limit(limit)]
@@ -648,17 +690,8 @@ class MissionMemoryFacade:
                     ),
                 },
                 "retrieval_mode": "exact_conservative_spatial_nearest",
-                "restricted_records_omitted": self._restricted_spatial_event_count(
-                    access,
-                    event_types=selected_event_types,
-                    robot_id=None,
-                    frame_id=frame_id,
-                    x=x,
-                    y=y,
-                    z=z,
-                    radius_m=search_radius,
-                    floor=floor,
-                ),
+                "candidate_backend": candidate_backend,
+                "restricted_records_omitted": restricted_records_omitted,
                 "restricted_entities_omitted": restricted_entities_omitted,
             },
             evidence_ids=evidence_ids,
@@ -991,6 +1024,145 @@ class MissionMemoryFacade:
                 for event_id in record.source_event_ids
             ],
             requires_revalidation=bool(records),
+        )
+
+    def _indexed_spatial_candidates(
+        self,
+        access: MemoryAccessContext,
+        *,
+        frame_id: str,
+        x: float,
+        y: float,
+        z: float | None,
+        radius_m: float,
+        floor: str | None,
+        selected_memory_types: frozenset[str],
+        selected_event_types: frozenset[str],
+        selected_entity_kinds: frozenset[str] | None,
+        selected_entity_statuses: frozenset[str] | None,
+        entities: list[FireClawEntity],
+    ) -> _IndexedSpatialResult | None:
+        index = self._store.index
+        if index is None or not index.rtree_available:
+            return None
+        candidates = index.query_spatial_candidates(
+            mission_id=access.mission_id,
+            runtime_mode=access.runtime_mode,
+            frame_id=frame_id,
+            x=x,
+            y=y,
+            z=z,
+            radius_m=radius_m,
+            floor=floor,
+            memory_types=selected_memory_types,
+            entity_kinds=selected_entity_kinds,
+            entity_statuses=selected_entity_statuses,
+            authority_token=self._store.evidence_store.snapshot_token(),
+        )
+        if candidates is None:
+            return None
+
+        event_candidate_types = {
+            candidate["source_id"]: candidate["memory_type"]
+            for candidate in candidates
+            if candidate["memory_type"] in {"observation", "gist"}
+        }
+        event_ids = list(event_candidate_types)
+        events = self._store.load_indexed_events_by_ids(
+            event_ids,
+            mission_id=access.mission_id,
+            runtime_mode=access.runtime_mode,
+            event_types=selected_event_types,
+        )
+        if events is None:
+            return None
+
+        ranked: list[
+            tuple[_SpatialMatch, str, str, EmbodiedMemoryEvent | FireClawEntity]
+        ] = []
+        restricted_records_omitted = 0
+        for event in events:
+            if event_candidate_types.get(event.event_id) != event.event_type:
+                return None
+            match = _spatial_match(
+                event,
+                frame_id=frame_id,
+                x=x,
+                y=y,
+                z=z,
+                radius_m=radius_m,
+                floor=floor,
+            )
+            if match is None:
+                continue
+            if event.sensitivity == "restricted" and not access.can_read_restricted:
+                restricted_records_omitted += 1
+                continue
+            ranked.append((match, event.event_type, event.event_id, event))
+
+        entity_candidate_ids = [
+            candidate["source_id"]
+            for candidate in candidates
+            if candidate["memory_type"] == "entity"
+        ]
+        entities_by_id = {entity.entity_id: entity for entity in entities}
+        if any(entity_id not in entities_by_id for entity_id in entity_candidate_ids):
+            return None
+        positioned_entities: list[tuple[_SpatialMatch, FireClawEntity]] = []
+        for entity_id in entity_candidate_ids:
+            entity = entities_by_id[entity_id]
+            if selected_entity_kinds is not None and entity.entity_kind not in selected_entity_kinds:
+                continue
+            if selected_entity_statuses is not None and entity.status not in selected_entity_statuses:
+                continue
+            match = _pose_spatial_match(
+                entity.current_pose,
+                frame_id=frame_id,
+                x=x,
+                y=y,
+                z=z,
+                radius_m=radius_m,
+                floor=floor,
+                source="entity_current_pose",
+            )
+            if match is not None:
+                positioned_entities.append((match, entity))
+
+        restricted_entities_omitted = 0
+        visible_entity_ids = {entity.entity_id for _, entity in positioned_entities}
+        if positioned_entities and not access.can_read_restricted:
+            evidence_ids = _unique_ids([
+                evidence_id
+                for _, entity in positioned_entities
+                for evidence_id in self._entity_evidence_ids(entity)
+            ])
+            evidence_events = self._store.load_indexed_events_by_ids(
+                evidence_ids,
+                mission_id=access.mission_id,
+                runtime_mode=access.runtime_mode,
+            )
+            if evidence_events is None:
+                return None
+            evidence_by_id = {event.event_id: event for event in evidence_events}
+            if set(evidence_by_id) != set(evidence_ids):
+                return None
+            visible_entity_ids = set()
+            for _, entity in positioned_entities:
+                if any(
+                    evidence_by_id[event_id].sensitivity == "restricted"
+                    for event_id in self._entity_evidence_ids(entity)
+                ):
+                    restricted_entities_omitted += 1
+                else:
+                    visible_entity_ids.add(entity.entity_id)
+
+        for match, entity in positioned_entities:
+            if entity.entity_id in visible_entity_ids:
+                ranked.append((match, "entity", entity.entity_id, entity))
+        return _IndexedSpatialResult(
+            ranked=ranked,
+            restricted_records_omitted=restricted_records_omitted,
+            restricted_entities_omitted=restricted_entities_omitted,
         )
 
     def _validate_access(self, access: MemoryAccessContext) -> None:
