@@ -45,6 +45,7 @@ _FILTER_COLUMN_MAP: dict[str, str] = {
     "runtime_mode": "runtime_mode",
     "source_type": "source_type",
     "episode_id": "episode_id",
+    "sensitivity": "sensitivity",
 }
 
 
@@ -286,8 +287,8 @@ class SqliteMemoryIndex:
             Optional mapping of column name to exact-match value.
             Supported keys: ``mission_id``, ``robot_id``, ``floor``,
             ``capability``, ``outcome``, ``operator``, ``risk_level``,
-            ``record_type``, ``runtime_mode``, ``source_type``, and
-            ``episode_id``.
+            ``record_type``, ``runtime_mode``, ``source_type``,
+            ``episode_id``, and ``sensitivity``.
         limit:
             Maximum number of results to return.
         """

@@ -14,6 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from fireclaw_core.memory.embodied_memory import (
+    MEMORY_RUNTIME_MODES,
+    MEMORY_SENSITIVITY_LEVELS,
+)
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex, _cosine_similarity
 
 
@@ -34,6 +38,38 @@ class EmbeddingProvider(Protocol):
     def dimensions(self) -> int:
         """Return the dimensionality of embeddings."""
         ...
+
+
+@dataclass(frozen=True)
+class MemoryRetrievalScope:
+    """Explicit boundaries for planner-facing memory retrieval."""
+
+    mission_ids: tuple[str, ...]
+    runtime_modes: tuple[str, ...]
+    allowed_sensitivities: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.mission_ids or any(
+            not isinstance(value, str) or not value.strip()
+            for value in self.mission_ids
+        ):
+            raise ValueError("mission_ids must contain non-empty strings")
+        if not self.runtime_modes or set(self.runtime_modes) - MEMORY_RUNTIME_MODES:
+            raise ValueError("runtime_modes must contain valid memory runtime modes")
+        if (
+            not self.allowed_sensitivities
+            or set(self.allowed_sensitivities) - MEMORY_SENSITIVITY_LEVELS
+        ):
+            raise ValueError(
+                "allowed_sensitivities must contain valid memory sensitivity levels"
+            )
+
+    def admits(self, value: dict[str, Any]) -> bool:
+        return (
+            value.get("mission_id") in self.mission_ids
+            and value.get("runtime_mode") in self.runtime_modes
+            and value.get("sensitivity") in self.allowed_sensitivities
+        )
 
 
 @dataclass(frozen=True)
@@ -118,7 +154,13 @@ class MemoryRetriever:
             "embedding_weight": self._embedding_weight,
         }
 
-    def retrieve(self, query: str, *, limit: int = 10) -> list[RetrievedMemory]:
+    def retrieve(
+        self,
+        query: str,
+        *,
+        scope: MemoryRetrievalScope,
+        limit: int = 10,
+    ) -> list[RetrievedMemory]:
         """Retrieve memories ranked by relevance.
 
         If no embedding provider is configured, falls back to pure lexical
@@ -132,7 +174,11 @@ class MemoryRetriever:
             return []
 
         # Step 1: Lexical search — always run for candidate retrieval.
-        lexical_hits = self._index.search(query, limit=limit * 3)
+        lexical_hits = self._scoped_lexical_hits(
+            query,
+            scope=scope,
+            candidate_limit=limit * 3,
+        )
         if not lexical_hits:
             return []
 
@@ -160,6 +206,40 @@ class MemoryRetriever:
         return self._rank_fusion(query, lexical_hits, limit)
 
     # -- internal helpers ----------------------------------------------------
+
+    def _scoped_lexical_hits(
+        self,
+        query: str,
+        *,
+        scope: MemoryRetrievalScope,
+        candidate_limit: int,
+    ) -> list[dict[str, Any]]:
+        assert self._index is not None
+        by_id: dict[str, dict[str, Any]] = {}
+        for mission_id in scope.mission_ids:
+            for runtime_mode in scope.runtime_modes:
+                for sensitivity in scope.allowed_sensitivities:
+                    hits = self._index.search(
+                        query,
+                        filters={
+                            "mission_id": mission_id,
+                            "runtime_mode": runtime_mode,
+                            "sensitivity": sensitivity,
+                        },
+                        limit=candidate_limit,
+                    )
+                    for hit in hits:
+                        if scope.admits(hit):
+                            by_id[str(hit["record_id"])] = hit
+        ordered = sorted(
+            by_id.values(),
+            key=lambda hit: (
+                str(hit.get("created_at") or ""),
+                str(hit.get("record_id") or ""),
+            ),
+            reverse=True,
+        )
+        return ordered[:candidate_limit]
 
     def _rank_fusion(
         self,
