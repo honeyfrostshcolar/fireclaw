@@ -214,6 +214,19 @@ class MemoryRetriever:
         scope: MemoryRetrievalScope,
         candidate_limit: int,
     ) -> list[dict[str, Any]]:
+        """Run scoped FTS5 queries and return deduplicated, ordered hits.
+
+        .. note::
+
+            **Combinatorial cost.** This method issues one ``search()`` call
+            per ``(mission_id, runtime_mode, sensitivity)`` triple, giving a
+            total cost of
+            ``O(|mission_ids| x |runtime_modes| x |sensitivities|)`` queries.
+            For the typical single-mission, single-mode, single-sensitivity
+            case this is a single query.  Caller should be aware that
+            expanding these tuples (e.g. passing all modes) multiplies the
+            number of FTS5 queries linearly.
+        """
         assert self._index is not None
         by_id: dict[str, dict[str, Any]] = {}
         for mission_id in scope.mission_ids:
