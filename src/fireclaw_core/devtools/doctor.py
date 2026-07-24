@@ -41,6 +41,7 @@ def run_doctor(
     memory_index_path: str | None = None,
     memory_eval_fixture: str | None = None,
     memory_eval_threshold: float = 0.5,
+    memory_eval_mission_id: str = "doctor-default",
     plugin_dir: str | None = None,
     fix: bool = False,
 ) -> dict[str, Any]:
@@ -89,7 +90,10 @@ def run_doctor(
     # --- repair-flow checks ---
     # Memory index and plugin descriptors are always report-only.
     checks.append(_memory_index_check(memory_index_path))
-    checks.append(_memory_eval_check(memory_index_path, memory_eval_fixture, memory_eval_threshold))
+    checks.append(_memory_eval_check(
+        memory_index_path, memory_eval_fixture, memory_eval_threshold,
+        mission_id=memory_eval_mission_id,
+    ))
     checks.append(_plugin_descriptor_check(plugin_dir))
 
     # --- repair actions (only when fix=True) ---
@@ -414,6 +418,8 @@ def _memory_eval_check(
     memory_index_path: str | None,
     memory_eval_fixture: str | None,
     threshold: float,
+    *,
+    mission_id: str = "doctor-default",
 ) -> DoctorCheck:
     """Run retrieval evaluation when both index and fixture are provided."""
     if memory_index_path is None or memory_eval_fixture is None:
@@ -440,10 +446,17 @@ def _memory_eval_check(
             details={"memory_eval_fixture": str(fixture_path), "exists": False},
         )
     try:
+        from fireclaw_core.memory.memory_retrieval import MemoryRetrievalScope
+
         index = SqliteMemoryIndex(str(index_path))
         retriever = MemoryRetriever(index=index)
         cases = load_eval_cases(fixture_path)
-        report = evaluate_retrieval(retriever, cases)
+        scope = MemoryRetrievalScope(
+            mission_ids=(mission_id,),
+            runtime_modes=("real", "simulation", "replay"),
+            allowed_sensitivities=("standard", "restricted"),
+        )
+        report = evaluate_retrieval(retriever, cases, scope=scope)
     except Exception as exc:
         return DoctorCheck(
             name="memory_eval",
