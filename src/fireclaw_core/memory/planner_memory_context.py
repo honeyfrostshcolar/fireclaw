@@ -270,12 +270,14 @@ class PlannerMemoryContextBuilder:
 
         # Step 1: Build authority map from mission memory
         authority_ids: set[str] = set()
+        authority_record_map: dict[str, MissionMemoryRecord] = {}
         if self._mission_memory is not None:
             try:
                 authority_records = self._mission_memory.list_records(
                     mission_id=request.mission_id,
                 )
                 authority_ids = {r.record_id for r in authority_records}
+                authority_record_map = {r.record_id: r for r in authority_records}
             except Exception as exc:
                 omit("authority_lookup_failed", "mission_memory", exception=exc)
         else:
@@ -495,11 +497,11 @@ class PlannerMemoryContextBuilder:
                         exception_class=failure.exception_class,
                     )
                 if filter_report.effects:
-                    # Use the last effect's memories list (plugins are sequential)
-                    last_effect = filter_report.effects[-1].get("effect", {})
-                    plugin_filtered = last_effect.get("memories", [])
-                    if isinstance(plugin_filtered, list):
-                        memories[:] = _reauthorize_plugin_items(plugin_filtered)
+                    for effect_entry in filter_report.effects:
+                        effect = effect_entry.get("effect", {})
+                        plugin_filtered = effect.get("memories", [])
+                        if isinstance(plugin_filtered, list):
+                            memories[:] = _reauthorize_plugin_items(plugin_filtered)
             except Exception as exc:
                 omit("plugin_filter_failed", "plugin_runtime", exception=exc)
 
@@ -516,10 +518,11 @@ class PlannerMemoryContextBuilder:
                         exception_class=failure.exception_class,
                     )
                 if rerank_report.effects:
-                    last_effect = rerank_report.effects[-1].get("effect", {})
-                    plugin_reranked = last_effect.get("memories", [])
-                    if isinstance(plugin_reranked, list):
-                        memories[:] = _reauthorize_plugin_items(plugin_reranked)
+                    for effect_entry in rerank_report.effects:
+                        effect = effect_entry.get("effect", {})
+                        plugin_reranked = effect.get("memories", [])
+                        if isinstance(plugin_reranked, list):
+                            memories[:] = _reauthorize_plugin_items(plugin_reranked)
             except Exception as exc:
                 omit("plugin_rerank_failed", "plugin_runtime", exception=exc)
 
@@ -539,6 +542,7 @@ class PlannerMemoryContextBuilder:
                         exception_class=failure.exception_class,
                     )
                 if enrich_report.effects:
+                    seen_enrichment_keys: set[tuple[str, str]] = set()
                     for effect_entry in enrich_report.effects:
                         effect = effect_entry.get("effect", {})
                         enrichment_items = effect.get("memories", [])
@@ -560,6 +564,7 @@ class PlannerMemoryContextBuilder:
                                     canonical = self._resolve_enrichment_record(
                                         key[1], request, allowed_sensitivities,
                                         authority_ids, seen_record_ids,
+                                        authority_record_map,
                                     )
                                 elif key[0] == "reusable_knowledge":
                                     canonical = self._resolve_enrichment_knowledge(
@@ -568,12 +573,23 @@ class PlannerMemoryContextBuilder:
                             if canonical is None:
                                 omit("plugin_record_unverified", "plugin")
                                 continue
-                            # Deduplicate
+                            # Deduplicate against memories and previously
+                            # enriched items
                             canonical_key = _plugin_key(canonical)
-                            if canonical_key and canonical_key not in {
+                            if canonical_key is None:
+                                continue
+                            if canonical_key in seen_enrichment_keys:
+                                continue
+                            all_existing_keys = {
                                 _plugin_key(m) for m in memories
                                 if _plugin_key(m) is not None
-                            }:
+                            }
+                            if canonical_key in all_existing_keys:
+                                continue
+                            seen_enrichment_keys.add(canonical_key)
+                            if canonical.get("record_type") == "correction":
+                                corrections.append(canonical)
+                            else:
                                 memories.append(canonical)
             except Exception as exc:
                 omit("plugin_enrichment_failed", "plugin_runtime", exception=exc)
@@ -623,6 +639,7 @@ class PlannerMemoryContextBuilder:
         allowed_sensitivities: tuple[str, ...],
         authority_ids: set[str],
         seen_record_ids: set[str],
+        authority_record_map: dict[str, MissionMemoryRecord] | None = None,
     ) -> dict[str, Any] | None:
         """Resolve an enrichment record_id against the full authority map.
 
@@ -635,22 +652,34 @@ class PlannerMemoryContextBuilder:
         if record_id in seen_record_ids:
             # Already in the memories list; return None to avoid duplicate
             # (the deduplication in the caller handles this)
-            pass
+            return None
         try:
-            records = self._mission_memory.list_records(
-                mission_id=request.mission_id,
-            )
-            for record in records:
-                if record.record_id != record_id:
-                    continue
+            if authority_record_map is not None:
+                # Use cached record map to avoid redundant list_records()
+                record = authority_record_map.get(record_id)
+                if record is None:
+                    return None
                 canonical, _reject_code = self._canonical_record(
                     record, request, allowed_sensitivities,
                 )
                 if canonical is not None:
                     seen_record_ids.add(record_id)
                     return canonical
+            else:
+                records = self._mission_memory.list_records(
+                    mission_id=request.mission_id,
+                )
+                for record in records:
+                    if record.record_id != record_id:
+                        continue
+                    canonical, _reject_code = self._canonical_record(
+                        record, request, allowed_sensitivities,
+                    )
+                    if canonical is not None:
+                        seen_record_ids.add(record_id)
+                        return canonical
         except Exception:
-            pass
+            return None
         return None
 
     def _resolve_enrichment_knowledge(

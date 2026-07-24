@@ -1728,6 +1728,158 @@ def test_enrichment_mission_mismatched_record_omitted(tmp_path: Path) -> None:
     assert "obs-other" not in admitted_ids
 
 
+def test_multiple_filter_plugins_all_effects_reauthorized(tmp_path: Path) -> None:
+    """When multiple filter plugins are registered, all effects are iterated
+    and reauthorized (not just the last one).
+
+    Each plugin is dispatched against the ORIGINAL payload independently by
+    the plugin runtime.  The builder iterates all effects in order, updating
+    memories after each reauthorization.  This means every plugin-provided
+    item goes through canonical reauthorization, even intermediate effects.
+
+    Since effects are computed from the original payload, the last effect's
+    memories list becomes the final state (each update replaces the previous).
+    The test verifies that the last filter's effect is applied and all items
+    are properly reauthorized.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-a")
+    _record_event(store, event_id="obs-b")
+    _record_event(store, event_id="obs-c")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    # Plugin A: remove obs-b
+    def filter_a(payload: dict) -> dict:
+        return {"memories": [
+            m for m in payload["memories"]
+            if m.get("record_id") != "obs-b"
+        ]}
+
+    # Plugin B: remove obs-c (but keeps obs-b since it sees original payload)
+    def filter_b(payload: dict) -> dict:
+        return {"memories": [
+            m for m in payload["memories"]
+            if m.get("record_id") != "obs-c"
+        ]}
+
+    runtime = PluginRuntime()
+    for name, cb in [("filter_a", filter_a), ("filter_b", filter_b)]:
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id=f"plugin.{name}",
+            callback=cb,
+        )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=store.evidence_store,
+        facade=facade,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    # Both plugins were iterated; last effect (filter_b) determines final state
+    assert "obs-a" in admitted_ids
+    assert "obs-c" not in admitted_ids  # filter_b removed obs-c
+    # All items are reauthorized (canonical fields present, no forged content)
+    for m in result.memories:
+        assert m["advisory_only"] is True
+        assert m["can_authorize_action"] is False
+
+
+def test_multiple_rerank_plugins_all_applied(tmp_path: Path) -> None:
+    """When multiple rerank plugins are registered, all effects are applied in order."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-a", note="a")
+    _record_event(store, event_id="obs-b", note="b")
+    _record_event(store, event_id="obs-c", note="c")
+
+    # Record canonical order without plugin
+    builder_ref = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+    )
+    ref_result = builder_ref.build(_request())
+    canonical_ids = [m["record_id"] for m in ref_result.memories]
+
+    def rerank_a(payload: dict) -> dict:
+        # Reverse
+        return {"memories": list(reversed(payload["memories"]))}
+
+    def rerank_b(payload: dict) -> dict:
+        # Reverse again (back to original)
+        return {"memories": list(reversed(payload["memories"]))}
+
+    runtime = PluginRuntime()
+    for name, cb in [("rerank_a", rerank_a), ("rerank_b", rerank_b)]:
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="rerank",
+            plugin_id=f"plugin.{name}",
+            callback=cb,
+        )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    # Two reversals bring us back to the canonical order
+    assert admitted_ids == canonical_ids
+
+
+def test_enrichment_correction_record_routed_to_corrections(tmp_path: Path) -> None:
+    """Enrichment items with record_type='correction' go to corrections, not memories."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-base")
+    # Record a correction in the current mission
+    _record_event(store, event_id="corr-enrich", event_type="correction", note="fix direction")
+
+    class SingleRetriever:
+        def retrieve(self, query, *, scope, limit):
+            raw = _retriever(store).retrieve(query, scope=scope, limit=limit)
+            return [r for r in raw if r.record_id == "obs-base"]
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "current_mission",
+            "record_id": "corr-enrich",
+            "record_type": "correction",
+            "source_mission_id": "mission-alpha",
+            "runtime_mode": "real",
+            "sensitivity": "standard",
+            "content": {"note": "PLUGIN CORRECTION"},
+            "advisory_only": True,
+            "can_authorize_action": False,
+            "requires_current_state_revalidation": True,
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=SingleRetriever(),
+        mission_memory=store.evidence_store,
+        facade=None,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # The correction should NOT be in memories
+    memory_ids = [m["record_id"] for m in result.memories]
+    assert "corr-enrich" not in memory_ids
+    # The correction SHOULD be in corrections
+    correction_ids = [c["record_id"] for c in result.corrections]
+    assert "corr-enrich" in correction_ids
+
+
 def test_plugin_filter_and_rerank_work_sequentially(tmp_path: Path) -> None:
     """Filter runs first, then rerank; both see the same canonical map."""
     store = _embodied_store(tmp_path)
@@ -1884,6 +2036,9 @@ if __name__ == "__main__":
         test_enrichment_content_fields_ignored_for_known_items,
         test_enrichment_unknown_knowledge_id_omitted,
         test_enrichment_mission_mismatched_record_omitted,
+        test_multiple_filter_plugins_all_effects_reauthorized,
+        test_multiple_rerank_plugins_all_applied,
+        test_enrichment_correction_record_routed_to_corrections,
         test_plugin_filter_and_rerank_work_sequentially,
         test_plugin_enrichment_adds_to_existing_memories,
     ]
