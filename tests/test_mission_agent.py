@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock
 
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
@@ -65,8 +66,8 @@ class FakeMemoryRetriever:
         self.results = results
         self.calls = []
 
-    def retrieve(self, query, *, limit=10):
-        self.calls.append((query, limit))
+    def retrieve(self, query, *, scope=None, limit=10):
+        self.calls.append((query, scope, limit))
         return self.results[:limit]
 
 
@@ -1753,21 +1754,39 @@ def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_pat
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
 
-    # Pre-populate memory with an outcome and a correction
-    from fireclaw_core.mission.mission_memory import MissionMemoryRecord
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
-
-    memory_store.append(MissionMemoryRecord(
-        record_id="mem-1", mission_id="old-mission", record_type="outcome",
+    # Pre-populate memory with an outcome and a correction using the Builder's
+    # admission requirements: matching mission_id and _embodied metadata.
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-1",
+        mission_id="mission-1",
+        record_type="outcome",
         content={"command": "去二楼搜索", "status": "succeeded", "subtask_count": 1},
-        created_at=now,
-    ))
-    memory_store.append(MissionMemoryRecord(
-        record_id="corr-1", mission_id="old-mission", record_type="correction",
+    )
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="corr-1",
+        mission_id="mission-1",
+        record_type="correction",
         content={"correction": "应先搜索三楼再搜索二楼", "context": "三楼有浓烟"},
-        created_at=now,
-    ))
+    )
+    # Use a FakeMemoryRetriever so the Builder can find indexed memories
+    retriever = FakeMemoryRetriever([
+        RetrievedMemory(
+            record_id="mem-1",
+            mission_id="mission-1",
+            record_type="outcome",
+            content={
+                "_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "test"},
+                "command": "去二楼搜索",
+                "status": "succeeded",
+                "subtask_count": 1,
+            },
+            score=0.9,
+            source="fused",
+            created_at="2026-07-24T00:00:00+00:00",
+        ),
+    ])
 
     plan = MissionPlan(
         intent="search",
@@ -1784,6 +1803,8 @@ def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_pat
         subagent_client=client,
         planner=planner,
         mission_memory=memory_store,
+        memory_retriever=retriever,
+        embodied_runtime_mode="simulation",
     )
 
     result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
@@ -1806,19 +1827,32 @@ def test_plan_and_submit_uses_ranked_memory_retriever_when_configured(tmp_path):
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
-    memory_store.append(MissionMemoryRecord(
+    _seed_record_with_metadata(
+        memory_store,
         record_id="corr-1",
-        mission_id="old-mission",
+        mission_id="mission-1",
         record_type="correction",
         content={"correction": "先确认楼梯间温度"},
         created_at="2026-06-10T00:00:00+00:00",
-    ))
+    )
+    # Seed a record that the retriever will find, with matching mission_id
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="ranked-1",
+        mission_id="mission-1",
+        record_type="lesson",
+        content={"lesson": "二楼搜索优先走东侧楼梯"},
+        created_at="2026-06-10T00:00:00+00:00",
+    )
     retriever = FakeMemoryRetriever([
         RetrievedMemory(
             record_id="ranked-1",
-            mission_id="m-old",
+            mission_id="mission-1",
             record_type="lesson",
-            content={"lesson": "二楼搜索优先走东侧楼梯"},
+            content={
+                "_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "test"},
+                "lesson": "二楼搜索优先走东侧楼梯",
+            },
             score=0.91,
             source="fused",
             created_at="2026-06-10T00:00:00+00:00",
@@ -1840,26 +1874,24 @@ def test_plan_and_submit_uses_ranked_memory_retriever_when_configured(tmp_path):
         planner=planner,
         mission_memory=memory_store,
         memory_retriever=retriever,
+        embodied_runtime_mode="simulation",
     )
 
     result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
 
     assert result["status"] == "planned"
-    assert retriever.calls == [("去二楼搜索", 5)]
+    assert len(retriever.calls) == 1
+    assert retriever.calls[0][0] == "去二楼搜索"
+    assert retriever.calls[0][-1] == 5
     ctx = planner.calls[0][1]
-    assert ctx.retrieved_memories == [
-        {
-            "record_id": "ranked-1",
-            "mission_id": "m-old",
-            "record_type": "lesson",
-            "content": {"lesson": "二楼搜索优先走东侧楼梯"},
-            "score": 0.91,
-            "source": "fused",
-            "created_at": "2026-06-10T00:00:00+00:00",
-            "robot_id": None,
-            "subtask_id": None,
-        }
-    ]
+    # The Builder canonicalizes records with additional fields
+    assert len(ctx.retrieved_memories) >= 1
+    ranked_memory = [m for m in ctx.retrieved_memories if m.get("record_id") == "ranked-1"]
+    assert len(ranked_memory) == 1
+    assert ranked_memory[0]["content"]["lesson"] == "二楼搜索优先走东侧楼梯"
+    assert ranked_memory[0]["memory_scope"] == "current_mission"
+    assert ranked_memory[0]["advisory_only"] is True
+    assert len(ctx.operator_corrections) == 1
     assert ctx.operator_corrections[0]["content"]["correction"] == "先确认楼梯间温度"
 
 
@@ -1903,16 +1935,14 @@ def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
 
-    from fireclaw_core.mission.mission_memory import MissionMemoryRecord
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Record with a secret in the correction
-    memory_store.append(MissionMemoryRecord(
-        record_id="corr-1", mission_id="old-mission", record_type="correction",
+    # Record with a secret in the correction, using matching mission_id and metadata
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="corr-1",
+        mission_id="mission-1",
+        record_type="correction",
         content={"correction": "使用 api_key=sk-abc1234567890 进行认证", "context": "需要更新token=secretvalue1234"},
-        created_at=now,
-    ))
+    )
 
     plan = MissionPlan(
         intent="search",
@@ -1929,6 +1959,7 @@ def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
         subagent_client=client,
         planner=planner,
         mission_memory=memory_store,
+        embodied_runtime_mode="simulation",
     )
 
     result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
@@ -1946,11 +1977,45 @@ def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
 # --- Plugin hook integration tests ---
 
 def test_plan_and_submit_applies_provider_context_hook(tmp_path):
+    """Plugin enrich_context items that reference verifiable records are admitted."""
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
     ])
     client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    # Seed the record that the plugin will reference
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="plugin-memory",
+        mission_id="mission-1",
+        record_type="lesson",
+        content={"lesson": "优先检查东侧楼梯"},
+    )
+    # Also seed an initial memory so the Builder has something in the canonical map
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-1",
+        mission_id="mission-1",
+        record_type="outcome",
+        content={"command": "去二楼搜索", "status": "succeeded"},
+    )
+    retriever = FakeMemoryRetriever([
+        RetrievedMemory(
+            record_id="mem-1",
+            mission_id="mission-1",
+            record_type="outcome",
+            content={
+                "_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "test"},
+                "command": "去二楼搜索",
+                "status": "succeeded",
+            },
+            score=0.9,
+            source="fused",
+            created_at="2026-07-24T00:00:00+00:00",
+        ),
+    ])
     runtime = PluginRuntime()
+    # Plugin enriches context by referencing a verifiable record from the authority
     runtime.register_callable(
         hook_type="provider",
         hook_name="enrich_context",
@@ -1958,7 +2023,7 @@ def test_plan_and_submit_applies_provider_context_hook(tmp_path):
         callback=lambda payload: {"retrieved_memories": [
             {
                 "record_id": "plugin-memory",
-                "mission_id": "plugin",
+                "mission_id": "mission-1",
                 "record_type": "lesson",
                 "content": {"lesson": "优先检查东侧楼梯"},
                 "source": "plugin",
@@ -1973,16 +2038,26 @@ def test_plan_and_submit_applies_provider_context_hook(tmp_path):
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
-    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner, plugin_runtime=runtime)
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        plugin_runtime=runtime,
+        mission_memory=memory_store,
+        memory_retriever=retriever,
+        embodied_runtime_mode="simulation",
+    )
 
     result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
 
     assert result["status"] == "planned"
     ctx = planner.calls[0][1]
-    assert ctx.retrieved_memories[0]["record_id"] == "plugin-memory"
+    enriched = [m for m in ctx.retrieved_memories if m.get("record_id") == "plugin-memory"]
+    assert len(enriched) == 1
 
 
 def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
+    """Non-dict plugin enrich_context items are dropped by the Builder."""
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
     ])
@@ -1995,7 +2070,7 @@ def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
         callback=lambda payload: {"retrieved_memories": [
             "not-a-dict",
             42,
-            {"record_id": "valid-memory", "mission_id": "plugin", "record_type": "lesson", "content": {}, "source": "plugin"},
+            {"record_id": "unverifiable", "mission_id": "plugin", "record_type": "lesson", "content": {}, "source": "plugin"},
         ]},
     )
     plan = MissionPlan(
@@ -2006,14 +2081,21 @@ def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
-    mission = MissionAgent(registry=registry, subagent_client=client, planner=planner, plugin_runtime=runtime)
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        plugin_runtime=runtime,
+        embodied_runtime_mode="simulation",
+    )
 
     result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
 
     assert result["status"] == "planned"
     ctx = planner.calls[0][1]
-    assert len(ctx.retrieved_memories) == 1
-    assert ctx.retrieved_memories[0]["record_id"] == "valid-memory"
+    # All plugin items are unverifiable and should be dropped
+    for mem in ctx.retrieved_memories:
+        assert mem.get("record_id") != "unverifiable"
 
 
 # --- TaskRegistry and SubagentRegistry lifecycle projection tests ---
@@ -2068,16 +2150,34 @@ def test_plan_and_submit_applies_memory_filter_hook(tmp_path):
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
-    memory_store.append(MissionMemoryRecord(
-        record_id="mem-1", mission_id="old", record_type="outcome",
-        content={"command": "去二楼搜索", "status": "succeeded"}, created_at=now,
-    ))
-    memory_store.append(MissionMemoryRecord(
-        record_id="mem-2", mission_id="old", record_type="outcome",
-        content={"command": "去三楼搜索", "status": "failed"}, created_at=now,
-    ))
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-1",
+        mission_id="mission-1",
+        record_type="outcome",
+        content={"command": "去二楼搜索", "status": "succeeded"},
+    )
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-2",
+        mission_id="mission-1",
+        record_type="outcome",
+        content={"command": "去三楼搜索", "status": "failed"},
+    )
+    retriever = FakeMemoryRetriever([
+        RetrievedMemory(
+            record_id="mem-1", mission_id="mission-1", record_type="outcome",
+            content={"_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "test"},
+                     "command": "去二楼搜索", "status": "succeeded"},
+            score=0.9, source="fused", created_at="2026-07-24T00:00:00+00:00",
+        ),
+        RetrievedMemory(
+            record_id="mem-2", mission_id="mission-1", record_type="outcome",
+            content={"_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "test"},
+                     "command": "去三楼搜索", "status": "failed"},
+            score=0.8, source="fused", created_at="2026-07-24T00:00:00+00:00",
+        ),
+    ])
 
     runtime = PluginRuntime()
     # Filter hook: keep only the first memory
@@ -2094,10 +2194,11 @@ def test_plan_and_submit_applies_memory_filter_hook(tmp_path):
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
     mission = MissionAgent(
         registry=registry, subagent_client=client, planner=planner,
-        mission_memory=memory_store, plugin_runtime=runtime,
+        mission_memory=memory_store, memory_retriever=retriever,
+        plugin_runtime=runtime, embodied_runtime_mode="simulation",
     )
 
-    result = mission.plan_and_submit("去二楼搜索", session_id="m1", use_scheduler=False)
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
 
     assert result["status"] == "planned"
     ctx = planner.calls[0][1]
@@ -2111,17 +2212,33 @@ def test_plan_and_submit_applies_memory_rerank_hook(tmp_path):
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
     ])
     client = FakeSubagentClient()
-    # Use a retriever that returns 2 memories so the rerank hook has something to reorder
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-a",
+        mission_id="mission-1",
+        record_type="outcome",
+        content={"command": "去二楼搜索", "status": "succeeded"},
+    )
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-b",
+        mission_id="mission-1",
+        record_type="outcome",
+        content={"command": "去三楼搜索", "status": "failed"},
+    )
     retriever = FakeMemoryRetriever([
         RetrievedMemory(
-            record_id="mem-a", mission_id="old", record_type="outcome",
-            content={"command": "去二楼搜索", "status": "succeeded"}, score=0.9, source="fused",
-            created_at="2026-06-10T00:00:00+00:00",
+            record_id="mem-a", mission_id="mission-1", record_type="outcome",
+            content={"_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "test"},
+                     "command": "去二楼搜索", "status": "succeeded"},
+            score=0.9, source="fused", created_at="2026-07-24T00:00:00+00:00",
         ),
         RetrievedMemory(
-            record_id="mem-b", mission_id="old", record_type="outcome",
-            content={"command": "去三楼搜索", "status": "failed"}, score=0.8, source="fused",
-            created_at="2026-06-10T00:00:00+00:00",
+            record_id="mem-b", mission_id="mission-1", record_type="outcome",
+            content={"_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "test"},
+                     "command": "去三楼搜索", "status": "failed"},
+            score=0.8, source="fused", created_at="2026-07-24T00:00:00+00:00",
         ),
     ])
 
@@ -2140,10 +2257,11 @@ def test_plan_and_submit_applies_memory_rerank_hook(tmp_path):
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
     mission = MissionAgent(
         registry=registry, subagent_client=client, planner=planner,
-        memory_retriever=retriever, plugin_runtime=runtime,
+        mission_memory=memory_store, memory_retriever=retriever,
+        plugin_runtime=runtime, embodied_runtime_mode="simulation",
     )
 
-    result = mission.plan_and_submit("去二楼搜索", session_id="m1", use_scheduler=False)
+    result = mission.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
 
     assert result["status"] == "planned"
     ctx = planner.calls[0][1]
@@ -2364,3 +2482,428 @@ def test_primitive_fallback_structured_task_validates_after_round_trip():
     task = StructuredRobotTask.from_dict(structured_task)
 
     assert validate_structured_robot_task(task) == []
+
+
+# --- Task 7: PlannerMemoryContextBuilder integration tests ---
+
+
+def _seed_record_with_metadata(
+    memory_store,
+    *,
+    record_id: str,
+    mission_id: str,
+    record_type: str,
+    content: dict,
+    runtime_mode: str = "simulation",
+    sensitivity: str = "standard",
+    robot_id=None,
+    subtask_id=None,
+    created_at=None,
+):
+    """Seed a mission memory record with embodied metadata for builder admission."""
+    from datetime import datetime, timezone
+    now = created_at or datetime.now(timezone.utc).isoformat()
+    enriched_content = {
+        "_embodied": {
+            "runtime_mode": runtime_mode,
+            "sensitivity": sensitivity,
+            "source_type": "test",
+        },
+        **content,
+    }
+    memory_store.append(MissionMemoryRecord(
+        record_id=record_id,
+        mission_id=mission_id,
+        record_type=record_type,
+        content=enriched_content,
+        robot_id=robot_id,
+        subtask_id=subtask_id,
+        created_at=now,
+    ))
+
+
+def test_retrieve_planner_context_returns_tuple(tmp_path):
+    """_retrieve_planner_context() still returns (memories, corrections) tuple."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="corr-1",
+        mission_id="mission-1",
+        record_type="correction",
+        content={"correction": "先确认楼梯安全"},
+    )
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_memory=memory_store,
+        embodied_runtime_mode="simulation",
+    )
+
+    result = agent._retrieve_planner_context("去二楼搜索", mission_id="mission-1")
+
+    assert isinstance(result, tuple)
+    assert len(result) == 2
+    memories, corrections = result
+    assert isinstance(memories, list)
+    assert isinstance(corrections, list)
+
+
+def test_retrieve_planner_context_returns_current_mission_corrections(tmp_path):
+    """Current mission/runtime corrections are returned by _retrieve_planner_context."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="corr-1",
+        mission_id="current-mission",
+        record_type="correction",
+        content={"correction": "先确认楼梯安全再上楼"},
+    )
+    # Seed a record from another mission (should NOT be returned)
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="corr-other",
+        mission_id="other-mission",
+        record_type="correction",
+        content={"correction": "其他任务的纠正"},
+    )
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_memory=memory_store,
+        embodied_runtime_mode="simulation",
+    )
+
+    memories, corrections = agent._retrieve_planner_context(
+        "去二楼搜索", mission_id="current-mission",
+    )
+
+    assert len(corrections) == 1
+    assert corrections[0]["content"]["correction"] == "先确认楼梯安全再上楼"
+    # Other mission's correction should be excluded
+    assert all(c.get("source_mission_id") == "current-mission" for c in corrections)
+
+
+def test_builder_source_exception_does_not_block_planning(tmp_path):
+    """A Builder source exception does not block a valid mission plan."""
+    from fireclaw_core.memory.planner_memory_context import PlannerMemoryContextBuilder
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    audit_sink = FakeAuditSink()
+
+    class FailingMemoryStore:
+        def list_records(self, **kwargs):
+            raise RuntimeError("store unavailable")
+
+        def search(self, **kwargs):
+            raise RuntimeError("store unavailable")
+
+    builder = PlannerMemoryContextBuilder(
+        mission_memory=FailingMemoryStore(),
+    )
+    base_audit = MissionPlanningAuditRecord(
+        command="去二楼搜索",
+        available_robots=[],
+        tool_schema={"type": "function"},
+        llm_tool_call={"name": "create_mission_plan", "arguments": {}},
+        decisions=[],
+        final_status="planned",
+        final_message="planned",
+        created_at="2026-07-24T00:00:00+00:00",
+    )
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="去二楼搜索",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="r1",
+                    command="去2楼搜索",
+                    floor=2,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=base_audit,
+    )
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_planning_audit_sink=audit_sink,
+        planner_memory_context_builder=builder,
+    )
+
+    result = agent.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    # Planning should succeed despite memory source failure
+    assert result["status"] == "planned"
+    assert len(audit_sink.records) == 1
+    record = audit_sink.records[0]
+    # The memory_context decision should have been appended
+    assert any(d.layer == "memory_context" for d in record.decisions)
+    # Warnings should be present (store failure)
+    mem_decision = [d for d in record.decisions if d.layer == "memory_context"][0]
+    assert mem_decision.status == "allow"
+
+
+def test_raw_plugin_enrichment_not_appended_after_builder(tmp_path):
+    """Raw plugin enrich_context memory is not appended after Builder validation."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-1",
+        mission_id="mission-1",
+        record_type="outcome",
+        content={"command": "去二楼搜索", "status": "succeeded"},
+    )
+    runtime = PluginRuntime()
+    # Plugin that injects extra memories via enrich_context
+    runtime.register_callable(
+        hook_type="provider",
+        hook_name="enrich_context",
+        plugin_id="fire.inject",
+        callback=lambda payload: {"retrieved_memories": [
+            {
+                "record_id": "injected-memory",
+                "mission_id": "fake",
+                "record_type": "lesson",
+                "content": {"lesson": "inject"},
+                "source": "plugin",
+            }
+        ]},
+    )
+    plan = MissionPlan(
+        intent="search", command="去二楼搜索",
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+    )
+    planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_memory=memory_store,
+        plugin_runtime=runtime,
+        embodied_runtime_mode="simulation",
+    )
+
+    result = agent.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    ctx = planner.calls[0][1]
+    # The injected plugin memory should NOT appear in context
+    for mem in ctx.retrieved_memories:
+        assert mem.get("record_id") != "injected-memory"
+
+
+def test_audit_record_receives_memory_context_decision_before_validator(tmp_path):
+    """Planner audit record receives exactly one memory_context decision before the validator decision."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    audit_sink = FakeAuditSink()
+    base_audit = MissionPlanningAuditRecord(
+        command="去二楼搜索",
+        available_robots=[],
+        tool_schema={"type": "function"},
+        llm_tool_call={"name": "create_mission_plan", "arguments": {}},
+        decisions=[],
+        final_status="planned",
+        final_message="planned",
+        created_at="2026-07-24T00:00:00+00:00",
+    )
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="去二楼搜索",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="r1",
+                    command="去2楼搜索",
+                    floor=2,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=base_audit,
+    )
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_planning_audit_sink=audit_sink,
+    )
+
+    result = agent.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    assert len(audit_sink.records) == 1
+    record = audit_sink.records[0]
+    # There should be exactly one memory_context decision
+    mem_decisions = [d for d in record.decisions if d.layer == "memory_context"]
+    assert len(mem_decisions) == 1
+    assert mem_decisions[0].status == "allow"
+    # Validator decision should come after memory_context
+    assert record.decisions[-1].layer == "validator"
+    assert record.decisions[0].layer == "memory_context"
+    assert record.decisions[1].layer == "validator"
+
+
+def test_memory_context_decision_contains_counts_not_content(tmp_path):
+    """The memory_context decision contains counts and warning codes, not memory content or exception messages."""
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    audit_sink = FakeAuditSink()
+    memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
+    _seed_record_with_metadata(
+        memory_store,
+        record_id="mem-1",
+        mission_id="mission-1",
+        record_type="outcome",
+        content={"command": "去二楼搜索", "status": "succeeded"},
+    )
+    base_audit = MissionPlanningAuditRecord(
+        command="去二楼搜索",
+        available_robots=[],
+        tool_schema={"type": "function"},
+        llm_tool_call={"name": "create_mission_plan", "arguments": {}},
+        decisions=[],
+        final_status="planned",
+        final_message="planned",
+        created_at="2026-07-24T00:00:00+00:00",
+    )
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="去二楼搜索",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="r1",
+                    command="去2楼搜索",
+                    floor=2,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=base_audit,
+    )
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_planning_audit_sink=audit_sink,
+        mission_memory=memory_store,
+        embodied_runtime_mode="simulation",
+    )
+
+    result = agent.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    assert result["status"] == "planned"
+    record = audit_sink.records[0]
+    mem_decision = [d for d in record.decisions if d.layer == "memory_context"][0]
+    details = mem_decision.details
+    # Must contain counts
+    assert "accepted_memories" in details
+    assert "accepted_corrections" in details
+    assert "omitted_counts" in details
+    assert "warning_codes" in details
+    # Must NOT contain memory content or exception messages
+    details_str = json.dumps(details, ensure_ascii=False)
+    assert "去二楼搜索" not in details_str
+    assert "exception" not in details_str.lower() or "exception_class" in details_str
+
+
+def test_memory_degradation_does_not_block_planning(tmp_path):
+    """Memory degradation must NOT block planning."""
+    from fireclaw_core.memory.planner_memory_context import PlannerMemoryContextBuilder
+
+    registry = RobotRegistry([
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+    ])
+    client = FakeSubagentClient()
+    audit_sink = FakeAuditSink()
+
+    class FailingRetriever:
+        def retrieve(self, query, *, scope=None, limit=10):
+            raise RuntimeError("index corrupted")
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=FailingRetriever(),
+    )
+    base_audit = MissionPlanningAuditRecord(
+        command="去二楼搜索",
+        available_robots=[],
+        tool_schema={"type": "function"},
+        llm_tool_call={"name": "create_mission_plan", "arguments": {}},
+        decisions=[],
+        final_status="planned",
+        final_message="planned",
+        created_at="2026-07-24T00:00:00+00:00",
+    )
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="去二楼搜索",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="r1",
+                    command="去2楼搜索",
+                    floor=2,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=base_audit,
+    )
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        planner=planner,
+        mission_planning_audit_sink=audit_sink,
+        planner_memory_context_builder=builder,
+        embodied_runtime_mode="simulation",
+    )
+
+    result = agent.plan_and_submit("去二楼搜索", session_id="mission-1", use_scheduler=False)
+
+    # Planning should succeed despite memory failure
+    assert result["status"] == "planned"
+    assert len(audit_sink.records) == 1
+    record = audit_sink.records[0]
+    mem_decision = [d for d in record.decisions if d.layer == "memory_context"][0]
+    # Decision is "allow" even though memory is degraded
+    assert mem_decision.status == "allow"
+    assert mem_decision.reason == "memory_context_degraded"

@@ -545,7 +545,7 @@ class PlannerMemoryContextBuilder:
                     seen_enrichment_keys: set[tuple[str, str]] = set()
                     for effect_entry in enrich_report.effects:
                         effect = effect_entry.get("effect", {})
-                        enrichment_items = effect.get("memories", [])
+                        enrichment_items = effect.get("retrieved_memories", effect.get("memories", []))
                         if not isinstance(enrichment_items, list):
                             continue
                         for item in enrichment_items:
