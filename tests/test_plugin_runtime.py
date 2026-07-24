@@ -388,3 +388,109 @@ class TestPluginRuntimeCallableHooks:
                 plugin_id="fire.context",
                 callback=lambda payload: None,
             )
+
+
+# ---------------------------------------------------------------------------
+# Plugin hook diagnostics (content-free failure reporting)
+# ---------------------------------------------------------------------------
+
+
+class TestPluginHookDiagnostics:
+    """Content-free diagnostic APIs for hook execution."""
+
+    def test_memory_hook_diagnostics_report_callback_exception_without_message(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id="broken.memory",
+            callback=lambda payload: (_ for _ in ()).throw(
+                RuntimeError("restricted victim name")
+            ),
+        )
+
+        report = runtime.run_memory_hooks_with_diagnostics("filter", {"memories": []})
+
+        assert report.effects == ()
+        assert [failure.to_dict() for failure in report.failures] == [{
+            "plugin_id": "broken.memory",
+            "hook_name": "filter",
+            "exception_class": "RuntimeError",
+        }]
+        assert "restricted victim name" not in repr(report)
+
+    def test_existing_memory_hook_api_keeps_list_shape_on_callback_exception(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id="broken.memory",
+            callback=lambda payload: (_ for _ in ()).throw(RuntimeError("private")),
+        )
+
+        assert runtime.run_memory_hooks("filter", {"memories": []}) == []
+
+    def test_provider_hook_diagnostics_report_callback_exception_without_message(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="provider",
+            hook_name="enrich_context",
+            plugin_id="broken.provider",
+            callback=lambda payload: (_ for _ in ()).throw(
+                RuntimeError("secret context leak")
+            ),
+        )
+
+        report = runtime.run_provider_hooks_with_diagnostics(
+            "enrich_context", {"command": "test", "context": {}},
+        )
+
+        assert report.effects == ()
+        assert [failure.to_dict() for failure in report.failures] == [{
+            "plugin_id": "broken.provider",
+            "hook_name": "enrich_context",
+            "exception_class": "RuntimeError",
+        }]
+        assert "secret context leak" not in repr(report)
+
+    def test_diagnostics_report_success_and_failure_mixed(self) -> None:
+        runtime = PluginRuntime()
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id="working.memory",
+            callback=lambda payload: {"filtered": True},
+        )
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id="broken.memory",
+            callback=lambda payload: (_ for _ in ()).throw(ValueError("bad")),
+        )
+
+        report = runtime.run_memory_hooks_with_diagnostics("filter", {"memories": []})
+
+        assert len(report.effects) == 1
+        assert report.effects[0]["plugin_id"] == "working.memory"
+        assert len(report.failures) == 1
+        assert report.failures[0].plugin_id == "broken.memory"
+
+    def test_plugin_hook_failure_is_frozen(self) -> None:
+        from fireclaw_core.plugin.plugin_runtime import PluginHookFailure
+        failure = PluginHookFailure(
+            plugin_id="x", hook_name="y", exception_class="RuntimeError"
+        )
+        try:
+            failure.plugin_id = "z"  # type: ignore[misc]
+            raise AssertionError("PluginHookFailure should be frozen")
+        except AttributeError:
+            pass
+
+    def test_plugin_hook_run_is_frozen(self) -> None:
+        from fireclaw_core.plugin.plugin_runtime import PluginHookRun
+        run = PluginHookRun(effects=(), failures=())
+        try:
+            run.effects = ("bad",)  # type: ignore[misc]
+            raise AssertionError("PluginHookRun should be frozen")
+        except AttributeError:
+            pass

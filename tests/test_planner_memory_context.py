@@ -1,4 +1,4 @@
-"""Tests for planner memory retrieval scope boundaries."""
+"""Tests for planner memory retrieval scope boundaries and plugin diagnostics."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,6 +8,7 @@ from fireclaw_core.memory.embodied_memory import EmbodiedMemoryEvent
 from fireclaw_core.memory.memory_eval import evaluate_retrieval
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 from fireclaw_core.memory.memory_retrieval import MemoryRetrievalScope, MemoryRetriever
+from fireclaw_core.plugin.plugin_runtime import PluginRuntime
 
 
 def _indexed_event(
@@ -163,6 +164,69 @@ def test_evaluate_retrieval_requires_scope_and_isolates_missions(tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
+# Plugin hook diagnostics (content-free failure reporting)
+# ---------------------------------------------------------------------------
+
+
+def test_memory_hook_diagnostics_report_callback_exception_without_message(tmp_path: Path) -> None:
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="memory",
+        hook_name="filter",
+        plugin_id="broken.memory",
+        callback=lambda payload: (_ for _ in ()).throw(
+            RuntimeError("restricted victim name")
+        ),
+    )
+
+    report = runtime.run_memory_hooks_with_diagnostics("filter", {"memories": []})
+
+    assert report.effects == ()
+    assert [failure.to_dict() for failure in report.failures] == [{
+        "plugin_id": "broken.memory",
+        "hook_name": "filter",
+        "exception_class": "RuntimeError",
+    }]
+    assert "restricted victim name" not in repr(report)
+
+
+def test_existing_memory_hook_api_keeps_list_shape_on_callback_exception(tmp_path: Path) -> None:
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="memory",
+        hook_name="filter",
+        plugin_id="broken.memory",
+        callback=lambda payload: (_ for _ in ()).throw(RuntimeError("private")),
+    )
+
+    assert runtime.run_memory_hooks("filter", {"memories": []}) == []
+
+
+def test_provider_hook_diagnostics_report_callback_exception_without_message(tmp_path: Path) -> None:
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="provider",
+        hook_name="enrich_context",
+        plugin_id="broken.provider",
+        callback=lambda payload: (_ for _ in ()).throw(
+            RuntimeError("secret context leak")
+        ),
+    )
+
+    report = runtime.run_provider_hooks_with_diagnostics(
+        "enrich_context", {"command": "test", "context": {}},
+    )
+
+    assert report.effects == ()
+    assert [failure.to_dict() for failure in report.failures] == [{
+        "plugin_id": "broken.provider",
+        "hook_name": "enrich_context",
+        "exception_class": "RuntimeError",
+    }]
+    assert "secret context leak" not in repr(report)
+
+
+# ---------------------------------------------------------------------------
 # Lightweight test runner (no pytest dependency)
 # ---------------------------------------------------------------------------
 
@@ -174,6 +238,9 @@ if __name__ == "__main__":
         test_memory_retriever_filters_mission_runtime_and_sensitivity,
         test_memory_retriever_admits_restricted_when_scope_allows_it,
         test_evaluate_retrieval_requires_scope_and_isolates_missions,
+        test_memory_hook_diagnostics_report_callback_exception_without_message,
+        test_existing_memory_hook_api_keeps_list_shape_on_callback_exception,
+        test_provider_hook_diagnostics_report_callback_exception_without_message,
     ]
 
     passed = 0
