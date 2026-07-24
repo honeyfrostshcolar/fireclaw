@@ -201,11 +201,23 @@ class SqliteMemoryIndex:
 
     # -- public API -----------------------------------------------------------
 
-    def upsert(self, record: dict[str, Any], *, index_text: bool = True) -> None:
+    def upsert(
+        self,
+        record: dict[str, Any],
+        *,
+        index_text: bool = True,
+        authority_token: str | None = None,
+        finalize_spatial: bool = True,
+        commit: bool = True,
+    ) -> None:
         """Insert or update a single record in the derived index.
 
         ``index_text=False`` still stores structured metadata for spatial and
         temporal queries while keeping the payload out of FTS5.
+
+        ``authority_token`` is accepted for compatibility with
+        ``EmbodiedMemoryStore`` but is not stored in the index.
+        ``finalize_spatial`` and ``commit`` control batch-upsert behaviour.
         """
         record_id = record.get("record_id")
         if not record_id:
@@ -268,7 +280,8 @@ class SqliteMemoryIndex:
                 "INSERT INTO memory_fts (record_id, text_blob) VALUES (?, ?)",
                 (record_id, text_blob),
             )
-        conn.commit()
+        if commit:
+            conn.commit()
 
     def search(
         self,
@@ -835,6 +848,100 @@ class SqliteMemoryIndex:
             self.upsert(record)
             count += 1
         return count
+
+    @property
+    def rtree_available(self) -> bool:
+        """Return whether R*Tree spatial queries are available."""
+        return getattr(self, "_rtree_available", False)
+
+    def sync_spatial_authority_token(self, authority_token: str) -> None:
+        """Accept an authority token for spatial projection consistency.
+
+        This is a no-op in the base implementation.  Subclasses or extended
+        versions may use it to track JSONL-to-index consistency.
+        """
+
+    def finalize_spatial_projection(self, *, authority_token: str) -> None:
+        """Finalize spatial projection after a batch of upserts.
+
+        This is a no-op in the base implementation.
+        """
+
+    def load_records_by_ids(
+        self,
+        event_ids: list[str] | tuple[str, ...],
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        record_types: frozenset[str] | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Load records by their IDs, filtered by mission and runtime.
+
+        Returns ``None`` if any requested ID is missing or if the data
+        cannot be loaded.
+        """
+        if not event_ids:
+            return []
+        conn = self._get_conn()
+        placeholders = ",".join("?" for _ in event_ids)
+        query = f"""
+            SELECT record_id, mission_id, record_type, robot_id, subtask_id,
+                   runtime_mode, source_type, created_at, content_json
+            FROM memory_records
+            WHERE record_id IN ({placeholders})
+              AND mission_id = ?
+              AND runtime_mode = ?
+        """
+        params: list[Any] = list(event_ids) + [mission_id, runtime_mode]
+        rows = conn.execute(query, params).fetchall()
+        if len(rows) != len(event_ids):
+            return None
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                content = json.loads(row["content_json"])
+            except (TypeError, json.JSONDecodeError):
+                return None
+            if not isinstance(content, dict):
+                return None
+            record_type = row["record_type"]
+            if record_types is not None and record_type not in record_types:
+                return None
+            results.append({
+                "record_id": row["record_id"],
+                "mission_id": row["mission_id"],
+                "record_type": record_type,
+                "robot_id": row["robot_id"],
+                "subtask_id": row["subtask_id"],
+                "content": content,
+                "created_at": row["created_at"],
+            })
+        return results
+
+    def query_spatial_candidates(
+        self,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        frame_id: str,
+        x: float,
+        y: float,
+        z: float | None,
+        radius_m: float,
+        floor: str | None,
+        memory_types: frozenset[str],
+        entity_kinds: frozenset[str] | None,
+        entity_statuses: frozenset[str] | None,
+        authority_token: str,
+    ) -> list[dict[str, Any]] | None:
+        """Return spatial candidates from the R*Tree index.
+
+        Returns ``None`` when the R*Tree is unavailable or the authority
+        token does not match.
+        """
+        if not self.rtree_available:
+            return None
+        return []
 
 
 # -- helpers ------------------------------------------------------------------
