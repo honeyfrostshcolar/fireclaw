@@ -239,6 +239,8 @@ class PlannerMemoryContextBuilder:
                 authority_ids = {r.record_id for r in authority_records}
             except Exception as exc:
                 omit("authority_lookup_failed", "mission_memory", exception=exc)
+        else:
+            omit("authority_lookup_failed", "mission_memory")
 
         # Step 2: Query indexed records via MemoryRetriever
         if self._memory_retriever is not None:
@@ -329,6 +331,11 @@ class PlannerMemoryContextBuilder:
                         continue
                     event_id = event_payload.get("event_id")
                     if not event_id or event_id in seen_record_ids:
+                        continue
+                    # Reject any facade event ID missing from the authority map
+                    if authority_ids and event_id not in authority_ids:
+                        omit("authority_record_missing", "facade",
+                             record_id=event_id)
                         continue
                     sensitivity = event_payload.get("sensitivity", "standard")
                     runtime_mode_val = event_payload.get("runtime_mode")

@@ -626,17 +626,25 @@ def test_restricted_scope_grant_reported_even_when_no_restricted_records(tmp_pat
 
 
 def test_guard_decision_reports_degraded_when_warnings_present(tmp_path: Path) -> None:
+    """Guard decision reports memory_context_degraded when warnings exist.
+
+    Use a mission_memory whose list_records() raises to trigger the
+    authority_lookup_failed warning.
+    """
     store = _embodied_store(tmp_path)
-    # Record events that will produce warnings (wrong mission)
-    _record_event(store, event_id="obs-other", mission_id="mission-beta")
-    # Also record a matching event so the facade can return something
-    _record_event(store, event_id="obs-current")
+    _record_event(store, event_id="obs-1")
     retriever = _retriever(store)
     facade = _facade(store, "real")
 
+    class BrokenMissionMemory:
+        def list_records(self, **kwargs):
+            raise RuntimeError("connection lost")
+        def append(self, record):
+            pass
+
     builder = PlannerMemoryContextBuilder(
         memory_retriever=retriever,
-        mission_memory=store.evidence_store,
+        mission_memory=BrokenMissionMemory(),
         facade=facade,
     )
     result = builder.build(_request())
@@ -644,16 +652,8 @@ def test_guard_decision_reports_degraded_when_warnings_present(tmp_path: Path) -
 
     assert decision.layer == "memory_context"
     assert decision.status == "allow"
-    # Should be degraded because facade events from wrong-mission records
-    # are filtered by the facade itself, but the retriever found no mismatch
-    # since the retriever only returns records matching the scope.
-    # With a matching event, the result should be valid.
-    # Let me adjust: we need warnings. Use a facade that returns wrong-runtime data.
-    # Actually the facade filters by runtime_mode already, so let me check what warnings we get.
-    # The facade.get_current_context returns events filtered by runtime_mode and mission,
-    # so it won't return obs-other. The retriever also filters. So we may get no warnings.
-    # Let's just check the structure is correct.
-    assert decision.details["accepted_memories"] >= 0
+    assert decision.reason == "memory_context_degraded"
+    assert "authority_lookup_failed" in decision.details["warning_codes"]
 
 
 def test_guard_decision_reports_valid_when_no_warnings(tmp_path: Path) -> None:
@@ -689,6 +689,143 @@ def test_reusable_knowledge_available_flag(tmp_path: Path) -> None:
     )
     result = builder.build(_request())
     assert result.reusable_knowledge_available is False
+
+
+def test_reusable_knowledge_available_true_with_lifecycle(tmp_path: Path) -> None:
+    """Providing a lifecycle store sets reusable_knowledge_available=True."""
+    from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
+
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+    lifecycle = MissionMemoryLifecycleStore(
+        store=store,
+        lifecycle_path=tmp_path / "lifecycle.jsonl",
+        audit_dir=tmp_path / "audit",
+        knowledge_path=tmp_path / "knowledge.jsonl",
+        runtime_mode="real",
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=store.evidence_store,
+        facade=facade,
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request())
+
+    assert result.reusable_knowledge_available is True
+
+
+def test_authority_lookup_failed_warning_when_list_records_raises(tmp_path: Path) -> None:
+    """When mission_memory.list_records() raises, emit authority_lookup_failed warning.
+
+    The builder should still return memories (fail-open for planning).
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    class BrokenMissionMemory:
+        def list_records(self, **kwargs):
+            raise RuntimeError("db offline")
+        def append(self, record):
+            pass
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=BrokenMissionMemory(),
+        facade=facade,
+    )
+    result = builder.build(_request())
+
+    codes = [w.code for w in result.warnings]
+    assert "authority_lookup_failed" in codes
+    # Fail-open: memories should still be returned
+    assert len(result.memories) >= 1
+
+
+def test_authority_lookup_failed_when_mission_memory_is_none(tmp_path: Path) -> None:
+    """When mission_memory is None, emit authority_lookup_failed warning.
+
+    The check is skipped but the caller gets a diagnostic warning.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=None,
+        facade=facade,
+    )
+    result = builder.build(_request())
+
+    codes = [w.code for w in result.warnings]
+    assert "authority_lookup_failed" in codes
+    # Fail-open: memories should still be returned
+    assert len(result.memories) >= 1
+
+
+def test_facade_events_checked_against_authority_map(tmp_path: Path) -> None:
+    """Facade events whose record_id is not in the authority map are rejected."""
+    from fireclaw_core.memory.mission_memory_facade import MemoryAccessContext
+
+    # Create a mock facade that returns two events: one valid, one stale
+    class MockFacade:
+        def get_current_context(self, access, **kwargs):
+            return {
+                "events": [
+                    {
+                        "event_id": "obs-valid",
+                        "event_type": "observation",
+                        "runtime_mode": "real",
+                        "sensitivity": "standard",
+                        "payload": {"note": "valid"},
+                    },
+                    {
+                        "event_id": "obs-stale",
+                        "event_type": "observation",
+                        "runtime_mode": "real",
+                        "sensitivity": "standard",
+                        "payload": {"note": "stale"},
+                    },
+                ],
+            }
+
+    # Create a mission_memory that knows only about "obs-valid"
+    class SelectiveMissionMemory:
+        def list_records(self, **kwargs):
+            from fireclaw_core.mission.mission_memory import MissionMemoryRecord
+            return [MissionMemoryRecord(
+                record_id="obs-valid",
+                mission_id="mission-alpha",
+                record_type="observation",
+                content={},
+                created_at="2026-07-24T10:00:00+00:00",
+            )]
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=SelectiveMissionMemory(),
+        facade=MockFacade(),
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    # obs-valid should pass the authority check
+    assert "obs-valid" in admitted_ids
+    # obs-stale should be rejected by the authority check
+    assert "obs-stale" not in admitted_ids
+    # A warning should be emitted for obs-stale
+    missing_warnings = [
+        w for w in result.warnings
+        if w.code == "authority_record_missing" and w.record_id == "obs-stale"
+    ]
+    assert len(missing_warnings) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +865,10 @@ if __name__ == "__main__":
         test_guard_decision_reports_degraded_when_warnings_present,
         test_guard_decision_reports_valid_when_no_warnings,
         test_reusable_knowledge_available_flag,
+        test_reusable_knowledge_available_true_with_lifecycle,
+        test_authority_lookup_failed_warning_when_list_records_raises,
+        test_authority_lookup_failed_when_mission_memory_is_none,
+        test_facade_events_checked_against_authority_map,
     ]
 
     passed = 0
