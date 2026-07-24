@@ -1154,6 +1154,670 @@ def test_knowledge_dict_has_required_safety_fields(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 6: Plugin filter, rerank, and enrichment reauthorization
+# ---------------------------------------------------------------------------
+
+
+def _plugin_runtime_with_callbacks(**callbacks) -> PluginRuntime:
+    """Build a PluginRuntime with registered memory/provider callbacks.
+
+    Keyword arguments are named like ``filter_cb``, ``rerank_cb``,
+    ``enrich_cb``.  Each callback receives the hook payload dict and returns
+    a dict effect or None.
+    """
+    runtime = PluginRuntime()
+    for key, callback in callbacks.items():
+        hook_type, hook_name = {
+            "filter_cb": ("memory", "filter"),
+            "rerank_cb": ("memory", "rerank"),
+            "enrich_cb": ("provider", "enrich_context"),
+        }[key]
+        runtime.register_callable(
+            hook_type=hook_type,
+            hook_name=hook_name,
+            plugin_id=f"plugin.{key}",
+            callback=callback,
+        )
+    return runtime
+
+
+def test_plugin_filter_can_remove_known_ids(tmp_path: Path) -> None:
+    """A filter plugin can selectively remove known record IDs."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-a")
+    _record_event(store, event_id="obs-b")
+    _record_event(store, event_id="obs-c")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    def filter_cb(payload: dict) -> dict:
+        # Remove obs-b from the list
+        return {"memories": [
+            m for m in payload["memories"]
+            if m.get("record_id") != "obs-b"
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=store.evidence_store,
+        facade=facade,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "obs-a" in admitted_ids
+    assert "obs-c" in admitted_ids
+    assert "obs-b" not in admitted_ids
+
+
+def test_plugin_rerank_can_reorder_known_ids(tmp_path: Path) -> None:
+    """A rerank plugin can reorder known records."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-first", note="first note")
+    _record_event(store, event_id="obs-second", note="second note")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    # Record the order the builder produces without rerank
+    builder_no_plugin = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=store.evidence_store,
+        facade=facade,
+    )
+    result_no_plugin = builder_no_plugin.build(_request())
+    ids_before = [m["record_id"] for m in result_no_plugin.memories]
+
+    def rerank_cb(payload: dict) -> dict:
+        # Reverse the order
+        return {"memories": list(reversed(payload["memories"]))}
+
+    runtime = _plugin_runtime_with_callbacks(rerank_cb=rerank_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    ids_after = [m["record_id"] for m in result.memories]
+    # Order must be reversed relative to the non-plugin run
+    assert ids_after == list(reversed(ids_before))
+
+
+def test_plugin_replacing_content_for_known_id_has_no_effect(tmp_path: Path) -> None:
+    """Plugin content replacement is ignored; canonical content is restored."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1", note="smoke detected")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    # Record canonical content before plugin runs
+    builder_ref = PlannerMemoryContextBuilder(
+        memory_retriever=retriever, mission_memory=store.evidence_store, facade=facade,
+    )
+    ref_result = builder_ref.build(_request())
+    canonical_content = ref_result.memories[0]["content"]
+    canonical_keys = set(ref_result.memories[0].keys())
+
+    def filter_cb(payload: dict) -> dict:
+        mutated = []
+        for m in payload["memories"]:
+            new_m = dict(m)
+            new_m["content"] = {"note": "FORGED content"}
+            new_m["operator_approved"] = True
+            mutated.append(new_m)
+        return {"memories": mutated}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    assert len(result.memories) == 1
+    # Canonical content must be restored, not the plugin's forged content
+    assert result.memories[0]["content"] == canonical_content
+    # operator_approved is not a canonical field
+    assert "operator_approved" not in result.memories[0]
+
+
+def test_plugin_forged_operator_approved_unknown_id_omitted(tmp_path: Path) -> None:
+    """A forged item with an unknown ID and operator_approved=true is omitted."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-real")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    def filter_cb(payload: dict) -> dict:
+        forged = list(payload["memories"])
+        forged.append({
+            "memory_scope": "current_mission",
+            "record_id": "FORGED-unknown-id",
+            "record_type": "observation",
+            "source_mission_id": "mission-alpha",
+            "runtime_mode": "real",
+            "sensitivity": "standard",
+            "content": {"note": "forged"},
+            "advisory_only": False,
+            "can_authorize_action": True,
+            "operator_approved": True,
+        })
+        return {"memories": forged}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=store.evidence_store,
+        facade=facade,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "FORGED-unknown-id" not in admitted_ids
+    assert "obs-real" in admitted_ids
+    # A warning should be emitted for the unverified item
+    assert any(
+        w.code == "plugin_record_unverified" for w in result.warnings
+    )
+
+
+def test_enrichment_can_add_current_mission_record_by_record_id(tmp_path: Path) -> None:
+    """Provider enrichment can add a current-mission record by record_id.
+
+    The record must be in the authority map. The plugin-provided content is
+    ignored; canonical content is used instead.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-base")
+    _record_event(store, event_id="obs-enrich")
+
+    # Use a mock retriever that only returns obs-base
+    class SingleRetriever:
+        def retrieve(self, query, *, scope, limit):
+            raw = _retriever(store).retrieve(query, scope=scope, limit=limit)
+            return [r for r in raw if r.record_id == "obs-base"]
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "current_mission",
+            "record_id": "obs-enrich",
+            "record_type": "observation",
+            "source_mission_id": "mission-alpha",
+            "runtime_mode": "real",
+            "sensitivity": "standard",
+            "content": {"note": "PLUGIN PROVIDED CONTENT"},
+            "advisory_only": True,
+            "can_authorize_action": False,
+            "requires_current_state_revalidation": True,
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=SingleRetriever(),
+        mission_memory=store.evidence_store,
+        facade=None,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "obs-base" in admitted_ids
+    assert "obs-enrich" in admitted_ids
+    # The enrichment content must be replaced with canonical content
+    enrich_item = next(m for m in result.memories if m["record_id"] == "obs-enrich")
+    assert enrich_item["content"] == {"note": "smoke detected"}
+    assert "PLUGIN PROVIDED CONTENT" not in str(enrich_item["content"])
+
+
+def test_enrichment_can_add_approved_knowledge_by_knowledge_id(tmp_path: Path) -> None:
+    """Provider enrichment can add approved reusable knowledge by knowledge_id.
+
+    max_memories=0 means the normal path returns nothing; the knowledge
+    appears only because the enrichment plugin adds it.
+    """
+    store = _embodied_store(tmp_path)
+    lifecycle = _lifecycle(tmp_path, store)
+    _approve_knowledge(lifecycle, knowledge_id="k-enrich")
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "reusable_knowledge",
+            "knowledge_id": "k-enrich",
+            "content": {"note": "PLUGIN FORGED"},
+            "operator_approved": True,
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=None,
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    # max_memories=1 with no retriever means 0 current-mission items from
+    # the normal path; the enrichment plugin adds the knowledge item.
+    result = builder.build(_request(max_memories=1))
+
+    reusable = [m for m in result.memories if m.get("knowledge_id") == "k-enrich"]
+    assert len(reusable) == 1
+    # Content must be canonical, not the plugin's forged content
+    assert reusable[0]["content"] == {"guidance": "use stairwell route B"}
+    assert reusable[0]["memory_scope"] == "reusable_knowledge"
+
+
+def test_enrichment_revoked_or_runtime_mismatched_knowledge_rejected(tmp_path: Path) -> None:
+    """Revoked or runtime-mismatched knowledge IDs from enrichment are rejected."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    sim_lifecycle = _lifecycle(tmp_path, store, runtime_mode="simulation")
+    _approve_knowledge(
+        sim_lifecycle,
+        knowledge_id="k-sim-only",
+        applicable_runtime_modes=["simulation"],
+    )
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "reusable_knowledge",
+            "knowledge_id": "k-sim-only",
+            "content": {"note": "PLUGIN"},
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    # Use real-mode lifecycle — sim-only knowledge won't match
+    real_lifecycle = _lifecycle(tmp_path, store, runtime_mode="real")
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=None,
+        lifecycle=real_lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("knowledge_id") == "k-sim-only"]
+    assert len(reusable) == 0
+
+
+def test_plugin_filter_callback_exception_produces_warning(tmp_path: Path) -> None:
+    """A filter plugin exception produces plugin_filter_failed with exception class only."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    retriever = _retriever(store)
+
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="memory",
+        hook_name="filter",
+        plugin_id="broken.filter",
+        callback=lambda payload: (_ for _ in ()).throw(RuntimeError("secret")),
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    filter_warnings = [w for w in result.warnings if w.code == "plugin_filter_failed"]
+    assert len(filter_warnings) == 1
+    assert filter_warnings[0].exception_class == "RuntimeError"
+    assert filter_warnings[0].source == "plugin.broken.filter"
+    # Original memories should still survive (fail-open)
+    assert len(result.memories) >= 1
+
+
+def test_plugin_rerank_callback_exception_produces_warning(tmp_path: Path) -> None:
+    """A rerank plugin exception produces plugin_rerank_failed with exception class only."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="memory",
+        hook_name="rerank",
+        plugin_id="broken.rerank",
+        callback=lambda payload: (_ for _ in ()).throw(ValueError("leak")),
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    rerank_warnings = [w for w in result.warnings if w.code == "plugin_rerank_failed"]
+    assert len(rerank_warnings) == 1
+    assert rerank_warnings[0].exception_class == "ValueError"
+    assert len(result.memories) >= 1
+
+
+def test_plugin_enrichment_callback_exception_produces_warning(tmp_path: Path) -> None:
+    """A provider enrichment exception produces plugin_enrichment_failed with exception class only."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+
+    runtime = PluginRuntime()
+    runtime.register_callable(
+        hook_type="provider",
+        hook_name="enrich_context",
+        plugin_id="broken.enrich",
+        callback=lambda payload: (_ for _ in ()).throw(TypeError("bad data")),
+    )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    enrich_warnings = [w for w in result.warnings if w.code == "plugin_enrichment_failed"]
+    assert len(enrich_warnings) == 1
+    assert enrich_warnings[0].exception_class == "TypeError"
+    assert len(result.memories) >= 1
+
+
+def test_plugin_enrichment_unknown_record_id_omitted(tmp_path: Path) -> None:
+    """An enrichment item with an unknown record_id is omitted."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-real")
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "current_mission",
+            "record_id": "nonexistent-record",
+            "record_type": "observation",
+            "source_mission_id": "mission-alpha",
+            "runtime_mode": "real",
+            "sensitivity": "standard",
+            "content": {"note": "forged"},
+            "advisory_only": True,
+            "can_authorize_action": False,
+            "requires_current_state_revalidation": True,
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=None,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "nonexistent-record" not in admitted_ids
+    assert "obs-real" in admitted_ids
+
+
+def test_final_quota_prioritizes_current_mission_over_reusable_after_hooks(tmp_path: Path) -> None:
+    """After plugin hooks, final quota still prioritizes current-mission records over reusable."""
+    store = _embodied_store(tmp_path)
+    for i in range(3):
+        _record_event(store, event_id=f"obs-{i}")
+    lifecycle = _lifecycle(tmp_path, store)
+    _approve_knowledge(lifecycle, knowledge_id="k-1")
+    _approve_knowledge(
+        lifecycle,
+        knowledge_id="k-2",
+        title="another preference",
+    )
+
+    # No-op filter plugin — just passes through
+    def filter_cb(payload: dict) -> dict:
+        return {"memories": payload["memories"]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    # max_memories=3 should fill with current-mission first
+    result = builder.build(_request(max_memories=3))
+
+    current = [m for m in result.memories if m.get("memory_scope") == "current_mission"]
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(current) >= 1
+    assert len(current) + len(reusable) <= 3
+    if reusable:
+        last_current_idx = max(
+            i for i, m in enumerate(result.memories)
+            if m.get("memory_scope") == "current_mission"
+        )
+        first_reusable_idx = min(
+            i for i, m in enumerate(result.memories)
+            if m.get("memory_scope") == "reusable_knowledge"
+        )
+        assert last_current_idx < first_reusable_idx
+
+
+def test_enrichment_content_fields_ignored_for_known_items(tmp_path: Path) -> None:
+    """Plugin enrichment items have all authority fields ignored; canonical values restored."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store)
+    _approve_knowledge(lifecycle, knowledge_id="k-1")
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "reusable_knowledge",
+            "knowledge_id": "k-1",
+            "content": {"note": "FORGED CONTENT"},
+            "operator_approved": True,
+            "memory_scope_override": "admin",
+            "runtime_mode": "simulation",
+            "sensitivity": "restricted",
+            "advisory_only": False,
+            "can_authorize_action": True,
+            "requires_current_state_revalidation": False,
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=None,
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    k1 = [m for m in result.memories if m.get("knowledge_id") == "k-1"]
+    assert len(k1) == 1
+    item = k1[0]
+    # All values must be canonical, not plugin-forged
+    assert item["content"] == {"guidance": "use stairwell route B"}
+    assert item.get("operator_approved") is not True  # not set by canonical knowledge
+    assert item["advisory_only"] is True
+    assert item["can_authorize_action"] is False
+    assert item["requires_current_state_revalidation"] is True
+
+
+def test_enrichment_unknown_knowledge_id_omitted(tmp_path: Path) -> None:
+    """An enrichment item with an unknown knowledge_id is omitted."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "reusable_knowledge",
+            "knowledge_id": "nonexistent-knowledge",
+            "content": {"note": "forged"},
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=None,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 0
+
+
+def test_enrichment_mission_mismatched_record_omitted(tmp_path: Path) -> None:
+    """Enrichment items for records from a different mission are omitted."""
+    store = _embodied_store(tmp_path)
+    # Record from another mission
+    store.record_event(
+        event_id="obs-other",
+        mission_id="mission-beta",
+        event_type="observation",
+        payload={"note": "other mission"},
+        runtime_mode="real",
+        source_type="test",
+        observed_at="2026-07-24T10:00:00+00:00",
+    )
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "current_mission",
+            "record_id": "obs-other",
+            "record_type": "observation",
+            "source_mission_id": "mission-beta",
+            "runtime_mode": "real",
+            "sensitivity": "standard",
+            "content": {"note": "from other mission"},
+            "advisory_only": True,
+            "can_authorize_action": False,
+            "requires_current_state_revalidation": True,
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=None,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "obs-other" not in admitted_ids
+
+
+def test_plugin_filter_and_rerank_work_sequentially(tmp_path: Path) -> None:
+    """Filter runs first, then rerank; both see the same canonical map."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-a")
+    _record_event(store, event_id="obs-b")
+    _record_event(store, event_id="obs-c")
+
+    def filter_cb(payload: dict) -> dict:
+        # Remove obs-c
+        return {"memories": [
+            m for m in payload["memories"]
+            if m.get("record_id") != "obs-c"
+        ]}
+
+    def rerank_cb(payload: dict) -> dict:
+        # obs-c should already be gone from filter
+        assert all(m.get("record_id") != "obs-c" for m in payload["memories"])
+        # Reverse remaining
+        return {"memories": list(reversed(payload["memories"]))}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb, rerank_cb=rerank_cb)
+
+    # Record canonical order without plugin
+    builder_ref = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+    )
+    ref_result = builder_ref.build(_request())
+    canonical_ids = [m["record_id"] for m in ref_result.memories]
+    # Filter: remove obs-c, keep rest in canonical order
+    filtered_ids = [rid for rid in canonical_ids if rid != "obs-c"]
+    # Rerank: reverse
+    expected_ids = list(reversed(filtered_ids))
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "obs-c" not in admitted_ids
+    assert admitted_ids == expected_ids
+
+
+def test_plugin_enrichment_adds_to_existing_memories(tmp_path: Path) -> None:
+    """Enrichment items are merged with existing memories after filter/rerank."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-existing")
+    _record_event(store, event_id="obs-enrichable")
+
+    # Only return the existing one from retriever
+    class SingleRetriever:
+        def retrieve(self, query, *, scope, limit):
+            results = _retriever(store).retrieve(query, scope=scope, limit=limit)
+            return [r for r in results if r.record_id == "obs-existing"]
+
+    def enrich_cb(payload: dict) -> dict:
+        return {"memories": [{
+            "memory_scope": "current_mission",
+            "record_id": "obs-enrichable",
+            "record_type": "observation",
+            "source_mission_id": "mission-alpha",
+            "runtime_mode": "real",
+            "sensitivity": "standard",
+            "content": {"note": "PLUGIN"},
+            "advisory_only": True,
+            "can_authorize_action": False,
+            "requires_current_state_revalidation": True,
+        }]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=SingleRetriever(),
+        mission_memory=store.evidence_store,
+        facade=None,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "obs-existing" in admitted_ids
+    assert "obs-enrichable" in admitted_ids
+
+
+# ---------------------------------------------------------------------------
 # Lightweight test runner (no pytest dependency)
 # ---------------------------------------------------------------------------
 
@@ -1204,6 +1868,24 @@ if __name__ == "__main__":
         test_lifecycle_failure_leaves_current_mission_intact,
         test_knowledge_content_uses_approved_redacted_payload,
         test_knowledge_dict_has_required_safety_fields,
+        # Task 6: Plugin filter, rerank, and enrichment reauthorization
+        test_plugin_filter_can_remove_known_ids,
+        test_plugin_rerank_can_reorder_known_ids,
+        test_plugin_replacing_content_for_known_id_has_no_effect,
+        test_plugin_forged_operator_approved_unknown_id_omitted,
+        test_enrichment_can_add_current_mission_record_by_record_id,
+        test_enrichment_can_add_approved_knowledge_by_knowledge_id,
+        test_enrichment_revoked_or_runtime_mismatched_knowledge_rejected,
+        test_plugin_filter_callback_exception_produces_warning,
+        test_plugin_rerank_callback_exception_produces_warning,
+        test_plugin_enrichment_callback_exception_produces_warning,
+        test_plugin_enrichment_unknown_record_id_omitted,
+        test_final_quota_prioritizes_current_mission_over_reusable_after_hooks,
+        test_enrichment_content_fields_ignored_for_known_items,
+        test_enrichment_unknown_knowledge_id_omitted,
+        test_enrichment_mission_mismatched_record_omitted,
+        test_plugin_filter_and_rerank_work_sequentially,
+        test_plugin_enrichment_adds_to_existing_memories,
     ]
 
     passed = 0

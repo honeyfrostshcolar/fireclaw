@@ -32,6 +32,22 @@ MAX_PLANNER_MEMORIES = 100
 MAX_PLANNER_CORRECTIONS = 100
 
 
+def _plugin_key(value: dict[str, Any]) -> tuple[str, str] | None:
+    """Extract the canonical map key from a plugin-provided value dict.
+
+    Returns ``("current_mission", record_id)`` if the value carries a
+    non-empty ``record_id``, ``("reusable_knowledge", knowledge_id)`` if it
+    carries a non-empty ``knowledge_id``, or ``None`` for malformed values.
+    """
+    record_id = value.get("record_id")
+    if isinstance(record_id, str) and record_id:
+        return ("current_mission", record_id)
+    knowledge_id = value.get("knowledge_id")
+    if isinstance(knowledge_id, str) and knowledge_id:
+        return ("reusable_knowledge", knowledge_id)
+    return None
+
+
 @dataclass(frozen=True)
 class PlannerMemoryContextRequest:
     command: str
@@ -236,14 +252,20 @@ class PlannerMemoryContextBuilder:
             count: int = 1,
             record_id: str | None = None,
             exception: Exception | None = None,
+            exception_class: str | None = None,
         ) -> None:
             omitted_counts[code] = omitted_counts.get(code, 0) + count
+            resolved_exception_class = (
+                exception_class
+                if exception_class is not None
+                else (type(exception).__name__ if exception is not None else None)
+            )
             warnings.append(MemoryContextWarning(
                 code=code,
                 source=source,
                 count=count,
                 record_id=record_id,
-                exception_class=type(exception).__name__ if exception is not None else None,
+                exception_class=resolved_exception_class,
             ))
 
         # Step 1: Build authority map from mission memory
@@ -423,16 +445,239 @@ class PlannerMemoryContextBuilder:
             except Exception as exc:
                 omit("reusable_knowledge_unavailable", "lifecycle", exception=exc)
 
-        # Merge: current-mission items consume quota first, then reusable knowledge
-        remaining = max(0, request.max_memories - len(memories))
-        selected_memories = memories[:request.max_memories]
-        selected_memories.extend(reusable_memories[:remaining])
+        # Step 6: Build canonical maps for plugin reauthorization
+        # Key: ("current_mission", record_id) or ("reusable_knowledge", knowledge_id)
+        canonical_map: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in memories:
+            key = _plugin_key(item)
+            if key is not None:
+                canonical_map[key] = item
+        for item in reusable_memories:
+            key = _plugin_key(item)
+            if key is not None:
+                canonical_map[key] = item
+
+        def _reauthorize_plugin_items(
+            plugin_items: list[dict[str, Any]],
+        ) -> list[dict[str, Any]]:
+            """Replace every plugin object with its canonical equivalent.
+
+            Unknown keys are dropped and increment ``plugin_record_unverified``.
+            """
+            reauthorized: list[dict[str, Any]] = []
+            for item in plugin_items:
+                if not isinstance(item, dict):
+                    omit("plugin_record_unverified", "plugin")
+                    continue
+                key = _plugin_key(item)
+                if key is None:
+                    omit("plugin_record_unverified", "plugin")
+                    continue
+                canonical = canonical_map.get(key)
+                if canonical is None:
+                    omit("plugin_record_unverified", "plugin")
+                    continue
+                reauthorized.append(canonical)
+            return reauthorized
+
+        # Step 7: Run plugin filter and rerank hooks
+        if self._plugin_runtime is not None:
+            # Filter
+            try:
+                filter_report = self._plugin_runtime.run_memory_hooks_with_diagnostics(
+                    "filter",
+                    {"command": request.command, "memories": list(memories)},
+                )
+                for failure in filter_report.failures:
+                    omit(
+                        "plugin_filter_failed",
+                        f"plugin.{failure.plugin_id}",
+                        exception_class=failure.exception_class,
+                    )
+                if filter_report.effects:
+                    # Use the last effect's memories list (plugins are sequential)
+                    last_effect = filter_report.effects[-1].get("effect", {})
+                    plugin_filtered = last_effect.get("memories", [])
+                    if isinstance(plugin_filtered, list):
+                        memories[:] = _reauthorize_plugin_items(plugin_filtered)
+            except Exception as exc:
+                omit("plugin_filter_failed", "plugin_runtime", exception=exc)
+
+            # Rerank
+            try:
+                rerank_report = self._plugin_runtime.run_memory_hooks_with_diagnostics(
+                    "rerank",
+                    {"command": request.command, "memories": list(memories)},
+                )
+                for failure in rerank_report.failures:
+                    omit(
+                        "plugin_rerank_failed",
+                        f"plugin.{failure.plugin_id}",
+                        exception_class=failure.exception_class,
+                    )
+                if rerank_report.effects:
+                    last_effect = rerank_report.effects[-1].get("effect", {})
+                    plugin_reranked = last_effect.get("memories", [])
+                    if isinstance(plugin_reranked, list):
+                        memories[:] = _reauthorize_plugin_items(plugin_reranked)
+            except Exception as exc:
+                omit("plugin_rerank_failed", "plugin_runtime", exception=exc)
+
+            # Provider enrichment
+            try:
+                enrich_report = self._plugin_runtime.run_provider_hooks_with_diagnostics(
+                    "enrich_context",
+                    {
+                        "command": request.command,
+                        "memories": list(memories),
+                    },
+                )
+                for failure in enrich_report.failures:
+                    omit(
+                        "plugin_enrichment_failed",
+                        f"plugin.{failure.plugin_id}",
+                        exception_class=failure.exception_class,
+                    )
+                if enrich_report.effects:
+                    for effect_entry in enrich_report.effects:
+                        effect = effect_entry.get("effect", {})
+                        enrichment_items = effect.get("memories", [])
+                        if not isinstance(enrichment_items, list):
+                            continue
+                        for item in enrichment_items:
+                            if not isinstance(item, dict):
+                                omit("plugin_record_unverified", "plugin")
+                                continue
+                            key = _plugin_key(item)
+                            if key is None:
+                                omit("plugin_record_unverified", "plugin")
+                                continue
+                            canonical = canonical_map.get(key)
+                            if canonical is None:
+                                # For current_mission records, reload from
+                                # the full authority map and revalidate
+                                if key[0] == "current_mission":
+                                    canonical = self._resolve_enrichment_record(
+                                        key[1], request, allowed_sensitivities,
+                                        authority_ids, seen_record_ids,
+                                    )
+                                elif key[0] == "reusable_knowledge":
+                                    canonical = self._resolve_enrichment_knowledge(
+                                        key[1], request,
+                                    )
+                            if canonical is None:
+                                omit("plugin_record_unverified", "plugin")
+                                continue
+                            # Deduplicate
+                            canonical_key = _plugin_key(canonical)
+                            if canonical_key and canonical_key not in {
+                                _plugin_key(m) for m in memories
+                                if _plugin_key(m) is not None
+                            }:
+                                memories.append(canonical)
+            except Exception as exc:
+                omit("plugin_enrichment_failed", "plugin_runtime", exception=exc)
+
+        # Step 8: Merge reusable knowledge and apply deterministic final quotas.
+        # Reusable items from the lifecycle query (Step 5) are merged here;
+        # plugin enrichment may have already added some.  Deduplicate by key.
+        all_items = list(memories) + list(reusable_memories)
+        deduplicated: list[dict[str, Any]] = []
+        deduplicated_keys: set[tuple[str, str]] = set()
+        for item in all_items:
+            key = _plugin_key(item)
+            if key is not None and key in deduplicated_keys:
+                continue
+            if key is not None:
+                deduplicated_keys.add(key)
+            deduplicated.append(item)
+        memories = deduplicated
+
+        current = [
+            item for item in memories
+            if item["memory_scope"] == "current_mission"
+        ]
+        reusable = [
+            item for item in memories
+            if item["memory_scope"] == "reusable_knowledge"
+        ]
+        final_memories = current[:request.max_memories]
+        final_memories.extend(
+            reusable[:max(0, request.max_memories - len(final_memories))]
+        )
+        final_corrections = corrections[:request.max_corrections]
 
         return PlannerMemoryContextResult(
-            memories=tuple(selected_memories),
-            corrections=tuple(corrections),
+            memories=tuple(final_memories),
+            corrections=tuple(final_corrections),
             warnings=tuple(warnings),
             omitted_counts=omitted_counts,
             restricted_access_granted=restricted_access_granted,
             reusable_knowledge_available=reusable_knowledge_available,
         )
+
+    def _resolve_enrichment_record(
+        self,
+        record_id: str,
+        request: PlannerMemoryContextRequest,
+        allowed_sensitivities: tuple[str, ...],
+        authority_ids: set[str],
+        seen_record_ids: set[str],
+    ) -> dict[str, Any] | None:
+        """Resolve an enrichment record_id against the full authority map.
+
+        Returns a canonical dict if the record passes all checks, or None.
+        """
+        if self._mission_memory is None:
+            return None
+        if authority_ids and record_id not in authority_ids:
+            return None
+        if record_id in seen_record_ids:
+            # Already in the memories list; return None to avoid duplicate
+            # (the deduplication in the caller handles this)
+            pass
+        try:
+            records = self._mission_memory.list_records(
+                mission_id=request.mission_id,
+            )
+            for record in records:
+                if record.record_id != record_id:
+                    continue
+                canonical, _reject_code = self._canonical_record(
+                    record, request, allowed_sensitivities,
+                )
+                if canonical is not None:
+                    seen_record_ids.add(record_id)
+                    return canonical
+        except Exception:
+            pass
+        return None
+
+    def _resolve_enrichment_knowledge(
+        self,
+        knowledge_id: str,
+        request: PlannerMemoryContextRequest,
+    ) -> dict[str, Any] | None:
+        """Resolve an enrichment knowledge_id against the lifecycle store.
+
+        Returns a canonical dict if the knowledge is approved and applicable,
+        or None.
+        """
+        if self._lifecycle is None:
+            return None
+        try:
+            knowledge_list = self._lifecycle.list_knowledge(
+                include_revoked=False,
+                limit=MAX_PLANNER_MEMORIES,
+            )
+            for record in knowledge_list:
+                if record.knowledge_id != knowledge_id:
+                    continue
+                if record.status != "approved":
+                    return None
+                if request.runtime_mode not in record.applicable_runtime_modes:
+                    return None
+                return self._canonical_knowledge(record)
+        except Exception:
+            pass
+        return None
