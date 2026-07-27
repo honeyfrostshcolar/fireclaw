@@ -117,6 +117,26 @@ class JsonlMissionRegistry:
     def get_mission(self, mission_id: str) -> MissionRecord | None:
         return self._missions_by_id().get(mission_id)
 
+    def list_missions(self) -> list[MissionRecord]:
+        """Return all missions with derived status."""
+        missions = self._missions_by_id()
+        result: list[MissionRecord] = []
+        for mission in missions.values():
+            derived_status = _mission_status(mission.subtasks)
+            if mission.status != derived_status:
+                result.append(MissionRecord(
+                    mission_id=mission.mission_id,
+                    session_id=mission.session_id,
+                    command=mission.command,
+                    status=derived_status,
+                    created_at=mission.created_at,
+                    updated_at=mission.updated_at,
+                    subtasks=mission.subtasks,
+                ))
+            else:
+                result.append(mission)
+        return sorted(result, key=lambda m: (m.created_at, m.mission_id))
+
     def mission_trace(self, mission_id: str) -> dict[str, Any]:
         mission = self.get_mission(mission_id)
         if mission is None:

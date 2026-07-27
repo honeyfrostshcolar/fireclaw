@@ -142,7 +142,8 @@ def attach_profile_sensor_discovery(robot: Any, profile: Any) -> None:
 
 
 class FireClawGateway:
-    def __init__(self, config: GatewayConfig) -> None:
+    def __init__(self, config: GatewayConfig, *, replication_security: Any | None = None) -> None:
+        self.replication_security = replication_security
         self.robot_profile = load_gateway_robot_profile(config)
         resolved_config = resolve_gateway_config_with_profile(config, self.robot_profile)
         self.config = resolved_config
@@ -897,6 +898,51 @@ class FireClawGateway:
             "limit": limit,
         }
 
+    def export_memory_replication(
+        self,
+        *,
+        scope: Any,
+        request_auth: Any,
+    ) -> dict[str, Any]:
+        from fireclaw_core.memory.replication_security import (
+            verify_signed_request,
+            sign_payload,
+        )
+
+        security = self.replication_security
+        if security is None or self.memory_replication_exporter is None:
+            raise ValueError("authenticated replication is not configured")
+        policy = security.peer_policies.get(request_auth.peer_id)
+        if policy is None:
+            raise ValueError("replication peer policy not found")
+        verified = verify_signed_request(
+            body={},
+            auth=request_auth,
+            scope=scope,
+            key_provider=security.key_provider,
+            peer_id=request_auth.peer_id,
+            nonce_cache=security.nonce_cache,
+        )
+        if not verified.verified:
+            raise ValueError(
+                f"replication request verification failed: {verified.error_code}"
+            )
+        batch = self.memory_replication_exporter.export_batch(
+            cursor=scope.cursor,
+            limit=scope.limit,
+            mission_id=scope.mission_id,
+            runtime_mode=scope.runtime_mode,
+            peer_policy=policy,
+        )
+        body = batch.to_dict()
+        auth = sign_payload(
+            payload=body,
+            scope=scope,
+            key_provider=security.key_provider,
+            identity=security.identity,
+        )
+        return {**body, "auth": auth.to_dict()}
+
     def recent_events(self, *, session_id: str | None = None, limit: int = 20) -> dict[str, Any]:
         return {
             "events": self.events.latest_events(limit=limit, session_id=session_id),
@@ -1353,20 +1399,34 @@ class FireClawGateway:
             )
             return
         if parsed.path == "/memory/replication":
-            if self.memory_replication_exporter is None:
-                self._write_error(handler, HTTPStatus.NOT_FOUND, "Embodied memory is not configured.")
-                return
             try:
-                batch = self.memory_replication_exporter.export_batch(
+                from fireclaw_core.memory.replication_security import (
+                    REPLICATION_AUTH_HEADER,
+                    ReplicationAuthMetadata,
+                    ReplicationRequestScope,
+                    decode_auth_header,
+                )
+                mission_id = _first(query, "mission_id")
+                runtime_mode = _first(query, "runtime_mode")
+                if not mission_id or not runtime_mode:
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "mission_id and runtime_mode are required")
+                    return
+                scope = ReplicationRequestScope(
+                    mission_id=mission_id,
+                    runtime_mode=runtime_mode,
                     cursor=_int_query(query, "cursor", 0),
                     limit=_int_query(query, "limit", 200),
-                    mission_id=_first(query, "mission_id"),
-                    runtime_mode=_first(query, "runtime_mode"),
                 )
+                auth_header = handler.headers.get(REPLICATION_AUTH_HEADER, "")
+                if not auth_header:
+                    self._write_error(handler, HTTPStatus.UNAUTHORIZED, "replication auth header required")
+                    return
+                request_auth = decode_auth_header(auth_header)
+                result = self.export_memory_replication(scope=scope, request_auth=request_auth)
             except ValueError as exc:
-                self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
+                self._write_error(handler, HTTPStatus.FORBIDDEN, "replication verification failed")
                 return
-            self._write_json(handler, HTTPStatus.OK, batch.to_dict())
+            self._write_json(handler, HTTPStatus.OK, result)
             return
         if parsed.path == "/entity-memory/tools":
             if self.entity_memory_tools is None:

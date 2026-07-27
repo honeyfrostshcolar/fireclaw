@@ -116,6 +116,144 @@ class FireClawConsolidationEngine:
     ) -> list[ConsolidationJob]:
         return self._job_store.list_jobs(mission_id=mission_id, status=status)
 
+    def consolidate_events(
+        self,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        source_event_ids: tuple[str, ...],
+    ) -> ConsolidationResult:
+        """Consolidate an explicit closed set of source event IDs.
+
+        The coordinator selects exact authoritative source IDs. This method
+        validates that every ID exists, belongs to the requested mission/runtime,
+        is eligible, and is unique before grouping/chunking.
+        """
+        _validate_mode(runtime_mode)
+        if not source_event_ids:
+            raise ValueError("source_event_ids must not be empty")
+        if len(set(source_event_ids)) != len(source_event_ids):
+            raise ValueError("source_event_ids must not contain duplicates")
+
+        # Hydrate all IDs from the authoritative Store
+        all_events = self._store.list_events(mission_id=mission_id)
+        events_by_id = {event.event_id: event for event in all_events}
+
+        validated: list[EmbodiedMemoryEvent] = []
+        for event_id in source_event_ids:
+            event = events_by_id.get(event_id)
+            if event is None:
+                raise ValueError(f"source event not found: {event_id}")
+            if event.runtime_mode != runtime_mode:
+                raise ValueError(
+                    f"source event runtime_mode mismatch: {event_id} "
+                    f"(expected {runtime_mode}, got {event.runtime_mode})"
+                )
+            if event.event_type in {"episode", "gist", "lesson"}:
+                raise ValueError(f"source event is derived: {event_id}")
+            validated.append(event)
+
+        # Preserve authority order
+        # Group by (robot_id, subtask_id) like consolidate_mission
+        grouped: dict[tuple[str | None, str | None], list[EmbodiedMemoryEvent]] = defaultdict(list)
+        for event in validated:
+            grouped[(event.robot_id, event.subtask_id)].append(event)
+
+        chunks = [
+            chunk
+            for group_events in grouped.values()
+            for chunk in self._temporal_chunks(group_events)
+        ]
+
+        # Find existing episodes/gists for dedup
+        existing_events = self._store.list_events(mission_id=mission_id)
+        existing_gists: dict[
+            tuple[tuple[str, ...], tuple[str, ...], str | None, str | None],
+            list[EmbodiedMemoryEvent],
+        ] = defaultdict(list)
+        existing_episodes: dict[tuple[str, ...], list[EmbodiedMemoryEvent]] = defaultdict(list)
+        for event in existing_events:
+            if event.runtime_mode != runtime_mode:
+                continue
+            if event.event_type == "gist":
+                source_ids = tuple(event.payload.get("source_event_ids") or ())
+                method_id = (
+                    event.provenance.method_id
+                    if event.provenance is not None
+                    else None
+                )
+                summary_provenance = event.payload.get("summary_provenance")
+                profile_id = (
+                    summary_provenance.get("consolidation_profile_id")
+                    if isinstance(summary_provenance, dict)
+                    else None
+                )
+                supporting_ids = tuple(event.payload.get("supporting_event_ids") or ())
+                existing_gists[
+                    (source_ids, supporting_ids, method_id, profile_id)
+                ].append(event)
+            elif event.event_type == "episode":
+                existing_episodes[event.derived_from].append(event)
+
+        # Use the full mission events for cross-robot assessment
+        mission_events = all_events
+
+        episode_ids: list[str] = []
+        gist_ids: list[str] = []
+        job_ids: list[str] = []
+        for chunk in chunks:
+            if len(chunk) < self.config.min_events_per_episode:
+                continue
+            source_ids = tuple(event.event_id for event in chunk)
+            cross_robot_assessment = assess_cross_robot_claims(
+                chunk,
+                mission_events,
+                window_seconds=self.config.cross_robot_window_seconds,
+                spatial_margin_m=self.config.cross_robot_spatial_margin_m,
+                max_items=self.config.max_cross_robot_assessments,
+            )
+            supporting_event_ids = tuple(sorted(
+                set(cross_robot_assessment.get("compared_event_ids") or ())
+                - set(source_ids)
+            ))
+            matching_gists = existing_gists.get(
+                (
+                    source_ids,
+                    supporting_event_ids,
+                    self._summarizer.method_id,
+                    self._profile_id,
+                ),
+                [],
+            )
+            matching_episodes = existing_episodes.get(source_ids, [])
+            if len(matching_gists) > 1:
+                raise ValueError(
+                    "multiple gists already exist for the same consolidation sources"
+                )
+            if len(matching_episodes) > 1:
+                raise ValueError(
+                    "multiple episodes already exist for the same consolidation sources"
+                )
+            existing_gist = matching_gists[0] if matching_gists else None
+            existing_episode = matching_episodes[0] if matching_episodes else None
+            episode, gist, job = self._consolidate_chunk(
+                chunk,
+                mission_events=mission_events,
+                cross_robot_assessment=cross_robot_assessment,
+                supporting_event_ids=supporting_event_ids,
+                existing_episode=existing_episode,
+                existing_gist=existing_gist,
+            )
+            episode_ids.append(episode.event_id)
+            gist_ids.append(gist.event_id)
+            job_ids.append(job.job_id)
+        return ConsolidationResult(
+            episode_event_ids=tuple(episode_ids),
+            gist_event_ids=tuple(gist_ids),
+            source_event_count=len(validated),
+            job_ids=tuple(job_ids),
+        )
+
     def consolidate_mission(
         self,
         *,
@@ -123,6 +261,13 @@ class FireClawConsolidationEngine:
         runtime_mode: str,
         subtask_id: str | None = None,
     ) -> ConsolidationResult:
+        """Consolidate all eligible events for a mission/runtime.
+
+        .. warning:: This rescans the entire mission store and may create
+            overlapping source ranges. For runtime use, prefer
+            :meth:`consolidate_events` with explicit closed ranges selected
+            by the :class:`MemoryConsolidationCoordinator`.
+        """
         _validate_mode(runtime_mode)
         events = [
             event
@@ -715,10 +860,12 @@ class FireClawConsolidationEngine:
     def _mark_job_failed(self, job: ConsolidationJob, exc: Exception) -> None:
         current = self._job_store.get(job.job_id)
         if current is not None and current.status != "completed":
+            error_code = type(exc).__name__
+            error_class = f"{type(exc).__module__}.{type(exc).__qualname__}"
             self._job_store.transition(
                 job.job_id,
                 status="failed",
-                error=f"{type(exc).__name__}: {exc}"[:1000],
+                error=f"{error_code}: {exc}"[:1000],
             )
 
     def _temporal_chunks(

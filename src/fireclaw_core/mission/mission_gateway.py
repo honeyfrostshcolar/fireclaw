@@ -72,6 +72,7 @@ class MissionGateway:
         subagent_registry: JsonlSubagentRegistry | None = None,
         session_lineage_store: JsonlSessionLineageStore | None = None,
         memory_reconciler: EmbodiedMemoryReconciler | None = None,
+        replication_security: Any | None = None,
     ) -> None:
         self.config = config
         self.mission_agent = mission_agent
@@ -84,6 +85,7 @@ class MissionGateway:
         self.subagent_registry = subagent_registry
         self._session_lineage_store = session_lineage_store
         self.memory_reconciler = memory_reconciler
+        self.replication_security = replication_security
         self._approval_relays: dict[str, dict[str, Any]] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -100,12 +102,27 @@ class MissionGateway:
     def start(self) -> None:
         if self._server is not None:
             return
+        # Recover and start consolidation coordinator before accepting requests
+        coordinator = self.mission_agent.consolidation_coordinator
+        if coordinator is not None:
+            try:
+                coordinator.recover()
+                coordinator.start()
+            except Exception:
+                logger.warning("Failed to start consolidation coordinator", exc_info=True)
         handler_class = self._handler_class()
         self._server = ThreadingHTTPServer((self.config.host, self.config.port), handler_class)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
     def serve_forever(self) -> None:
+        coordinator = self.mission_agent.consolidation_coordinator
+        if coordinator is not None:
+            try:
+                coordinator.recover()
+                coordinator.start()
+            except Exception:
+                logger.warning("Failed to start consolidation coordinator", exc_info=True)
         handler_class = self._handler_class()
         self._server = ThreadingHTTPServer((self.config.host, self.config.port), handler_class)
         self._server.serve_forever()
@@ -113,6 +130,13 @@ class MissionGateway:
     def stop(self) -> None:
         if self._server is None:
             return
+        # Stop consolidation coordinator after stopping request intake
+        coordinator = self.mission_agent.consolidation_coordinator
+        if coordinator is not None:
+            try:
+                coordinator.stop()
+            except Exception:
+                logger.warning("Failed to stop consolidation coordinator", exc_info=True)
         self._server.shutdown()
         self._server.server_close()
         if self._thread is not None:
@@ -403,6 +427,29 @@ class MissionGateway:
         robot_results: list[dict[str, Any]] = []
         for entry in entries:
             expected_store_id = f"robot:{entry.robot_id}"
+            if self.memory_reconciler.runtime_mode == "real":
+                if not entry.base_url.startswith("https://"):
+                    robot_results.append({
+                        "robot_id": entry.robot_id,
+                        "source_store_id": expected_store_id,
+                        "cursor": 0,
+                        "has_more": False,
+                        "reports": [],
+                        "status": "error",
+                        "error": "real runtime requires HTTPS robot endpoint",
+                    })
+                    continue
+                if self.replication_security is None:
+                    robot_results.append({
+                        "robot_id": entry.robot_id,
+                        "source_store_id": expected_store_id,
+                        "cursor": 0,
+                        "has_more": False,
+                        "reports": [],
+                        "status": "error",
+                        "error": "replication security not configured",
+                    })
+                    continue
             cursor = self.memory_reconciler.checkpoint(
                 expected_store_id,
                 mission_id=mission_id,
@@ -412,32 +459,61 @@ class MissionGateway:
             error: str | None = None
             for _ in range(max_batches):
                 try:
+                    runtime_mode = self.memory_reconciler.runtime_mode
                     payload = self.subagent_client.get_memory_replication(
                         entry,
                         cursor=cursor,
                         limit=batch_limit,
                         mission_id=mission_id,
-                        runtime_mode=self.memory_reconciler.runtime_mode,
+                        runtime_mode=runtime_mode,
                     )
-                    batch = ReplicationBatch.from_dict(payload)
-                    if batch.source_store_id != expected_store_id:
-                        raise ValueError("robot replication store identity mismatch")
-                    if batch.cursor != cursor:
-                        raise ValueError("robot replication cursor mismatch")
-                    report = self.memory_reconciler.ingest_batch(
-                        batch,
-                        expected_robot_id=entry.robot_id,
-                        expected_mission_id=mission_id,
-                    )
+                    if self.replication_security is not None:
+                        from fireclaw_core.memory.replication_security import (
+                            ReplicationNonceCache,
+                            ReplicationRequestScope,
+                        )
+                        policy = self.replication_security.robot_policies.get(entry.robot_id)
+                        if policy is None:
+                            raise ValueError("replication robot policy not found")
+                        scope = ReplicationRequestScope(
+                            mission_id=mission_id,
+                            runtime_mode=runtime_mode,
+                            cursor=cursor,
+                            limit=batch_limit,
+                        )
+                        report = self.memory_reconciler.ingest_signed_payload(
+                            payload,
+                            expected_robot_id=entry.robot_id,
+                            expected_mission_id=mission_id,
+                            expected_scope=scope,
+                            key_provider=self.replication_security.key_provider,
+                            peer_policy=policy,
+                            nonce_cache=self.replication_security.nonce_cache,
+                        )
+                    else:
+                        batch = ReplicationBatch.from_dict(payload)
+                        if batch.source_store_id != expected_store_id:
+                            raise ValueError("robot replication store identity mismatch")
+                        if batch.cursor != cursor:
+                            raise ValueError("robot replication cursor mismatch")
+                        report = self.memory_reconciler.ingest_batch(
+                            batch,
+                            expected_robot_id=entry.robot_id,
+                            expected_mission_id=mission_id,
+                        )
                 except Exception as exc:
-                    error = str(exc)
+                    error_class = type(exc).__name__
+                    error = f"{error_class}: replication sync failed"
                     break
                 reports.append(report.to_dict())
-                if batch.next_cursor == cursor and batch.has_more:
+                # Re-parse cursor from payload for loop control
+                next_cursor = int(payload.get("next_cursor", cursor))
+                batch_has_more = bool(payload.get("has_more", False))
+                if next_cursor == cursor and batch_has_more:
                     error = "robot replication cursor made no progress"
                     break
-                cursor = batch.next_cursor
-                has_more = batch.has_more
+                cursor = next_cursor
+                has_more = batch_has_more
                 if not has_more:
                     break
             robot_results.append({

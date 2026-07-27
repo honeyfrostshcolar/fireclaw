@@ -103,6 +103,8 @@ class MissionAgent:
         mission_memory_tools: MissionMemoryTools | None = None,
         memory_lifecycle: MissionMemoryLifecycleStore | None = None,
         planner_memory_context_builder: PlannerMemoryContextBuilder | None = None,
+        consolidation_coordinator: Any | None = None,
+        working_memory_hydration_report: Any | None = None,
     ) -> None:
         self.registry = registry
         self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
@@ -150,6 +152,7 @@ class MissionAgent:
         self.embodied_working_memory = embodied_working_memory
         self.mission_memory_tools = mission_memory_tools
         self.memory_lifecycle = memory_lifecycle
+        self.consolidation_coordinator = consolidation_coordinator
         self.planner_memory_context_builder = (
             planner_memory_context_builder
             or PlannerMemoryContextBuilder(
@@ -164,6 +167,7 @@ class MissionAgent:
                 plugin_runtime=plugin_runtime,
             )
         )
+        self.working_memory_hydration_report = working_memory_hydration_report
 
     @property
     def session_lineage_store(self) -> JsonlSessionLineageStore | None:
@@ -313,6 +317,60 @@ class MissionAgent:
             )
         except Exception:
             logger.warning("Failed to write embodied mission memory relation", exc_info=True)
+
+    def _record_terminal_outcome(
+        self,
+        mission_id: str,
+        *,
+        terminal_event_id: str,
+        terminal_status: str,
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
+    ) -> None:
+        """Record a terminal outcome event and queue a consolidation boundary.
+
+        Uses a deterministic key so repeated observation is idempotent.
+        """
+        if self.embodied_memory_producer is None or self.embodied_runtime_mode is None:
+            return
+        if self.consolidation_coordinator is None:
+            return
+        try:
+            # Append a terminal outcome event
+            outcome_event_id = self._record_embodied_memory(
+                mission_id,
+                "outcome",
+                "runtime_evidence",
+                {
+                    "terminal_status": terminal_status,
+                    "terminal_event_id": terminal_event_id,
+                    "robot_id": robot_id,
+                    "subtask_id": subtask_id,
+                },
+                source_type="terminal_transition",
+                robot_id=robot_id,
+                subtask_id=subtask_id,
+                observed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            if outcome_event_id is None:
+                return
+            # Get the current sequence from the store
+            store = self.embodied_memory_producer.store
+            all_events = store.list_events(mission_id=mission_id)
+            through_sequence = len(all_events)
+            # Queue a boundary
+            self.consolidation_coordinator.request_terminal_boundary(
+                mission_id=mission_id,
+                runtime_mode=self.embodied_runtime_mode,
+                scope_kind="subtask" if subtask_id is not None else "mission",
+                robot_id=robot_id,
+                subtask_id=subtask_id,
+                terminal_event_id=terminal_event_id,
+                terminal_status=terminal_status,
+                through_sequence=through_sequence,
+            )
+        except Exception:
+            logger.warning("Failed to record terminal outcome or queue boundary", exc_info=True)
 
     def _operator_source_id(self, operator: dict[str, Any] | None = None) -> str:
         if isinstance(operator, dict):
@@ -621,6 +679,14 @@ class MissionAgent:
                     updated_at=datetime.now(timezone.utc).isoformat(),
                     result=robot_trace.get("result") if isinstance(robot_trace.get("result"), dict) else None,
                 )
+                if status in TERMINAL_SUBTASK_STATUSES:
+                    self._record_terminal_outcome(
+                        mission_id,
+                        terminal_event_id=f"{mission_id}:{subtask.robot_id}:{subtask.task_id}:terminal",
+                        terminal_status=status,
+                        robot_id=subtask.robot_id,
+                        subtask_id=subtask.task_id,
+                    )
         trace = self.mission_registry.mission_trace(mission_id)
         enriched_subtasks = []
         for subtask in trace.get("subtasks", []):

@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import threading
-from typing import Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
 
 from fireclaw_core.memory.embodied_memory import (
     MEMORY_RUNTIME_MODES,
@@ -69,6 +72,16 @@ class WorkingMemorySnapshot:
     current_pose: SpatialMemoryContext | None
 
 
+@dataclass(frozen=True)
+class WorkingMemoryHydrationReport:
+    considered: int = 0
+    selected: int = 0
+    added: int = 0
+    stale: int = 0
+    wrong_scope: int = 0
+    oversized: int = 0
+
+
 class EmbodiedWorkingMemory:
     """Thread-safe write-through projection over already-persisted events."""
 
@@ -97,6 +110,136 @@ class EmbodiedWorkingMemory:
             if self.add_persisted(event):
                 added += 1
         return added
+
+    def hydrate_recent(
+        self,
+        *,
+        store: Any,
+        registry: "JsonlMissionRegistry",
+        runtime_mode: str,
+        reference_at: str,
+    ) -> WorkingMemoryHydrationReport:
+        """Hydrate from authoritative store for active missions at startup.
+
+        Selection rules:
+        - only missions currently 'created' or 'running';
+        - exact configured runtime;
+        - only events fresh under existing per-type freshness rules;
+        - future timestamps beyond allowed skew are excluded;
+        - deterministic ordering by (observed_at, event_id);
+        - total admitted events remain bounded by capacity;
+        - multiple active missions receive a fair quota.
+        """
+        if runtime_mode not in MEMORY_RUNTIME_MODES:
+            raise ValueError(
+                f"Invalid runtime_mode: {runtime_mode}. "
+                f"Must be one of: {sorted(MEMORY_RUNTIME_MODES)}"
+            )
+        reference = _parse_reference_time(reference_at)
+        active_statuses = {"created", "running"}
+
+        try:
+            missions = registry.list_missions()
+        except Exception:
+            return WorkingMemoryHydrationReport()
+
+        active_mission_ids = frozenset(
+            m.mission_id for m in missions if m.status in active_statuses
+        )
+        if not active_mission_ids:
+            return WorkingMemoryHydrationReport()
+
+        try:
+            all_events = store.list_events()
+        except Exception:
+            return WorkingMemoryHydrationReport()
+
+        # Filter to active missions and runtime
+        candidates: list[EmbodiedMemoryEvent] = []
+        wrong_scope = 0
+        for event in all_events:
+            if event.mission_id not in active_mission_ids:
+                wrong_scope += 1
+                continue
+            if event.runtime_mode != runtime_mode:
+                wrong_scope += 1
+                continue
+            candidates.append(event)
+
+        # Sort deterministically by (observed_at, event_id)
+        candidates.sort(key=lambda e: (e.observed_at, e.event_id))
+
+        # Apply freshness and future-skew filtering
+        fresh: list[EmbodiedMemoryEvent] = []
+        stale = 0
+        for event in candidates:
+            if self._is_stale(event, reference):
+                stale += 1
+                continue
+            fresh.append(event)
+
+        # Newest-first round-robin selection
+        capacity = self.config.capacity
+        by_mission: dict[str, deque[EmbodiedMemoryEvent]] = {}
+        for event in fresh:
+            by_mission.setdefault(event.mission_id, deque()).append(event)
+        # Sort each mission's events newest-first
+        for events in by_mission.values():
+            ordered = sorted(
+                events,
+                key=lambda event: (event.observed_at, event.event_id),
+                reverse=True,
+            )
+            events.clear()
+            events.extend(ordered)
+
+        # Sort missions by their newest event (newest mission first)
+        mission_order = sorted(
+            by_mission,
+            key=lambda mission_id: (
+                by_mission[mission_id][0].observed_at,
+                by_mission[mission_id][0].event_id,
+                mission_id,
+            ),
+            reverse=True,
+        )
+        # Round-robin: pick one from each mission per round
+        selected_newest_first: list[EmbodiedMemoryEvent] = []
+        while len(selected_newest_first) < capacity:
+            admitted_this_round = 0
+            for mission_id in mission_order:
+                queue = by_mission[mission_id]
+                if not queue:
+                    continue
+                selected_newest_first.append(queue.popleft())
+                admitted_this_round += 1
+                if len(selected_newest_first) == capacity:
+                    break
+            if admitted_this_round == 0:
+                break
+        # Insert oldest-to-newest so deque preserves chronological order
+        selected = sorted(
+            selected_newest_first,
+            key=lambda event: (event.observed_at, event.event_id),
+        )
+
+        # Add to working memory
+        added = 0
+        oversized = 0
+        for event in selected:
+            if self.add_persisted(event):
+                added += 1
+            else:
+                oversized += 1
+
+        return WorkingMemoryHydrationReport(
+            considered=len(candidates),
+            selected=len(selected),
+            added=added,
+            stale=stale,
+            wrong_scope=wrong_scope,
+            oversized=oversized,
+        )
 
     def snapshot(
         self,

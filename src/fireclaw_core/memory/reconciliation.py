@@ -1,7 +1,7 @@
 """Incremental robot-to-mission embodied-memory replication and reconciliation."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -17,10 +17,19 @@ from fireclaw_core.memory.embodied_memory import (
     EmbodiedMemoryRelation,
     EmbodiedMemoryStore,
 )
+from fireclaw_core.memory.replication_security import (
+    ReplicationAuthMetadata,
+    ReplicationNonceCache,
+    ReplicationPeerPolicy,
+    ReplicationRequestScope,
+    verify_signed_batch,
+    verify_signed_payload,
+)
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord
 
 
 REPLICATION_SCHEMA_VERSION = 1
+REPLICATION_SCHEMA_VERSION_V2 = 2
 
 
 @dataclass(frozen=True)
@@ -105,15 +114,33 @@ class ReplicationBatch:
     next_cursor: int
     has_more: bool
     envelopes: tuple[ReplicationEnvelope, ...]
+    protocol_version: int = REPLICATION_SCHEMA_VERSION
+    policy_id: str | None = None
+    omission_counts: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.source_store_id.strip() or not self.source_robot_id.strip():
             raise ValueError("replication batch source identities must not be empty")
         if self.cursor < 0 or self.next_cursor < self.cursor:
             raise ValueError("invalid replication batch cursor range")
+        if self.protocol_version == REPLICATION_SCHEMA_VERSION_V2:
+            if not self.policy_id:
+                raise ValueError("v2 batch requires a non-empty policy_id")
+            for reason, count in self.omission_counts.items():
+                if not reason.strip():
+                    raise ValueError("omission reason must not be empty")
+                if count < 0:
+                    raise ValueError(f"omission count must be non-negative: {reason}")
+            if len(self.omission_counts) > 32:
+                raise ValueError("too many omission reason keys")
+        elif self.protocol_version == REPLICATION_SCHEMA_VERSION:
+            if self.policy_id is not None:
+                raise ValueError("v1 batch must not have policy_id")
+            if self.omission_counts:
+                raise ValueError("v1 batch must not have omission_counts")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "source_store_id": self.source_store_id,
             "source_robot_id": self.source_robot_id,
             "cursor": self.cursor,
@@ -121,6 +148,13 @@ class ReplicationBatch:
             "has_more": self.has_more,
             "envelopes": [item.to_dict() for item in self.envelopes],
         }
+        if self.protocol_version != REPLICATION_SCHEMA_VERSION:
+            result["protocol_version"] = self.protocol_version
+        if self.policy_id is not None:
+            result["policy_id"] = self.policy_id
+        if self.omission_counts:
+            result["omission_counts"] = dict(self.omission_counts)
+        return result
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ReplicationBatch":
@@ -131,6 +165,7 @@ class ReplicationBatch:
             raise ValueError("replication batch envelopes must be a list")
         if any(not isinstance(item, dict) for item in raw):
             raise ValueError("replication batch envelopes must contain objects")
+        raw_omission = payload.get("omission_counts", {})
         return cls(
             source_store_id=str(payload.get("source_store_id") or ""),
             source_robot_id=str(payload.get("source_robot_id") or ""),
@@ -138,6 +173,9 @@ class ReplicationBatch:
             next_cursor=int(payload.get("next_cursor", 0)),
             has_more=bool(payload.get("has_more", False)),
             envelopes=tuple(ReplicationEnvelope.from_dict(item) for item in raw),
+            protocol_version=int(payload.get("protocol_version", REPLICATION_SCHEMA_VERSION)),
+            policy_id=str(payload["policy_id"]) if payload.get("policy_id") is not None else None,
+            omission_counts=dict(raw_omission) if isinstance(raw_omission, dict) else {},
         )
 
 
@@ -181,6 +219,7 @@ class EmbodiedMemoryReplicationExporter:
         limit: int = 200,
         mission_id: str | None = None,
         runtime_mode: str | None = None,
+        peer_policy: ReplicationPeerPolicy | None = None,
     ) -> ReplicationBatch:
         if cursor < 0:
             raise ValueError("cursor cannot be negative")
@@ -191,6 +230,20 @@ class EmbodiedMemoryReplicationExporter:
         records = self._store.evidence_store.list_records()
         position = min(cursor, len(records))
         envelopes: list[ReplicationEnvelope] = []
+        exportable_ids: set[str] | None = None
+        if peer_policy is not None:
+            exportable_ids = set()
+            for record in records:
+                env = self._record_envelope(record, source_sequence=1)
+                if env is None:
+                    continue
+                sensitivity = self._record_sensitivity(record)
+                if peer_policy.is_event_exportable(
+                    robot_id=env.source_robot_id,
+                    runtime_mode=env.runtime_mode,
+                    sensitivity=sensitivity,
+                ):
+                    exportable_ids.add(env.source_record_id)
         while position < len(records) and len(envelopes) < limit:
             record = records[position]
             position += 1
@@ -201,11 +254,42 @@ class EmbodiedMemoryReplicationExporter:
                 continue
             if runtime_mode is not None and envelope.runtime_mode != runtime_mode:
                 continue
+            if peer_policy is not None:
+                sensitivity = self._record_sensitivity(record)
+                if not peer_policy.is_event_exportable(
+                    robot_id=envelope.source_robot_id,
+                    runtime_mode=envelope.runtime_mode,
+                    sensitivity=sensitivity,
+                ):
+                    continue
+                if (
+                    envelope.record_kind == "relation"
+                    and exportable_ids is not None
+                ):
+                    relation_meta = record.content.get(EMBODIED_METADATA_KEY, {})
+                    rel_source = relation_meta.get("source_record_id", "")
+                    rel_target = relation_meta.get("target_record_id", "")
+                    if (
+                        rel_source not in exportable_ids
+                        or rel_target not in exportable_ids
+                    ):
+                        continue
             envelopes.append(envelope)
         has_more = any(
             self._matches(record, mission_id=mission_id, runtime_mode=runtime_mode)
             for record in records[position:]
         )
+        if peer_policy is not None:
+            return ReplicationBatch(
+                source_store_id=self.source_store_id,
+                source_robot_id=self.source_robot_id,
+                cursor=cursor,
+                next_cursor=position,
+                has_more=has_more,
+                envelopes=tuple(envelopes),
+                protocol_version=REPLICATION_SCHEMA_VERSION_V2,
+                policy_id=peer_policy.policy_id,
+            )
         return ReplicationBatch(
             source_store_id=self.source_store_id,
             source_robot_id=self.source_robot_id,
@@ -228,6 +312,12 @@ class EmbodiedMemoryReplicationExporter:
             and (mission_id is None or envelope.mission_id == mission_id)
             and (runtime_mode is None or envelope.runtime_mode == runtime_mode)
         )
+
+    def _record_sensitivity(self, record: MissionMemoryRecord) -> str:
+        metadata = record.content.get(EMBODIED_METADATA_KEY)
+        if isinstance(metadata, dict):
+            return str(metadata.get("sensitivity") or "standard")
+        return "standard"
 
     def _record_envelope(
         self,
@@ -264,12 +354,14 @@ class EmbodiedMemoryReconciler:
         destination: EmbodiedMemoryStore,
         state_path: str | Path,
         runtime_mode: str,
+        allow_legacy_unsigned: bool = False,
     ) -> None:
         if runtime_mode not in MEMORY_RUNTIME_MODES:
             raise ValueError(f"Invalid runtime_mode: {runtime_mode}")
         self.destination = destination
         self.state_path = Path(state_path)
         self.runtime_mode = runtime_mode
+        self.allow_legacy_unsigned = allow_legacy_unsigned
         self._lock = threading.Lock()
         self._production_policy = EmbodiedMemoryProductionPolicy()
 
@@ -295,11 +387,101 @@ class EmbodiedMemoryReconciler:
         *,
         expected_robot_id: str,
         expected_mission_id: str | None = None,
+        auth: ReplicationAuthMetadata | None = None,
+        key_provider: Any | None = None,
+        expected_peer_id: str | None = None,
+        nonce_cache: ReplicationNonceCache | None = None,
     ) -> ReconciliationReport:
+        """Ingest a batch. Only allowed for explicit simulation legacy path.
+        Use ingest_signed_payload for authenticated replication."""
         if batch.source_robot_id != expected_robot_id:
             raise ValueError("replication batch robot identity mismatch")
         if batch.next_cursor < batch.cursor:
             raise ValueError("replication batch next_cursor cannot move backwards")
+        if auth is None:
+            # Only simulation + allow_legacy_unsigned permits unsigned
+            if self.runtime_mode == "real" or not self.allow_legacy_unsigned:
+                raise ValueError(
+                    "use ingest_signed_payload for authenticated replication"
+                )
+        else:
+            # Auth provided but incomplete config is fail-closed
+            if key_provider is None or expected_peer_id is None:
+                raise ValueError(
+                    "signed replication batch requires key_provider and expected_peer_id"
+                )
+            scope = ReplicationRequestScope(
+                mission_id=expected_mission_id or "",
+                runtime_mode=self.runtime_mode,
+                cursor=batch.cursor,
+                limit=max(1, len(batch.envelopes)),
+            )
+            result = verify_signed_batch(
+                batch=batch,
+                auth=auth,
+                scope=scope,
+                key_provider=key_provider,
+                peer_id=expected_peer_id,
+                nonce_cache=nonce_cache,
+            )
+            if not result.verified:
+                raise ValueError(
+                    f"replication batch verification failed: {result.error_code}"
+                )
+        return self._ingest_verified_batch(
+            batch,
+            expected_robot_id=expected_robot_id,
+            expected_mission_id=expected_mission_id,
+        )
+
+    def ingest_signed_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        expected_robot_id: str,
+        expected_mission_id: str,
+        expected_scope: ReplicationRequestScope,
+        key_provider: ReplicationKeyProvider,
+        peer_policy: ReplicationPeerPolicy,
+        nonce_cache: ReplicationNonceCache,
+    ) -> ReconciliationReport:
+        """Verify raw payload signature before parsing. Production entry point."""
+        raw_auth = payload.get("auth")
+        if not isinstance(raw_auth, dict):
+            raise ValueError("signed replication payload requires auth")
+        raw_batch = {key: value for key, value in payload.items() if key != "auth"}
+        auth = ReplicationAuthMetadata.from_dict(raw_auth)
+        verified = verify_signed_payload(
+            payload=raw_batch,
+            auth=auth,
+            scope=expected_scope,
+            key_provider=key_provider,
+            peer_id=expected_robot_id,
+            nonce_cache=nonce_cache,
+        )
+        if not verified.verified:
+            raise ValueError(
+                f"replication batch verification failed: {verified.error_code}"
+            )
+        batch = ReplicationBatch.from_dict(raw_batch)
+        if batch.protocol_version == REPLICATION_SCHEMA_VERSION_V2:
+            if batch.policy_id != peer_policy.policy_id:
+                raise ValueError("replication batch policy_id mismatch")
+        return self._ingest_verified_batch(
+            batch,
+            expected_robot_id=expected_robot_id,
+            expected_mission_id=expected_mission_id,
+            peer_policy=peer_policy,
+        )
+
+    def _ingest_verified_batch(
+        self,
+        batch: ReplicationBatch,
+        *,
+        expected_robot_id: str,
+        expected_mission_id: str | None = None,
+        peer_policy: ReplicationPeerPolicy | None = None,
+    ) -> ReconciliationReport:
         sequences = [item.source_sequence for item in batch.envelopes]
         if sequences != sorted(sequences) or any(
             sequence <= batch.cursor or sequence > batch.next_cursor
