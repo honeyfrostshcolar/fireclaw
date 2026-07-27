@@ -19,6 +19,7 @@ from fireclaw_core.memory.mission_memory_facade import (
     MissionMemoryFacade,
 )
 from fireclaw_core.memory.planner_memory_context import (
+    MAX_PLANNER_MEMORIES,
     PlannerMemoryContextBuilder,
     PlannerMemoryContextRequest,
     PlannerMemoryContextResult,
@@ -629,7 +630,7 @@ def test_guard_decision_reports_degraded_when_warnings_present(tmp_path: Path) -
     """Guard decision reports memory_context_degraded when warnings exist.
 
     Use a mission_memory whose list_records() raises to trigger the
-    authority_lookup_failed warning.
+    current_memory_unavailable warning.
     """
     store = _embodied_store(tmp_path)
     _record_event(store, event_id="obs-1")
@@ -653,7 +654,7 @@ def test_guard_decision_reports_degraded_when_warnings_present(tmp_path: Path) -
     assert decision.layer == "memory_context"
     assert decision.status == "allow"
     assert decision.reason == "memory_context_degraded"
-    assert "authority_lookup_failed" in decision.details["warning_codes"]
+    assert "current_memory_unavailable" in decision.details["warning_codes"]
 
 
 def test_guard_decision_reports_valid_when_no_warnings(tmp_path: Path) -> None:
@@ -719,9 +720,10 @@ def test_reusable_knowledge_available_true_with_lifecycle(tmp_path: Path) -> Non
 
 
 def test_authority_lookup_failed_warning_when_list_records_raises(tmp_path: Path) -> None:
-    """When mission_memory.list_records() raises, emit authority_lookup_failed warning.
+    """When mission_memory.list_records() raises, no memory is admitted.
 
-    The builder should still return memories (fail-open for planning).
+    Authority unavailable means fail-closed for memory admission, but planning
+    continues with a degraded allow decision.
     """
     store = _embodied_store(tmp_path)
     _record_event(store, event_id="obs-1")
@@ -741,16 +743,21 @@ def test_authority_lookup_failed_warning_when_list_records_raises(tmp_path: Path
     )
     result = builder.build(_request())
 
+    # Fail-closed: no memories admitted when authority is unavailable
+    assert result.memories == ()
     codes = [w.code for w in result.warnings]
-    assert "authority_lookup_failed" in codes
-    # Fail-open: memories should still be returned
-    assert len(result.memories) >= 1
+    # Must contain an authority/current-memory unavailability warning
+    assert any(c in codes for c in ("authority_lookup_failed", "current_memory_unavailable"))
+    # Planning continues with degraded allow
+    assert result.guard_decision().status == "allow"
+    assert result.guard_decision().reason == "memory_context_degraded"
 
 
 def test_authority_lookup_failed_when_mission_memory_is_none(tmp_path: Path) -> None:
-    """When mission_memory is None, emit authority_lookup_failed warning.
+    """When mission_memory is None, no memory is admitted.
 
-    The check is skipped but the caller gets a diagnostic warning.
+    Authority unavailable means fail-closed for memory admission, but planning
+    continues with a degraded allow decision.
     """
     store = _embodied_store(tmp_path)
     _record_event(store, event_id="obs-1")
@@ -764,10 +771,99 @@ def test_authority_lookup_failed_when_mission_memory_is_none(tmp_path: Path) -> 
     )
     result = builder.build(_request())
 
+    # Fail-closed: no memories admitted when authority is unavailable
+    assert result.memories == ()
     codes = [w.code for w in result.warnings]
-    assert "authority_lookup_failed" in codes
-    # Fail-open: memories should still be returned
-    assert len(result.memories) >= 1
+    # Must contain a current-memory unavailability warning
+    assert "current_memory_unavailable" in codes
+    # Planning continues with degraded allow
+    assert result.guard_decision().status == "allow"
+    assert result.guard_decision().reason == "memory_context_degraded"
+
+
+def test_empty_authority_store_rejects_index_only_candidate(tmp_path: Path) -> None:
+    """An empty but successful authority store rejects index-only candidates.
+
+    Distinguishes a valid empty authority store from an authority read failure.
+    Both fail closed, but only the missing-record case reports
+    authority_record_missing.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    # Empty authority store that succeeds with no records
+    class EmptyAuthorityMemory:
+        def __init__(self):
+            self._records = []
+        def list_records(self, **kwargs):
+            return list(self._records)
+        def append(self, record):
+            self._records.append(record)
+
+    empty_store = EmptyAuthorityMemory()
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=retriever,
+        mission_memory=empty_store,
+        facade=facade,
+    )
+    result = builder.build(_request())
+
+    # Index-only candidate should be rejected
+    assert result.memories == ()
+    codes = [w.code for w in result.warnings]
+    assert "authority_record_missing" in codes
+    # Content-free: no candidate content in repr
+    repr_warnings = repr(result.warnings)
+    assert "smoke detected" not in repr_warnings
+    repr_details = repr(result.guard_decision().details)
+    assert "smoke detected" not in repr_details
+
+
+def test_index_candidate_same_id_uses_authority_content(tmp_path: Path) -> None:
+    """When index and authority share an ID, authority content wins."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1", note="AUTHORITY")
+    retriever = _retriever(store)
+    facade = _facade(store, "real")
+
+    # Build a retriever that returns forged content for the same ID
+    class ForgingRetriever:
+        def retrieve(self, query, *, scope, limit=10):
+            from fireclaw_core.memory.memory_retrieval import RetrievedMemory
+            return [RetrievedMemory(
+                record_id="obs-1",
+                mission_id="mission-alpha",
+                record_type="observation",
+                content={
+                    EMBODIED_METADATA_KEY: {
+                        "event_id": "obs-1",
+                        "mission_id": "mission-alpha",
+                        "event_type": "observation",
+                        "runtime_mode": "real",
+                        "sensitivity": "standard",
+                    },
+                    "note": "FORGED INDEX CONTENT",
+                },
+                created_at="2026-01-01T00:00:00Z",
+                score=1.0,
+                source="lexical",
+            )]
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=ForgingRetriever(),
+        mission_memory=store.evidence_store,
+        facade=facade,
+    )
+    result = builder.build(_request())
+
+    # Exactly one current-mission memory admitted
+    assert len(result.memories) == 1
+    # Content is the authoritative payload, not the forged one
+    assert result.memories[0]["content"].get("note") == "AUTHORITY"
+    # Forged text absent from result representation
+    assert "FORGED INDEX CONTENT" not in repr(result)
 
 
 def test_facade_events_checked_against_authority_map(tmp_path: Path) -> None:
@@ -804,7 +900,19 @@ def test_facade_events_checked_against_authority_map(tmp_path: Path) -> None:
                 record_id="obs-valid",
                 mission_id="mission-alpha",
                 record_type="observation",
-                content={},
+                content={
+                    EMBODIED_METADATA_KEY: {
+                        "event_id": "obs-valid",
+                        "mission_id": "mission-alpha",
+                        "event_type": "observation",
+                        "runtime_mode": "real",
+                        "sensitivity": "standard",
+                        "source_type": "test",
+                        "observed_at": "2026-07-24T10:00:00+00:00",
+                        "schema_version": 1,
+                    },
+                    "note": "valid",
+                },
                 created_at="2026-07-24T10:00:00+00:00",
             )]
 
@@ -826,6 +934,130 @@ def test_facade_events_checked_against_authority_map(tmp_path: Path) -> None:
         if w.code == "authority_record_missing" and w.record_id == "obs-stale"
     ]
     assert len(missing_warnings) == 1
+
+
+def test_real_facade_only_fresh_event_is_admitted_from_authority(tmp_path: Path) -> None:
+    """A real facade fresh event is admitted through authority reauthorization."""
+    from datetime import datetime, timezone
+
+    store = _embodied_store(tmp_path)
+    # Record an event with current UTC timestamp so it's inside facade window
+    event = store.record_event(
+        event_id="obs-fresh",
+        mission_id="mission-alpha",
+        event_type="observation",
+        payload={"note": "fresh observation"},
+        runtime_mode="real",
+        source_type="test",
+        observed_at=datetime.now(timezone.utc).isoformat(),
+        sensitivity="standard",
+    )
+
+    # Build with real facade, no retriever
+    facade = _facade(store, "real")
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=facade,
+    )
+    result = builder.build(_request())
+
+    admitted_ids = [m["record_id"] for m in result.memories]
+    assert "obs-fresh" in admitted_ids
+    # Must have runtime mode "real"
+    fresh = [m for m in result.memories if m["record_id"] == "obs-fresh"][0]
+    assert fresh["runtime_mode"] == "real"
+    # No runtime_mode_mismatch warning for this event
+    mismatch_warnings = [
+        w for w in result.warnings
+        if w.code == "runtime_mode_mismatch" and w.record_id == "obs-fresh"
+    ]
+    assert len(mismatch_warnings) == 0
+
+
+def test_facade_candidate_same_id_uses_authority_content(tmp_path: Path) -> None:
+    """When facade and authority share an ID, authority content wins."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1", note="AUTHORITY CONTENT")
+
+    # Mock facade that returns forged data for the same ID
+    class ForgingFacade:
+        def get_current_context(self, access, **kwargs):
+            return {
+                "events": [
+                    {
+                        "event_id": "obs-1",
+                        "event_type": "forged_type",
+                        "runtime_mode": "simulation",
+                        "sensitivity": "restricted",
+                        "payload": {"note": "FORGED FACADE CONTENT"},
+                    },
+                ],
+            }
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=ForgingFacade(),
+    )
+    result = builder.build(_request())
+
+    # Exactly one memory admitted
+    assert len(result.memories) == 1
+    # Content is the authoritative payload
+    assert result.memories[0]["content"].get("note") == "AUTHORITY CONTENT"
+    # Forged fields are absent
+    assert result.memories[0]["record_type"] != "forged_type"
+    assert result.memories[0]["runtime_mode"] != "simulation"
+    assert result.memories[0]["sensitivity"] != "restricted"
+    # Forged text absent from result representation
+    assert "FORGED FACADE CONTENT" not in repr(result)
+
+
+def test_facade_correction_is_routed_to_corrections_once(tmp_path: Path) -> None:
+    """A facade correction is routed to corrections, not memories, and not duplicated."""
+    store = _embodied_store(tmp_path)
+    # Record a correction event
+    store.record_event(
+        event_id="corr-1",
+        mission_id="mission-alpha",
+        event_type="correction",
+        payload={"note": "operator correction"},
+        runtime_mode="real",
+        source_type="test",
+        observed_at="2026-07-24T10:00:00+00:00",
+        sensitivity="standard",
+    )
+
+    # Mock facade that exposes the correction
+    class CorrectionFacade:
+        def get_current_context(self, access, **kwargs):
+            return {
+                "events": [
+                    {
+                        "event_id": "corr-1",
+                        "event_type": "correction",
+                        "runtime_mode": "real",
+                        "sensitivity": "standard",
+                        "payload": {"note": "operator correction"},
+                    },
+                ],
+            }
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=CorrectionFacade(),
+    )
+    result = builder.build(_request())
+
+    # Correction appears in corrections, not memories
+    correction_ids = [c["record_id"] for c in result.corrections]
+    memory_ids = [m["record_id"] for m in result.memories]
+    assert "corr-1" in correction_ids
+    assert "corr-1" not in memory_ids
+    # Not duplicated (exactly once in corrections)
+    assert correction_ids.count("corr-1") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1153,6 +1385,226 @@ def test_knowledge_dict_has_required_safety_fields(tmp_path: Path) -> None:
     assert reusable[0]["requires_current_state_revalidation"] is True
 
 
+def test_dependency_failures_use_stable_warning_codes(tmp_path: Path) -> None:
+    """Dependency failures emit stable public warning codes."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+
+    # 1. Authority/memory unavailable
+    class BrokenAuthority:
+        def list_records(self, **kwargs):
+            raise RuntimeError("authority down")
+        def append(self, record):
+            pass
+
+    builder1 = PlannerMemoryContextBuilder(
+        memory_retriever=_retriever(store),
+        mission_memory=BrokenAuthority(),
+        facade=_facade(store, "real"),
+    )
+    result1 = builder1.build(_request())
+    codes1 = {w.code for w in result1.warnings}
+    assert "current_memory_unavailable" in codes1
+    assert "authority_lookup_failed" not in codes1
+
+    # 2. Facade unavailable (authority works)
+    class BrokenFacade:
+        def get_current_context(self, access, **kwargs):
+            raise RuntimeError("facade down")
+
+    builder2 = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=BrokenFacade(),
+    )
+    result2 = builder2.build(_request())
+    codes2 = {w.code for w in result2.warnings}
+    assert "current_context_unavailable" in codes2
+    assert "facade_query_failed" not in codes2
+
+    # 3. Reusable knowledge unavailable
+    class BrokenLifecycle:
+        def list_knowledge(self, **kwargs):
+            raise RuntimeError("lifecycle db down")
+
+    builder3 = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=None,
+        lifecycle=BrokenLifecycle(),
+    )
+    result3 = builder3.build(_request())
+    codes3 = {w.code for w in result3.warnings}
+    assert "reusable_knowledge_unavailable" in codes3
+
+
+def test_reusable_knowledge_available_false_when_lifecycle_query_fails(tmp_path: Path) -> None:
+    """reusable_knowledge_available is False when list_knowledge() raises."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+
+    class BrokenLifecycle:
+        def list_knowledge(self, **kwargs):
+            raise RuntimeError("lifecycle db down")
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=None,
+        lifecycle=BrokenLifecycle(),
+    )
+    result = builder.build(_request())
+
+    assert result.reusable_knowledge_available is False
+
+
+def test_plugin_scope_mismatch_for_known_current_record(tmp_path: Path) -> None:
+    """A known current record that fails scope during canonicalization is
+    not admitted and the plugin claim is unverified (not scope_mismatch).
+
+    In the current architecture, scope checks happen during canonicalization
+    (before hooks), so a scope-rejected record never enters the candidate set.
+    A plugin claim for it is classified as plugin_record_unverified.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1", runtime_mode="real")
+
+    # Mock facade that returns the real-mode event
+    class MockFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": "obs-1", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "event"}},
+            ]}
+
+    # Filter plugin tries to keep the scope-rejected record
+    def filter_cb(payload):
+        return {"memories": [
+            {"memory_scope": "current_mission", "record_id": "obs-1"},
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=MockFacade(),
+        plugin_runtime=runtime,
+    )
+    # Request with runtime_mode="simulation" so the real-mode record is scoped out
+    result = builder.build(_request(runtime_mode="simulation"))
+
+    codes = {w.code for w in result.warnings}
+    # Record was not a candidate (scope-rejected during canonicalization)
+    # so the plugin claim is unverified
+    assert "plugin_record_unverified" in codes
+    assert "plugin_scope_mismatch" not in codes
+
+
+def test_known_but_not_candidate_record_produces_plugin_record_unverified(
+    tmp_path: Path,
+) -> None:
+    """A known in-scope record that was NOT a candidate produces plugin_record_unverified.
+
+    Filter/rerank can only operate on candidates that were passed to them.
+    Injecting a known record that wasn't a candidate is an unverified claim.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-known", note="known event")
+    _record_event(store, event_id="obs-other", note="other event")
+
+    # Mock facade that returns only obs-other (not obs-known)
+    class PartialFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": "obs-other", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "other event"}},
+            ]}
+
+    # Filter plugin tries to inject obs-known (which is in authority but not a candidate)
+    def filter_cb(payload):
+        # Keep the real candidate and add the known-but-not-candidate one
+        return {"memories": [
+            {"memory_scope": "current_mission", "record_id": "obs-other"},
+            {"memory_scope": "current_mission", "record_id": "obs-known"},
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=PartialFacade(),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    codes = {w.code for w in result.warnings}
+    # obs-known is in authority but was not a candidate → unverified, not scope_mismatch
+    assert "plugin_record_unverified" in codes
+    assert "plugin_scope_mismatch" not in codes
+
+
+def test_knowledge_not_approved_for_revoked_knowledge(tmp_path: Path) -> None:
+    """A plugin claim for revoked knowledge produces knowledge_not_approved."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-revoked")
+
+    # Revoke the knowledge
+    lifecycle.revoke_knowledge(
+        knowledge_id="k-revoked",
+        actor_id="reviewer",
+        reason="outdated",
+    )
+
+    # Plugin tries to return the revoked knowledge ID
+    def enrich_cb(payload):
+        return {"retrieved_memories": [
+            {"memory_scope": "reusable_knowledge", "knowledge_id": "k-revoked"},
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=None,
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    codes = {w.code for w in result.warnings}
+    assert "knowledge_not_approved" in codes
+
+
+def test_unknown_plugin_id_produces_plugin_record_unverified(tmp_path: Path) -> None:
+    """An unknown plugin ID produces plugin_record_unverified."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+
+    # Plugin returns a completely unknown ID
+    def filter_cb(payload):
+        return {"memories": [
+            {"memory_scope": "current_mission", "record_id": "completely-unknown-id"},
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=None,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    codes = {w.code for w in result.warnings}
+    assert "plugin_record_unverified" in codes
+    # Verify no content leaked
+    assert "completely-unknown-id" not in repr(result.warnings)
+
+
 # ---------------------------------------------------------------------------
 # Task 6: Plugin filter, rerank, and enrichment reauthorization
 # ---------------------------------------------------------------------------
@@ -1179,6 +1631,298 @@ def _plugin_runtime_with_callbacks(**callbacks) -> PluginRuntime:
             callback=callback,
         )
     return runtime
+
+
+def test_plugin_filter_can_remove_approved_reusable_knowledge(tmp_path: Path) -> None:
+    """A filter plugin can remove approved reusable knowledge items."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-current")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-1")
+
+    # Mock facade that always returns the event
+    class MockFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": "obs-current", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "current event"}},
+            ]}
+
+    captured_payloads = []
+
+    def filter_cb(payload):
+        captured_payloads.append(payload)
+        # Keep only the current-mission record
+        return {"memories": [
+            m for m in payload.get("memories", [])
+            if m.get("record_id") == "obs-current"
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=MockFacade(),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # Hook received both canonical candidates
+    assert len(captured_payloads) == 1
+    hook_ids = {m.get("record_id") or m.get("knowledge_id") for m in captured_payloads[0]["memories"]}
+    assert "obs-current" in hook_ids
+    assert "k-1" in hook_ids
+
+    # Approved knowledge is filtered out
+    result_ids = {m.get("record_id") or m.get("knowledge_id") for m in result.memories}
+    assert "obs-current" in result_ids
+    assert "k-1" not in result_ids
+
+
+def test_plugin_rerank_orders_approved_reusable_knowledge(tmp_path: Path) -> None:
+    """A rerank plugin can reorder approved reusable knowledge."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-first", title="first knowledge")
+    _approve_knowledge(lifecycle, knowledge_id="k-second", title="second knowledge")
+
+    # Record the order that the hook receives to verify rerank effect
+    captured_orders = []
+
+    def rerank_cb(payload):
+        memories = list(payload.get("memories", []))
+        ids_before = [m.get("knowledge_id") or m.get("record_id") for m in memories]
+        captured_orders.append(("before", ids_before))
+        memories.reverse()
+        ids_after = [m.get("knowledge_id") or m.get("record_id") for m in memories]
+        captured_orders.append(("after", ids_after))
+        return {"memories": memories}
+
+    runtime = _plugin_runtime_with_callbacks(rerank_cb=rerank_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    reusable_ids = [m["knowledge_id"] for m in reusable]
+    assert len(reusable_ids) == 2
+
+    # Verify the rerank actually reversed the order
+    before_ids = [o[1] for o in captured_orders if o[0] == "before"][0]
+    after_ids = [o[1] for o in captured_orders if o[0] == "after"][0]
+    assert before_ids == after_ids[::-1]  # rerank reversed
+    # Final order matches the reranked order
+    assert reusable_ids == after_ids
+
+
+def test_plugin_forged_knowledge_content_replacement_ignored(tmp_path: Path) -> None:
+    """A plugin cannot replace approved knowledge content."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-1")
+
+    def filter_cb(payload):
+        # Try to replace knowledge content
+        return {"memories": [
+            {"memory_scope": "reusable_knowledge", "knowledge_id": "k-1",
+             "content": {"forged": True}, "title": "FORGED TITLE"},
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    reusable = [m for m in result.memories if m.get("knowledge_id") == "k-1"]
+    assert len(reusable) == 1
+    # Content should be the canonical approved content, not the forged one
+    assert "forged" not in reusable[0].get("content", {})
+    assert "FORGED TITLE" not in repr(result)
+
+
+def test_revoked_knowledge_cannot_be_introduced_by_plugin(tmp_path: Path) -> None:
+    """A plugin cannot introduce revoked knowledge via filter or rerank."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-revoked")
+    lifecycle.revoke_knowledge(
+        knowledge_id="k-revoked", actor_id="reviewer", reason="outdated",
+    )
+
+    def filter_cb(payload):
+        # Try to reintroduce the revoked knowledge
+        return {"memories": list(payload.get("memories", [])) + [
+            {"memory_scope": "reusable_knowledge", "knowledge_id": "k-revoked"},
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    result_ids = {m.get("knowledge_id") for m in result.memories}
+    assert "k-revoked" not in result_ids
+    # The lifecycle diagnostic map recognizes the ID as revoked even though it
+    # was never an approved filter candidate.
+    codes = {w.code for w in result.warnings}
+    assert "knowledge_not_approved" in codes
+    assert "plugin_record_unverified" not in codes
+
+
+def test_current_mission_quota_priority_preserved_after_hooks(tmp_path: Path) -> None:
+    """Current-mission items consume quota before reusable knowledge after hooks."""
+    store = _embodied_store(tmp_path)
+    for i in range(4):
+        _record_event(store, event_id=f"obs-{i}")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-1")
+
+    # Mock facade that returns all events
+    class AllEventsFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": f"obs-{i}", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": f"event {i}"}}
+                for i in range(4)
+            ]}
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=AllEventsFacade(),
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request(max_memories=3))
+
+    # Current-mission items should fill the quota first
+    current = [m for m in result.memories if m.get("memory_scope") == "current_mission"]
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(current) == 3
+    assert len(reusable) == 0
+
+
+def test_revoked_knowledge_does_not_consume_approved_candidate_quota(
+    tmp_path: Path,
+) -> None:
+    """100 newer revoked records must not crowd out an older approved record."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+
+    # Create one older approved record
+    _approve_knowledge(
+        lifecycle,
+        knowledge_id="k-approved-old",
+        title="approved knowledge",
+    )
+
+    # Create and revoke 100 newer records
+    for i in range(100):
+        kid = f"k-revoked-{i:03d}"
+        _approve_knowledge(
+            lifecycle,
+            knowledge_id=kid,
+            title=f"revoked {i}",
+            content={"note": f"revoked {i}"},
+        )
+        lifecycle.revoke_knowledge(
+            knowledge_id=kid,
+            actor_id="reviewer",
+            reason="test cleanup",
+        )
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+    )
+    result = builder.build(_request(max_memories=10))
+
+    # The approved record must be present
+    reusable = [m for m in result.memories if m.get("knowledge_id") == "k-approved-old"]
+    assert len(reusable) == 1
+    # No revoked records present
+    revoked = [m for m in result.memories if "revoked" in m.get("knowledge_id", "")]
+    assert len(revoked) == 0
+    # Availability is true
+    assert result.reusable_knowledge_available is True
+
+
+def test_runtime_mode_none_reports_reusable_knowledge_unavailable_without_query(
+    tmp_path: Path,
+) -> None:
+    """runtime_mode=None should report reusable_knowledge_available=False."""
+    store = _embodied_store(tmp_path)
+
+    class FailingLifecycle:
+        def list_knowledge(self, **kwargs):
+            raise RuntimeError("should not be called")
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=None,
+        lifecycle=FailingLifecycle(),
+    )
+    result = builder.build(_request(runtime_mode=None))
+
+    assert len(result.memories) == 0
+    assert len(result.corrections) == 0
+    assert result.reusable_knowledge_available is False
+
+
+def test_diagnostic_lookup_failure_does_not_discard_approved_knowledge(
+    tmp_path: Path,
+) -> None:
+    """If include_revoked=True raises, approved knowledge from include_revoked=False still works."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-approved")
+
+    # Create a lifecycle wrapper where revoked lookup fails
+    class PartialFailureLifecycle:
+        def __init__(self, real_lifecycle):
+            self._real = real_lifecycle
+        def list_knowledge(self, include_revoked=False, **kwargs):
+            if include_revoked:
+                raise RuntimeError("revoked db unavailable")
+            return self._real.list_knowledge(include_revoked=False, **kwargs)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=PartialFailureLifecycle(lifecycle),
+    )
+    result = builder.build(_request())
+
+    # Approved knowledge should still be available
+    reusable = [m for m in result.memories if m.get("knowledge_id") == "k-approved"]
+    assert len(reusable) == 1
+    assert result.reusable_knowledge_available is True
 
 
 def test_plugin_filter_can_remove_known_ids(tmp_path: Path) -> None:
@@ -1970,88 +2714,458 @@ def test_plugin_enrichment_adds_to_existing_memories(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 2 (second review): Plugin mutation isolation proofs
+# ---------------------------------------------------------------------------
+
+
+def test_filter_in_place_mutation_returning_none_cannot_change_authority_content(
+    tmp_path: Path,
+) -> None:
+    """A filter callback that mutates nested content cannot affect authority content."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1", note="AUTHORITY CONTENT")
+
+    class MockFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": "obs-1", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "AUTHORITY CONTENT"}},
+            ]}
+
+    def mutating_filter(payload):
+        # Mutate nested content in place
+        for m in payload.get("memories", []):
+            m["content"]["note"] = "PLUGIN FORGED CONTENT"
+        return None
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=mutating_filter)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=MockFacade(),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # Authority content must survive
+    assert len(result.memories) >= 1
+    assert result.memories[0]["content"].get("note") == "AUTHORITY CONTENT"
+    # Forged content absent from result
+    assert "PLUGIN FORGED CONTENT" not in repr(result)
+
+
+def test_rerank_in_place_mutation_cannot_change_authority_content(
+    tmp_path: Path,
+) -> None:
+    """A rerank callback that mutates nested content cannot affect authority content."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1", note="AUTHORITY CONTENT")
+
+    class MockFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": "obs-1", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "AUTHORITY CONTENT"}},
+            ]}
+
+    def mutating_rerank(payload):
+        for m in payload.get("memories", []):
+            m["content"]["note"] = "PLUGIN FORGED CONTENT"
+        return {"memories": list(payload.get("memories", []))}
+
+    runtime = _plugin_runtime_with_callbacks(rerank_cb=mutating_rerank)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=MockFacade(),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    assert len(result.memories) >= 1
+    assert result.memories[0]["content"].get("note") == "AUTHORITY CONTENT"
+    assert "PLUGIN FORGED CONTENT" not in repr(result)
+
+
+def test_enrichment_in_place_mutation_cannot_change_authority_content(
+    tmp_path: Path,
+) -> None:
+    """Enrichment callback mutation cannot affect current or reusable content."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1", note="AUTHORITY CONTENT")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-1")
+
+    class MockFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": "obs-1", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "AUTHORITY CONTENT"}},
+            ]}
+
+    def mutating_enrich(payload):
+        for m in payload.get("memories", []):
+            m["content"] = {"note": "PLUGIN FORGED CONTENT"}
+        return None
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=mutating_enrich)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=MockFacade(),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # Current-mission content survives
+    current = [m for m in result.memories if m.get("memory_scope") == "current_mission"]
+    assert len(current) >= 1
+    assert current[0]["content"].get("note") == "AUTHORITY CONTENT"
+    # Reusable knowledge content survives
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) >= 1
+    assert "PLUGIN FORGED CONTENT" not in repr(result)
+
+
+def test_correction_list_isolation_from_plugin_mutation(tmp_path: Path) -> None:
+    """Plugin mutation of general memory cannot alter canonical correction objects."""
+    store = _embodied_store(tmp_path)
+    # Record a correction
+    store.record_event(
+        event_id="corr-1",
+        mission_id="mission-alpha",
+        event_type="correction",
+        payload={"note": "OPERATOR CORRECTION"},
+        runtime_mode="real",
+        source_type="test",
+        observed_at="2026-07-24T10:00:00+00:00",
+        sensitivity="standard",
+    )
+    # Record a regular observation
+    _record_event(store, event_id="obs-1", note="regular observation")
+
+    # Mock facade that returns both
+    class BothFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": "corr-1", "event_type": "correction",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "OPERATOR CORRECTION"}},
+                {"event_id": "obs-1", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": "regular observation"}},
+            ]}
+
+    def mutating_filter(payload):
+        # Mutate everything in the memories list
+        for m in payload.get("memories", []):
+            m["content"] = {"note": "FORGED"}
+        return None
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=mutating_filter)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=BothFacade(),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # Correction must retain its canonical content
+    assert len(result.corrections) >= 1
+    assert result.corrections[0]["content"].get("note") == "OPERATOR CORRECTION"
+    # Observation must also retain its canonical content
+    current = [m for m in result.memories if m.get("record_id") == "obs-1"]
+    assert len(current) >= 1
+    assert current[0]["content"].get("note") == "regular observation"
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (third review): Stage-scoped filter and rerank allowlists
+# ---------------------------------------------------------------------------
+
+
+def test_rerank_cannot_reintroduce_current_record_removed_by_filter(
+    tmp_path: Path,
+) -> None:
+    """A rerank plugin cannot reintroduce a current-mission record removed by filter.
+
+    Three authoritative records: obs-a, obs-b, obs-c.
+    Filter returns only obs-a and obs-b.  Rerank receives the post-filter list
+    and tries to reintroduce obs-c.  The reintroduction must be rejected and
+    obs-c must remain absent from the final context.
+    """
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-a", note="note a")
+    _record_event(store, event_id="obs-b", note="note b")
+    _record_event(store, event_id="obs-c", note="note c")
+
+    # Mock facade that returns all three events
+    class AllFacade:
+        def get_current_context(self, access, **kwargs):
+            return {"events": [
+                {"event_id": f"obs-{c}", "event_type": "observation",
+                 "runtime_mode": "real", "sensitivity": "standard",
+                 "payload": {"note": f"note {c}"}} for c in "abc"
+            ]}
+
+    filter_payloads = []
+
+    def filter_cb(payload):
+        filter_payloads.append(payload)
+        # Remove obs-c
+        return {"memories": [
+            m for m in payload["memories"]
+            if m.get("record_id") != "obs-c"
+        ]}
+
+    rerank_payloads = []
+
+    def rerank_cb(payload):
+        rerank_payloads.append(payload)
+        # Try to reintroduce obs-c
+        items = list(payload["memories"])
+        items.append({"memory_scope": "current_mission", "record_id": "obs-c"})
+        return {"memories": items}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb, rerank_cb=rerank_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=AllFacade(),
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # Filter payload must include obs-c (it was an admitted candidate)
+    assert len(filter_payloads) == 1
+    filter_ids = {m.get("record_id") for m in filter_payloads[0]["memories"]}
+    assert "obs-c" in filter_ids
+
+    # Rerank payload must NOT include obs-c (filter removed it)
+    assert len(rerank_payloads) == 1
+    rerank_ids = {m.get("record_id") for m in rerank_payloads[0]["memories"]}
+    assert "obs-c" not in rerank_ids
+
+    # Final result must not contain obs-c
+    final_ids = [m["record_id"] for m in result.memories]
+    assert "obs-a" in final_ids
+    assert "obs-b" in final_ids
+    assert "obs-c" not in final_ids
+
+    # obs-c reintroduction must be rejected as unverified
+    codes = {w.code for w in result.warnings}
+    assert "plugin_record_unverified" in codes
+
+
+def test_rerank_cannot_reintroduce_knowledge_removed_by_filter(
+    tmp_path: Path,
+) -> None:
+    """A rerank plugin cannot reintroduce reusable knowledge removed by filter."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-keep", title="keep this")
+    _approve_knowledge(lifecycle, knowledge_id="k-filtered", title="filtered out")
+
+    filter_payloads = []
+
+    def filter_cb(payload):
+        filter_payloads.append(payload)
+        # Remove k-filtered
+        return {"memories": [
+            m for m in payload["memories"]
+            if m.get("knowledge_id") != "k-filtered"
+        ]}
+
+    rerank_payloads = []
+
+    def rerank_cb(payload):
+        rerank_payloads.append(payload)
+        # Try to reintroduce k-filtered
+        items = list(payload["memories"])
+        items.append({"memory_scope": "reusable_knowledge", "knowledge_id": "k-filtered"})
+        return {"memories": items}
+
+    runtime = _plugin_runtime_with_callbacks(filter_cb=filter_cb, rerank_cb=rerank_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # Filter payload must include k-filtered (it was an approved candidate)
+    assert len(filter_payloads) == 1
+    filter_kids = {m.get("knowledge_id") for m in filter_payloads[0]["memories"]}
+    assert "k-filtered" in filter_kids
+    assert "k-keep" in filter_kids
+
+    # Rerank payload must NOT include k-filtered (filter removed it)
+    assert len(rerank_payloads) == 1
+    rerank_kids = {m.get("knowledge_id") for m in rerank_payloads[0]["memories"]}
+    assert "k-filtered" not in rerank_kids
+    assert "k-keep" in rerank_kids
+
+    # Final result must not contain k-filtered
+    result_kids = {m.get("knowledge_id") for m in result.memories}
+    assert "k-keep" in result_kids
+    assert "k-filtered" not in result_kids
+
+    # k-filtered reintroduction must be rejected as unverified
+    codes = {w.code for w in result.warnings}
+    assert "plugin_record_unverified" in codes
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (third review): Diagnostic query bound
+# ---------------------------------------------------------------------------
+
+
+def test_revoked_diagnostic_query_uses_lifecycle_max_without_changing_approved_quota(
+    tmp_path: Path,
+) -> None:
+    """The diagnostic query requests up to 500 records; approved query stays at 100."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+    _approve_knowledge(lifecycle, knowledge_id="k-approved")
+
+    # Record list_knowledge call arguments
+    call_log: list[dict[str, Any]] = []
+
+    class LoggingLifecycle:
+        def __init__(self, real):
+            self._real = real
+
+        def list_knowledge(self, **kwargs):
+            call_log.append(dict(kwargs))
+            return self._real.list_knowledge(**kwargs)
+
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=LoggingLifecycle(lifecycle),
+    )
+    result = builder.build(_request())
+
+    # Must have two calls: approved and diagnostic
+    assert len(call_log) == 2
+    approved_call = call_log[0]
+    diagnostic_call = call_log[1]
+
+    # Approved call: include_revoked=False, limit=100
+    assert approved_call["include_revoked"] is False
+    assert approved_call["limit"] == MAX_PLANNER_MEMORIES
+
+    # Diagnostic call: include_revoked=True, limit=500
+    assert diagnostic_call["include_revoked"] is True
+    assert diagnostic_call["limit"] == 500
+
+    # No revoked records in result
+    reusable = [m for m in result.memories if m.get("memory_scope") == "reusable_knowledge"]
+    assert len(reusable) == 1
+    assert reusable[0]["knowledge_id"] == "k-approved"
+    assert result.reusable_knowledge_available is True
+
+
+def test_old_revoked_knowledge_within_diagnostic_window_is_not_approved(
+    tmp_path: Path,
+) -> None:
+    """A revoked record within the 500-record diagnostic window is classified as
+    knowledge_not_approved, not plugin_record_unverified."""
+    store = _embodied_store(tmp_path)
+    _record_event(store, event_id="obs-1")
+    lifecycle = _lifecycle(tmp_path, store, "real")
+
+    # Revoke the target first, then add 100 newer approved records so the
+    # target falls outside a 100-record diagnostic query but remains inside
+    # the 500-record lifecycle maximum.
+    _approve_knowledge(lifecycle, knowledge_id="k-old-revoked", title="old revoked")
+    lifecycle.revoke_knowledge(
+        knowledge_id="k-old-revoked", actor_id="reviewer", reason="outdated",
+    )
+    for i in range(100):
+        _approve_knowledge(
+            lifecycle,
+            knowledge_id=f"k-new-approved-{i:03d}",
+            title=f"new approved {i}",
+        )
+
+    # Enrichment tries to claim the old revoked record
+    def enrich_cb(payload):
+        return {"retrieved_memories": [
+            {"memory_scope": "reusable_knowledge", "knowledge_id": "k-old-revoked"},
+        ]}
+
+    runtime = _plugin_runtime_with_callbacks(enrich_cb=enrich_cb)
+    builder = PlannerMemoryContextBuilder(
+        memory_retriever=None,
+        mission_memory=store.evidence_store,
+        facade=_facade(store, "real"),
+        lifecycle=lifecycle,
+        plugin_runtime=runtime,
+    )
+    result = builder.build(_request())
+
+    # k-old-revoked must not appear
+    result_kids = {m.get("knowledge_id") for m in result.memories}
+    assert "k-old-revoked" not in result_kids
+
+    # Must be classified as knowledge_not_approved (not plugin_record_unverified)
+    codes = {w.code for w in result.warnings}
+    assert "knowledge_not_approved" in codes
+    assert "plugin_record_unverified" not in codes
+
+    # Approved recall remains intact.
+    assert "k-new-approved-099" in result_kids
+
+
+# ---------------------------------------------------------------------------
 # Lightweight test runner (no pytest dependency)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import inspect
     import tempfile
 
-    _ALL_TESTS = [
-        # Tasks 1-3: retrieval scope and plugin diagnostics
-        test_memory_retriever_requires_explicit_scope,
-        test_memory_retriever_filters_mission_runtime_and_sensitivity,
-        test_memory_retriever_admits_restricted_when_scope_allows_it,
-        test_evaluate_retrieval_requires_scope_and_isolates_missions,
-        test_memory_hook_diagnostics_report_callback_exception_without_message,
-        test_existing_memory_hook_api_keeps_list_shape_on_callback_exception,
-        test_provider_hook_diagnostics_report_callback_exception_without_message,
-        # Task 4: PlannerMemoryContextBuilder admission
-        test_request_validation_empty_command_raises,
-        test_request_validation_empty_mission_raises,
-        test_request_validation_empty_requester_raises,
-        test_request_validation_invalid_runtime_raises,
-        test_request_validation_empty_scope_value_raises,
-        test_request_validation_negative_limit_raises,
-        test_request_validation_limit_above_100_raises,
-        test_standard_embodied_record_matching_mission_and_runtime_is_admitted,
-        test_other_mission_record_is_omitted,
-        test_other_runtime_record_is_omitted,
-        test_restricted_without_scope_is_omitted,
-        test_missing_embodied_metadata_is_omitted,
-        test_restricted_memory_admitted_with_scope,
-        test_corrections_admitted_only_for_current_mission_and_runtime,
-        test_facade_events_canonicalized_and_deduplicated_against_indexed,
-        test_runtime_mode_none_returns_empty_result,
-        test_restricted_scope_grant_reported_even_when_no_restricted_records,
-        test_guard_decision_reports_degraded_when_warnings_present,
-        test_guard_decision_reports_valid_when_no_warnings,
-        test_reusable_knowledge_available_flag,
-        test_reusable_knowledge_available_true_with_lifecycle,
-        test_authority_lookup_failed_warning_when_list_records_raises,
-        test_authority_lookup_failed_when_mission_memory_is_none,
-        test_facade_events_checked_against_authority_map,
-        # Task 5: Approval-gated reusable knowledge
-        test_approved_operator_preference_from_other_mission_is_admitted,
-        test_raw_correction_not_admitted_across_missions,
-        test_revoked_knowledge_is_absent,
-        test_simulation_knowledge_absent_in_real_mode,
-        test_simulation_knowledge_admitted_when_real_included,
-        test_current_mission_consumes_quota_before_reusable,
-        test_lifecycle_failure_leaves_current_mission_intact,
-        test_knowledge_content_uses_approved_redacted_payload,
-        test_knowledge_dict_has_required_safety_fields,
-        # Task 6: Plugin filter, rerank, and enrichment reauthorization
-        test_plugin_filter_can_remove_known_ids,
-        test_plugin_rerank_can_reorder_known_ids,
-        test_plugin_replacing_content_for_known_id_has_no_effect,
-        test_plugin_forged_operator_approved_unknown_id_omitted,
-        test_enrichment_can_add_current_mission_record_by_record_id,
-        test_enrichment_can_add_approved_knowledge_by_knowledge_id,
-        test_enrichment_revoked_or_runtime_mismatched_knowledge_rejected,
-        test_plugin_filter_callback_exception_produces_warning,
-        test_plugin_rerank_callback_exception_produces_warning,
-        test_plugin_enrichment_callback_exception_produces_warning,
-        test_plugin_enrichment_unknown_record_id_omitted,
-        test_final_quota_prioritizes_current_mission_over_reusable_after_hooks,
-        test_enrichment_content_fields_ignored_for_known_items,
-        test_enrichment_unknown_knowledge_id_omitted,
-        test_enrichment_mission_mismatched_record_omitted,
-        test_multiple_filter_plugins_all_effects_reauthorized,
-        test_multiple_rerank_plugins_all_applied,
-        test_enrichment_correction_record_routed_to_corrections,
-        test_plugin_filter_and_rerank_work_sequentially,
-        test_plugin_enrichment_adds_to_existing_memories,
-    ]
+    # Deterministic discovery: find all module-level test_* functions
+    _ALL_TESTS = sorted(
+        (
+            value
+            for name, value in globals().items()
+            if name.startswith("test_") and callable(value)
+        ),
+        key=lambda function: function.__name__,
+    )
 
     passed = 0
     failed = 0
     for fn in _ALL_TESTS:
+        sig = inspect.signature(fn)
+        params = list(sig.parameters.values())
         with tempfile.TemporaryDirectory() as tmp:
             try:
-                fn(Path(tmp))
+                if len(params) == 0:
+                    fn()
+                elif len(params) == 1 and params[0].name == "tmp_path":
+                    fn(Path(tmp))
+                else:
+                    raise AssertionError(
+                        f"Unsupported test signature: {fn.__name__}{sig}"
+                    )
                 print(f"PASS: {fn.__name__}")
                 passed += 1
             except Exception as exc:
                 print(f"FAIL: {fn.__name__}: {exc}")
                 failed += 1
     print(f"\n{passed} passed, {failed} failed out of {len(_ALL_TESTS)}")
+    if failed:
+        raise SystemExit(1)

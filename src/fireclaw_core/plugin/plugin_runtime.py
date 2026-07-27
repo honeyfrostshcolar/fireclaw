@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -331,14 +332,30 @@ class PluginRuntime:
             (hook_type, hook_name), []
         ):
             try:
-                result = callback(dict(payload))  # copy to prevent mutation
+                callback_payload = deepcopy(payload)
             except Exception as exc:
                 logger.warning(
-                    "Plugin '%s' %s hook '%s' raised an exception; skipping.",
+                    "Plugin '%s' %s hook '%s' raised %s; skipping.",
                     plugin_id,
                     hook_type,
                     hook_name,
-                    exc_info=True,
+                    type(exc).__name__,
+                )
+                failures.append(PluginHookFailure(
+                    plugin_id=plugin_id,
+                    hook_name=hook_name,
+                    exception_class=type(exc).__name__,
+                ))
+                continue
+            try:
+                result = callback(callback_payload)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' %s hook '%s' raised %s; skipping.",
+                    plugin_id,
+                    hook_type,
+                    hook_name,
+                    type(exc).__name__,
                 )
                 failures.append(PluginHookFailure(
                     plugin_id=plugin_id,
@@ -360,8 +377,24 @@ class PluginRuntime:
                     exception_class="TypeError",
                 ))
                 continue
+            try:
+                detached = deepcopy(result)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' %s hook '%s' raised %s; skipping.",
+                    plugin_id,
+                    hook_type,
+                    hook_name,
+                    type(exc).__name__,
+                )
+                failures.append(PluginHookFailure(
+                    plugin_id=plugin_id,
+                    hook_name=hook_name,
+                    exception_class=type(exc).__name__,
+                ))
+                continue
             effects.append(
-                PluginHookEffect(plugin_id, hook_name, result).to_dict()
+                PluginHookEffect(plugin_id, hook_name, detached).to_dict()
             )
         return PluginHookRun(tuple(effects), tuple(failures))
 

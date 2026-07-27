@@ -30,6 +30,7 @@ from fireclaw_core.mission.mission_planning_audit import GuardDecision
 
 MAX_PLANNER_MEMORIES = 100
 MAX_PLANNER_CORRECTIONS = 100
+MAX_KNOWLEDGE_DIAGNOSTIC_RECORDS = 500
 
 
 def _plugin_key(value: dict[str, Any]) -> tuple[str, str] | None:
@@ -243,7 +244,7 @@ class PlannerMemoryContextBuilder:
                     "admin" in request.scopes
                     or MEMORY_RESTRICTED_READ_SCOPE in request.scopes
                 ),
-                reusable_knowledge_available=self._lifecycle is not None,
+                reusable_knowledge_available=False,
             )
 
         allowed_sensitivities = self._allowed_sensitivities(request)
@@ -251,7 +252,7 @@ class PlannerMemoryContextBuilder:
             "admin" in request.scopes
             or MEMORY_RESTRICTED_READ_SCOPE in request.scopes
         )
-        reusable_knowledge_available = self._lifecycle is not None
+        reusable_knowledge_available = False
 
         memories: list[dict[str, Any]] = []
         corrections: list[dict[str, Any]] = []
@@ -283,6 +284,7 @@ class PlannerMemoryContextBuilder:
             ))
 
         # Step 1: Build authority map from mission memory
+        authority_available = False
         authority_ids: set[str] = set()
         authority_record_map: dict[str, MissionMemoryRecord] = {}
         if self._mission_memory is not None:
@@ -290,15 +292,18 @@ class PlannerMemoryContextBuilder:
                 authority_records = self._mission_memory.list_records(
                     mission_id=request.mission_id,
                 )
+                authority_available = True
                 authority_ids = {r.record_id for r in authority_records}
                 authority_record_map = {r.record_id: r for r in authority_records}
             except Exception as exc:
-                omit("authority_lookup_failed", "mission_memory", exception=exc)
+                omit("current_memory_unavailable", "mission_memory", exception=exc)
         else:
-            omit("authority_lookup_failed", "mission_memory")
+            omit("current_memory_unavailable", "mission_memory")
 
         # Step 2: Query indexed records via MemoryRetriever
-        if self._memory_retriever is not None:
+        # Only admit candidates when authority is available; use authority
+        # content exclusively (never trust retriever payload).
+        if self._memory_retriever is not None and authority_available:
             try:
                 scope = MemoryRetrievalScope(
                     mission_ids=(request.mission_id,),
@@ -311,63 +316,37 @@ class PlannerMemoryContextBuilder:
                     limit=request.max_memories,
                 )
                 for item in retrieved:
-                    # Reject any retrieved ID missing from the authority map
-                    if authority_ids and item.record_id not in authority_ids:
+                    # The record_id is the only claim; must be in authority map
+                    if item.record_id not in authority_record_map:
                         omit("authority_record_missing", "memory_retriever",
                              record_id=item.record_id)
                         continue
-                    metadata = item.content.get(EMBODIED_METADATA_KEY)
-                    if not isinstance(metadata, dict):
-                        omit("legacy_metadata_missing", "memory_retriever",
+                    # Canonicalize from authority, never from retriever payload
+                    record = authority_record_map[item.record_id]
+                    canonical, reject_code = self._canonical_record(
+                        record, request, allowed_sensitivities,
+                    )
+                    if canonical is None:
+                        omit(reject_code or "unknown", "memory_retriever",
                              record_id=item.record_id)
                         continue
-                    runtime_mode = metadata.get("runtime_mode")
-                    sensitivity = metadata.get("sensitivity")
-                    if item.mission_id != request.mission_id:
-                        omit("mission_scope_mismatch", "memory_retriever",
-                             record_id=item.record_id)
-                        continue
-                    if runtime_mode != request.runtime_mode:
-                        omit("runtime_mode_mismatch", "memory_retriever",
-                             record_id=item.record_id)
-                        continue
-                    if sensitivity not in allowed_sensitivities:
-                        omit("restricted_scope_denied", "memory_retriever",
-                             record_id=item.record_id)
-                        continue
-                    try:
-                        event = EmbodiedMemoryEvent.from_mission_record(
-                            MissionMemoryRecord(
-                                record_id=item.record_id,
-                                mission_id=item.mission_id,
-                                record_type=item.record_type,
-                                content=item.content,
-                                created_at=item.created_at,
-                            )
-                        )
-                    except ValueError:
-                        omit("legacy_metadata_missing", "memory_retriever",
-                             record_id=item.record_id)
-                        continue
-                    if item.record_id not in seen_record_ids:
-                        seen_record_ids.add(item.record_id)
-                        memories.append({
-                            "memory_scope": "current_mission",
-                            "record_id": event.event_id,
-                            "record_type": event.event_type,
-                            "source_mission_id": event.mission_id,
-                            "runtime_mode": event.runtime_mode,
-                            "sensitivity": event.sensitivity,
-                            "content": redact_dict(dict(event.payload)),
-                            "advisory_only": True,
-                            "can_authorize_action": False,
-                            "requires_current_state_revalidation": True,
-                        })
+                    if record.record_type == "correction":
+                        if item.record_id not in seen_record_ids:
+                            seen_record_ids.add(item.record_id)
+                            corrections.append(canonical)
+                    else:
+                        if item.record_id not in seen_record_ids:
+                            seen_record_ids.add(item.record_id)
+                            memories.append(canonical)
             except Exception as exc:
-                omit("memory_retriever_failed", "memory_retriever", exception=exc)
+                omit("current_memory_unavailable", "memory_retriever", exception=exc)
+        elif self._memory_retriever is not None and not authority_available:
+            omit("current_memory_unavailable", "memory_retriever")
 
         # Step 3: Query facade events via MissionMemoryFacade
-        if self._facade is not None:
+        # Only admit candidates when authority is available; use authority
+        # content exclusively (never trust facade payload).
+        if self._facade is not None and authority_available:
             try:
                 access = MemoryAccessContext(
                     mission_id=request.mission_id,
@@ -379,7 +358,6 @@ class PlannerMemoryContextBuilder:
                     access,
                     limit=request.max_memories,
                 )
-                # Reconstruct current envelopes from returned events
                 facade_events = context.get("events", [])
                 for event_payload in facade_events:
                     if not isinstance(event_payload, dict):
@@ -387,39 +365,36 @@ class PlannerMemoryContextBuilder:
                     event_id = event_payload.get("event_id")
                     if not event_id or event_id in seen_record_ids:
                         continue
-                    # Reject any facade event ID missing from the authority map
-                    if authority_ids and event_id not in authority_ids:
+                    # The event_id is the only claim; must be in authority map
+                    if event_id not in authority_record_map:
                         omit("authority_record_missing", "facade",
                              record_id=event_id)
                         continue
-                    sensitivity = event_payload.get("sensitivity", "standard")
-                    runtime_mode_val = event_payload.get("runtime_mode")
-                    if runtime_mode_val != request.runtime_mode:
-                        omit("runtime_mode_mismatch", "facade",
+                    # Canonicalize from authority, never from facade payload
+                    record = authority_record_map[event_id]
+                    canonical, reject_code = self._canonical_record(
+                        record, request, allowed_sensitivities,
+                    )
+                    if canonical is None:
+                        omit(reject_code or "unknown", "facade",
                              record_id=event_id)
                         continue
-                    if sensitivity not in allowed_sensitivities:
-                        omit("restricted_scope_denied", "facade",
-                             record_id=event_id)
-                        continue
-                    seen_record_ids.add(event_id)
-                    memories.append({
-                        "memory_scope": "current_mission",
-                        "record_id": event_id,
-                        "record_type": event_payload.get("event_type", ""),
-                        "source_mission_id": request.mission_id,
-                        "runtime_mode": request.runtime_mode,
-                        "sensitivity": sensitivity,
-                        "content": redact_dict(dict(event_payload.get("payload", {}))),
-                        "advisory_only": True,
-                        "can_authorize_action": False,
-                        "requires_current_state_revalidation": True,
-                    })
+                    if record.record_type == "correction":
+                        if event_id not in seen_record_ids:
+                            seen_record_ids.add(event_id)
+                            corrections.append(canonical)
+                    else:
+                        if event_id not in seen_record_ids:
+                            seen_record_ids.add(event_id)
+                            memories.append(canonical)
             except Exception as exc:
-                omit("facade_query_failed", "facade", exception=exc)
+                omit("current_context_unavailable", "facade", exception=exc)
+        elif self._facade is not None and not authority_available:
+            omit("current_context_unavailable", "facade")
 
         # Step 4: Query corrections via MissionMemoryStore
-        if self._mission_memory is not None:
+        # Only when authority is available (same store as Step 1).
+        if self._mission_memory is not None and authority_available:
             try:
                 correction_records = self._mission_memory.list_records(
                     mission_id=request.mission_id,
@@ -439,31 +414,49 @@ class PlannerMemoryContextBuilder:
                     if len(corrections) >= request.max_corrections:
                         break
             except Exception as exc:
-                omit("corrections_query_failed", "corrections", exception=exc)
+                omit("corrections_unavailable", "corrections", exception=exc)
+        elif self._mission_memory is not None and not authority_available:
+            omit("corrections_unavailable", "corrections")
 
         # Step 5: Query reusable knowledge via MissionMemoryLifecycleStore
         reusable_memories: list[dict[str, Any]] = []
-        # Cache raw knowledge records keyed by knowledge_id to avoid
-        # redundant list_knowledge() calls during enrichment resolution.
+        # Map for plugin claim classification.  Diagnostic-only revoked
+        # records are merged here but never enter canonical_map or Planner
+        # context.
         knowledge_by_id: dict[str, Any] = {}
         if self._lifecycle is not None:
             try:
-                knowledge = self._lifecycle.list_knowledge(
+                # Primary query: approved candidates only (quota-respecting)
+                approved_knowledge = self._lifecycle.list_knowledge(
                     include_revoked=False,
                     limit=MAX_PLANNER_MEMORIES,
                 )
+                reusable_knowledge_available = True
                 # Reverse for newest-first deterministic ordering
-                knowledge = list(reversed(knowledge))
-                for record in knowledge:
+                approved_knowledge = list(reversed(approved_knowledge))
+                for record in approved_knowledge:
                     knowledge_by_id[record.knowledge_id] = record
-                    # Defensive recheck
-                    if record.status != "approved":
-                        continue
                     if request.runtime_mode not in record.applicable_runtime_modes:
                         continue
                     reusable_memories.append(self._canonical_knowledge(record))
             except Exception as exc:
                 omit("reusable_knowledge_unavailable", "lifecycle", exception=exc)
+
+            # Diagnostic-only lookup: include revoked for classification.
+            # Failure here does not discard a successful approved query.
+            # Records outside the MAX_KNOWLEDGE_DIAGNOSTIC_RECORDS window
+            # remain plugin_record_unverified (fail-closed).
+            if reusable_knowledge_available:
+                try:
+                    revoked_knowledge = self._lifecycle.list_knowledge(
+                        include_revoked=True,
+                        limit=MAX_KNOWLEDGE_DIAGNOSTIC_RECORDS,
+                    )
+                    for record in revoked_knowledge:
+                        if record.knowledge_id not in knowledge_by_id:
+                            knowledge_by_id[record.knowledge_id] = record
+                except Exception:
+                    pass  # diagnostic-only; approved candidates remain valid
 
         # Step 6: Build canonical maps for plugin reauthorization
         # Key: ("current_mission", record_id) or ("reusable_knowledge", knowledge_id)
@@ -477,12 +470,21 @@ class PlannerMemoryContextBuilder:
             if key is not None:
                 canonical_map[key] = item
 
+        # Stage-scoped allowlists: each plugin stage (filter, rerank) can
+        # only authorize candidates that were in that stage's input.
+        # A candidate removed by filter cannot be reintroduced by rerank.
         def _reauthorize_plugin_items(
             plugin_items: list[dict[str, Any]],
+            allowed_keys: set[tuple[str, str]],
         ) -> list[dict[str, Any]]:
             """Replace every plugin object with its canonical equivalent.
 
-            Unknown keys are dropped and increment ``plugin_record_unverified``.
+            Only items whose key is in ``allowed_keys`` may be authorized.
+            Classifies rejections deterministically:
+            - ``knowledge_not_approved``: known knowledge ID that is revoked
+              or runtime-mismatched
+            - ``plugin_record_unverified``: unknown ID or not in the stage
+              allowlist
             """
             reauthorized: list[dict[str, Any]] = []
             for item in plugin_items:
@@ -493,20 +495,59 @@ class PlannerMemoryContextBuilder:
                 if key is None:
                     omit("plugin_record_unverified", "plugin")
                     continue
+                if key not in allowed_keys:
+                    # Reject out-of-stage claims fail-closed, while preserving
+                    # the more precise lifecycle diagnosis for known
+                    # non-approved reusable knowledge.
+                    known_knowledge = (
+                        knowledge_by_id.get(key[1])
+                        if key[0] == "reusable_knowledge"
+                        else None
+                    )
+                    if known_knowledge is not None and (
+                        getattr(known_knowledge, "status", None) != "approved"
+                        or request.runtime_mode
+                        not in getattr(
+                            known_knowledge,
+                            "applicable_runtime_modes",
+                            (),
+                        )
+                    ):
+                        omit(
+                            "knowledge_not_approved",
+                            "plugin",
+                            record_id=key[1],
+                        )
+                    else:
+                        omit("plugin_record_unverified", "plugin")
+                    continue
                 canonical = canonical_map.get(key)
                 if canonical is None:
+                    # Key was in the stage input but missing from canonical
+                    # map (should not happen); reject unverified
                     omit("plugin_record_unverified", "plugin")
                     continue
                 reauthorized.append(canonical)
             return reauthorized
 
         # Step 7: Run plugin filter and rerank hooks
+        # Hooks receive a combined list: current-mission memories + approved
+        # reusable knowledge.  After each effect, items are reauthorized and
+        # partitioned back so the final quota can prioritize current-mission.
         if self._plugin_runtime is not None:
+            # Build combined authorized candidate list for filter
+            filter_candidates = list(memories) + list(reusable_memories)
+            filter_allowed_keys: set[tuple[str, str]] = set()
+            for item in filter_candidates:
+                key = _plugin_key(item)
+                if key is not None:
+                    filter_allowed_keys.add(key)
+
             # Filter
             try:
                 filter_report = self._plugin_runtime.run_memory_hooks_with_diagnostics(
                     "filter",
-                    {"command": request.command, "memories": list(memories)},
+                    {"command": request.command, "memories": filter_candidates},
                 )
                 for failure in filter_report.failures:
                     omit(
@@ -519,15 +560,34 @@ class PlannerMemoryContextBuilder:
                         effect = effect_entry.get("effect", {})
                         plugin_filtered = effect.get("memories", [])
                         if isinstance(plugin_filtered, list):
-                            memories[:] = _reauthorize_plugin_items(plugin_filtered)
+                            reauthorized = _reauthorize_plugin_items(
+                                plugin_filtered, filter_allowed_keys,
+                            )
+                            memories[:] = [
+                                item for item in reauthorized
+                                if item.get("memory_scope") == "current_mission"
+                            ]
+                            reusable_memories[:] = [
+                                item for item in reauthorized
+                                if item.get("memory_scope") == "reusable_knowledge"
+                            ]
             except Exception as exc:
                 omit("plugin_filter_failed", "plugin_runtime", exception=exc)
+
+            # Build rerank candidates from post-filter surviving items only.
+            # A candidate removed by filter is not in rerank's allowlist.
+            rerank_candidates = list(memories) + list(reusable_memories)
+            rerank_allowed_keys: set[tuple[str, str]] = set()
+            for item in rerank_candidates:
+                key = _plugin_key(item)
+                if key is not None:
+                    rerank_allowed_keys.add(key)
 
             # Rerank
             try:
                 rerank_report = self._plugin_runtime.run_memory_hooks_with_diagnostics(
                     "rerank",
-                    {"command": request.command, "memories": list(memories)},
+                    {"command": request.command, "memories": rerank_candidates},
                 )
                 for failure in rerank_report.failures:
                     omit(
@@ -540,17 +600,28 @@ class PlannerMemoryContextBuilder:
                         effect = effect_entry.get("effect", {})
                         plugin_reranked = effect.get("memories", [])
                         if isinstance(plugin_reranked, list):
-                            memories[:] = _reauthorize_plugin_items(plugin_reranked)
+                            reauthorized = _reauthorize_plugin_items(
+                                plugin_reranked, rerank_allowed_keys,
+                            )
+                            memories[:] = [
+                                item for item in reauthorized
+                                if item.get("memory_scope") == "current_mission"
+                            ]
+                            reusable_memories[:] = [
+                                item for item in reauthorized
+                                if item.get("memory_scope") == "reusable_knowledge"
+                            ]
             except Exception as exc:
                 omit("plugin_rerank_failed", "plugin_runtime", exception=exc)
 
-            # Provider enrichment
+            # Provider enrichment (also uses combined list)
+            combined_for_hooks = list(memories) + list(reusable_memories)
             try:
                 enrich_report = self._plugin_runtime.run_provider_hooks_with_diagnostics(
                     "enrich_context",
                     {
                         "command": request.command,
-                        "memories": list(memories),
+                        "memories": combined_for_hooks,
                     },
                 )
                 for failure in enrich_report.failures:
@@ -589,7 +660,13 @@ class PlannerMemoryContextBuilder:
                                         key[1], request, knowledge_by_id,
                                     )
                             if canonical is None:
-                                omit("plugin_record_unverified", "plugin")
+                                # Classify the rejection
+                                if key[0] == "current_mission" and key[1] in authority_record_map:
+                                    omit("plugin_scope_mismatch", "plugin", record_id=key[1])
+                                elif key[0] == "reusable_knowledge" and key[1] in knowledge_by_id:
+                                    omit("knowledge_not_approved", "plugin", record_id=key[1])
+                                else:
+                                    omit("plugin_record_unverified", "plugin")
                                 continue
                             # Deduplicate against memories and previously
                             # enriched items
@@ -599,7 +676,7 @@ class PlannerMemoryContextBuilder:
                             if canonical_key in seen_enrichment_keys:
                                 continue
                             all_existing_keys = {
-                                _plugin_key(m) for m in memories
+                                _plugin_key(m) for m in (memories + reusable_memories)
                                 if _plugin_key(m) is not None
                             }
                             if canonical_key in all_existing_keys:
