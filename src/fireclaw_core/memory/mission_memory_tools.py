@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fireclaw_core.memory.embodied_memory import EMBODIED_EVENT_TYPES
+from fireclaw_core.memory.embodied_memory import (
+    EMBODIED_EVENT_TYPES,
+    MEMORY_RELATION_TYPES,
+)
 from fireclaw_core.memory.entity_memory import ENTITY_KINDS, ENTITY_STATUSES
 from fireclaw_core.memory.mission_memory_facade import (
     MemoryAccessContext,
@@ -20,6 +23,7 @@ QUERY_TIMELINE_TOOL = "query_mission_memory_timeline"
 QUERY_AREA_TOOL = "query_mission_memory_area"
 QUERY_NEAREST_TOOL = "query_mission_memory_nearest"
 QUERY_ENTITIES_TOOL = "query_mission_memory_entities"
+QUERY_RELATED_CONTEXT_TOOL = "query_mission_memory_related_context"
 QUERY_IDENTITY_PROPOSALS_TOOL = "query_mission_entity_identity_proposals"
 LOCATE_ENTITY_TOOL = "locate_mission_memory_entity"
 ROBOT_STATUS_TOOL = "get_mission_robot_status"
@@ -33,6 +37,7 @@ MISSION_MEMORY_TOOL_NAMES = frozenset({
     QUERY_AREA_TOOL,
     QUERY_NEAREST_TOOL,
     QUERY_ENTITIES_TOOL,
+    QUERY_RELATED_CONTEXT_TOOL,
     QUERY_IDENTITY_PROPOSALS_TOOL,
     LOCATE_ENTITY_TOOL,
     ROBOT_STATUS_TOOL,
@@ -54,6 +59,8 @@ class MissionMemoryTools:
         return mission_memory_tool_schemas(
             max_results=self._facade.config.max_results,
             max_spatial_radius_m=self._facade.config.max_spatial_radius_m,
+            max_relation_depth=self._facade.config.max_relation_depth,
+            max_relation_edges=self._facade.config.max_relation_edges,
         )
 
     def execute(
@@ -110,6 +117,21 @@ class MissionMemoryTools:
             }
             _reject_unknown(arguments, allowed)
             return self._facade.query_entities(access, **_provided(arguments, allowed))
+        if name == QUERY_RELATED_CONTEXT_TOOL:
+            allowed = {
+                "entity_id",
+                "episode_id",
+                "direction",
+                "relation_types",
+                "max_depth",
+                "max_nodes",
+                "max_edges",
+            }
+            _reject_unknown(arguments, allowed)
+            return self._facade.query_related_context(
+                access,
+                **_provided(arguments, allowed),
+            )
         if name == QUERY_IDENTITY_PROPOSALS_TOOL:
             allowed = {"entity_kind", "entity_id", "limit"}
             _reject_unknown(arguments, allowed)
@@ -137,6 +159,8 @@ def mission_memory_tool_schemas(
     *,
     max_results: int = 100,
     max_spatial_radius_m: float = 500.0,
+    max_relation_depth: int = 4,
+    max_relation_edges: int = 200,
 ) -> list[dict[str, Any]]:
     """Return OpenAI-compatible schemas with server-bound isolation fields omitted."""
     limit = {"type": "integer", "minimum": 1, "maximum": max_results}
@@ -311,6 +335,54 @@ def mission_memory_tool_schemas(
                     "last_seen_after": timestamp,
                     "limit": limit,
                 },
+                "additionalProperties": False,
+            },
+        ),
+        _tool_schema(
+            QUERY_RELATED_CONTEXT_TOOL,
+            "Traverse a bounded relation graph from one Entity or Episode. "
+            "Hidden records are omitted and never used as traversal bridges.",
+            {
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "string", "minLength": 1},
+                    "episode_id": {"type": "string", "minLength": 1},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["incoming", "outgoing", "both"],
+                    },
+                    "relation_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": sorted(MEMORY_RELATION_TYPES),
+                        },
+                        "minItems": 1,
+                        "maxItems": len(MEMORY_RELATION_TYPES),
+                        "uniqueItems": True,
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": max_relation_depth,
+                    },
+                    "max_nodes": limit,
+                    "max_edges": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": max_relation_edges,
+                    },
+                },
+                "oneOf": [
+                    {
+                        "required": ["entity_id"],
+                        "not": {"required": ["episode_id"]},
+                    },
+                    {
+                        "required": ["episode_id"],
+                        "not": {"required": ["entity_id"]},
+                    },
+                ],
                 "additionalProperties": False,
             },
         ),

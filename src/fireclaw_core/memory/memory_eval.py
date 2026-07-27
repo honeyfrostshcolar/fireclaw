@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fireclaw_core.memory.memory_retrieval import MemoryRetriever, RetrievedMemory
+from fireclaw_core.memory.memory_retrieval import MemoryRetrievalScope, MemoryRetriever, RetrievedMemory
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,7 @@ def evaluate_retrieval(
     retriever: MemoryRetriever,
     cases: list[dict[str, Any]],
     *,
+    scope: MemoryRetrievalScope,
     limit: int = 5,
 ) -> EvalReport:
     """Evaluate retrieval quality against a set of test cases.
@@ -108,7 +109,7 @@ def evaluate_retrieval(
             missing.append(f"Case {i}: invalid format ({exc})")
             continue
 
-        retrieved = retriever.retrieve(case.query, limit=limit)
+        retrieved = retriever.retrieve(case.query, scope=scope, limit=limit)
         if case.record_type is not None:
             retrieved = [mem for mem in retrieved if mem.record_type == case.record_type]
 

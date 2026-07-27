@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -38,6 +39,38 @@ class PluginHookEffect:
             "hook_name": self.hook_name,
             "effect": dict(self.effect),
         }
+
+
+@dataclass(frozen=True)
+class PluginHookFailure:
+    """Content-free record of a single hook callback failure.
+
+    Stores the plugin ID, hook name, and exception class name only.
+    Exception messages and payload content are never captured.
+    """
+
+    plugin_id: str
+    hook_name: str
+    exception_class: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "plugin_id": self.plugin_id,
+            "hook_name": self.hook_name,
+            "exception_class": self.exception_class,
+        }
+
+
+@dataclass(frozen=True)
+class PluginHookRun:
+    """Immutable diagnostic result of a hook execution pass.
+
+    ``effects`` contains the structured effect dicts from successful hooks.
+    ``failures`` contains content-free failure records from hooks that raised.
+    """
+
+    effects: tuple[dict[str, Any], ...]
+    failures: tuple[PluginHookFailure, ...]
 
 # ---------------------------------------------------------------------------
 # Known hook name sets
@@ -239,36 +272,131 @@ class PluginRuntime:
         """Execute all registered tool_approval *hook_name* callables."""
         return self._run_hooks("tool_approval", hook_name, payload)
 
+    def run_memory_hooks_with_diagnostics(
+        self,
+        hook_name: str,
+        payload: dict[str, Any],
+    ) -> PluginHookRun:
+        """Execute memory hooks and return content-free diagnostics.
+
+        Unlike :meth:`run_memory_hooks`, non-dict return values from
+        callbacks are recorded as failures rather than raising ``ValueError``.
+        Exception messages are never stored in the result.
+        """
+        return self._run_hooks_with_diagnostics(
+            "memory", hook_name, payload, strict_result_type=False
+        )
+
+    def run_provider_hooks_with_diagnostics(
+        self,
+        hook_name: str,
+        payload: dict[str, Any],
+    ) -> PluginHookRun:
+        """Execute provider hooks and return content-free diagnostics.
+
+        Unlike :meth:`run_provider_hooks`, non-dict return values from
+        callbacks are recorded as failures rather than raising ``ValueError``.
+        Exception messages are never stored in the result.
+        """
+        return self._run_hooks_with_diagnostics(
+            "provider", hook_name, payload, strict_result_type=False
+        )
+
     def _run_hooks(
         self, hook_type: str, hook_name: str, payload: dict[str, Any]
     ) -> list[dict[str, Any]]:
+        """Legacy hook execution returning a list of effect dicts."""
+        report = self._run_hooks_with_diagnostics(
+            hook_type, hook_name, payload, strict_result_type=True,
+        )
+        return list(report.effects)
+
+    def _run_hooks_with_diagnostics(
+        self,
+        hook_type: str,
+        hook_name: str,
+        payload: dict[str, Any],
+        *,
+        strict_result_type: bool,
+    ) -> PluginHookRun:
+        """Execute hooks and return a diagnostic report.
+
+        When *strict_result_type* is ``True`` (legacy callers), a non-dict
+        return value raises ``ValueError`` immediately.  When ``False``
+        (diagnostic callers), the non-dict return is recorded as a failure.
+        Exception messages are never stored in the report.
+        """
         effects: list[dict[str, Any]] = []
+        failures: list[PluginHookFailure] = []
         for plugin_id, callback in self._callables.get(
             (hook_type, hook_name), []
         ):
             try:
-                result = callback(dict(payload))  # copy to prevent mutation
-            except Exception:
-                # A buggy plugin must not prevent other plugins from running.
+                callback_payload = deepcopy(payload)
+            except Exception as exc:
                 logger.warning(
-                    "Plugin '%s' %s hook '%s' raised an exception; skipping.",
+                    "Plugin '%s' %s hook '%s' raised %s; skipping.",
                     plugin_id,
                     hook_type,
                     hook_name,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
+                failures.append(PluginHookFailure(
+                    plugin_id=plugin_id,
+                    hook_name=hook_name,
+                    exception_class=type(exc).__name__,
+                ))
+                continue
+            try:
+                result = callback(callback_payload)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' %s hook '%s' raised %s; skipping.",
+                    plugin_id,
+                    hook_type,
+                    hook_name,
+                    type(exc).__name__,
+                )
+                failures.append(PluginHookFailure(
+                    plugin_id=plugin_id,
+                    hook_name=hook_name,
+                    exception_class=type(exc).__name__,
+                ))
                 continue
             if result is None:
                 continue
             if not isinstance(result, dict):
-                raise ValueError(
-                    f"Plugin '{plugin_id}' {hook_type} hook '{hook_name}' "
-                    f"must return a dict or None."
+                if strict_result_type:
+                    raise ValueError(
+                        f"Plugin '{plugin_id}' {hook_type} hook '{hook_name}' "
+                        "must return a dict or None."
+                    )
+                failures.append(PluginHookFailure(
+                    plugin_id=plugin_id,
+                    hook_name=hook_name,
+                    exception_class="TypeError",
+                ))
+                continue
+            try:
+                detached = deepcopy(result)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' %s hook '%s' raised %s; skipping.",
+                    plugin_id,
+                    hook_type,
+                    hook_name,
+                    type(exc).__name__,
                 )
+                failures.append(PluginHookFailure(
+                    plugin_id=plugin_id,
+                    hook_name=hook_name,
+                    exception_class=type(exc).__name__,
+                ))
+                continue
             effects.append(
-                PluginHookEffect(plugin_id, hook_name, result).to_dict()
+                PluginHookEffect(plugin_id, hook_name, detached).to_dict()
             )
-        return effects
+        return PluginHookRun(tuple(effects), tuple(failures))
 
     def _validate_known_hook(
         self, hook_type: str, hook_name: str, plugin_id: str

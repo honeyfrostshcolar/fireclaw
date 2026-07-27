@@ -20,10 +20,14 @@ class RobotSubagentClient:
         timeout_seconds: float = 15.0,
         api_token: str | None = None,
         registry: JsonlSubagentRegistry | None = None,
+        replication_identity: Any | None = None,
+        replication_key_provider: Any | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.api_token = api_token
         self.registry = registry
+        self.replication_identity = replication_identity
+        self.replication_key_provider = replication_key_provider
 
     def get_state(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         return self._request_json("GET", entry.base_url, "/state")
@@ -133,21 +137,74 @@ class RobotSubagentClient:
         entry: RobotRegistryEntry,
         *,
         cursor: int,
-        limit: int = 200,
-        mission_id: str | None = None,
-        runtime_mode: str | None = None,
+        limit: int,
+        mission_id: str,
+        runtime_mode: str,
     ) -> dict[str, Any]:
-        query: dict[str, str | int] = {"cursor": cursor, "limit": limit}
-        if mission_id is not None:
-            query["mission_id"] = mission_id
-        if runtime_mode is not None:
-            query["runtime_mode"] = runtime_mode
-        return self._request_json(
-            "GET",
-            entry.base_url,
-            f"/memory/replication?{urlencode(query)}",
-            scopes={MEMORY_REPLICATION_SCOPE},
+        request_value = self._build_memory_replication_request(
+            entry,
+            cursor=cursor,
+            limit=limit,
+            mission_id=mission_id,
+            runtime_mode=runtime_mode,
         )
+        try:
+            with request.urlopen(request_value, timeout=self.timeout_seconds) as response:
+                return _decode_json_response(response.read())
+        except HTTPError as exc:
+            body = _decode_json_response(exc.read())
+            body.setdefault("status", "error")
+            body.setdefault("http_status", exc.code)
+            return body
+
+    def _build_memory_replication_request(
+        self,
+        entry: RobotRegistryEntry,
+        *,
+        cursor: int,
+        limit: int,
+        mission_id: str,
+        runtime_mode: str,
+    ) -> request.Request:
+        from fireclaw_core.memory.replication_security import (
+            REPLICATION_AUTH_HEADER,
+            ReplicationRequestScope,
+            encode_auth_header,
+            sign_request,
+        )
+
+        if self.replication_identity is None or self.replication_key_provider is None:
+            raise ValueError("replication signing configuration is required")
+        if runtime_mode == "real" and not entry.base_url.startswith("https://"):
+            raise ValueError("real runtime requires HTTPS robot endpoint")
+        query: dict[str, str | int] = {
+            "cursor": cursor,
+            "limit": limit,
+            "mission_id": mission_id,
+            "runtime_mode": runtime_mode,
+        }
+        scope = ReplicationRequestScope(
+            mission_id=mission_id,
+            runtime_mode=runtime_mode,
+            cursor=cursor,
+            limit=limit,
+        )
+        auth = sign_request(
+            body={},
+            scope=scope,
+            key_provider=self.replication_key_provider,
+            peer_id=self.replication_identity.peer_id,
+            key_id=self.replication_identity.key_id,
+        )
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "X-Operator-Scopes": MEMORY_REPLICATION_SCOPE,
+            REPLICATION_AUTH_HEADER: encode_auth_header(auth),
+        }
+        if self.api_token is not None:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        url = f"{entry.base_url.rstrip('/')}/memory/replication?{urlencode(query)}"
+        return request.Request(url, method="GET", headers=headers)
 
     def check_presence(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         try:

@@ -9,6 +9,7 @@ from typing import Any, Callable
 from fireclaw_core.infra.log_redaction import redact_dict
 from fireclaw_core.memory.embodied_memory import (
     EMBODIED_EVENT_TYPES,
+    MEMORY_RELATION_TYPES,
     MEMORY_RUNTIME_MODES,
     EmbodiedMemoryEvent,
     EmbodiedMemoryStore,
@@ -55,6 +56,15 @@ class _SpatialMatch:
         }
 
 
+@dataclass
+class _IndexedSpatialResult:
+    ranked: list[
+        tuple[_SpatialMatch, str, str, EmbodiedMemoryEvent | FireClawEntity]
+    ]
+    restricted_records_omitted: int
+    restricted_entities_omitted: int
+
+
 @dataclass(frozen=True)
 class MemoryAccessContext:
     """Server-bound identity and isolation context for one memory read."""
@@ -86,6 +96,9 @@ class MissionMemoryFacadeConfig:
     max_results: int = 100
     max_context_minutes: float = 60.0
     max_spatial_radius_m: float = 500.0
+    max_relation_depth: int = 4
+    max_relation_edges: int = 200
+    max_relation_neighbors_per_node: int = 50
     working_memory: WorkingMemoryConfig = WorkingMemoryConfig()
 
     def __post_init__(self) -> None:
@@ -95,6 +108,13 @@ class MissionMemoryFacadeConfig:
             raise ValueError("max_context_minutes must be positive")
         if self.max_spatial_radius_m <= 0:
             raise ValueError("max_spatial_radius_m must be positive")
+        for name, value in (
+            ("max_relation_depth", self.max_relation_depth),
+            ("max_relation_edges", self.max_relation_edges),
+            ("max_relation_neighbors_per_node", self.max_relation_neighbors_per_node),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
 
 
 class MissionMemoryFacade:
@@ -543,27 +563,10 @@ class MissionMemoryFacade:
                 "entity_kinds and entity_statuses require entity in memory_types"
             )
         reference = _parse_timestamp(reference_at) if reference_at else datetime.now(timezone.utc)
-        ranked: list[
-            tuple[_SpatialMatch, str, str, EmbodiedMemoryEvent | FireClawEntity]
-        ] = []
         selected_event_types = frozenset(
             selected_memory_types & {"gist", "observation"}
         )
-        if selected_event_types:
-            for event in self._visible_events(access, event_types=selected_event_types):
-                match = _spatial_match(
-                    event,
-                    frame_id=frame_id,
-                    x=x,
-                    y=y,
-                    z=z,
-                    radius_m=search_radius,
-                    floor=floor,
-                )
-                if match is not None:
-                    ranked.append((match, event.event_type, event.event_id, event))
-
-        restricted_entities_omitted = 0
+        entities: list[FireClawEntity] = []
         if "entity" in selected_memory_types:
             service = self._require_entity_memory()
             entities = service.list_entities(mission_id=access.mission_id)
@@ -577,28 +580,78 @@ class MissionMemoryFacade:
                     entity for entity in entities
                     if entity.status in selected_entity_statuses
                 ]
-            positioned: list[tuple[_SpatialMatch, FireClawEntity]] = []
-            for entity in entities:
-                match = _pose_spatial_match(
-                    entity.current_pose,
-                    frame_id=frame_id,
-                    x=x,
-                    y=y,
-                    z=z,
-                    radius_m=search_radius,
-                    floor=floor,
-                    source="entity_current_pose",
+
+        indexed = self._indexed_spatial_candidates(
+            access,
+            frame_id=frame_id,
+            x=x,
+            y=y,
+            z=z,
+            radius_m=search_radius,
+            floor=floor,
+            selected_memory_types=selected_memory_types,
+            selected_event_types=selected_event_types,
+            selected_entity_kinds=selected_entity_kinds,
+            selected_entity_statuses=selected_entity_statuses,
+            entities=entities,
+        )
+        if indexed is not None:
+            ranked = indexed.ranked
+            restricted_records_omitted = indexed.restricted_records_omitted
+            restricted_entities_omitted = indexed.restricted_entities_omitted
+            candidate_backend = "sqlite_rtree"
+        else:
+            ranked = []
+            if selected_event_types:
+                for event in self._visible_events(access, event_types=selected_event_types):
+                    match = _spatial_match(
+                        event,
+                        frame_id=frame_id,
+                        x=x,
+                        y=y,
+                        z=z,
+                        radius_m=search_radius,
+                        floor=floor,
+                    )
+                    if match is not None:
+                        ranked.append((match, event.event_type, event.event_id, event))
+
+            restricted_entities_omitted = 0
+            if "entity" in selected_memory_types:
+                positioned: list[tuple[_SpatialMatch, FireClawEntity]] = []
+                for entity in entities:
+                    match = _pose_spatial_match(
+                        entity.current_pose,
+                        frame_id=frame_id,
+                        x=x,
+                        y=y,
+                        z=z,
+                        radius_m=search_radius,
+                        floor=floor,
+                        source="entity_current_pose",
+                    )
+                    if match is not None:
+                        positioned.append((match, entity))
+                visible_entities, restricted_entities_omitted = self._filter_entities(
+                    access,
+                    [entity for _, entity in positioned],
                 )
-                if match is not None:
-                    positioned.append((match, entity))
-            visible_entities, restricted_entities_omitted = self._filter_entities(
+                visible_entity_ids = {entity.entity_id for entity in visible_entities}
+                for match, entity in positioned:
+                    if entity.entity_id in visible_entity_ids:
+                        ranked.append((match, "entity", entity.entity_id, entity))
+            restricted_records_omitted = self._restricted_spatial_event_count(
                 access,
-                [entity for _, entity in positioned],
+                event_types=selected_event_types,
+                robot_id=None,
+                frame_id=frame_id,
+                x=x,
+                y=y,
+                z=z,
+                radius_m=search_radius,
+                floor=floor,
             )
-            visible_entity_ids = {entity.entity_id for entity in visible_entities}
-            for match, entity in positioned:
-                if entity.entity_id in visible_entity_ids:
-                    ranked.append((match, "entity", entity.entity_id, entity))
+            candidate_backend = "linear_scan"
 
         ranked.sort(key=lambda item: (item[0].sort_key(), item[1], item[2]))
         ranked = ranked[:self._bounded_limit(limit)]
@@ -648,17 +701,8 @@ class MissionMemoryFacade:
                     ),
                 },
                 "retrieval_mode": "exact_conservative_spatial_nearest",
-                "restricted_records_omitted": self._restricted_spatial_event_count(
-                    access,
-                    event_types=selected_event_types,
-                    robot_id=None,
-                    frame_id=frame_id,
-                    x=x,
-                    y=y,
-                    z=z,
-                    radius_m=search_radius,
-                    floor=floor,
-                ),
+                "candidate_backend": candidate_backend,
+                "restricted_records_omitted": restricted_records_omitted,
                 "restricted_entities_omitted": restricted_entities_omitted,
             },
             evidence_ids=evidence_ids,
@@ -794,6 +838,294 @@ class MissionMemoryFacade:
             },
             evidence_ids=evidence_ids,
             requires_revalidation=bool(payloads),
+        )
+
+    def query_related_context(
+        self,
+        access: MemoryAccessContext,
+        *,
+        entity_id: str | None = None,
+        episode_id: str | None = None,
+        direction: str = "both",
+        relation_types: list[str] | tuple[str, ...] | None = None,
+        max_depth: int = 2,
+        max_nodes: int | None = None,
+        max_edges: int | None = None,
+        reference_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Traverse a bounded, permission-filtered relation graph from one seed."""
+        self._validate_access(access)
+        if (entity_id is None) == (episode_id is None):
+            raise ValueError("provide exactly one of entity_id or episode_id")
+        seed_id = entity_id if entity_id is not None else episode_id
+        if not isinstance(seed_id, str) or not seed_id.strip():
+            raise ValueError("entity_id or episode_id must not be empty")
+        if direction not in {"incoming", "outgoing", "both"}:
+            raise ValueError("direction must be one of: incoming, outgoing, both")
+        if relation_types is None:
+            selected_relation_types = frozenset(MEMORY_RELATION_TYPES)
+        else:
+            if not isinstance(relation_types, (list, tuple)) or any(
+                not isinstance(value, str) or not value.strip()
+                for value in relation_types
+            ):
+                raise ValueError(
+                    "relation_types must be a list or tuple of non-empty strings"
+                )
+            selected_relation_types = frozenset(relation_types)
+        if not selected_relation_types:
+            raise ValueError("relation_types must not be empty")
+        invalid_relation_types = selected_relation_types - MEMORY_RELATION_TYPES
+        if invalid_relation_types:
+            raise ValueError(
+                f"Invalid relation_types: {sorted(invalid_relation_types)}"
+            )
+        if (
+            isinstance(max_depth, bool)
+            or not isinstance(max_depth, int)
+            or not 0 <= max_depth <= self.config.max_relation_depth
+        ):
+            raise ValueError(
+                f"max_depth must be between 0 and {self.config.max_relation_depth}"
+            )
+        node_limit = self._bounded_limit(max_nodes)
+        edge_limit = (
+            min(self.config.max_relation_edges, node_limit * 4)
+            if max_edges is None
+            else max_edges
+        )
+        if (
+            isinstance(edge_limit, bool)
+            or not isinstance(edge_limit, int)
+            or not 1 <= edge_limit <= self.config.max_relation_edges
+        ):
+            raise ValueError(
+                f"max_edges must be between 1 and {self.config.max_relation_edges}"
+            )
+
+        reference = (
+            _parse_timestamp(reference_at)
+            if reference_at
+            else datetime.now(timezone.utc)
+        )
+        scoped_events = [
+            event
+            for event in self._store.list_events(mission_id=access.mission_id)
+            if event.runtime_mode == access.runtime_mode
+        ]
+        events_by_id = {event.event_id: event for event in scoped_events}
+        visible_event_ids = {
+            event.event_id
+            for event in scoped_events
+            if access.can_read_restricted or event.sensitivity != "restricted"
+        }
+        restricted_event_ids = set(events_by_id) - visible_event_ids
+
+        seed_payload: dict[str, Any] | None
+        seed_record_ids: list[str]
+        restricted_omitted: set[str] = set()
+        if entity_id is not None:
+            service = self._require_entity_memory()
+            entity = service.get_entity(
+                mission_id=access.mission_id,
+                entity_id=entity_id,
+            )
+            if entity is None or entity.runtime_mode != access.runtime_mode:
+                seed_payload = None
+                seed_record_ids = []
+            else:
+                visible_entities, restricted_entities = self._filter_entities(
+                    access,
+                    [entity],
+                )
+                if not visible_entities:
+                    seed_payload = None
+                    seed_record_ids = []
+                    restricted_omitted.update(
+                        event_id
+                        for event_id in self._entity_evidence_ids(entity)
+                        if event_id in restricted_event_ids
+                    )
+                else:
+                    seed_payload = {
+                        "seed_type": "entity",
+                        "entity_id": entity.entity_id,
+                        "record": self._entity_payload(entity, reference),
+                    }
+                    seed_record_ids = [
+                        event_id
+                        for event_id in self._entity_evidence_ids(entity)
+                        if event_id in visible_event_ids
+                    ]
+                if restricted_entities:
+                    restricted_omitted.update(
+                        set(self._entity_evidence_ids(entity))
+                        & restricted_event_ids
+                    )
+        else:
+            episode = events_by_id.get(str(episode_id))
+            if episode is None or episode.event_type != "episode":
+                seed_payload = None
+                seed_record_ids = []
+            elif episode.event_id not in visible_event_ids:
+                seed_payload = None
+                seed_record_ids = []
+                restricted_omitted.add(episode.event_id)
+            else:
+                seed_payload = {
+                    "seed_type": "episode",
+                    "episode_id": episode.event_id,
+                    "record": self._event_payload(episode, reference),
+                }
+                seed_record_ids = [episode.event_id]
+
+        seed_record_ids = sorted(
+            set(seed_record_ids),
+            key=lambda event_id: (
+                events_by_id[event_id].observed_at,
+                events_by_id[event_id].created_at,
+                event_id,
+            ),
+            reverse=True,
+        )
+        truncated = len(seed_record_ids) > node_limit
+        seed_record_ids = seed_record_ids[:node_limit]
+
+        relations = [
+            relation
+            for relation in self._store.list_relations(mission_id=access.mission_id)
+            if relation.runtime_mode == access.runtime_mode
+            and relation.relation_type in selected_relation_types
+        ]
+        relations.sort(
+            key=lambda relation: (
+                relation.created_at,
+                relation.relation_type,
+                relation.relation_id,
+            )
+        )
+        adjacency: dict[str, list[tuple[Any, str, str]]] = {}
+        for relation in relations:
+            if direction in {"outgoing", "both"}:
+                adjacency.setdefault(relation.source_record_id, []).append(
+                    (relation, relation.target_record_id, "outgoing")
+                )
+            if direction in {"incoming", "both"}:
+                adjacency.setdefault(relation.target_record_id, []).append(
+                    (relation, relation.source_record_id, "incoming")
+                )
+
+        depths = {event_id: 0 for event_id in seed_record_ids}
+        queue = list(seed_record_ids)
+        seen_relation_ids: set[str] = set()
+        traversed_edges: list[dict[str, Any]] = []
+        cursor = 0
+        while cursor < len(queue) and len(traversed_edges) < edge_limit:
+            current_id = queue[cursor]
+            cursor += 1
+            current_depth = depths[current_id]
+            if current_depth >= max_depth:
+                continue
+            neighbors = adjacency.get(current_id, [])
+            if len(neighbors) > self.config.max_relation_neighbors_per_node:
+                truncated = True
+            bounded_neighbors = neighbors[
+                : self.config.max_relation_neighbors_per_node
+            ]
+            for neighbor_index, (
+                relation,
+                neighbor_id,
+                traversal_direction,
+            ) in enumerate(bounded_neighbors):
+                if relation.relation_id in seen_relation_ids:
+                    continue
+                if neighbor_id in restricted_event_ids:
+                    restricted_omitted.add(neighbor_id)
+                    seen_relation_ids.add(relation.relation_id)
+                    continue
+                if neighbor_id not in visible_event_ids:
+                    continue
+                if neighbor_id not in depths:
+                    if len(depths) >= node_limit:
+                        truncated = True
+                        continue
+                    depths[neighbor_id] = current_depth + 1
+                    queue.append(neighbor_id)
+                seen_relation_ids.add(relation.relation_id)
+                traversed_edges.append({
+                    "relation_id": relation.relation_id,
+                    "source_record_id": relation.source_record_id,
+                    "target_record_id": relation.target_record_id,
+                    "relation_type": relation.relation_type,
+                    "created_at": relation.created_at,
+                    "metadata": redact_dict(dict(relation.metadata or {})),
+                    "traversal_direction": traversal_direction,
+                    "discovered_at_depth": current_depth + 1,
+                })
+                if len(traversed_edges) >= edge_limit:
+                    truncated = (
+                        truncated
+                        or neighbor_index + 1 < len(bounded_neighbors)
+                        or cursor < len(queue)
+                    )
+                    break
+
+        ordered_node_ids = sorted(
+            depths,
+            key=lambda event_id: (
+                depths[event_id],
+                events_by_id[event_id].observed_at,
+                events_by_id[event_id].created_at,
+                event_id,
+            ),
+        )
+        nodes = [
+            {
+                "record_id": event_id,
+                "depth": depths[event_id],
+                "record": self._event_payload(events_by_id[event_id], reference),
+            }
+            for event_id in ordered_node_ids
+        ]
+        node_events = [events_by_id[event_id] for event_id in ordered_node_ids]
+        evidence_ids = [
+            source_id
+            for event in node_events
+            for source_id in (event.event_id, *event.derived_from)
+        ]
+        return self._envelope(
+            access,
+            {
+                "seed": seed_payload,
+                "seed_found": seed_payload is not None,
+                "seed_record_ids": seed_record_ids,
+                "nodes": nodes,
+                "edges": traversed_edges,
+                "node_count": len(nodes),
+                "edge_count": len(traversed_edges),
+                "restricted_records_omitted": len(restricted_omitted),
+                "truncated": truncated,
+                "retrieval_mode": "bounded_permission_filtered_relation_traversal",
+                "query": {
+                    "direction": direction,
+                    "relation_types": sorted(selected_relation_types),
+                    "max_depth": max_depth,
+                    "max_nodes": node_limit,
+                    "max_edges": edge_limit,
+                },
+            },
+            evidence_ids=evidence_ids,
+            requires_revalidation=(
+                bool(nodes)
+                and (
+                    entity_id is not None
+                    or _is_cross_robot(node_events)
+                    or any(
+                        self._requires_revalidation(event, reference)
+                        for event in node_events
+                    )
+                )
+            ),
         )
 
     def query_entity_identity_proposals(
@@ -991,6 +1323,145 @@ class MissionMemoryFacade:
                 for event_id in record.source_event_ids
             ],
             requires_revalidation=bool(records),
+        )
+
+    def _indexed_spatial_candidates(
+        self,
+        access: MemoryAccessContext,
+        *,
+        frame_id: str,
+        x: float,
+        y: float,
+        z: float | None,
+        radius_m: float,
+        floor: str | None,
+        selected_memory_types: frozenset[str],
+        selected_event_types: frozenset[str],
+        selected_entity_kinds: frozenset[str] | None,
+        selected_entity_statuses: frozenset[str] | None,
+        entities: list[FireClawEntity],
+    ) -> _IndexedSpatialResult | None:
+        index = self._store.index
+        if index is None or not index.rtree_available:
+            return None
+        candidates = index.query_spatial_candidates(
+            mission_id=access.mission_id,
+            runtime_mode=access.runtime_mode,
+            frame_id=frame_id,
+            x=x,
+            y=y,
+            z=z,
+            radius_m=radius_m,
+            floor=floor,
+            memory_types=selected_memory_types,
+            entity_kinds=selected_entity_kinds,
+            entity_statuses=selected_entity_statuses,
+            authority_token=self._store.evidence_store.snapshot_token(),
+        )
+        if candidates is None:
+            return None
+
+        event_candidate_types = {
+            candidate["source_id"]: candidate["memory_type"]
+            for candidate in candidates
+            if candidate["memory_type"] in {"observation", "gist"}
+        }
+        event_ids = list(event_candidate_types)
+        events = self._store.load_indexed_events_by_ids(
+            event_ids,
+            mission_id=access.mission_id,
+            runtime_mode=access.runtime_mode,
+            event_types=selected_event_types,
+        )
+        if events is None:
+            return None
+
+        ranked: list[
+            tuple[_SpatialMatch, str, str, EmbodiedMemoryEvent | FireClawEntity]
+        ] = []
+        restricted_records_omitted = 0
+        for event in events:
+            if event_candidate_types.get(event.event_id) != event.event_type:
+                return None
+            match = _spatial_match(
+                event,
+                frame_id=frame_id,
+                x=x,
+                y=y,
+                z=z,
+                radius_m=radius_m,
+                floor=floor,
+            )
+            if match is None:
+                continue
+            if event.sensitivity == "restricted" and not access.can_read_restricted:
+                restricted_records_omitted += 1
+                continue
+            ranked.append((match, event.event_type, event.event_id, event))
+
+        entity_candidate_ids = [
+            candidate["source_id"]
+            for candidate in candidates
+            if candidate["memory_type"] == "entity"
+        ]
+        entities_by_id = {entity.entity_id: entity for entity in entities}
+        if any(entity_id not in entities_by_id for entity_id in entity_candidate_ids):
+            return None
+        positioned_entities: list[tuple[_SpatialMatch, FireClawEntity]] = []
+        for entity_id in entity_candidate_ids:
+            entity = entities_by_id[entity_id]
+            if selected_entity_kinds is not None and entity.entity_kind not in selected_entity_kinds:
+                continue
+            if selected_entity_statuses is not None and entity.status not in selected_entity_statuses:
+                continue
+            match = _pose_spatial_match(
+                entity.current_pose,
+                frame_id=frame_id,
+                x=x,
+                y=y,
+                z=z,
+                radius_m=radius_m,
+                floor=floor,
+                source="entity_current_pose",
+            )
+            if match is not None:
+                positioned_entities.append((match, entity))
+
+        restricted_entities_omitted = 0
+        visible_entity_ids = {entity.entity_id for _, entity in positioned_entities}
+        if positioned_entities and not access.can_read_restricted:
+            evidence_ids = _unique_ids([
+                evidence_id
+                for _, entity in positioned_entities
+                for evidence_id in self._entity_evidence_ids(entity)
+            ])
+            evidence_events = self._store.load_indexed_events_by_ids(
+                evidence_ids,
+                mission_id=access.mission_id,
+                runtime_mode=access.runtime_mode,
+            )
+            if evidence_events is None:
+                return None
+            evidence_by_id = {event.event_id: event for event in evidence_events}
+            if set(evidence_by_id) != set(evidence_ids):
+                return None
+            visible_entity_ids = set()
+            for _, entity in positioned_entities:
+                if any(
+                    evidence_by_id[event_id].sensitivity == "restricted"
+                    for event_id in self._entity_evidence_ids(entity)
+                ):
+                    restricted_entities_omitted += 1
+                else:
+                    visible_entity_ids.add(entity.entity_id)
+
+        for match, entity in positioned_entities:
+            if entity.entity_id in visible_entity_ids:
+                ranked.append((match, "entity", entity.entity_id, entity))
+        return _IndexedSpatialResult(
+            ranked=ranked,
+            restricted_records_omitted=restricted_records_omitted,
+            restricted_entities_omitted=restricted_entities_omitted,
         )
 
     def _validate_access(self, access: MemoryAccessContext) -> None:

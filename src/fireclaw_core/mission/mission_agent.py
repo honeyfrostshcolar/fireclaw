@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any, Protocol
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -17,6 +17,11 @@ from fireclaw_core.memory.mission_memory_tools import (
     MissionMemoryTools,
 )
 from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
+from fireclaw_core.memory.planner_memory_context import (
+    PlannerMemoryContextBuilder,
+    PlannerMemoryContextRequest,
+    PlannerMemoryContextResult,
+)
 from fireclaw_core.memory.embodied_memory import (
     MEMORY_RUNTIME_MODES,
     EmbodiedMemoryProducer,
@@ -97,6 +102,9 @@ class MissionAgent:
         embodied_working_memory: EmbodiedWorkingMemory | None = None,
         mission_memory_tools: MissionMemoryTools | None = None,
         memory_lifecycle: MissionMemoryLifecycleStore | None = None,
+        planner_memory_context_builder: PlannerMemoryContextBuilder | None = None,
+        consolidation_coordinator: Any | None = None,
+        working_memory_hydration_report: Any | None = None,
     ) -> None:
         self.registry = registry
         self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
@@ -144,6 +152,22 @@ class MissionAgent:
         self.embodied_working_memory = embodied_working_memory
         self.mission_memory_tools = mission_memory_tools
         self.memory_lifecycle = memory_lifecycle
+        self.consolidation_coordinator = consolidation_coordinator
+        self.planner_memory_context_builder = (
+            planner_memory_context_builder
+            or PlannerMemoryContextBuilder(
+                memory_retriever=memory_retriever,
+                mission_memory=mission_memory,
+                facade=(
+                    mission_memory_tools.facade
+                    if mission_memory_tools is not None
+                    else None
+                ),
+                lifecycle=memory_lifecycle,
+                plugin_runtime=plugin_runtime,
+            )
+        )
+        self.working_memory_hydration_report = working_memory_hydration_report
 
     @property
     def session_lineage_store(self) -> JsonlSessionLineageStore | None:
@@ -293,6 +317,60 @@ class MissionAgent:
             )
         except Exception:
             logger.warning("Failed to write embodied mission memory relation", exc_info=True)
+
+    def _record_terminal_outcome(
+        self,
+        mission_id: str,
+        *,
+        terminal_event_id: str,
+        terminal_status: str,
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
+    ) -> None:
+        """Record a terminal outcome event and queue a consolidation boundary.
+
+        Uses a deterministic key so repeated observation is idempotent.
+        """
+        if self.embodied_memory_producer is None or self.embodied_runtime_mode is None:
+            return
+        if self.consolidation_coordinator is None:
+            return
+        try:
+            # Append a terminal outcome event
+            outcome_event_id = self._record_embodied_memory(
+                mission_id,
+                "outcome",
+                "runtime_evidence",
+                {
+                    "terminal_status": terminal_status,
+                    "terminal_event_id": terminal_event_id,
+                    "robot_id": robot_id,
+                    "subtask_id": subtask_id,
+                },
+                source_type="terminal_transition",
+                robot_id=robot_id,
+                subtask_id=subtask_id,
+                observed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            if outcome_event_id is None:
+                return
+            # Get the current sequence from the store
+            store = self.embodied_memory_producer.store
+            all_events = store.list_events(mission_id=mission_id)
+            through_sequence = len(all_events)
+            # Queue a boundary
+            self.consolidation_coordinator.request_terminal_boundary(
+                mission_id=mission_id,
+                runtime_mode=self.embodied_runtime_mode,
+                scope_kind="subtask" if subtask_id is not None else "mission",
+                robot_id=robot_id,
+                subtask_id=subtask_id,
+                terminal_event_id=terminal_event_id,
+                terminal_status=terminal_status,
+                through_sequence=through_sequence,
+            )
+        except Exception:
+            logger.warning("Failed to record terminal outcome or queue boundary", exc_info=True)
 
     def _operator_source_id(self, operator: dict[str, Any] | None = None) -> str:
         if isinstance(operator, dict):
@@ -601,6 +679,14 @@ class MissionAgent:
                     updated_at=datetime.now(timezone.utc).isoformat(),
                     result=robot_trace.get("result") if isinstance(robot_trace.get("result"), dict) else None,
                 )
+                if status in TERMINAL_SUBTASK_STATUSES:
+                    self._record_terminal_outcome(
+                        mission_id,
+                        terminal_event_id=f"{mission_id}:{subtask.robot_id}:{subtask.task_id}:terminal",
+                        terminal_status=status,
+                        robot_id=subtask.robot_id,
+                        subtask_id=subtask.task_id,
+                    )
         trace = self.mission_registry.mission_trace(mission_id)
         enriched_subtasks = []
         for subtask in trace.get("subtasks", []):
@@ -638,6 +724,36 @@ class MissionAgent:
         )
         return aggregator.aggregate(mission_id, robot_id=robot_id, event_type=event_type, limit=limit)
 
+    def _build_planner_memory_context(
+        self,
+        command: str,
+        *,
+        mission_id: str,
+        max_memories: int = 5,
+        max_corrections: int = 3,
+    ) -> PlannerMemoryContextResult:
+        """Build scoped planner memory context via the Builder."""
+        scopes = frozenset(
+            self.operator.control_scopes
+            if self.operator is not None
+            else {"state.read"}
+        )
+        return self.planner_memory_context_builder.build(
+            PlannerMemoryContextRequest(
+                command=command,
+                mission_id=mission_id,
+                runtime_mode=self.embodied_runtime_mode,
+                requester_id=(
+                    self.operator.operator_id
+                    if self.operator is not None
+                    else "mission-agent"
+                ),
+                scopes=scopes,
+                max_memories=max_memories,
+                max_corrections=max_corrections,
+            )
+        )
+
     def _retrieve_planner_context(
         self,
         command: str,
@@ -649,109 +765,19 @@ class MissionAgent:
         """Retrieve relevant memories and operator corrections for planning context.
 
         Returns (memories, corrections) with secrets redacted.
+
+        This is a compatibility wrapper that delegates to the
+        PlannerMemoryContextBuilder when a mission_id is provided.
         """
-        memories: list[dict[str, Any]] = []
-        corrections: list[dict[str, Any]] = []
-
-        try:
-            if self.memory_retriever is not None:
-                retrieved = self.memory_retriever.retrieve(command, limit=max_memories)
-                memories = [redact_dict(_memory_result_to_dict(r)) for r in retrieved]
-            elif self.mission_memory is not None:
-                # Search for relevant outcome records matching the command
-                outcome_records = self.mission_memory.search(
-                    record_type="outcome",
-                    keyword=command.strip()[:50] if command.strip() else None,
-                    limit=max_memories,
-                )
-                memories = [
-                    redact_dict(r.to_dict())
-                    for r in outcome_records
-                ]
-        except Exception:
-            logger.warning("Failed to retrieve planner memories", exc_info=True)
-
-        if (
-            mission_id is not None
-            and self.embodied_working_memory is not None
-            and self.embodied_runtime_mode is not None
-        ):
-            try:
-                snapshot = self.embodied_working_memory.snapshot(
-                    runtime_mode=self.embodied_runtime_mode,
-                    mission_id=mission_id,
-                    event_types=frozenset({
-                        "correction",
-                        "observation",
-                        "outcome",
-                        "safety_decision",
-                    }),
-                    limit=max_memories,
-                )
-                memories.extend(
-                    {
-                        "memory_tier": "working",
-                        "fresh_at": snapshot.reference_at,
-                        "event": redact_dict(event.to_mission_record().to_dict()),
-                    }
-                    for event in snapshot.events
-                )
-                memories = memories[-max_memories:]
-            except Exception:
-                logger.warning("Failed to project working memory into planner context", exc_info=True)
-
-        if mission_id is not None and self.mission_memory_tools is not None:
-            try:
-                operator_scopes = frozenset(
-                    self.operator.control_scopes if self.operator is not None else {"state.read"}
-                )
-                context_memory = self.call_memory_tool(
-                    mission_id=mission_id,
-                    name=CURRENT_CONTEXT_TOOL,
-                    arguments={"limit": max_memories},
-                    requester_id=(
-                        self.operator.operator_id if self.operator is not None else "mission-agent"
-                    ),
-                    scopes=operator_scopes,
-                )
-                memories.append({"memory_tier": "mission_facade", **context_memory})
-                memories = memories[-max_memories:]
-            except Exception:
-                logger.warning("Failed to read planner context through memory facade", exc_info=True)
-
-        try:
-            if self.mission_memory is not None:
-                # Search for all recent operator corrections (not keyword-filtered,
-                # since corrections may reference different commands than the current one)
-                correction_records = self.mission_memory.search(
-                    record_type="correction",
-                    limit=max_corrections,
-                )
-                corrections = [
-                    redact_dict(r.to_dict())
-                    for r in correction_records
-                ]
-        except Exception:
-            logger.warning("Failed to retrieve operator corrections", exc_info=True)
-
-        # Apply memory hooks from plugin runtime (filter + rerank)
-        if self.plugin_runtime is not None and memories:
-            for effect in self.plugin_runtime.run_memory_hooks(
-                "filter",
-                {"command": command, "memories": memories},
-            ):
-                filtered = effect.get("effect", {}).get("memories")
-                if isinstance(filtered, list):
-                    memories = filtered
-            for effect in self.plugin_runtime.run_memory_hooks(
-                "rerank",
-                {"command": command, "memories": memories},
-            ):
-                reranked = effect.get("effect", {}).get("memories")
-                if isinstance(reranked, list):
-                    memories = reranked
-
-        return memories, corrections
+        if mission_id is None:
+            return [], []
+        result = self._build_planner_memory_context(
+            command,
+            mission_id=mission_id,
+            max_memories=max_memories,
+            max_corrections=max_corrections,
+        )
+        return list(result.memories), list(result.corrections)
 
     def plan_and_submit(
         self,
@@ -783,32 +809,45 @@ class MissionAgent:
         presence = self.check_fleet_presence()
         online_robot_ids = {rid for rid, info in presence.items() if info.get("online")}
 
-        # Retrieve memories and corrections for planner context
-        memories, corrections = self._retrieve_planner_context(
+        # Build scoped memory context via the PlannerMemoryContextBuilder
+        memory_context_result = self._build_planner_memory_context(
             command,
             mission_id=mission_id,
         )
-
-        # Apply provider context hooks from plugin runtime
-        if self.plugin_runtime is not None:
-            for effect in self.plugin_runtime.run_provider_hooks(
-                "enrich_context",
-                {"command": command, "retrieved_memories": memories, "operator_corrections": corrections},
-            ):
-                payload = effect.get("effect", {})
-                extra_memories = payload.get("retrieved_memories", [])
-                if isinstance(extra_memories, list):
-                    memories.extend(redact_dict(m) for m in extra_memories if isinstance(m, dict))
-                extra_corrections = payload.get("operator_corrections", [])
-                if isinstance(extra_corrections, list):
-                    corrections.extend(redact_dict(c) for c in extra_corrections if isinstance(c, dict))
-
         context = MissionPlannerContext(
-            available_robots=[e for e in self.registry.enabled_entries() if e.robot_id in online_robot_ids],
-            retrieved_memories=memories,
-            operator_corrections=corrections,
+            available_robots=[
+                entry
+                for entry in self.registry.enabled_entries()
+                if entry.robot_id in online_robot_ids
+            ],
+            retrieved_memories=list(memory_context_result.memories),
+            operator_corrections=list(memory_context_result.corrections),
         )
         planning_result = self.planner.plan(command, context=context)
+
+        # Append memory context guard decision before validator decisions.
+        # Memory degradation must NOT block planning.
+        if planning_result.audit_record is not None:
+            planning_result = replace(
+                planning_result,
+                audit_record=append_guard_decision(
+                    planning_result.audit_record,
+                    memory_context_result.guard_decision(),
+                    final_status=planning_result.audit_record.final_status,
+                    final_message=planning_result.audit_record.final_message,
+                    mission_id=mission_id,
+                ),
+            )
+        elif memory_context_result.warnings:
+            logger.warning(
+                "Planner memory context degraded",
+                extra={
+                    "mission_id": mission_id,
+                    "warning_codes": sorted({
+                        warning.code for warning in memory_context_result.warnings
+                    }),
+                },
+            )
 
         # Primitive fallback: when planner returns "clarify", try primitive composition
         if planning_result.status == "clarify" and planning_result.plan is None:

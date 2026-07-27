@@ -83,26 +83,37 @@ class FakeSubagentClient:
         return {"online": True, "last_seen_at": "2026-06-11T00:00:00+00:00", "state": {}}
 
 
-def _seed_memory(memory_path: Path) -> MissionMemoryStore:
-    """Seed mission memory with an operator correction and a past outcome."""
+def _seed_memory(memory_path: Path, *, mission_id: str = "past-mission-1") -> MissionMemoryStore:
+    """Seed mission memory with an operator correction and a past outcome.
+
+    Records include ``_embodied`` metadata so the PlannerMemoryContextBuilder
+    can admit them when the request mission_id and runtime_mode match.
+    """
     store = MissionMemoryStore(memory_path)
     now = datetime.now(timezone.utc).isoformat()
 
     # Operator correction: advice for rescue missions
     store.append(MissionMemoryRecord(
         record_id="corr-1",
-        mission_id="past-mission-1",
+        mission_id=mission_id,
         record_type="correction",
-        content={"correction": "先确认楼梯安全再上楼，注意烟雾浓度"},
+        content={
+            "_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "operator"},
+            "correction": "先确认楼梯安全再上楼，注意烟雾浓度",
+        },
         created_at=now,
     ))
 
     # Past mission outcome
     store.append(MissionMemoryRecord(
         record_id="out-1",
-        mission_id="past-mission-1",
+        mission_id=mission_id,
         record_type="outcome",
-        content={"summary": "成功找到1名伤员并转移至安全区域", "status": "succeeded"},
+        content={
+            "_embodied": {"runtime_mode": "simulation", "sensitivity": "standard", "source_type": "mission_agent"},
+            "summary": "成功找到1名伤员并转移至安全区域",
+            "status": "succeeded",
+        },
         robot_id="robot-1",
         created_at=now,
     ))
@@ -138,7 +149,8 @@ def test_retrieve_planner_context_includes_corrections(tmp_path: Path):
     memory_path = tmp_path / "memory.jsonl"
     index_path = tmp_path / "memory.sqlite"
 
-    store = _seed_memory(memory_path)
+    mission_id = "test-mission"
+    store = _seed_memory(memory_path, mission_id=mission_id)
     index = _build_index(store, index_path)
     retriever = MemoryRetriever(index=index)
 
@@ -150,10 +162,11 @@ def test_retrieve_planner_context_includes_corrections(tmp_path: Path):
         subagent_client=FakeSubagentClient(),
         mission_memory=store,
         memory_retriever=retriever,
+        embodied_runtime_mode="simulation",
     )
 
-    # Directly call the retrieval method
-    memories, corrections = agent._retrieve_planner_context("去二楼救人")
+    # Directly call the retrieval method with the matching mission_id
+    memories, corrections = agent._retrieve_planner_context("去二楼救人", mission_id=mission_id)
 
     # Corrections must be present
     assert len(corrections) > 0, "Expected operator corrections in planner context"
@@ -168,7 +181,8 @@ def test_retrieve_planner_context_includes_retrieved_memories(tmp_path: Path):
     memory_path = tmp_path / "memory.jsonl"
     index_path = tmp_path / "memory.sqlite"
 
-    store = _seed_memory(memory_path)
+    mission_id = "test-mission"
+    store = _seed_memory(memory_path, mission_id=mission_id)
     index = _build_index(store, index_path)
     retriever = MemoryRetriever(index=index)
 
@@ -180,9 +194,10 @@ def test_retrieve_planner_context_includes_retrieved_memories(tmp_path: Path):
         subagent_client=FakeSubagentClient(),
         mission_memory=store,
         memory_retriever=retriever,
+        embodied_runtime_mode="simulation",
     )
 
-    memories, corrections = agent._retrieve_planner_context("去二楼救人")
+    memories, corrections = agent._retrieve_planner_context("去二楼救人", mission_id=mission_id)
 
     # Memories (outcomes) should be retrievable via FTS5
     # The command "去二楼救人" should match the outcome about rescue
@@ -198,7 +213,8 @@ def test_plan_and_submit_passes_context_to_planner(tmp_path: Path):
     memory_path = tmp_path / "memory.jsonl"
     index_path = tmp_path / "memory.sqlite"
 
-    store = _seed_memory(memory_path)
+    mission_id = "test-loop"
+    store = _seed_memory(memory_path, mission_id=mission_id)
     index = _build_index(store, index_path)
     retriever = MemoryRetriever(index=index)
 
@@ -212,10 +228,11 @@ def test_plan_and_submit_passes_context_to_planner(tmp_path: Path):
         planner=spy,
         mission_memory=store,
         memory_retriever=retriever,
+        embodied_runtime_mode="simulation",
     )
 
     # use_scheduler=False: we only care that planner receives context, not dispatch
-    agent.plan_and_submit("去二楼救人", session_id="test-loop", use_scheduler=False)
+    agent.plan_and_submit("去二楼救人", session_id=mission_id, use_scheduler=False)
 
     # Verify planner was called with context
     assert spy.last_context is not None, "Planner should have been called"
@@ -260,7 +277,8 @@ def test_memory_retriever_wired_from_paths(tmp_path: Path):
     index_path = tmp_path / "memory.sqlite"
     registry_path = tmp_path / "robots.json"
 
-    _seed_memory(memory_path)
+    mission_id = "test-path-mission"
+    _seed_memory(memory_path, mission_id=mission_id)
     _build_index(MissionMemoryStore(memory_path), index_path)
     _make_registry(registry_path)
 
@@ -269,6 +287,7 @@ def test_memory_retriever_wired_from_paths(tmp_path: Path):
         mission_registry=tmp_path / "missions.jsonl",
         mission_memory=memory_path,
         memory_index=index_path,
+        embodied_runtime_mode="simulation",
     )
     agent = build_mission_agent_from_paths(
         paths,
@@ -280,5 +299,5 @@ def test_memory_retriever_wired_from_paths(tmp_path: Path):
     assert agent.mission_memory is not None, "MissionMemoryStore should be wired when mission_memory is set"
 
     # Verify retrieval works end-to-end through the built agent
-    memories, corrections = agent._retrieve_planner_context("去二楼救人")
+    memories, corrections = agent._retrieve_planner_context("去二楼救人", mission_id=mission_id)
     assert len(corrections) > 0, "Corrections should be retrievable through built agent"

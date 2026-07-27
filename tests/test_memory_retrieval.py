@@ -4,11 +4,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import pytest
-
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 from fireclaw_core.memory.memory_retrieval import (
     EmbeddingProvider,
+    MemoryRetrievalScope,
     MemoryRetriever,
     RetrievedMemory,
 )
@@ -53,18 +52,26 @@ class FakeEmbeddingProvider:
 
 def _make_index_record(
     record_id: str = "mem-1",
-    mission_id: str = "m-1",
+    mission_id: str = "mission-1",
     record_type: str = "outcome",
     content: dict | None = None,
     robot_id: str | None = None,
     subtask_id: str | None = None,
     created_at: str = "2026-06-08T12:00:00Z",
 ) -> dict:
+    base_content = dict(content or {"status": "succeeded"})
+    base_content.setdefault("_embodied", {})
+    embodied = base_content["_embodied"]
+    if not isinstance(embodied, dict):
+        embodied = {}
+        base_content["_embodied"] = embodied
+    embodied.setdefault("runtime_mode", "simulation")
+    embodied.setdefault("sensitivity", "standard")
     return {
         "record_id": record_id,
         "mission_id": mission_id,
         "record_type": record_type,
-        "content": content or {"status": "succeeded"},
+        "content": base_content,
         "robot_id": robot_id,
         "subtask_id": subtask_id,
         "created_at": created_at,
@@ -88,6 +95,14 @@ def _seed_index_with_embeddings(
         text = " ".join(str(v) for v in content.values() if isinstance(v, str))
         embedding = provider.embed(text)
         idx.store_embedding(rec["record_id"], embedding)
+
+
+def _test_scope() -> MemoryRetrievalScope:
+    return MemoryRetrievalScope(
+        mission_ids=("mission-1",),
+        runtime_modes=("simulation",),
+        allowed_sensitivities=("standard",),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +143,11 @@ class TestRetrievedMemory:
             score=1.0,
             source="lexical",
         )
-        with pytest.raises(AttributeError):
+        try:
             mem.score = 0.5  # type: ignore[misc]
+        except AttributeError:
+            return
+        raise AssertionError("RetrievedMemory should be frozen")
 
 
 class TestEmbeddingProviderProtocol:
@@ -223,7 +241,7 @@ class TestMemoryRetrieverLexicalOnly:
         ])
 
         retriever = MemoryRetriever(idx)
-        results = retriever.retrieve("smoke")
+        results = retriever.retrieve("smoke", scope=_test_scope())
 
         assert len(results) >= 1
         assert results[0].record_id == "mem-2"
@@ -238,11 +256,11 @@ class TestMemoryRetrieverLexicalOnly:
         ])
 
         retriever = MemoryRetriever(idx)
-        results = retriever.retrieve("fire")
+        results = retriever.retrieve("fire", scope=_test_scope())
 
         assert len(results) == 1
         assert isinstance(results[0], RetrievedMemory)
-        assert results[0].content == {"note": "fire event"}
+        assert results[0].content.get("note") == "fire event"
 
 
 class TestMemoryRetrieverWithEmbedding:
@@ -271,7 +289,7 @@ class TestMemoryRetrieverWithEmbedding:
             idx, embedding_provider=provider,
             lexical_weight=0.6, embedding_weight=0.4,
         )
-        results = retriever.retrieve("smoke")
+        results = retriever.retrieve("smoke", scope=_test_scope())
 
         assert len(results) >= 1
         # Fused source when embedding provider is present.
@@ -301,7 +319,7 @@ class TestMemoryRetrieverWithEmbedding:
             idx, embedding_provider=provider,
             lexical_weight=1.0, embedding_weight=0.0,
         )
-        results_lex = retriever_lex.retrieve("smoke")
+        results_lex = retriever_lex.retrieve("smoke", scope=_test_scope())
         assert len(results_lex) >= 1
 
         # All embedding weight.
@@ -309,7 +327,7 @@ class TestMemoryRetrieverWithEmbedding:
             idx, embedding_provider=provider,
             lexical_weight=0.0, embedding_weight=1.0,
         )
-        results_emb = retriever_emb.retrieve("smoke")
+        results_emb = retriever_emb.retrieve("smoke", scope=_test_scope())
         assert len(results_emb) >= 1
 
 
@@ -327,7 +345,7 @@ class TestMemoryRetrieverLimit:
         _seed_index(idx, records)
 
         retriever = MemoryRetriever(idx)
-        results = retriever.retrieve("fire", limit=3)
+        results = retriever.retrieve("fire", scope=_test_scope(), limit=3)
         assert len(results) == 3
 
 
@@ -340,7 +358,7 @@ class TestMemoryRetrieverEmpty:
         ])
 
         retriever = MemoryRetriever(idx)
-        results = retriever.retrieve("nonexistent_term_xyz")
+        results = retriever.retrieve("nonexistent_term_xyz", scope=_test_scope())
         assert results == []
 
 
@@ -360,7 +378,7 @@ class TestMemoryRetrieverFallback:
         ])
 
         retriever = MemoryRetriever(idx)
-        results = retriever.retrieve("survivor")
+        results = retriever.retrieve("survivor", scope=_test_scope())
 
         assert len(results) == 1
         assert results[0].record_id == "mem-1"

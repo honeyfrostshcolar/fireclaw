@@ -17,6 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     ev = subparsers.add_parser("eval", help="Evaluate retrieval quality against a fixture.")
     ev.add_argument("--index-path", required=True, help="Path to SQLite memory index.")
     ev.add_argument("--fixture", required=True, help="Path to eval cases JSON file.")
+    ev.add_argument("--mission-id", required=True, help="Mission ID to scope retrieval to.")
     ev.add_argument("--threshold", type=float, default=1.0, help="Minimum hit_rate to pass.")
     ev.add_argument("--limit", type=int, default=5, help="Max results per query.")
 
@@ -51,7 +52,7 @@ def _cmd_index(args: argparse.Namespace) -> int:
 def _cmd_eval(args: argparse.Namespace) -> int:
     from fireclaw_core.memory.memory_eval import evaluate_retrieval, load_eval_cases
     from fireclaw_core.memory.memory_index import SqliteMemoryIndex
-    from fireclaw_core.memory.memory_retrieval import MemoryRetriever
+    from fireclaw_core.memory.memory_retrieval import MemoryRetrievalScope, MemoryRetriever
 
     index_path = Path(args.index_path)
     fixture_path = Path(args.fixture)
@@ -63,10 +64,15 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"Error: fixture not found: {fixture_path}", file=sys.stderr)
         return 1
 
+    scope = MemoryRetrievalScope(
+        mission_ids=(args.mission_id,),
+        runtime_modes=("real", "simulation", "replay"),
+        allowed_sensitivities=("standard", "restricted"),
+    )
     index = SqliteMemoryIndex(str(index_path))
     retriever = MemoryRetriever(index=index)
     cases = load_eval_cases(fixture_path)
-    report = evaluate_retrieval(retriever, cases, limit=args.limit)
+    report = evaluate_retrieval(retriever, cases, scope=scope, limit=args.limit)
 
     result = report.to_dict()
     result["threshold"] = args.threshold

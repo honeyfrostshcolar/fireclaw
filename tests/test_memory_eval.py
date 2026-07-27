@@ -14,7 +14,11 @@ from fireclaw_core.memory.memory_eval import (
     evaluate_retrieval,
     load_eval_cases,
 )
-from fireclaw_core.memory.memory_retrieval import MemoryRetriever, RetrievedMemory
+from fireclaw_core.memory.memory_retrieval import (
+    MemoryRetrievalScope,
+    MemoryRetriever,
+    RetrievedMemory,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -28,10 +32,19 @@ class FakeMemoryIndex:
     def __init__(self, records: list[dict[str, Any]]) -> None:
         self._records = records
 
-    def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
         # Simple keyword match against content values.
         results = []
         for r in self._records:
+            if filters is not None:
+                if not all(r.get(k) == v for k, v in filters.items()):
+                    continue
             content_str = str(r.get("content", {}))
             if any(word in content_str for word in query.split()):
                 results.append(r)
@@ -45,6 +58,19 @@ def _make_retriever(records: list[dict[str, Any]]) -> MemoryRetriever:
     """Build a MemoryRetriever backed by a FakeMemoryIndex."""
     index = FakeMemoryIndex(records)
     return MemoryRetriever(index=index)
+
+
+def _eval_scope(
+    mission_id: str = "m1",
+    runtime_mode: str = "real",
+    sensitivity: str = "standard",
+) -> MemoryRetrievalScope:
+    """Return a MemoryRetrievalScope for evaluation tests."""
+    return MemoryRetrievalScope(
+        mission_ids=(mission_id,),
+        runtime_modes=(runtime_mode,),
+        allowed_sensitivities=(sensitivity,),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -139,13 +165,14 @@ class TestEvaluateRetrieval:
     def test_passes_when_all_patterns_match(self) -> None:
         records = [
             {"record_id": "r1", "mission_id": "m1", "record_type": "outcome",
+             "runtime_mode": "real", "sensitivity": "standard",
              "content": {"command": "去二楼搜索", "status": "succeeded"},
              "created_at": ""},
         ]
         retriever = _make_retriever(records)
         cases = [{"query": "二楼 搜索", "must_match": ["二楼"]}]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
 
         assert report.total == 1
         assert report.passed == 1
@@ -154,12 +181,13 @@ class TestEvaluateRetrieval:
     def test_fails_when_pattern_missing(self) -> None:
         records = [
             {"record_id": "r1", "mission_id": "m1", "record_type": "outcome",
+             "runtime_mode": "real", "sensitivity": "standard",
              "content": {"command": "去三楼巡逻"}, "created_at": ""},
         ]
         retriever = _make_retriever(records)
         cases = [{"query": "二楼", "must_match": ["二楼"]}]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
 
         assert report.total == 1
         assert report.passed == 0
@@ -168,7 +196,7 @@ class TestEvaluateRetrieval:
 
     def test_handles_empty_cases(self) -> None:
         retriever = _make_retriever([])
-        report = evaluate_retrieval(retriever, [])
+        report = evaluate_retrieval(retriever, [], scope=_eval_scope())
 
         assert report.total == 0
         assert report.hit_rate == 0.0
@@ -177,19 +205,20 @@ class TestEvaluateRetrieval:
         retriever = _make_retriever([])
         cases = [{"invalid_key": True}]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
 
         assert len(report.missing_cases) == 1
 
     def test_report_to_dict_roundtrip(self) -> None:
         records = [
             {"record_id": "r1", "mission_id": "m1", "record_type": "outcome",
+             "runtime_mode": "real", "sensitivity": "standard",
              "content": {"command": "搜索"}, "created_at": ""},
         ]
         retriever = _make_retriever(records)
         cases = [{"query": "搜索", "must_match": ["搜索"]}]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
         d = report.to_dict()
 
         assert d["total"] == 1
@@ -200,12 +229,13 @@ class TestEvaluateRetrieval:
         """Patterns can match against record_type as well as content."""
         records = [
             {"record_id": "r1", "mission_id": "m1", "record_type": "outcome",
+             "runtime_mode": "real", "sensitivity": "standard",
              "content": {"status": "ok"}, "created_at": ""},
         ]
         retriever = _make_retriever(records)
         cases = [{"query": "ok", "must_match": ["outcome"]}]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
 
         assert report.total == 1
         assert report.passed == 1
@@ -213,6 +243,7 @@ class TestEvaluateRetrieval:
     def test_multiple_cases_mixed_results(self) -> None:
         records = [
             {"record_id": "r1", "mission_id": "m1", "record_type": "outcome",
+             "runtime_mode": "real", "sensitivity": "standard",
              "content": {"command": "灭火"}, "created_at": ""},
         ]
         retriever = _make_retriever(records)
@@ -221,7 +252,7 @@ class TestEvaluateRetrieval:
             {"query": "巡逻", "must_match": ["巡逻"]},
         ]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
 
         assert report.total == 2
         assert report.passed == 1
@@ -230,10 +261,16 @@ class TestEvaluateRetrieval:
 
     def test_expected_record_ids_and_min_score_are_enforced(self) -> None:
         records = [
-            {"record_id": "successful-rescue-floor-2", "mission_id": "m1", "record_type": "mission_outcome",
-             "content": {"command": "去二楼救人", "status": "succeeded"}, "created_at": ""},
-            {"record_id": "wrong-record", "mission_id": "m2", "record_type": "mission_outcome",
-             "content": {"command": "去二楼救人", "status": "failed"}, "created_at": ""},
+            {"record_id": "successful-rescue-floor-2", "mission_id": "m1",
+             "record_type": "mission_outcome",
+             "runtime_mode": "real", "sensitivity": "standard",
+             "content": {"command": "去二楼救人", "status": "succeeded"},
+             "created_at": ""},
+            {"record_id": "wrong-record", "mission_id": "m1",
+             "record_type": "mission_outcome",
+             "runtime_mode": "real", "sensitivity": "standard",
+             "content": {"command": "去二楼救人", "status": "failed"},
+             "created_at": ""},
         ]
         retriever = _make_retriever(records)
         cases = [{
@@ -243,7 +280,7 @@ class TestEvaluateRetrieval:
             "record_type": "mission_outcome",
         }]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
 
         assert report.total == 1
         assert report.passed == 1
@@ -251,8 +288,11 @@ class TestEvaluateRetrieval:
 
     def test_record_type_mismatch_fails_expected_record_case(self) -> None:
         records = [
-            {"record_id": "successful-rescue-floor-2", "mission_id": "m1", "record_type": "operator_correction",
-             "content": {"command": "去二楼救人", "status": "succeeded"}, "created_at": ""},
+            {"record_id": "successful-rescue-floor-2", "mission_id": "m1",
+             "record_type": "operator_correction",
+             "runtime_mode": "real", "sensitivity": "standard",
+             "content": {"command": "去二楼救人", "status": "succeeded"},
+             "created_at": ""},
         ]
         retriever = _make_retriever(records)
         cases = [{
@@ -261,7 +301,7 @@ class TestEvaluateRetrieval:
             "record_type": "mission_outcome",
         }]
 
-        report = evaluate_retrieval(retriever, cases)
+        report = evaluate_retrieval(retriever, cases, scope=_eval_scope())
 
         assert report.total == 1
         assert report.passed == 0

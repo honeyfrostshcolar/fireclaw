@@ -13,7 +13,11 @@ from fireclaw_core.memory.entity_memory import EntityMemoryService
 from fireclaw_core.memory.mission_memory_facade import MissionMemoryFacade
 from fireclaw_core.memory.mission_memory_tools import MissionMemoryTools
 from fireclaw_core.memory.memory_lifecycle import MissionMemoryLifecycleStore
-from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory
+from fireclaw_core.memory.planner_memory_context import PlannerMemoryContextBuilder
+from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory, WorkingMemoryHydrationReport
+from fireclaw_core.memory.consolidation import FireClawConsolidationEngine
+from fireclaw_core.memory.consolidation_state import ConsolidationStateStore
+from fireclaw_core.memory.consolidation_coordinator import MemoryConsolidationCoordinator
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_memory import MissionMemoryStore
 from fireclaw_core.mission.mission_planning_audit import JsonlMissionPlanningAuditSink
@@ -43,6 +47,9 @@ class MissionRuntimePaths:
     memory_audit_dir: Path | None = None
     reusable_knowledge: Path | None = None
     embodied_runtime_mode: str | None = None
+    consolidation_jobs: Path | None = None
+    consolidation_state: Path | None = None
+    consolidation_lock: Path | None = None
 
 
 def build_operator_context(
@@ -74,6 +81,7 @@ def build_mission_agent_from_paths(
     approval_memory_producer = None
     embodied_working_memory = None
     embodied_store = None
+    facade = None
     if paths.embodied_runtime_mode is not None:
         if paths.mission_memory is None:
             raise ValueError("embodied_runtime_mode requires mission_memory")
@@ -178,9 +186,66 @@ def build_mission_agent_from_paths(
         )
         mission_memory_tools = MissionMemoryTools(facade)
 
+    # Construct consolidation coordinator when embodied memory is enabled
+    consolidation_coordinator = None
+    if embodied_store is not None and paths.embodied_runtime_mode is not None:
+        from fireclaw_core.memory.consolidation_jobs import ConsolidationJobStore
+
+        evidence_path = embodied_store.evidence_store.path
+        jobs_path = paths.consolidation_jobs or evidence_path.with_name(
+            f"{evidence_path.name}.consolidation-jobs.jsonl"
+        )
+        state_path = paths.consolidation_state or evidence_path.with_name(
+            f"{evidence_path.name}.consolidation-state.jsonl"
+        )
+        lock_path = paths.consolidation_lock or evidence_path.with_name(
+            f"{evidence_path.name}.consolidation.lock"
+        )
+        consolidator_producer = EmbodiedMemoryProducer(
+            embodied_store,
+            producer_type="memory_consolidator",
+            producer_id="mission-runtime-consolidator",
+            working_memory=embodied_working_memory,
+        )
+        consolidation_engine = FireClawConsolidationEngine(
+            store=embodied_store,
+            producer=consolidator_producer,
+            job_store=ConsolidationJobStore(jobs_path),
+        )
+        consolidation_state_store = ConsolidationStateStore(state_path)
+        consolidation_coordinator = MemoryConsolidationCoordinator(
+            engine=consolidation_engine,
+            state_store=consolidation_state_store,
+            store=embodied_store,
+            lock_path=lock_path,
+        )
+
+    planner_memory_context_builder = PlannerMemoryContextBuilder(
+        memory_retriever=memory_retriever,
+        mission_memory=memory_store,
+        facade=facade,
+        lifecycle=memory_lifecycle,
+        plugin_runtime=plugin_runtime,
+    )
+
+    # Hydrate working memory from authoritative store at startup
+    mission_registry = JsonlMissionRegistry(paths.mission_registry)
+    hydration_report = WorkingMemoryHydrationReport()
+    if embodied_store is not None and embodied_working_memory is not None:
+        from datetime import datetime, timezone
+        try:
+            hydration_report = embodied_working_memory.hydrate_recent(
+                store=embodied_store,
+                registry=mission_registry,
+                runtime_mode=paths.embodied_runtime_mode,
+                reference_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception:
+            pass
+
     return MissionAgent(
         registry=registry,
-        mission_registry=JsonlMissionRegistry(paths.mission_registry),
+        mission_registry=mission_registry,
         planner=planner,
         control_policy=ControlPolicy(),
         operator=build_operator_context(operator_id=operator_id, role=role, scopes=scopes, source=source),
@@ -201,6 +266,9 @@ def build_mission_agent_from_paths(
         embodied_working_memory=embodied_working_memory,
         mission_memory_tools=mission_memory_tools,
         memory_lifecycle=memory_lifecycle,
+        planner_memory_context_builder=planner_memory_context_builder,
+        consolidation_coordinator=consolidation_coordinator,
+        working_memory_hydration_report=hydration_report,
     )
 
 

@@ -16,6 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from fireclaw_core.memory.spatial_projection import (
+    SpatialProjectionRow,
+    entity_spatial_projection_row,
+    event_spatial_projection_rows,
+)
+
 # Columns stored in the main table alongside the FTS content blob.
 _FILTER_COLUMNS: list[str] = [
     "record_id",
@@ -45,6 +51,7 @@ _FILTER_COLUMN_MAP: dict[str, str] = {
     "runtime_mode": "runtime_mode",
     "source_type": "source_type",
     "episode_id": "episode_id",
+    "sensitivity": "sensitivity",
 }
 
 
@@ -72,12 +79,12 @@ class SqliteMemoryIndex:
         conn = sqlite3.connect(str(self._path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        self._init_schema(conn)
+        self._rtree_available = self._init_schema(conn)
         self._conn = conn
         return conn
 
     @staticmethod
-    def _init_schema(conn: sqlite3.Connection) -> None:
+    def _init_schema(conn: sqlite3.Connection) -> bool:
         """Create tables if they do not already exist."""
         conn.executescript(
             """
@@ -155,6 +162,34 @@ class SqliteMemoryIndex:
                 PRIMARY KEY (mission_id, runtime_mode, entity_id)
             );
 
+            CREATE TABLE IF NOT EXISTS spatial_projection_meta (
+                mission_id      TEXT NOT NULL,
+                runtime_mode    TEXT NOT NULL,
+                authority_token TEXT NOT NULL,
+                rebuilt_at      TEXT NOT NULL,
+                PRIMARY KEY (mission_id, runtime_mode)
+            );
+
+            CREATE TABLE IF NOT EXISTS spatial_projection (
+                projection_id   INTEGER PRIMARY KEY,
+                mission_id      TEXT NOT NULL,
+                runtime_mode    TEXT NOT NULL,
+                memory_type     TEXT NOT NULL,
+                source_id       TEXT NOT NULL,
+                geometry_source TEXT NOT NULL,
+                geometry_index  INTEGER NOT NULL,
+                frame_id        TEXT NOT NULL,
+                floor           TEXT,
+                center_x        REAL NOT NULL,
+                center_y        REAL NOT NULL,
+                center_z        REAL,
+                uncertainty_radius_m REAL NOT NULL,
+                min_z           REAL,
+                max_z           REAL,
+                entity_kind     TEXT,
+                entity_status   TEXT
+            );
+
             """
         )
         _ensure_columns(
@@ -195,16 +230,47 @@ class SqliteMemoryIndex:
                 ON entity_projection(
                     mission_id, runtime_mode, frame_id, floor, position_x, position_y
                 );
+            CREATE INDEX IF NOT EXISTS spatial_projection_lookup_idx
+                ON spatial_projection(
+                    mission_id, runtime_mode, frame_id, floor, memory_type,
+                    source_id
+                );
             """
         )
+        try:
+            conn.executescript(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS spatial_rtree_2d
+                    USING rtree(projection_id, min_x, max_x, min_y, max_y);
+                CREATE VIRTUAL TABLE IF NOT EXISTS spatial_rtree_3d
+                    USING rtree(
+                        projection_id, min_x, max_x, min_y, max_y, min_z, max_z
+                    );
+                """
+            )
+            return True
+        except sqlite3.OperationalError:
+            return False
 
     # -- public API -----------------------------------------------------------
 
-    def upsert(self, record: dict[str, Any], *, index_text: bool = True) -> None:
+    def upsert(
+        self,
+        record: dict[str, Any],
+        *,
+        index_text: bool = True,
+        authority_token: str | None = None,
+        finalize_spatial: bool = True,
+        commit: bool = True,
+    ) -> None:
         """Insert or update a single record in the derived index.
 
         ``index_text=False`` still stores structured metadata for spatial and
         temporal queries while keeping the payload out of FTS5.
+
+        ``authority_token`` is accepted for compatibility with
+        ``EmbodiedMemoryStore`` but is not stored in the index.
+        ``finalize_spatial`` and ``commit`` control batch-upsert behaviour.
         """
         record_id = record.get("record_id")
         if not record_id:
@@ -267,7 +333,22 @@ class SqliteMemoryIndex:
                 "INSERT INTO memory_fts (record_id, text_blob) VALUES (?, ?)",
                 (record_id, text_blob),
             )
-        conn.commit()
+        if commit:
+            if self.rtree_available:
+                self._replace_event_spatial_projection(conn, record)
+                if authority_token is not None and finalize_spatial:
+                    mission_id = record.get("mission_id")
+                    runtime_mode = fields["runtime_mode"]
+                    if isinstance(mission_id, str) and isinstance(runtime_mode, str):
+                        self._sync_spatial_authority_token_for_scope(
+                            conn,
+                            mission_id=mission_id,
+                            runtime_mode=runtime_mode,
+                            authority_token=authority_token,
+                        )
+            conn.commit()
+        elif self.rtree_available:
+            self._replace_event_spatial_projection(conn, record)
 
     def search(
         self,
@@ -286,8 +367,8 @@ class SqliteMemoryIndex:
             Optional mapping of column name to exact-match value.
             Supported keys: ``mission_id``, ``robot_id``, ``floor``,
             ``capability``, ``outcome``, ``operator``, ``risk_level``,
-            ``record_type``, ``runtime_mode``, ``source_type``, and
-            ``episode_id``.
+            ``record_type``, ``runtime_mode``, ``source_type``,
+            ``episode_id``, and ``sensitivity``.
         limit:
             Maximum number of results to return.
         """
@@ -630,6 +711,11 @@ class SqliteMemoryIndex:
         conn.execute("DELETE FROM memory_embeddings")
         conn.execute("DELETE FROM entity_projection")
         conn.execute("DELETE FROM entity_projection_meta")
+        if self.rtree_available:
+            conn.execute("DELETE FROM spatial_projection")
+            conn.execute("DELETE FROM spatial_projection_meta")
+            conn.execute("DELETE FROM spatial_rtree_2d")
+            conn.execute("DELETE FROM spatial_rtree_3d")
         conn.commit()
 
     def entity_source_token(self, *, mission_id: str, runtime_mode: str) -> str:
@@ -695,6 +781,7 @@ class SqliteMemoryIndex:
         runtime_mode: str,
         source_token: str,
         entities: Iterable[dict[str, Any]],
+        authority_token: str | None = None,
     ) -> int:
         """Atomically replace one mission/runtime Entity derived projection."""
         _require_query_text("mission_id", mission_id)
@@ -707,6 +794,13 @@ class SqliteMemoryIndex:
                 "DELETE FROM entity_projection WHERE mission_id = ? AND runtime_mode = ?",
                 (mission_id, runtime_mode),
             )
+            if self.rtree_available:
+                self._delete_spatial_projection(
+                    conn,
+                    mission_id=mission_id,
+                    runtime_mode=runtime_mode,
+                    memory_type="entity",
+                )
             for payload in payloads:
                 entity_id = str(payload.get("entity_id") or "")
                 if not entity_id:
@@ -737,6 +831,14 @@ class SqliteMemoryIndex:
                         json.dumps(payload, ensure_ascii=False, sort_keys=True),
                     ),
                 )
+                if self.rtree_available:
+                    row = entity_spatial_projection_row(
+                        mission_id=mission_id,
+                        runtime_mode=runtime_mode,
+                        payload=payload,
+                    )
+                    if row is not None:
+                        self._insert_spatial_projection(conn, row)
             conn.execute(
                 """
                 INSERT OR REPLACE INTO entity_projection_meta (
@@ -751,6 +853,13 @@ class SqliteMemoryIndex:
                     datetime.now().astimezone().isoformat(),
                 ),
             )
+            if self.rtree_available and authority_token is not None:
+                self._sync_spatial_authority_token_for_scope(
+                    conn,
+                    mission_id=mission_id,
+                    runtime_mode=runtime_mode,
+                    authority_token=authority_token,
+                )
         return len(payloads)
 
     def store_embedding(
@@ -834,6 +943,402 @@ class SqliteMemoryIndex:
             self.upsert(record)
             count += 1
         return count
+
+    @property
+    def rtree_available(self) -> bool:
+        """Return whether R*Tree spatial queries are available."""
+        if not hasattr(self, "_rtree_available"):
+            self._get_conn()
+        return getattr(self, "_rtree_available", False)
+
+    def sync_spatial_authority_token(self, authority_token: str) -> None:
+        """Mark existing spatial projections as matching the authority token."""
+        if not self.rtree_available:
+            return
+        conn = self._get_conn()
+        scopes = conn.execute(
+            """
+            SELECT DISTINCT mission_id, runtime_mode
+            FROM spatial_projection
+            """
+        ).fetchall()
+        for scope in scopes:
+            self._sync_spatial_authority_token_for_scope(
+                conn,
+                mission_id=scope["mission_id"],
+                runtime_mode=scope["runtime_mode"],
+                authority_token=authority_token,
+            )
+        conn.commit()
+
+    def finalize_spatial_projection(self, *, authority_token: str) -> None:
+        """Finalize spatial projection after a batch of upserts."""
+        self.sync_spatial_authority_token(authority_token)
+
+    def load_records_by_ids(
+        self,
+        event_ids: list[str] | tuple[str, ...],
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        record_types: frozenset[str] | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Load records by their IDs, filtered by mission and runtime.
+
+        Returns ``None`` if any requested ID is missing or if the data
+        cannot be loaded.
+        """
+        if not event_ids:
+            return []
+        conn = self._get_conn()
+        placeholders = ",".join("?" for _ in event_ids)
+        query = f"""
+            SELECT record_id, mission_id, record_type, robot_id, subtask_id,
+                   runtime_mode, source_type, created_at, content_json
+            FROM memory_records
+            WHERE record_id IN ({placeholders})
+              AND mission_id = ?
+              AND runtime_mode = ?
+        """
+        params: list[Any] = list(event_ids) + [mission_id, runtime_mode]
+        rows = conn.execute(query, params).fetchall()
+        if len(rows) != len(event_ids):
+            return None
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                content = json.loads(row["content_json"])
+            except (TypeError, json.JSONDecodeError):
+                return None
+            if not isinstance(content, dict):
+                return None
+            record_type = row["record_type"]
+            if record_types is not None and record_type not in record_types:
+                return None
+            results.append({
+                "record_id": row["record_id"],
+                "mission_id": row["mission_id"],
+                "record_type": record_type,
+                "robot_id": row["robot_id"],
+                "subtask_id": row["subtask_id"],
+                "content": content,
+                "created_at": row["created_at"],
+            })
+        return results
+
+    def query_spatial_candidates(
+        self,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        frame_id: str,
+        x: float,
+        y: float,
+        z: float | None = None,
+        radius_m: float,
+        floor: str | None,
+        memory_types: frozenset[str],
+        entity_kinds: frozenset[str] | None = None,
+        entity_statuses: frozenset[str] | None = None,
+        authority_token: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Return spatial candidates from the R*Tree index.
+
+        Returns ``None`` when the R*Tree is unavailable or the authority
+        token does not match.
+        """
+        if not self.rtree_available:
+            return None
+        conn = self._get_conn()
+        meta = conn.execute(
+            """
+            SELECT authority_token
+            FROM spatial_projection_meta
+            WHERE mission_id = ? AND runtime_mode = ?
+            """,
+            (mission_id, runtime_mode),
+        ).fetchone()
+        if authority_token is not None and (
+            meta is None or meta["authority_token"] != authority_token
+        ):
+            return None
+        if authority_token is None:
+            projection_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM spatial_projection
+                WHERE mission_id = ? AND runtime_mode = ?
+                """,
+                (mission_id, runtime_mode),
+            ).fetchone()
+            if projection_count is not None and int(projection_count["count"]) == 0:
+                self._rebuild_spatial_projection_for_scope(
+                    conn,
+                    mission_id=mission_id,
+                    runtime_mode=runtime_mode,
+                )
+        if radius_m < 0:
+            raise ValueError("radius_m must be >= 0")
+        min_x, max_x = x - radius_m, x + radius_m
+        min_y, max_y = y - radius_m, y + radius_m
+        query = [
+            "sp.mission_id = ?",
+            "sp.runtime_mode = ?",
+            "sp.frame_id = ?",
+            f"sp.memory_type IN ({', '.join('?' for _ in memory_types)})",
+        ]
+        params: list[Any] = [mission_id, runtime_mode, frame_id, *sorted(memory_types)]
+        if floor is not None:
+            query.append("sp.floor = ?")
+            params.append(floor)
+        if entity_kinds is not None:
+            query.append(
+                "(sp.memory_type != 'entity' OR "
+                f"sp.entity_kind IN ({', '.join('?' for _ in entity_kinds)}))"
+            )
+            params.extend(sorted(entity_kinds))
+        if entity_statuses is not None:
+            query.append(
+                "(sp.memory_type != 'entity' OR "
+                f"sp.entity_status IN ({', '.join('?' for _ in entity_statuses)}))"
+            )
+            params.extend(sorted(entity_statuses))
+        if z is None:
+            sql = f"""
+                SELECT DISTINCT sp.memory_type, sp.source_id
+                FROM spatial_projection sp
+                JOIN spatial_rtree_2d rt
+                  ON rt.projection_id = sp.projection_id
+                WHERE {' AND '.join(query)}
+                  AND rt.max_x >= ? AND rt.min_x <= ?
+                  AND rt.max_y >= ? AND rt.min_y <= ?
+                ORDER BY sp.memory_type ASC, sp.source_id ASC
+            """
+            params.extend([min_x, max_x, min_y, max_y])
+        else:
+            min_z, max_z = z - radius_m, z + radius_m
+            sql = f"""
+                SELECT DISTINCT sp.memory_type, sp.source_id
+                FROM spatial_projection sp
+                JOIN spatial_rtree_3d rt
+                  ON rt.projection_id = sp.projection_id
+                WHERE {' AND '.join(query)}
+                  AND rt.max_x >= ? AND rt.min_x <= ?
+                  AND rt.max_y >= ? AND rt.min_y <= ?
+                  AND rt.max_z >= ? AND rt.min_z <= ?
+                ORDER BY sp.memory_type ASC, sp.source_id ASC
+            """
+            params.extend([min_x, max_x, min_y, max_y, min_z, max_z])
+        return [
+            {"memory_type": row["memory_type"], "source_id": row["source_id"]}
+            for row in conn.execute(sql, params).fetchall()
+        ]
+
+    def _replace_event_spatial_projection(
+        self,
+        conn: sqlite3.Connection,
+        record: dict[str, Any],
+    ) -> None:
+        mission_id = record.get("mission_id")
+        runtime_mode = _extract_index_fields(
+            record,
+            record.get("content") if isinstance(record.get("content"), dict) else {},
+        )["runtime_mode"]
+        record_id = record.get("record_id")
+        record_type = record.get("record_type")
+        if (
+            not isinstance(mission_id, str)
+            or not isinstance(runtime_mode, str)
+            or not isinstance(record_id, str)
+            or record_type not in {"observation", "gist"}
+        ):
+            return
+        self._delete_spatial_projection(
+            conn,
+            mission_id=mission_id,
+            runtime_mode=runtime_mode,
+            memory_type=str(record_type),
+            source_id=record_id,
+        )
+        for row in event_spatial_projection_rows(record):
+            self._insert_spatial_projection(conn, row)
+
+    def _delete_spatial_projection(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        memory_type: str,
+        source_id: str | None = None,
+    ) -> None:
+        query = (
+            "SELECT projection_id FROM spatial_projection "
+            "WHERE mission_id = ? AND runtime_mode = ? AND memory_type = ?"
+        )
+        params: list[Any] = [mission_id, runtime_mode, memory_type]
+        if source_id is not None:
+            query += " AND source_id = ?"
+            params.append(source_id)
+        ids = [row["projection_id"] for row in conn.execute(query, params).fetchall()]
+        if ids:
+            placeholders = ", ".join("?" for _ in ids)
+            conn.execute(
+                f"DELETE FROM spatial_rtree_2d WHERE projection_id IN ({placeholders})",
+                ids,
+            )
+            conn.execute(
+                f"DELETE FROM spatial_rtree_3d WHERE projection_id IN ({placeholders})",
+                ids,
+            )
+            conn.execute(
+                f"DELETE FROM spatial_projection WHERE projection_id IN ({placeholders})",
+                ids,
+            )
+
+    def _insert_spatial_projection(
+        self,
+        conn: sqlite3.Connection,
+        row: SpatialProjectionRow,
+    ) -> None:
+        cursor = conn.execute(
+            """
+            INSERT INTO spatial_projection (
+                mission_id, runtime_mode, memory_type, source_id,
+                geometry_source, geometry_index, frame_id, floor,
+                center_x, center_y, center_z, uncertainty_radius_m,
+                min_z, max_z, entity_kind, entity_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.mission_id,
+                row.runtime_mode,
+                row.memory_type,
+                row.source_id,
+                row.geometry_source,
+                row.geometry_index,
+                row.frame_id,
+                row.floor,
+                row.center_x,
+                row.center_y,
+                row.center_z,
+                row.uncertainty_radius_m,
+                row.min_z,
+                row.max_z,
+                row.entity_kind,
+                row.entity_status,
+            ),
+        )
+        projection_id = int(cursor.lastrowid)
+        min_x, max_x, min_y, max_y = row.bounds_2d()
+        conn.execute(
+            """
+            INSERT INTO spatial_rtree_2d
+                (projection_id, min_x, max_x, min_y, max_y)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (projection_id, min_x, max_x, min_y, max_y),
+        )
+        bounds_3d = row.bounds_3d()
+        if bounds_3d is not None:
+            conn.execute(
+                """
+                INSERT INTO spatial_rtree_3d
+                    (projection_id, min_x, max_x, min_y, max_y, min_z, max_z)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (projection_id, *bounds_3d),
+            )
+
+    def _sync_spatial_authority_token_for_scope(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+        authority_token: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO spatial_projection_meta (
+                mission_id, runtime_mode, authority_token, rebuilt_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                mission_id,
+                runtime_mode,
+                authority_token,
+                datetime.now().astimezone().isoformat(),
+            ),
+        )
+
+    def _rebuild_spatial_projection_for_scope(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        mission_id: str,
+        runtime_mode: str,
+    ) -> None:
+        for memory_type in ("observation", "gist", "entity"):
+            self._delete_spatial_projection(
+                conn,
+                mission_id=mission_id,
+                runtime_mode=runtime_mode,
+                memory_type=memory_type,
+            )
+        records = conn.execute(
+            """
+            SELECT record_id, mission_id, record_type, robot_id, subtask_id,
+                   runtime_mode, created_at, content_json
+            FROM memory_records
+            WHERE mission_id = ? AND runtime_mode = ?
+              AND record_type IN ('observation', 'gist')
+            """,
+            (mission_id, runtime_mode),
+        ).fetchall()
+        for record in records:
+            try:
+                content = json.loads(record["content_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(content, dict):
+                continue
+            self._replace_event_spatial_projection(
+                conn,
+                {
+                    "record_id": record["record_id"],
+                    "mission_id": record["mission_id"],
+                    "record_type": record["record_type"],
+                    "robot_id": record["robot_id"],
+                    "subtask_id": record["subtask_id"],
+                    "runtime_mode": record["runtime_mode"],
+                    "created_at": record["created_at"],
+                    "content": content,
+                },
+            )
+        entities = conn.execute(
+            """
+            SELECT payload_json
+            FROM entity_projection
+            WHERE mission_id = ? AND runtime_mode = ?
+            """,
+            (mission_id, runtime_mode),
+        ).fetchall()
+        for entity in entities:
+            try:
+                payload = json.loads(entity["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            row = entity_spatial_projection_row(
+                mission_id=mission_id,
+                runtime_mode=runtime_mode,
+                payload=payload,
+            )
+            if row is not None:
+                self._insert_spatial_projection(conn, row)
+        conn.commit()
 
 
 # -- helpers ------------------------------------------------------------------

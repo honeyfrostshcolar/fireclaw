@@ -138,7 +138,11 @@ query boundary only and does not expose entity resolution or robot actuation.
 
 `EntityExtractionPipeline` automatically processes each Observation persisted
 by `RobotMemoryRecorder`. The default extractor accepts only an explicit
-`payload.entities` array:
+`payload.entities` array. The normative producer contract, field semantics,
+invalid examples, and adapter guidance are documented in
+[`payload-entities-schema.md`](payload-entities-schema.md).
+
+Example:
 
 ```json
 {
@@ -393,7 +397,9 @@ mission/runtime-isolated records and projected Entities. Query distance and
 result count are bounded. This is intentionally the correctness baseline before
 an R*Tree projection: any future spatial index must preserve uncertainty-region
 intersection, multi-geometry Gists, sensitivity omission, and deterministic
-ordering exactly.
+ordering exactly. The implemented SQLite schema, lifecycle, fallback, candidate
+hydration, and equivalence contract are specified in
+[`spatial-rtree-projection-design.md`](spatial-rtree-projection-design.md).
 
 All responses carry source evidence IDs and a common safety envelope. Memory is
 always `advisory_only`; `can_authorize_action` is always false; stale, derived,
@@ -494,6 +500,188 @@ scale and measured latency pressure: at least 10,000 embedded records plus
 100 ms p95 for R*Tree consideration. Crossing a threshold starts an engineering
 evaluation; it does not waive JSONL authority, runtime isolation, exact rebuild,
 or result-equivalence requirements.
+
+## Consolidation Boundaries And Watermarks
+
+Consolidation produces Episode and Gist summaries from authoritative embodied
+events. To prevent overlapping source sets across successive consolidations, the
+system uses closed sequence-based boundaries with durable watermarks.
+
+### Boundary Identity
+
+A `ConsolidationBoundary` identifies a closed range of evidence:
+
+| Field | Meaning |
+|---|---|
+| `mission_id` | Mission owning the evidence |
+| `runtime_mode` | `real` or `simulation` |
+| `robot_id` | Robot whose evidence is being consolidated |
+| `subtask_id` | Subtask context (optional) |
+| `terminal_event_id` | Event that triggered the boundary |
+| `terminal_status` | Terminal status value |
+| `after_sequence` | Exclusive lower bound (1-based absolute position) |
+| `through_sequence` | Inclusive upper bound |
+
+The boundary ID is a deterministic SHA-256 hash of these fields, ensuring
+idempotency: the same terminal event always produces the same boundary.
+
+### Watermarks
+
+`ConsolidationWatermark` tracks the highest completed `through_sequence` for
+each `(mission_id, runtime_mode, robot_id)` triple. Watermarks are:
+
+- **monotonic**: completed watermarks never move backwards;
+- **durable**: persisted in a JSONL state journal with fsync;
+- **used for source selection**: only events with sequence > watermark are
+  eligible for the next boundary.
+
+### State Journal
+
+`<evidence>.consolidation-state.jsonl` records boundary state transitions:
+
+```
+{"boundary_id": "...", "status": "queued", "timestamp": "..."}
+{"boundary_id": "...", "status": "running", "timestamp": "..."}
+{"boundary_id": "...", "status": "completed", "through_sequence": 15, "timestamp": "..."}
+```
+
+Boundaries without a state entry are treated as "queued" in `pending_boundaries()`.
+
+## Coordinator Lifecycle And Crash Recovery
+
+`MemoryConsolidationCoordinator` owns the consolidation worker thread and
+cross-process lease.
+
+### Lifecycle
+
+1. `recover()`: replays the state journal, resets "running" boundaries to
+   "queued" (crash recovery).
+2. `start()`: spawns a daemon worker thread.
+3. Worker loop: waits on stop event, calls `run_pending_once()` bounded by
+   `max_boundaries`.
+4. `stop()`: sets stop event, joins worker thread with timeout.
+
+### Cross-Process Lease
+
+`fcntl.flock(fd, LOCK_EX | LOCK_NB)` provides kernel-managed exclusive locking:
+
+- lock is automatically released on process exit (including crashes);
+- lock file contains content-free metadata (PID, start time) only;
+- `_LeaseBusyError` signals contention; boundary stays queued for retry.
+
+### Source Selection
+
+Only terminal subtask/mission statuses create boundaries:
+`succeeded`, `failed`, `cancelled`, `completed`, `block`, `denied`, `lost`.
+
+Non-terminal statuses (`running`, `cancel_requested`) are ignored.
+
+## Startup Hydration
+
+`EmbodiedWorkingMemory.hydrate_recent()` restores a bounded projection of
+recent events after restart without writing authority records.
+
+### Selection Rules
+
+- only missions currently `created` or `running`;
+- exact configured runtime mode;
+- only events fresh under per-type freshness rules;
+- future timestamps beyond allowed skew are excluded;
+- deterministic ordering by `(observed_at, event_id)`;
+- fair per-mission quota before remaining capacity is filled by recency;
+- total admitted bytes and events bounded by working-memory limits.
+
+### Hydration Report
+
+`WorkingMemoryHydrationReport` provides content-free diagnostics:
+
+| Field | Meaning |
+|---|---|
+| `considered` | Events examined |
+| `selected` | Events passing all filters |
+| `added` | Events actually admitted |
+| `stale` | Events excluded by freshness |
+| `wrong_scope` | Events excluded by mission/runtime |
+| `oversized` | Events excluded by capacity |
+
+Hydration failure degrades to an empty projection and does not prevent the
+Gateway from starting.
+
+## Replication Policy And Authentication
+
+### Policy Model
+
+`ReplicationPeerPolicy` binds a peer identity to allowed evidence:
+
+| Field | Meaning |
+|---|---|
+| `policy_id` | Stable policy identifier |
+| `peer_id` | Verified peer identity (from credentials, not caller header) |
+| `allowed_robot_ids` | Robots whose evidence may be exported |
+| `allowed_runtime_modes` | Runtime modes allowed for export |
+| `allowed_sensitivities` | Sensitivity levels allowed for export |
+
+Export admission:
+- mission and runtime match the request;
+- source robot is allowed by policy;
+- event sensitivity is explicitly allowed;
+- relations exported only when both endpoint events are exportable;
+- cursor advances over omitted records.
+
+### HMAC Authentication
+
+`ReplicationKeyProvider` supplies pairwise HMAC-SHA256 keys. Production
+configuration injects keys; no default secrets exist.
+
+Requests and batches carry `ReplicationAuthMetadata`:
+
+| Field | Meaning |
+|---|---|
+| `protocol_version` | Must be 2 |
+| `peer_id` | Verified peer identity |
+| `key_id` | Key identifier |
+| `issued_at` | ISO timestamp |
+| `nonce` | Unique per request |
+| `body_digest` | SHA-256 of canonical body/batch |
+| `signature` | HMAC-SHA256 of canonical signing data |
+
+Verification uses `hmac.compare_digest()`, bounded clock skew (default 300s),
+and a bounded nonce replay cache.
+
+### Protocol Version
+
+- v2: carries policy/auth metadata and omission diagnostics.
+- v1: parsing available only when `allow_legacy_unsigned=True` (simulation).
+- Normal real-runtime assembly never enables legacy mode.
+
+### HTTPS Requirement
+
+For `runtime_mode="real"`:
+- client refuses non-HTTPS robot endpoints before network I/O;
+- missing key or peer policy fails closed;
+- unsigned legacy batches are rejected.
+
+Simulation tests may explicitly allow HTTP and unsigned fixtures. There is no
+silent insecure fallback.
+
+### Limitation
+
+HMAC proves possession of a configured pairwise secret; it is not a substitute
+for transport encryption or third-party-verifiable signatures. For stronger
+authentication, integrate with a PKI or mTLS layer.
+
+## Content-Free Diagnostics
+
+Status and log records never contain event payloads, secrets, signatures, or
+raw exception messages. Exposed fields:
+
+- pending/running/failed consolidation boundary counts;
+- latest watermark per scope;
+- last successful consolidation time;
+- startup hydration selected/added/oversized/stale counts;
+- replication authenticated peer and policy IDs;
+- exported/imported/omitted/rejected/conflict counts;
+- stable failure codes and exception class.
 
 ## OpenClaw Analogue Status
 
