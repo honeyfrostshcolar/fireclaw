@@ -12,7 +12,7 @@
 
 - [x] **Step 1: Inspect OpenClaw abort/run control**
 
-Attempted CodeGraph lookups for `registerChatAbortController`; broad and narrow CodeGraph calls timed out. Used previously gathered CodeGraph findings plus local source reads of `openclaw-main/src/gateway/chat-abort.ts` and `openclaw-main/src/gateway/server-methods/chat.ts`.
+Attempted CodeGraph lookups for `registerChatAbortController`; broad and narrow CodeGraph calls timed out. Used previously gathered CodeGraph findings plus local source reads of `openclaw/src/gateway/chat-abort.ts` and `openclaw/src/gateway/server-methods/chat.ts`.
 
 - [x] **Step 2: Write failing Gateway cancellation test**
 

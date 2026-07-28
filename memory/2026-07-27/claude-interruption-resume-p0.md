@@ -268,7 +268,7 @@ out of scope.
 
 ### Upstream Analogue Review
 
-- Inspected the local `openclaw-main/` memory retrieval structures with
+- Inspected the local `openclaw/` memory retrieval structures with
   CodeGraph. No directly reusable bounded memory-graph traversal API was found.
 - Inspected local `emem-main` relation/getter behavior. It primarily exposes
   direct record and single-hop access rather than a permission-aware bounded

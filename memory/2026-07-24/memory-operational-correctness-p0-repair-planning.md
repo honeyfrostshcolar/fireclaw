@@ -48,7 +48,7 @@ Inspected current source and blast radius for:
 - `FireClawConsolidationEngine.consolidate_events`
 - existing P0 and compatibility tests
 
-The local `openclaw-main/` reference remains absent. The indexed `emem-main/`
+The local `openclaw/` reference remains absent. The indexed `emem-main/`
 analogue confirms episode-end and time-window consolidation behavior, but its
 memory facade does not provide FireClaw's authenticated robot replication or
 safety-critical terminal journaling. The plan therefore preserves eMEM's

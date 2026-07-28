@@ -39,7 +39,7 @@ Not implemented yet:
 - HNSW vector index;
 - R-tree / SQLite R*Tree spatial backend;
 - full hybrid retrieval orchestration and evaluation loop;
-- OpenClaw-first memory analogue comparison, because `openclaw-main/` and `.codegraph/` were unavailable.
+- OpenClaw-first memory analogue comparison, because `openclaw/` and `.codegraph/` were unavailable.
 
 ### Important Framing
 

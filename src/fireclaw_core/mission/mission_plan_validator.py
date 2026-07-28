@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 from fireclaw_core.mission.mission_planner import MissionPlan
+from fireclaw_core.mission.task_graph import (
+    MissionTaskGraph,
+    MissionTaskGraphValidator,
+    task_graph_from_mission_plan,
+)
 from fireclaw_core.agent.robot_registry import RobotRegistry
 from fireclaw_core.task.task_contract import structured_task_from_mission_subtask, validate_structured_robot_task
 
 
 class MissionPlanValidator:
-    def validate(self, plan: MissionPlan, registry: RobotRegistry) -> list[str]:
+    def validate(
+        self,
+        plan: MissionPlan,
+        registry: RobotRegistry,
+        *,
+        task_graph: MissionTaskGraph | None = None,
+    ) -> list[str]:
         errors: list[str] = []
         if not plan.subtasks:
             errors.append("Mission plan must contain at least one subtask.")
@@ -22,8 +33,12 @@ class MissionPlanValidator:
                 errors.append(
                     f"Robot {subtask.robot_id} lacks required capability {subtask.capability_required}."
                 )
-            if subtask.floor <= 0:
+            if subtask.floor is not None and subtask.floor <= 0:
                 errors.append(f"Subtask floor must be positive for robot {subtask.robot_id}.")
+            if subtask.floor is None and not subtask.target:
+                errors.append(
+                    f"Subtask requires a floor or typed target for robot {subtask.robot_id}."
+                )
             if subtask.execution_group < 0:
                 errors.append(f"Execution group must be non-negative for robot {subtask.robot_id}.")
             structured = structured_task_from_mission_subtask(
@@ -31,4 +46,11 @@ class MissionPlanValidator:
                 subtask=subtask,
             )
             errors.extend(validate_structured_robot_task(structured))
-        return errors
+        if task_graph is None:
+            task_graph = task_graph_from_mission_plan(
+                plan,
+                mission_id="validation",
+                plan_id="validation-plan",
+            )
+        errors.extend(MissionTaskGraphValidator().validate(task_graph, registry))
+        return list(dict.fromkeys(errors))

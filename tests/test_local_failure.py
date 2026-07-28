@@ -123,6 +123,18 @@ def test_local_failure_reason_from_robot_result_unknown() -> None:
     assert reason.category == FailureCategory.ACTION_FAILED
 
 
+def test_local_failure_reason_recognizes_navigation_no_path() -> None:
+    reason = LocalFailureReason.from_robot_result(
+        status="failed",
+        error="Navigation failed: no path to target",
+        action="navigate_to_floor",
+        robot_id="r1",
+    )
+
+    assert reason.category == FailureCategory.TARGET_UNREACHABLE
+    assert reason.retryable is False
+
+
 def test_local_failure_reason_frozen() -> None:
     reason = LocalFailureReason(
         category=FailureCategory.TIMEOUT,

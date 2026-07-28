@@ -120,9 +120,20 @@ def _infer_category(status: str, error: str | None) -> FailureCategory:
         return FailureCategory.ROBOT_OFFLINE
     if "battery" in error_lower:
         return FailureCategory.LOW_BATTERY
+    route_blocked_terms = (
+        "unreachable",
+        "no path",
+        "path blocked",
+        "route blocked",
+        "blocked route",
+    )
     if "sensor" in error_lower:
-        return FailureCategory.TARGET_UNREACHABLE if "unreachable" in error_lower else FailureCategory.SENSOR_UNAVAILABLE
-    if "unreachable" in error_lower:
+        return (
+            FailureCategory.TARGET_UNREACHABLE
+            if any(term in error_lower for term in route_blocked_terms)
+            else FailureCategory.SENSOR_UNAVAILABLE
+        )
+    if any(term in error_lower for term in route_blocked_terms):
         return FailureCategory.TARGET_UNREACHABLE
     if "transport" in error_lower or "connection" in error_lower:
         return FailureCategory.TRANSPORT

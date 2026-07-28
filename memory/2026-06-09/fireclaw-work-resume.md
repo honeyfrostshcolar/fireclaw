@@ -159,8 +159,8 @@ Re-check current FireClaw code after the large implementation step, compare impl
 - Read recent memory from `memory/2026-06-09/fireclaw-work-resume.md` and `memory/2026-06-08/fireclaw-work-resume.md`.
 - Checked git state with `git status --short --branch`.
 - Used FireClaw CodeGraph context for mission agent, Gateway, robot runtime, safety, LLM provider, mission trace, scheduler, memory, and approval surfaces.
-- Used OpenClaw CodeGraph status/context/search/explore against `openclaw-main/.codegraph`.
-- Read `openclaw-main/AGENTS.md`.
+- Used OpenClaw CodeGraph status/context/search/explore against `openclaw/.codegraph`.
+- Read `openclaw/AGENTS.md`.
 - Inspected current FireClaw files:
   - `src/fireclaw_core/mission_agent.py`
   - `src/fireclaw_core/mission_scheduler.py`
@@ -966,9 +966,9 @@ Re-check the current FireClaw code after Phase 6-10 completion and hardening, co
 - Used CodeGraph for FireClaw architecture context:
   - `MissionAgent`, `MissionGateway`, `MissionScheduler`, `FireClawGateway`, `StreamEvent`, `SqliteMemoryIndex`, `FireClawPluginDescriptor`, `SafetyGate`, `Ros1Transport`
 - Used CodeGraph for OpenClaw reference:
-  - `openclaw-main/src/tasks/task-registry.types.ts`
-  - `openclaw-main/src/tasks/task-registry.store.ts`
-  - `openclaw-main/src/agents/subagent-registry.store.ts`
+  - `openclaw/src/tasks/task-registry.types.ts`
+  - `openclaw/src/tasks/task-registry.store.ts`
+  - `openclaw/src/agents/subagent-registry.store.ts`
   - gateway/method scope/plugin/memory/approval related directories
 - Ran full verification:
   - `.venv/bin/python -m pytest -q`

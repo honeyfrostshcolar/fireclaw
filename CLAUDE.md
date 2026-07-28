@@ -12,14 +12,14 @@ This repository is for building **FireClaw**: an embodied agent framework for fi
 
 The target system installs one agent on each firefighting robot. A human operator can give natural-language tasks such as `去二楼救人`; the agent should understand the request, decompose it into executable subtasks, select and run appropriate skills/tools, coordinate with robot-side algorithms, and remember previous tasks, observations, outcomes, and operator preferences.
 
-`openclaw-main/` is a local reference copy of OpenClaw. Treat it as architectural source material, not as code to blindly copy. Prefer studying OpenClaw's agent/session/tool/skill/memory/gateway patterns, then adapting useful parts to robotics constraints and this repository's codebase.
+`openclaw/` is a local reference copy of OpenClaw. Treat it as architectural source material, not as code to blindly copy. Prefer studying OpenClaw's agent/session/tool/skill/memory/gateway patterns, then adapting useful parts to robotics constraints and this repository's codebase.
 If a FireClaw module has a clear OpenClaw analogue, inspect the upstream implementation with CodeGraph first, then mirror the proven structure before adding FireClaw-specific adaptations. Do not invent a fresh design or API when OpenClaw already solves the same problem. Preserve the firefighting domain constraints, and do not wholesale copy OpenClaw UI/channel/transport assumptions when they do not fit rescue robotics.
 
 ## Current Repository Shape
 
 - Root-level FireClaw code may still be incomplete or under construction.
-- `openclaw-main/` contains the upstream OpenClaw reference implementation and its own scoped guides. Read its scoped `AGENTS.md` files before modifying files inside that subtree.
-- This root `AGENTS.md` owns FireClaw work outside `openclaw-main/`.
+- `openclaw/` contains the upstream OpenClaw reference implementation and its own scoped guides. Read its scoped `AGENTS.md` files before modifying files inside that subtree.
+- This root `AGENTS.md` owns FireClaw work outside `openclaw/`.
 - Do not describe this repository as the old leader-switching PyTorch project. That description came from another project and is obsolete here.
 
 ## Architecture Direction
@@ -43,7 +43,7 @@ For FireClaw modules that have an OpenClaw counterpart, follow this workflow bef
 - Use CodeGraph to inspect the relevant OpenClaw source first. Start with `codegraph_context` for broad module context, then use one focused `codegraph_explore` or `codegraph_trace` when source or flow details are needed.
 - Record the OpenClaw analogue in the working notes or memory record: which files/symbols were inspected, what structure is being reused, and what is being changed for firefighting robotics.
 - Reuse OpenClaw's proven module shape where it fits: session state, conversation state, tool calling, skills, memory retrieval, gateway/control plane, operator-facing status, and local persistence should not be redesigned from scratch without a concrete reason.
-- Adapt instead of copying wholesale. FireClaw may need different safety gates, operator confirmation, ROS2/simulator adapters, robot identity handling, execution audit logs, degraded-network behavior, and emergency-stop assumptions.
+- Adapt instead of copying wholesale. FireClaw may need different safety gates, operator confirmation, ROS1/simulator adapters, robot identity handling, execution audit logs, degraded-network behavior, and emergency-stop assumptions.
 - If OpenClaw's design does not fit FireClaw, state the reason explicitly before introducing a different API or module boundary.
 - Do not let an LLM invent a fresh implementation pattern for an OpenClaw-existing feature until the upstream pattern has been checked.
 
@@ -58,7 +58,7 @@ find . -maxdepth 3 -type f | sort | head -200
 find . -name AGENTS.md -print
 ```
 
-For OpenClaw reference work inside `openclaw-main/`, follow `openclaw-main/AGENTS.md` and scoped guides. Do not apply OpenClaw's `pnpm`/Vitest commands to FireClaw root code unless the root has adopted the same toolchain.
+For OpenClaw reference work inside `openclaw/`, follow `openclaw/AGENTS.md` and scoped guides. Do not apply OpenClaw's `pnpm`/Vitest commands to FireClaw root code unless the root has adopted the same toolchain.
 
 When adding FireClaw implementation, add narrow verification commands with the code being introduced, for example unit tests for skill schemas, planner output validation, memory persistence, safety gate decisions, and robot adapter behavior.
 

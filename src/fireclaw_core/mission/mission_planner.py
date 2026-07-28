@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from fireclaw_core.planner.planner import CHINESE_DIGITS
+
+if TYPE_CHECKING:
+    from fireclaw_core.mission.graph_proposal import MissionGraphProposal
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
 from fireclaw_core.mission.mission_planning_audit import MissionPlanningAuditRecord
 
@@ -15,18 +18,42 @@ from fireclaw_core.mission.mission_planning_audit import MissionPlanningAuditRec
 class MissionSubtask:
     robot_id: str
     command: str
-    floor: int
+    floor: int | None
     capability_required: str
     execution_group: int = 0
+    node_id: str | None = None
+    task_type: str | None = None
+    target: dict[str, Any] = field(default_factory=dict)
+    completion_goal: str | None = None
+    completion_contract: dict[str, Any] = field(default_factory=dict)
+    belief_requirements: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "robot_id": self.robot_id,
             "command": self.command,
             "floor": self.floor,
             "capability_required": self.capability_required,
             "execution_group": self.execution_group,
         }
+        optional = {
+            "node_id": self.node_id,
+            "task_type": self.task_type,
+            "completion_goal": self.completion_goal,
+        }
+        result.update({
+            key: value for key, value in optional.items() if value is not None
+        })
+        if self.target:
+            result["target"] = dict(self.target)
+        if self.completion_contract:
+            result["completion_contract"] = dict(self.completion_contract)
+        if self.belief_requirements:
+            result["belief_requirements"] = [
+                dict(requirement)
+                for requirement in self.belief_requirements
+            ]
+        return result
 
 
 @dataclass(frozen=True)
@@ -59,11 +86,13 @@ class MissionPlanningResult:
     intent: str | None = None
     plan: MissionPlan | None = None
     audit_record: MissionPlanningAuditRecord | None = None
+    graph_proposal: MissionGraphProposal | None = None
 
 
 @dataclass(frozen=True)
 class MissionPlannerContext:
     available_robots: list[RobotRegistryEntry] = field(default_factory=list)
+    state_snapshot: dict[str, Any] | None = None
     retrieved_memories: list[dict[str, Any]] = field(default_factory=list)
     operator_corrections: list[dict[str, Any]] = field(default_factory=list)
     external_knowledge: list[dict[str, Any]] = field(default_factory=list)

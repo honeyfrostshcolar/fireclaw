@@ -92,7 +92,7 @@ Safety-relevant invariants implemented in the typed facade:
 
 ### OpenClaw Analogue Limitation
 
-The repository currently has no `openclaw-main/` directory, no `.codegraph/` index was found, and CodeGraph MCP tools were not exposed in the session. Therefore the required OpenClaw-first structural comparison could not be completed. The implementation reuses FireClaw's existing mission-memory/index boundaries and records this deviation explicitly. Recheck OpenClaw session/memory/local-persistence structure when the reference tree and CodeGraph become available.
+The repository currently has no `openclaw/` directory, no `.codegraph/` index was found, and CodeGraph MCP tools were not exposed in the session. Therefore the required OpenClaw-first structural comparison could not be completed. The implementation reuses FireClaw's existing mission-memory/index boundaries and records this deviation explicitly. Recheck OpenClaw session/memory/local-persistence structure when the reference tree and CodeGraph become available.
 
 ### Current Conclusion
 

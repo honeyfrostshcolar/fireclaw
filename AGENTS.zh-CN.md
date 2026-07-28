@@ -8,14 +8,14 @@
 
 目标系统是在每台消防机器人上部署一个 agent。人类操作员可以用自然语言下达任务，例如 `去二楼救人`。agent 应该能够理解请求，拆解成可执行子任务，选择并运行合适的 skills/tools，调用机器人侧已经测试完成的算法，并记住之前的任务、观测、执行结果和操作员偏好。
 
-`openclaw-main/` 是本地放置的 OpenClaw 参考源码。它应该被当成架构参考，而不是直接复制的代码。重点参考 OpenClaw 的 agent、session、tool、skill、memory、gateway 等模式，然后按照消防机器人场景进行改造。
+`openclaw/` 是本地放置的 OpenClaw 参考源码。它应该被当成架构参考，而不是直接复制的代码。重点参考 OpenClaw 的 agent、session、tool、skill、memory、gateway 等模式，然后按照消防机器人场景进行改造。
 如果 FireClaw 里的某个模块在 OpenClaw 里有明确对应物，先用 CodeGraph 去看 OpenClaw 的实现，再按它已经验证过的结构去仿造，之后只做 FireClaw 自己需要的适配。不要在 OpenClaw 已经有成熟形态的时候，自己重新想一套设计或 API。保留消防救援场景的约束，不要把 OpenClaw 的 UI、channel 或 transport 假设整包搬过来。
 
 ## 当前仓库状态
 
 - FireClaw 根目录代码可能还处在搭建阶段。
-- `openclaw-main/` 包含 OpenClaw 原始参考实现，里面可能有自己的 `AGENTS.md` 或局部说明。修改该目录前要先看它自己的规则。
-- 根目录的 `AGENTS.md` 负责指导 `openclaw-main/` 之外的 FireClaw 开发。
+- `openclaw/` 包含 OpenClaw 原始参考实现，里面可能有自己的 `AGENTS.md` 或局部说明。修改该目录前要先看它自己的规则。
+- 根目录的 `AGENTS.md` 负责指导 `openclaw/` 之外的 FireClaw 开发。
 - 不要再把本项目描述成旧的 leader-switching PyTorch 项目。那是从其他项目复制来的旧说明，已经不适用。
 
 ## 架构方向
@@ -39,7 +39,7 @@ FireClaw 中只要某个模块在 OpenClaw 里有对应实现，设计或改代�
 - 先用 CodeGraph 查看 OpenClaw 相关源码。一般先用 `codegraph_context` 获取模块上下文，需要源码或调用链细节时，再用一次聚焦的 `codegraph_explore` 或 `codegraph_trace`。
 - 在工作记录或 `memory/` 记录里写清楚：看了 OpenClaw 的哪些文件 / symbol，复用了什么结构，哪些地方因为消防机器人场景做了调整。
 - 能复用 OpenClaw 成熟形态的就复用：session state、conversation state、tool calling、skills、memory retrieval、gateway/control plane、面向操作员的状态回报、本地持久化等，不要无理由重新设计。
-- 复用的是结构，不是整包照搬。FireClaw 需要额外考虑 safety gate、operator confirmation、ROS2/simulator adapter、robot identity、执行审计日志、弱网/断连行为和 emergency stop 假设。
+- 复用的是结构，不是整包照搬。FireClaw 需要额外考虑 safety gate、operator confirmation、ROS1/simulator adapter、robot identity、执行审计日志、弱网/断连行为和 emergency stop 假设。
 - 如果 OpenClaw 的设计不适合 FireClaw，要先说明原因，再引入新的 API 或模块边界。
 - 对 OpenClaw 已经实现过的功能，不能让 LLM 在没查 upstream 的情况下凭空生成一套新模式。
 
@@ -54,7 +54,7 @@ find . -maxdepth 3 -type f | sort | head -200
 find . -name AGENTS.md -print
 ```
 
-如果是在 `openclaw-main/` 内部做参考或修改，要遵守 `openclaw-main/AGENTS.md` 和它的局部规则。不要把 OpenClaw 的 `pnpm`、Vitest 等命令直接套用到 FireClaw 根目录，除非根目录也明确采用了同样工具链。
+如果是在 `openclaw/` 内部做参考或修改，要遵守 `openclaw/AGENTS.md` 和它的局部规则。不要把 OpenClaw 的 `pnpm`、Vitest 等命令直接套用到 FireClaw 根目录，除非根目录也明确采用了同样工具链。
 
 当新增 FireClaw 实现时，要一起补充窄范围验证命令，例如 skill schema 单测、planner 输出校验、memory 持久化测试、safety gate 决策测试、robot adapter dry-run 测试等。
 

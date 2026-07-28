@@ -119,7 +119,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 ## 编码规范
 
-- **要求 Python 3.11+**。使用 `from __future__ import annotations` 进行前向引用。
+- **要求 Python 3.10+**。使用 `from __future__ import annotations` 进行前向引用。
 - **优先使用数据类**。不可变类型使用 `@dataclass(frozen=True)`。
 - **Protocol 类**用于接口定义（参见 `RobotAdapter`、`MemoryStore`、`Planner`）。
 - **所有公共 API 需要类型注解**。内部辅助函数可省略。
@@ -129,7 +129,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 ## OpenClaw 参考
 
-`openclaw-main/` 是 OpenClaw 的本地参考副本。它已被 gitignore，作为架构参考资料，而非 FireClaw 源代码。
+`openclaw/` 是 OpenClaw 的本地参考副本。它已被 gitignore，作为架构参考资料，而非 FireClaw 源代码。
 
 构建具有 OpenClaw 对应物的 FireClaw 模块时：
 1. 先用 CodeGraph 检查 OpenClaw 源码（`codegraph_context` → `codegraph_explore`）

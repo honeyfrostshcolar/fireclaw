@@ -88,6 +88,8 @@ def build_mission_agent_from_paths(
     rag_reranker=None,
     knowledge_rag_embedding_provider=None,
     knowledge_rag_reranker=None,
+    subagent_client=None,
+    resume_dispatches: bool = True,
     source: str = "runtime",
 ) -> MissionAgent:
     embodied_memory_producer = None
@@ -325,8 +327,9 @@ def build_mission_agent_from_paths(
         except Exception:
             pass
 
-    return MissionAgent(
+    agent = MissionAgent(
         registry=registry,
+        subagent_client=subagent_client,
         mission_registry=mission_registry,
         planner=planner,
         control_policy=ControlPolicy(),
@@ -352,6 +355,9 @@ def build_mission_agent_from_paths(
         consolidation_coordinator=consolidation_coordinator,
         working_memory_hydration_report=hydration_report,
     )
+    if resume_dispatches:
+        agent.resume_pending_dispatches()
+    return agent
 
 
 def _registry_state(registry: Any) -> dict[str, Any]:

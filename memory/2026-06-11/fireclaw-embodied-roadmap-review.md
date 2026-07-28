@@ -185,7 +185,7 @@ Re-check FireClaw after commit `9033a92`, compare it against OpenClaw only for e
 
 ### OpenClaw References Inspected
 
-Used CodeGraph against `/home/nankai/fireclaw/openclaw-main`.
+Used CodeGraph against `/home/nankai/fireclaw/openclaw`.
 
 Relevant OpenClaw patterns:
 
@@ -491,7 +491,7 @@ Re-check whether current FireClaw can complete the originally intended firefight
 
 ### OpenClaw References Inspected
 
-Used CodeGraph against `/home/nankai/fireclaw/openclaw-main`.
+Used CodeGraph against `/home/nankai/fireclaw/openclaw`.
 
 Relevant OpenClaw patterns checked:
 
@@ -867,12 +867,12 @@ Reassess FireClaw after the recent embodied-agent milestone, compare only the Op
   - `f861a3d feat: add embodied rescue scenario evaluation harness`
   - `c1d5571 test: prove real mission-to-robot gateway embodied chain`
 - OpenClaw scoped guides read:
-  - `openclaw-main/AGENTS.md`
-  - `openclaw-main/src/agents/AGENTS.md`
-  - `openclaw-main/src/gateway/AGENTS.md`
-  - `openclaw-main/src/plugin-sdk/AGENTS.md`
+  - `openclaw/AGENTS.md`
+  - `openclaw/src/agents/AGENTS.md`
+  - `openclaw/src/gateway/AGENTS.md`
+  - `openclaw/src/plugin-sdk/AGENTS.md`
 - CodeGraph used for OpenClaw context:
-  - `codegraph_status` on `/home/nankai/fireclaw/openclaw-main`
+  - `codegraph_status` on `/home/nankai/fireclaw/openclaw`
   - `codegraph_context` / `codegraph_explore` for agent/session, gateway, plugin control-plane, hook runner, doctor/startup sidecar, provider/memory startup, and session cancel/background task context.
 
 ### Commands Run

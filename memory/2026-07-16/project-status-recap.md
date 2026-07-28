@@ -35,7 +35,7 @@ The latest implementation work is the FireClaw embodied memory v1 slice recorded
 
 - Workspace root is not currently a usable Git repository. `.git/` exists but is empty, so `git status` reports that the directory is not a repository.
 - `emem-main/` exists.
-- `openclaw-main/` does not exist, so the required OpenClaw-first analogue review remains blocked.
+- `openclaw/` does not exist, so the required OpenClaw-first analogue review remains blocked.
 - System Python is 3.8.10, while the project requires Python 3.11 or newer.
 - The available Python 3.10 environment does not have pytest.
 - `.venv` and a usable `uv` command are absent, although `uv.lock` exists.
@@ -49,7 +49,7 @@ The embodied memory v1 code is implemented but not test-verified. It is an engin
 1. Restore or create a Python 3.11+ development environment and install the project dev dependencies.
 2. Run the focused embodied-memory and existing memory regression tests.
 3. Run the full test suite.
-4. Restore `openclaw-main/` and CodeGraph access, then compare the relevant OpenClaw memory/session/local-persistence structure before further memory API expansion.
+4. Restore `openclaw/` and CodeGraph access, then compare the relevant OpenClaw memory/session/local-persistence structure before further memory API expansion.
 5. After verification, integrate writes at `MissionAgent`, `SafetyGate`, `SkillRuntime`, and robot-adapter boundaries.
 
 ### Commands To Run

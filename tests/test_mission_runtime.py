@@ -6,7 +6,13 @@ from unittest.mock import MagicMock
 
 from fireclaw_core.mission.mission_planner import MissionPlan, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission.mission_planning_audit import GuardDecision, JsonlMissionPlanningAuditSink, MissionPlanningAuditRecord
+from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
+from fireclaw_core.mission.revision_dispatcher import (
+    JsonlMissionDispatchStore,
+    checkpoint_for_graph,
+)
 from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
+from fireclaw_core.mission.task_graph import task_graph_from_mission_plan
 from fireclaw_core.memory.memory_retrieval import MemoryRetrievalScope
 from fireclaw_core.memory.rag_indexing import build_memory_rag_indexes
 from fireclaw_core.rag.bm25_retrieval import build_bm25_index
@@ -66,6 +72,80 @@ class FakeRuntimeSubagentClient:
             "session_id": kwargs.get("session_id"),
             "robot_id": entry.robot_id,
         }
+
+    def get_task_trace(self, entry, task_id):
+        return {
+            "task_id": task_id,
+            "robot_id": entry.robot_id,
+            "status": "succeeded",
+            "result": {"status": "succeeded"},
+            "events": [{"type": "task.completed"}],
+        }
+
+    def cancel_task(self, entry, task_id, *, operator=None):
+        return {
+            "status": "cancel_requested",
+            "task_id": task_id,
+            "robot_id": entry.robot_id,
+        }
+
+
+def test_runtime_startup_automatically_resumes_dispatch_checkpoint(
+    tmp_path: Path,
+):
+    registry_path = tmp_path / "robots.json"
+    _write_robot_registry(registry_path, [
+        {
+            "robot_id": "r1",
+            "base_url": "http://r1:8765",
+            "capabilities": ["search_for_victims"],
+        },
+    ])
+    mission_registry_path = tmp_path / "missions.jsonl"
+    mission_registry = JsonlMissionRegistry(mission_registry_path)
+    mission_registry.create_mission(
+        mission_id="m1",
+        session_id="m1",
+        command="search floor 2",
+        created_at="2026-07-28T00:00:00+00:00",
+    )
+    plan = MissionPlan(
+        intent="search",
+        command="search floor 2",
+        subtasks=[
+            MissionSubtask(
+                robot_id="r1",
+                command="search floor 2",
+                floor=2,
+                capability_required="search_for_victims",
+            ),
+        ],
+    )
+    graph = task_graph_from_mission_plan(
+        plan,
+        mission_id="m1",
+        plan_id="m1:plan:1",
+        state_snapshot_id="m1:state:1",
+    )
+    JsonlMissionDispatchStore(
+        tmp_path / "missions.dispatch.jsonl"
+    ).append(checkpoint_for_graph(graph, ()))
+    client = FakeRuntimeSubagentClient()
+
+    agent = build_mission_agent_from_paths(
+        MissionRuntimePaths(
+            robot_registry=registry_path,
+            mission_registry=mission_registry_path,
+        ),
+        operator_id="op-a",
+        role="operator",
+        subagent_client=client,
+    )
+
+    assert agent.dispatch_recovery_report[0]["status"] == "succeeded"
+    assert agent.dispatch_recovery_report[0]["recovered"] is True
+    assert agent.active_task_graph("m1") == graph
+    assert len(client.calls) == 1
 
 
 def _mission_planning_audit_record(command="去二楼搜索"):

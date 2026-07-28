@@ -27,7 +27,7 @@ git log --oneline -8
 git diff -- src/fireclaw_core/gateway/gateway.py src/fireclaw_core/mission/mission_cli.py tests/test_gateway_robot_profile_config.py tests/test_mission_cli.py
 sed -n '1,220p' memory/2026-06-13/fireclaw-dry-run-profile-runtime-fix.md
 .venv/bin/python -m pytest tests/test_gateway_dry_run_profile.py tests/test_gateway_robot_profile_config.py tests/test_robot.py tests/test_gateway_serve_profiles.py tests/test_mission_cli.py -q
-rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]{12,}|api_key\s*=\s*\"[^\"]+\"|api-key\s+\"[^\"]+\"|token-plan" fireclaw.example.toml README.md docs examples src tests -g '!openclaw-main/**'
+rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]{12,}|api_key\s*=\s*\"[^\"]+\"|api-key\s+\"[^\"]+\"|token-plan" fireclaw.example.toml README.md docs examples src tests -g '!openclaw/**'
 .venv/bin/python -m pytest -q
 ```
 

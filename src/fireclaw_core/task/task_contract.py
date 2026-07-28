@@ -88,17 +88,48 @@ def structured_task_from_mission_subtask(
     capability_skill_chains: dict[str, list[str]] | None = None,
     memory_lineage: MemoryLineage | None = None,
 ) -> StructuredRobotTask:
-    task_type = _task_type_from_capability(subtask.capability_required)
+    task_type = (
+        subtask.task_type
+        or _task_type_from_capability(subtask.capability_required)
+    )
     required_skills = skills_from_capability(
         subtask.capability_required,
         capability_skill_chains=capability_skill_chains,
     )
+    target = (
+        dict(subtask.target)
+        if subtask.target
+        else (
+            {"floor": subtask.floor}
+            if subtask.floor is not None
+            else {}
+        )
+    )
     return StructuredRobotTask(
-        task_id=task_id or f"{mission_id}:{subtask.robot_id}:{subtask.floor}:{subtask.execution_group}",
+        task_id=(
+            task_id
+            or subtask.node_id
+            or (
+                f"{mission_id}:{subtask.robot_id}:"
+                f"{subtask.floor}:{subtask.execution_group}"
+            )
+        ),
         task_type=task_type,
-        target={"floor": subtask.floor},
+        target=target,
         required_skills=required_skills,
-        constraints={"execution_group": subtask.execution_group},
+        constraints={
+            "execution_group": subtask.execution_group,
+            **(
+                {"completion_goal": subtask.completion_goal}
+                if subtask.completion_goal is not None
+                else {}
+            ),
+            **(
+                {"completion_contract": dict(subtask.completion_contract)}
+                if subtask.completion_contract
+                else {}
+            ),
+        },
         priority="normal",
         risk_level="low",
         operator_id=operator_id,

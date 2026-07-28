@@ -41,7 +41,7 @@ pytest-compatible tests.
 
 The repository guide requests inspection of the OpenClaw analogue before
 editing a corresponding FireClaw module. The current worktree has no
-`openclaw-main/` directory, and CodeGraph returned no OpenClaw hook runner.
+`openclaw/` directory, and CodeGraph returned no OpenClaw hook runner.
 Record this absence rather than inventing an upstream pattern.
 
 Current FireClaw production hook callers are:

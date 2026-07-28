@@ -609,7 +609,7 @@ Gateway now has a real live-progress event substrate. A client can poll task eve
 
 Implemented Operator Console Projection v1 after re-checking OpenClaw's human-facing chat layer with CodeGraph.
 
-CodeGraph findings from `openclaw-main`:
+CodeGraph findings from `openclaw`:
 
 - `src/tui/gateway-chat.ts:189`: `GatewayChatClient.sendChat(...)` sends `chat.send` and returns a `runId`.
 - `src/gateway/server-methods/chat.ts:2291`: `chatHandlers["chat.send"]` is the structured Gateway chat entrypoint.
@@ -694,7 +694,7 @@ Create the first git baseline for the current FireClaw prototype before starting
 - `git log --oneline -5`
 - `sed -n '1,220p' .gitignore`
 - `git status --short --ignored`
-- `rg --files -g '!openclaw-main/**' -g '!.venv/**' -g '!__pycache__/**' -g '!*.pyc' -g '!*.jsonl' -g '!.pytest_cache/**' -g '!*.egg-info/**'`
+- `rg --files -g '!openclaw/**' -g '!.venv/**' -g '!__pycache__/**' -g '!*.pyc' -g '!*.jsonl' -g '!.pytest_cache/**' -g '!*.egg-info/**'`
 - `git add .gitignore AGENTS.md AGENTS.zh-CN.md README.md pyproject.toml skills src tests docs memory/2026-06-01/fireclaw-dry-run-core.md memory/2026-06-02/fireclaw-dry-run-core.md`
 - `.venv/bin/python -m pytest -q`
 - `git diff --cached --stat`
@@ -712,7 +712,7 @@ Create the first git baseline for the current FireClaw prototype before starting
 
 - Included FireClaw code, tests, docs, plans, specs, README, AGENTS guides, skills examples, and markdown memory records in the baseline.
 - Excluded local/reference/generated artifacts:
-  - `openclaw-main/`
+  - `openclaw/`
   - `.venv/`
   - `.vscode/`
   - `.codegraph/`
@@ -759,7 +759,7 @@ Implement the next OpenClaw-like control-plane step for FireClaw: HTTP task subm
 
 ### OpenClaw Reference Checked With CodeGraph
 
-Used CodeGraph on `openclaw-main` before implementation.
+Used CodeGraph on `openclaw` before implementation.
 
 Relevant OpenClaw analogues:
 
@@ -859,12 +859,12 @@ Attempted CodeGraph first as required:
 
 Used previous CodeGraph findings plus local OpenClaw source reads to avoid blocking implementation:
 
-- `openclaw-main/src/gateway/chat-abort.ts`
+- `openclaw/src/gateway/chat-abort.ts`
   - `ChatAbortControllerEntry`
   - `registerChatAbortController(...)`
   - `abortChatRunById(...)`
   - `broadcastChatAborted(...)`
-- `openclaw-main/src/gateway/server-methods/chat.ts`
+- `openclaw/src/gateway/server-methods/chat.ts`
   - `chat.abort`
   - active `runId` handling
   - final aborted state handling
@@ -971,7 +971,7 @@ Add robot-side task capacity and backpressure so one FireClaw Gateway does not s
 
 Attempted CodeGraph first:
 
-- `codegraph_search(query="resolveGatewayInflightMap", projectPath="openclaw-main")` timed out after 120 seconds.
+- `codegraph_search(query="resolveGatewayInflightMap", projectPath="openclaw")` timed out after 120 seconds.
 
 Used local OpenClaw source search/read plus earlier CodeGraph findings:
 

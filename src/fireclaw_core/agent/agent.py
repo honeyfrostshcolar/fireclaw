@@ -7,6 +7,9 @@ import re
 from typing import Any, Protocol
 
 from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
+from fireclaw_core.execution.execution_event_producer import (
+    RobotExecutionEventProducer,
+)
 from fireclaw_core.execution.executor import CancellationCheck, ExecutionEventSink, ExecutionResult, PlanExecutor
 from fireclaw_core.memory.memory import JsonlMemoryStore
 from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer
@@ -65,6 +68,7 @@ class FireClawAgent:
         skill_memory_producer: EmbodiedMemoryProducer | None = None,
         embodied_runtime_mode: str | None = None,
         robot_memory_recorder: RobotMemoryRecorder | None = None,
+        execution_event_producer: RobotExecutionEventProducer | None = None,
     ) -> None:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
@@ -83,6 +87,9 @@ class FireClawAgent:
         self._cancellation_requested = cancellation_requested
         self.task_id = task_id
         self._robot_memory_recorder = robot_memory_recorder
+        self._execution_event_producer = (
+            execution_event_producer or RobotExecutionEventProducer()
+        )
         action_runtime = RobotActionRuntime(
             backend=RobotAdapterActionBackend(self.robot),
             event_sink=event_sink,
@@ -190,6 +197,11 @@ class FireClawAgent:
             "memory_error": None,
         }
 
+        self._attach_execution_event(
+            result,
+            execution_result=execution_result,
+            structured_task=None,
+        )
         self._append_memory_result(result)
         return result
 
@@ -255,8 +267,44 @@ class FireClawAgent:
         # Note: session info (session_id, turn_index) is intentionally omitted here
         # to match the pre-existing run_structured_task() behavior. Session tracking
         # lives in the run() path for interactive commands.
+        self._attach_execution_event(
+            result,
+            execution_result=execution_result,
+            structured_task=structured_task,
+        )
         self._append_memory_result(result)
         return result
+
+    def _attach_execution_event(
+        self,
+        result: dict[str, Any],
+        *,
+        execution_result: ExecutionResult | None,
+        structured_task: StructuredRobotTask | None,
+    ) -> None:
+        try:
+            event = self._execution_event_producer.produce(
+                execution_result=execution_result,
+                mission_id=self.session_id,
+                robot_id=getattr(self.robot, "robot_id", None),
+                runtime_task_id=self.task_id,
+                plan_node_id=(
+                    structured_task.task_id
+                    if structured_task is not None
+                    else None
+                ),
+            )
+        except Exception as exc:
+            result["execution_event_error"] = str(exc)
+            return
+        if event is None:
+            return
+        event_payload = event.to_dict()
+        result["invalidation_event"] = event_payload
+        self._emit_event(
+            "mission.plan_invalidated",
+            {"invalidation_event": event_payload},
+        )
 
     def _next_turn_index(self) -> int:
         try:

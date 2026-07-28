@@ -11,6 +11,7 @@ from fireclaw_core.planner.llm_planner import (
     LLMMissionPlanner,
     MISSION_PLAN_TOOL,
     VALID_INTENTS,
+    build_constrained_graph_proposal_tool,
     build_constrained_mission_plan_tool,
     build_system_prompt,
 )
@@ -204,6 +205,24 @@ def test_constrained_tool_limits_external_knowledge_references():
 
     schema = tool["function"]["parameters"]["properties"]["knowledge_refs"]
     assert schema["items"]["enum"] == ["guide-1", "guide-2"]
+
+
+def test_constrained_graph_tool_limits_assumption_knowledge_references():
+    ctx = MissionPlannerContext(
+        external_knowledge=[
+            {"knowledge_id": "guide-1"},
+            {"knowledge_id": "guide-2"},
+        ],
+    )
+
+    tool = build_constrained_graph_proposal_tool(ctx)
+
+    assumption_refs = (
+        tool["function"]["parameters"]["properties"]["nodes"]["items"][
+            "properties"
+        ]["belief_assumptions"]["items"]["properties"]["knowledge_refs"]
+    )
+    assert assumption_refs["items"]["enum"] == ["guide-1", "guide-2"]
 
 
 # --- Test: successful plan from tool call ---

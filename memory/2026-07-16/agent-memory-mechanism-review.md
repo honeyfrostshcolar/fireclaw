@@ -13,7 +13,7 @@ Explain the current FireClaw agent memory mechanism to the user after reading th
 - `find . -maxdepth 2 -name AGENTS.md -print`
 - `find memory/2026-07-16 memory/2026-07-15 -maxdepth 1 -type f | sort`
 - `rg --files src tests docs | rg 'memory|embodied|mission'`
-- `find . -maxdepth 2 -type d -name '.codegraph' -o -name 'openclaw-main'`
+- `find . -maxdepth 2 -type d -name '.codegraph' -o -name 'openclaw'`
 - `sed`/`nl` reads of memory notes, design spec, memory source files, and focused tests.
 - `rg "EmbodiedMemoryStore|MissionMemoryStore|MemoryRetriever|search_text|query_spatial|record_event" -n src tests docs/superpowers/specs docs/superpowers/plans`
 - `rg "_record_mission_memory\(" -n src/fireclaw_core/mission/mission_agent.py`
@@ -54,7 +54,7 @@ The active `MissionAgent` constructor still accepts `MissionMemoryStore` and `me
 - spatial context requires `frame_id`, finite coordinates, and non-negative uncertainty.
 - `body_state`, `correction`, and `restricted` payloads are excluded from text indexing by default but remain structurally queryable.
 - `MemoryRetriever` embedding mode reranks lexical candidates; it is not a true full-vector recall path.
-- The repository currently has no usable git metadata, no `.codegraph/`, and no `openclaw-main/`, so OpenClaw-first structural comparison remains unavailable.
+- The repository currently has no usable git metadata, no `.codegraph/`, and no `openclaw/`, so OpenClaw-first structural comparison remains unavailable.
 - Pytest has still not been run in this environment.
 
 ### Next Recommended Step

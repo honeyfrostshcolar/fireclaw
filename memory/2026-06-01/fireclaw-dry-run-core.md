@@ -17,8 +17,8 @@ Start the FireClaw project by designing the first runnable Python dry-run core i
 
 - `AGENTS.md`
 - `AGENTS.zh-CN.md`
-- OpenClaw structure through CodeGraph, especially `openclaw-main/src/agents/skills/*`
-- OpenClaw memory structure through CodeGraph, especially `openclaw-main/extensions/memory-core/src/memory/*`
+- OpenClaw structure through CodeGraph, especially `openclaw/src/agents/skills/*`
+- OpenClaw memory structure through CodeGraph, especially `openclaw/extensions/memory-core/src/memory/*`
 
 ### Current Design
 

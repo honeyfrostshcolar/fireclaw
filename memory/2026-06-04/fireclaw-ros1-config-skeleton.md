@@ -22,7 +22,7 @@ Implemented:
 
 ### OpenClaw Analogue
 
-Checked OpenClaw config/validation patterns through CodeGraph under `openclaw-main`.
+Checked OpenClaw config/validation patterns through CodeGraph under `openclaw`.
 
 Relevant analogue:
 

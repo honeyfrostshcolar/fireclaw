@@ -42,7 +42,25 @@ from fireclaw_core.planner.planner import RuleBasedPlanner
 from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore, MissionSessionLineage
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
+from fireclaw_core.mission.mission_deliberation import (
+    MissionDeliberationResult,
+    MissionDeliberationRuntime,
+    PlannerDeliberationPolicy,
+)
+from fireclaw_core.mission.execution_event import MissionExecutionEvent
 from fireclaw_core.mission.mission_plan_validator import MissionPlanValidator
+from fireclaw_core.mission.mission_plan_revision import (
+    MissionPlanRevisionCoordinator,
+)
+from fireclaw_core.mission.mission_state import (
+    MissionStateSnapshot,
+    MissionStateSnapshotBuilder,
+    MissionStateSnapshotValidator,
+)
+from fireclaw_core.mission.task_graph import (
+    MissionTaskGraph,
+    MissionTaskGraphValidator,
+)
 from fireclaw_core.task.task_contract import MemoryLineage, structured_task_from_mission_subtask
 from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
 
@@ -103,6 +121,9 @@ class MissionAgent:
         mission_memory_tools: MissionMemoryTools | None = None,
         memory_lifecycle: MissionMemoryLifecycleStore | None = None,
         planner_memory_context_builder: PlannerMemoryContextBuilder | None = None,
+        mission_state_snapshot_builder: MissionStateSnapshotBuilder | None = None,
+        mission_deliberation_runtime: MissionDeliberationRuntime | None = None,
+        mission_plan_revision_coordinator: MissionPlanRevisionCoordinator | None = None,
         consolidation_coordinator: Any | None = None,
         working_memory_hydration_report: Any | None = None,
     ) -> None:
@@ -119,6 +140,32 @@ class MissionAgent:
             self.subagent_client = RobotSubagentClient(**client_kwargs)
         self.mission_registry = mission_registry
         self.planner = planner
+        planner_policy = (
+            planner
+            if (
+                planner is not None
+                and getattr(
+                    planner,
+                    "supports_mission_deliberation",
+                    False,
+                )
+                is True
+            )
+            else PlannerDeliberationPolicy(planner)
+            if planner is not None
+            else None
+        )
+        self.mission_deliberation_runtime = (
+            mission_deliberation_runtime
+            or (
+                MissionDeliberationRuntime(
+                    registry=registry,
+                    policy=planner_policy,
+                )
+                if planner_policy is not None
+                else None
+            )
+        )
         self.control_policy = control_policy
         self.operator = operator
         self.mission_memory = mission_memory
@@ -126,6 +173,29 @@ class MissionAgent:
         self.approval_store = approval_store
         self.plugin_runtime = plugin_runtime
         self.task_registry = task_registry
+        self.mission_state_snapshot_builder = (
+            mission_state_snapshot_builder
+            or MissionStateSnapshotBuilder(
+                registry=registry,
+                task_registry=task_registry,
+            )
+        )
+        self.mission_plan_revision_coordinator = (
+            mission_plan_revision_coordinator
+            or (
+                MissionPlanRevisionCoordinator(
+                    registry=registry,
+                    state_snapshot_builder=self.mission_state_snapshot_builder,
+                    deliberation_runtime=self.mission_deliberation_runtime,
+                )
+                if self.mission_deliberation_runtime is not None
+                else None
+            )
+        )
+        self._latest_mission_state_refs: dict[str, tuple[int, str]] = {}
+        self._active_task_graphs: dict[str, MissionTaskGraph] = {}
+        self._revision_event_memory_refs: dict[tuple[str, str], str | None] = {}
+        self.dispatch_recovery_report: list[dict[str, Any]] = []
         self.subagent_registry = subagent_registry
         self._session_lineage_store = session_lineage_store
         self._task_flow_store = task_flow_store
@@ -382,8 +452,361 @@ class MissionAgent:
         return "unknown-operator"
 
     def _planner_method_id(self) -> str:
-        planner_type = type(self.planner)
+        planner_owner = (
+            self.planner
+            if self.planner is not None
+            else self.mission_deliberation_runtime
+        )
+        planner_type = type(planner_owner)
         return f"{planner_type.__module__}.{planner_type.__qualname__}"
+
+    def _latest_mission_state_ref(self, mission_id: str) -> tuple[int, str] | None:
+        latest = self._latest_mission_state_refs.get(mission_id)
+        if self.mission_memory is None:
+            return latest
+        try:
+            records = self.mission_memory.list_records(
+                mission_id=mission_id,
+                record_type="observation",
+            )
+        except Exception:
+            logger.warning("Failed to read prior mission state snapshots", exc_info=True)
+            return latest
+        for record in records:
+            content = record.content if isinstance(record.content, dict) else {}
+            if content.get("artifact_type") != "mission_state_snapshot":
+                continue
+            snapshot = content.get("snapshot")
+            if not isinstance(snapshot, dict):
+                continue
+            version = snapshot.get("version")
+            snapshot_id = snapshot.get("snapshot_id")
+            if (
+                isinstance(version, int)
+                and version > 0
+                and isinstance(snapshot_id, str)
+                and snapshot_id
+                and (latest is None or version > latest[0])
+            ):
+                latest = (version, snapshot_id)
+        if latest is not None:
+            self._latest_mission_state_refs[mission_id] = latest
+        return latest
+
+    def _build_mission_state_snapshot(
+        self,
+        mission_id: str,
+        presence: dict[str, dict[str, Any]],
+    ) -> MissionStateSnapshot:
+        previous = self._latest_mission_state_ref(mission_id)
+        return self.mission_state_snapshot_builder.build(
+            mission_id=mission_id,
+            presence=presence,
+            version=1 if previous is None else previous[0] + 1,
+            previous_snapshot_id=None if previous is None else previous[1],
+        )
+
+    def refresh_mission_state_snapshot(
+        self,
+        mission_id: str,
+    ) -> MissionStateSnapshot:
+        """Capture, validate, and persist current state for dispatch gates."""
+        snapshot = self._build_mission_state_snapshot(
+            mission_id,
+            self.check_fleet_presence(),
+        )
+        errors = MissionStateSnapshotValidator().validate(snapshot)
+        if errors:
+            raise ValueError(
+                "Dispatch state snapshot failed validation: "
+                + "; ".join(errors)
+            )
+        self._record_mission_state_snapshot(snapshot)
+        return snapshot
+
+    def _record_mission_state_snapshot(
+        self,
+        snapshot: MissionStateSnapshot,
+    ) -> str | None:
+        payload = {
+            "artifact_type": "mission_state_snapshot",
+            "snapshot": snapshot.to_dict(),
+        }
+        event_id = self._record_embodied_memory(
+            snapshot.mission_id,
+            "observation",
+            "runtime_evidence",
+            payload,
+            source_type="mission_state_projection",
+            observed_at=snapshot.captured_at,
+        )
+        if self.embodied_memory_producer is None:
+            self._record_mission_memory(
+                snapshot.mission_id,
+                "observation",
+                payload,
+            )
+        self._latest_mission_state_refs[snapshot.mission_id] = (
+            snapshot.version,
+            snapshot.snapshot_id,
+        )
+        return event_id
+
+    def _record_mission_deliberation(
+        self,
+        result: MissionDeliberationResult,
+        *,
+        derived_from: tuple[str, ...],
+    ) -> str | None:
+        payload = {
+            "artifact_type": "mission_deliberation_trace",
+            "deliberation": result.to_dict(),
+        }
+        event_id = self._record_embodied_memory(
+            result.mission_id,
+            "plan",
+            "cognitive_artifact",
+            payload,
+            source_type="mission_deliberation_runtime",
+            method_id=self._planner_method_id(),
+            derived_from=derived_from,
+        )
+        if self.embodied_memory_producer is None:
+            self._record_mission_memory(
+                result.mission_id,
+                "plan",
+                payload,
+            )
+        return event_id
+
+    def active_task_graph(self, mission_id: str) -> MissionTaskGraph | None:
+        return self._active_task_graphs.get(mission_id)
+
+    def restore_active_task_graph(
+        self,
+        graph: MissionTaskGraph,
+    ) -> list[str]:
+        """Hydrate one validated graph without invoking the planner."""
+        errors = MissionTaskGraphValidator().validate(graph, self.registry)
+        existing = self._active_task_graphs.get(graph.mission_id)
+        if existing is not None:
+            if existing.revision > graph.revision:
+                errors.append(
+                    "Persisted task graph is older than the active graph."
+                )
+            elif (
+                existing.revision == graph.revision
+                and existing.plan_id != graph.plan_id
+            ):
+                errors.append(
+                    "Persisted task graph conflicts with the active revision."
+                )
+        if errors:
+            return list(dict.fromkeys(errors))
+        self._active_task_graphs[graph.mission_id] = graph
+        return []
+
+    def resume_pending_dispatches(self) -> list[dict[str, Any]]:
+        """Recover persisted dispatches under the runtime operator authority."""
+        from fireclaw_core.mission.mission_scheduler import MissionScheduler
+
+        operator = self.operator.to_dict() if self.operator is not None else None
+        try:
+            report = MissionScheduler(
+                mission_agent=self,
+            ).resume_pending_dispatches(operator=operator)
+        except Exception as exc:
+            logger.exception("Mission dispatch startup recovery failed")
+            report = [{
+                "status": "blocked",
+                "message": (
+                    "Mission dispatch startup recovery failed: "
+                    f"{exc}"
+                ),
+                "recovered": False,
+            }]
+        self.dispatch_recovery_report = report
+        return report
+
+    def handle_execution_event(
+        self,
+        event: MissionExecutionEvent,
+    ) -> dict[str, Any]:
+        """Classify one trusted execution event and produce a safe plan revision."""
+        if not isinstance(event, MissionExecutionEvent):
+            return {
+                "status": "blocked",
+                "message": "Execution event must use MissionExecutionEvent.",
+            }
+        graph = self._active_task_graphs.get(event.mission_id)
+        if graph is None:
+            return {
+                "status": "blocked",
+                "message": "No active mission task graph is available for revision.",
+                "event": event.to_dict(),
+            }
+        if self.mission_plan_revision_coordinator is None:
+            return {
+                "status": "blocked",
+                "message": "Mission plan revision coordinator is not configured.",
+                "event": event.to_dict(),
+            }
+
+        event_key = (event.mission_id, event.event_id)
+        if event_key not in self._revision_event_memory_refs:
+            event_event_id = self._record_embodied_memory(
+                event.mission_id,
+                "outcome",
+                "runtime_evidence",
+                {
+                    "artifact_type": "mission_execution_event",
+                    "event": event.to_dict(),
+                },
+                source_type=event.source_type,
+                robot_id=event.robot_id,
+                subtask_id=event.task_id,
+                observed_at=event.observed_at,
+            )
+            if self.embodied_memory_producer is None:
+                self._record_mission_memory(
+                    event.mission_id,
+                    "outcome",
+                    {
+                        "artifact_type": "mission_execution_event",
+                        "event": event.to_dict(),
+                    },
+                    robot_id=event.robot_id,
+                    subtask_id=event.task_id,
+                )
+            self._revision_event_memory_refs[event_key] = event_event_id
+        event_event_id = self._revision_event_memory_refs[event_key]
+
+        previous = self._latest_mission_state_ref(event.mission_id)
+        if previous is None:
+            return {
+                "status": "blocked",
+                "message": "Active plan has no recorded state snapshot lineage.",
+                "event": event.to_dict(),
+            }
+        presence = self.check_fleet_presence()
+        memory_context_result = self._build_planner_memory_context(
+            graph.command,
+            mission_id=event.mission_id,
+        )
+        planner_context = MissionPlannerContext(
+            retrieved_memories=list(memory_context_result.memories),
+            operator_corrections=list(memory_context_result.corrections),
+            external_knowledge=list(memory_context_result.external_knowledge),
+        )
+        result = self.mission_plan_revision_coordinator.coordinate(
+            event=event,
+            current_graph=graph,
+            presence=presence,
+            planner_context=planner_context,
+            snapshot_version=previous[0] + 1,
+            previous_snapshot_id=previous[1],
+        )
+        snapshot_event_id: str | None = None
+        if result.state_snapshot is not None:
+            snapshot_event_id = self._record_mission_state_snapshot(
+                result.state_snapshot
+            )
+        if result.deliberation_result is not None:
+            deliberation_event_id = self._record_mission_deliberation(
+                result.deliberation_result,
+                derived_from=tuple(
+                    item
+                    for item in (event_event_id, snapshot_event_id)
+                    if item is not None
+                ),
+            )
+        else:
+            deliberation_event_id = None
+        revision_event_id: str | None = None
+        if result.status == "revised" and result.revised_task_graph is not None:
+            planning_result = (
+                result.deliberation_result.planning_result
+                if result.deliberation_result is not None
+                else None
+            )
+            audit_record = (
+                planning_result.audit_record
+                if planning_result is not None
+                else None
+            )
+            if audit_record is not None:
+                audit_record = append_guard_decision(
+                    audit_record,
+                    memory_context_result.guard_decision(),
+                    final_status=audit_record.final_status,
+                    final_message=audit_record.final_message,
+                    mission_id=event.mission_id,
+                )
+                audit_record = self._with_validator_decision(
+                    audit_record,
+                    validation_errors=[],
+                    final_status=(
+                        planning_result.status
+                        if planning_result is not None
+                        else "planned"
+                    ),
+                    final_message=result.message,
+                    mission_id=event.mission_id,
+                )
+            audit_error = self._record_mission_planning_audit(audit_record)
+            if audit_error is not None:
+                response = result.to_dict()
+                response["status"] = "blocked"
+                response["message"] = audit_error
+                return response
+
+            revision_payload = {
+                "artifact_type": "mission_plan_revision",
+                "event": event.to_dict(),
+                "supersedes_plan_id": graph.plan_id,
+                "task_graph": result.revised_task_graph.to_dict(),
+                "deliberation_run_id": (
+                    result.deliberation_result.run_id
+                    if result.deliberation_result is not None
+                    else None
+                ),
+            }
+            revision_event_id = self._record_embodied_memory(
+                event.mission_id,
+                "plan",
+                "cognitive_artifact",
+                revision_payload,
+                source_type="mission_plan_revision_coordinator",
+                method_id=self._planner_method_id(),
+                derived_from=tuple(
+                    item
+                    for item in (
+                        event_event_id,
+                        snapshot_event_id,
+                        deliberation_event_id,
+                    )
+                    if item is not None
+                ),
+            )
+            if self.embodied_memory_producer is None:
+                self._record_mission_memory(
+                    event.mission_id,
+                    "plan",
+                    revision_payload,
+                )
+            self._add_embodied_relation(
+                event.mission_id,
+                revision_event_id,
+                event_event_id,
+                "caused_by",
+            )
+            self._active_task_graphs[event.mission_id] = (
+                result.revised_task_graph
+            )
+        response = result.to_dict()
+        if revision_event_id is not None:
+            response["revision_memory_event_id"] = revision_event_id
+        return response
 
     def _record_approval_memory(
         self,
@@ -491,6 +914,7 @@ class MissionAgent:
         operator: dict[str, Any] | None = None,
         mission: dict[str, Any] | None = None,
         mission_subtask: MissionSubtask | None = None,
+        mission_node_id: str | None = None,
         memory_command_event_id: str | None = None,
         memory_plan_event_id: str | None = None,
     ) -> dict[str, Any]:
@@ -529,6 +953,7 @@ class MissionAgent:
                 mission_id=mission_id,
                 subtask=mission_subtask,
                 operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
+                task_id=mission_node_id,
                 capability_skill_chains=self.profile_skill_chains_by_robot.get(robot_id),
             ).to_dict()
         else:
@@ -546,6 +971,7 @@ class MissionAgent:
                     mission_id=mission_id,
                     subtask=generated_subtask,
                     operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
+                    task_id=mission_node_id,
                     capability_skill_chains=self.profile_skill_chains_by_robot.get(robot_id),
                 ).to_dict()
 
@@ -577,13 +1003,16 @@ class MissionAgent:
                 subtask_event_id=subtask_event_id,
             ).to_dict()
 
+        mission_payload = dict(mission or {"mission_id": mission_id})
+        if mission_node_id is not None:
+            mission_payload["subtask_id"] = mission_node_id
         subagent_result = self.subagent_client.submit_task(
             entry,
             command=command,
             session_id=session_id,
             dedupe_key=dedupe_key,
             operator=operator,
-            mission=mission or {"mission_id": mission_id},
+            mission=mission_payload,
             structured_task=structured_task,
         )
         task_id = subagent_result.get("task_id")
@@ -801,7 +1230,7 @@ class MissionAgent:
             source_type="operator",
             source_id=self._operator_source_id(operator),
         )
-        if self.planner is None:
+        if self.mission_deliberation_runtime is None:
             return {
                 "status": "no_planner",
                 "message": "No mission planner configured.",
@@ -810,23 +1239,63 @@ class MissionAgent:
         # Check fleet presence before planning
         presence = self.check_fleet_presence()
         online_robot_ids = {rid for rid, info in presence.items() if info.get("online")}
+        try:
+            state_snapshot = self._build_mission_state_snapshot(mission_id, presence)
+        except Exception:
+            logger.exception("Failed to build mission state snapshot")
+            return {
+                "status": "blocked",
+                "message": "Mission state snapshot could not be built.",
+                "errors": ["Authoritative mission state is unavailable."],
+                "subtask_results": [],
+            }
+        snapshot_errors = MissionStateSnapshotValidator().validate(state_snapshot)
+        if snapshot_errors:
+            return {
+                "status": "blocked",
+                "message": "Mission state snapshot failed deterministic validation.",
+                "errors": snapshot_errors,
+                "state_snapshot": state_snapshot.to_dict(),
+                "subtask_results": [],
+            }
 
         # Build scoped memory context via the PlannerMemoryContextBuilder
         memory_context_result = self._build_planner_memory_context(
             command,
             mission_id=mission_id,
         )
+        state_snapshot_event_id = self._record_mission_state_snapshot(state_snapshot)
         context = MissionPlannerContext(
             available_robots=[
                 entry
                 for entry in self.registry.enabled_entries()
                 if entry.robot_id in online_robot_ids
             ],
+            state_snapshot=state_snapshot.to_dict(),
             retrieved_memories=list(memory_context_result.memories),
             operator_corrections=list(memory_context_result.corrections),
             external_knowledge=list(memory_context_result.external_knowledge),
         )
-        planning_result = self.planner.plan(command, context=context)
+        deliberation_result = self.mission_deliberation_runtime.deliberate(
+            mission_id=mission_id,
+            command=command,
+            state_snapshot=state_snapshot,
+            planner_context=context,
+        )
+        planning_result = deliberation_result.planning_result
+        if planning_result is None:
+            planning_result = MissionPlanningResult(
+                status="blocked",
+                message="Mission deliberation returned no planning decision.",
+            )
+        deliberation_event_id = self._record_mission_deliberation(
+            deliberation_result,
+            derived_from=tuple(
+                item
+                for item in (command_event_id, state_snapshot_event_id)
+                if item is not None
+            ),
+        )
 
         # Append memory context guard decision before validator decisions.
         # Memory degradation must NOT block planning.
@@ -851,9 +1320,24 @@ class MissionAgent:
                     }),
                 },
             )
+        if deliberation_result.validation_errors:
+            planning_result = replace(
+                planning_result,
+                audit_record=self._with_validator_decision(
+                    planning_result.audit_record,
+                    validation_errors=list(deliberation_result.validation_errors),
+                    final_status="blocked",
+                    final_message="Mission plan failed deterministic validation.",
+                    mission_id=mission_id,
+                ),
+            )
 
         # Primitive fallback: when planner returns "clarify", try primitive composition
-        if planning_result.status == "clarify" and planning_result.plan is None:
+        if (
+            planning_result.status == "clarify"
+            and planning_result.plan is None
+            and deliberation_result.reason_code == "planner_clarification"
+        ):
             fallback = self._try_primitive_fallback(
                 command,
                 online_robot_ids,
@@ -861,6 +1345,8 @@ class MissionAgent:
                 memory_command_event_id=command_event_id,
             )
             if fallback is not None:
+                fallback["state_snapshot"] = state_snapshot.to_dict()
+                fallback["deliberation"] = deliberation_result.to_dict()
                 return fallback
 
         if planning_result.status != "planned" or planning_result.plan is None:
@@ -868,24 +1354,53 @@ class MissionAgent:
             response = {
                 "status": planning_result.status,
                 "message": planning_result.message,
+                "mission_id": mission_id,
+                "state_snapshot": state_snapshot.to_dict(),
+                "deliberation": deliberation_result.to_dict(),
                 "subtask_results": [],
             }
+            if deliberation_result.validation_errors:
+                response["errors"] = list(deliberation_result.validation_errors)
             if audit_error is not None:
                 response["audit_warning"] = audit_error
             return response
+        task_graph = deliberation_result.task_graph
+        if task_graph is None:
+            return {
+                "status": "blocked",
+                "message": "Mission deliberation returned no validated task graph.",
+                "state_snapshot": state_snapshot.to_dict(),
+                "deliberation": deliberation_result.to_dict(),
+                "subtask_results": [],
+            }
+        plan_artifact = {
+            "status": planning_result.status,
+            "message": planning_result.message,
+            "intent": planning_result.intent,
+            "plan": planning_result.plan.to_dict(),
+            "task_graph": task_graph.to_dict(),
+            "deliberation_run_id": deliberation_result.run_id,
+        }
+        if planning_result.graph_proposal is not None:
+            plan_artifact["graph_proposal"] = (
+                planning_result.graph_proposal.to_dict()
+            )
         plan_event_id = self._record_embodied_memory(
             mission_id,
             "plan",
             "cognitive_artifact",
-            {
-                "status": planning_result.status,
-                "message": planning_result.message,
-                "intent": planning_result.intent,
-                "plan": planning_result.plan.to_dict(),
-            },
+            plan_artifact,
             source_type="planner",
             method_id=self._planner_method_id(),
-            derived_from=(command_event_id,) if command_event_id is not None else (),
+            derived_from=(
+                (deliberation_event_id,)
+                if deliberation_event_id is not None
+                else tuple(
+                    item
+                    for item in (command_event_id, state_snapshot_event_id)
+                    if item is not None
+                )
+            ),
         )
         self._add_embodied_relation(
             mission_id,
@@ -893,7 +1408,11 @@ class MissionAgent:
             command_event_id,
             "caused_by",
         )
-        validation_errors = MissionPlanValidator().validate(planning_result.plan, self.registry)
+        validation_errors = MissionPlanValidator().validate(
+            planning_result.plan,
+            self.registry,
+            task_graph=task_graph,
+        )
         if validation_errors:
             audit_record = self._with_validator_decision(
                 planning_result.audit_record,
@@ -907,6 +1426,9 @@ class MissionAgent:
                 "status": "blocked",
                 "message": "Mission plan failed deterministic validation.",
                 "errors": validation_errors,
+                "state_snapshot": state_snapshot.to_dict(),
+                "deliberation": deliberation_result.to_dict(),
+                "task_graph": task_graph.to_dict(),
                 "subtask_results": [],
             }
             if audit_error is not None:
@@ -926,6 +1448,7 @@ class MissionAgent:
                 "message": audit_error,
                 "subtask_results": [],
             }
+        self._active_task_graphs[mission_id] = task_graph
         created_at = datetime.now(timezone.utc).isoformat()
         if self.mission_registry is not None and self.mission_registry.get_mission(mission_id) is None:
             self.mission_registry.create_mission(
@@ -1019,16 +1542,38 @@ class MissionAgent:
             # Project task-flow summary
             self._project_task_flow(mission_id, command, subtask_results, created_at)
 
-            return {
+            response = {
                 "status": scheduler_result.get("status", planning_result.status),
                 "message": scheduler_result.get("message", planning_result.message),
                 "mission_id": mission_id,
                 "intent": planning_result.intent,
                 "plan": planning_result.plan.to_dict(),
+                "state_snapshot": state_snapshot.to_dict(),
+                "deliberation": deliberation_result.to_dict(),
+                "task_graph": task_graph.to_dict(),
                 "subtask_results": subtask_results,
                 "group_results": scheduler_result.get("group_results", []),
                 "failure_decisions": scheduler_result.get("failure_decisions", []),
             }
+            if scheduler_result.get("plan_revision") is not None:
+                response["plan_revision"] = scheduler_result["plan_revision"]
+            for key in (
+                "revision_dispatch",
+                "cancellation_results",
+                "cancellation_terminal_states",
+                "active_plan_id",
+                "node_executions",
+                "failed_nodes",
+            ):
+                if scheduler_result.get(key) is not None:
+                    response[key] = scheduler_result[key]
+            active_graph = self.active_task_graph(mission_id)
+            if (
+                active_graph is not None
+                and active_graph.plan_id != task_graph.plan_id
+            ):
+                response["active_task_graph"] = active_graph.to_dict()
+            return response
 
         subtask_results: list[dict[str, Any]] = []
         for subtask in planning_result.plan.subtasks:
@@ -1092,6 +1637,9 @@ class MissionAgent:
             "mission_id": mission_id,
             "intent": planning_result.intent,
             "plan": planning_result.plan.to_dict(),
+            "state_snapshot": state_snapshot.to_dict(),
+            "deliberation": deliberation_result.to_dict(),
+            "task_graph": task_graph.to_dict(),
             "subtask_results": subtask_results,
         }
 

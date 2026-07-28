@@ -302,11 +302,11 @@ Re-check current FireClaw after runtime hardening completion, compare against Op
   - `docs/superpowers/plans/2026-06-09-openclaw-parity-next-roadmap.md`
   - `docs/superpowers/plans/2026-06-10-openclaw-parity-runtime-hardening.md`
 - OpenClaw reference inspected with CodeGraph:
-  - `openclaw-main/src/tasks/task-registry.store.ts`
-  - `openclaw-main/src/acp/session-lineage-meta.ts`
-  - `openclaw-main/src/plugins/plugin-control-plane-context.ts`
-  - `openclaw-main/extensions/memory-core/src/memory/manager.ts`
-  - `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
+  - `openclaw/src/tasks/task-registry.store.ts`
+  - `openclaw/src/acp/session-lineage-meta.ts`
+  - `openclaw/src/plugins/plugin-control-plane-context.ts`
+  - `openclaw/extensions/memory-core/src/memory/manager.ts`
+  - `openclaw/extensions/memory-core/src/memory/qmd-manager.ts`
 
 ### Current Conclusion
 
@@ -501,14 +501,14 @@ Re-check FireClaw after the OpenClaw parity maturity work and follow-up fixes, c
   - uncommitted tests in `tests/test_lifecycle_reconciler.py`, `tests/test_plugin_policy.py`
   - untracked `docs/superpowers/plans/2026-06-10-openclaw-parity-maturity-roadmap.md`
 - OpenClaw references inspected with CodeGraph:
-  - `openclaw-main/src/tasks/task-registry.store.ts`
-  - `openclaw-main/src/tasks/task-flow-registry.store.ts`
-  - `openclaw-main/src/acp/session-lineage-meta.ts`
-  - `openclaw-main/src/plugins/plugin-control-plane-context.ts`
-  - `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
-  - `openclaw-main/src/acp/translator.ts`
-  - `openclaw-main/src/agents/acp-spawn.ts`
-  - `openclaw-main/src/agents/model-fallback.ts`
+  - `openclaw/src/tasks/task-registry.store.ts`
+  - `openclaw/src/tasks/task-flow-registry.store.ts`
+  - `openclaw/src/acp/session-lineage-meta.ts`
+  - `openclaw/src/plugins/plugin-control-plane-context.ts`
+  - `openclaw/extensions/memory-core/src/memory/qmd-manager.ts`
+  - `openclaw/src/acp/translator.ts`
+  - `openclaw/src/agents/acp-spawn.ts`
+  - `openclaw/src/agents/model-fallback.ts`
 
 ### Verification
 

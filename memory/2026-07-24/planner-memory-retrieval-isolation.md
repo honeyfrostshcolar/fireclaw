@@ -885,7 +885,7 @@ requested in this turn.
 
 - Attempted to inspect the OpenClaw plugin hook analogue as required by the
   repository guide.
-- The current worktree has no `openclaw-main/` directory and CodeGraph returned
+- The current worktree has no `openclaw/` directory and CodeGraph returned
   no OpenClaw hook runner. This absence is recorded rather than substituting
   an invented upstream design.
 - CodeGraph and focused inspection covered:
@@ -1100,7 +1100,7 @@ Execution evidence requirements were made explicit:
 - do not create a Python 3.11 environment, install pytest, or commit.
 
 OpenClaw analogue status remains unchanged: the worktree has no
-`openclaw-main/` directory and CodeGraph returned no upstream hook runner, so
+`openclaw/` directory and CodeGraph returned no upstream hook runner, so
 the plan records the absence instead of inventing an upstream design.
 
 ## 2026-07-24 (Execution Timestamp Unverified) - Third Review Fixes Execution

@@ -219,13 +219,13 @@ The user identified that FireClaw should behave more like OpenClaw: LLM/provider
 
 ### OpenClaw References Checked
 
-- `openclaw-main/src/agents/openclaw-tools.ts`
+- `openclaw/src/agents/openclaw-tools.ts`
   - `createOpenClawTools(...)` collects tools from runtime config, plugins, workspace, session context, and policy gates before model calls.
-- `openclaw-main/src/plugins/tools.ts`
+- `openclaw/src/plugins/tools.ts`
   - plugin tools keep metadata/execution behind a stable runtime boundary.
-- `openclaw-main/src/gateway/server-methods/tools-invoke.ts`
+- `openclaw/src/gateway/server-methods/tools-invoke.ts`
   - gateway tool invocation is a controlled boundary, not arbitrary model execution.
-- `openclaw-main/openclaw.mjs`
+- `openclaw/openclaw.mjs`
   - launcher config path resolution keeps model/provider config separate from tool availability and runtime state.
 
 ### FireClaw Current Gap

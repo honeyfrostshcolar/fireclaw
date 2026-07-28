@@ -48,7 +48,7 @@ Reviewed the relevant eMEM analogues:
 FireClaw retains the high-level facade/tool shape but does not copy eMEM's
 unscoped coordinates, center-only Gist area matching, mutable/archive behavior,
 or text-formatted results. The repository still has no `.codegraph/`, the
-configured `codegraph_*` tools were not exposed, and `openclaw-main/` was not
+configured `codegraph_*` tools were not exposed, and `openclaw/` was not
 available, so no new OpenClaw structural comparison was possible in this run.
 The user was asked whether `codegraph init -i` should be run later; this did not
 block the spatial implementation.

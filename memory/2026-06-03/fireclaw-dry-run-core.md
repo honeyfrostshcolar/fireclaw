@@ -8,7 +8,7 @@ Implement Subprocess Skill Cancellation v1 so Gateway task cancellation can stop
 
 ### OpenClaw Analogue
 
-Checked OpenClaw abort flow in `openclaw-main/src/gateway/chat-abort.ts`.
+Checked OpenClaw abort flow in `openclaw/src/gateway/chat-abort.ts`.
 
 OpenClaw pattern:
 
@@ -22,7 +22,7 @@ FireClaw adaptation:
 task_id -> TaskControl.cancel_event -> PlanExecutor -> SubprocessSkillRunner -> terminate child process -> task.cancelled
 ```
 
-CodeGraph was checked, but the available index was for the FireClaw Python files only, not the TypeScript OpenClaw reference subtree. The OpenClaw reference was therefore read directly from the local `openclaw-main` source.
+CodeGraph was checked, but the available index was for the FireClaw Python files only, not the TypeScript OpenClaw reference subtree. The OpenClaw reference was therefore read directly from the local `openclaw` source.
 
 ### Files Modified
 
@@ -84,7 +84,7 @@ The user asked to continue by building the large framework direction first and l
 
 ### OpenClaw Reference Checked
 
-Used the newly separate OpenClaw CodeGraph index at `/home/nankai/fireclaw/openclaw-main`.
+Used the newly separate OpenClaw CodeGraph index at `/home/nankai/fireclaw/openclaw`.
 
 Relevant OpenClaw symbols:
 

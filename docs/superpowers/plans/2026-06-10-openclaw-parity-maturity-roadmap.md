@@ -44,11 +44,11 @@ Latest completion verification after implementation and review fixes:
 
 OpenClaw comparison used:
 
-- `openclaw-main/src/tasks/task-registry.store.ts`
-- `openclaw-main/src/acp/session-lineage-meta.ts`
-- `openclaw-main/src/plugins/plugin-control-plane-context.ts`
-- `openclaw-main/extensions/memory-core/src/memory/manager.ts`
-- `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
+- `openclaw/src/tasks/task-registry.store.ts`
+- `openclaw/src/acp/session-lineage-meta.ts`
+- `openclaw/src/plugins/plugin-control-plane-context.ts`
+- `openclaw/extensions/memory-core/src/memory/manager.ts`
+- `openclaw/extensions/memory-core/src/memory/qmd-manager.ts`
 
 ## Original High-Value Gaps Addressed
 

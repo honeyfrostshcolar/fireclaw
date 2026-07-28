@@ -14,7 +14,7 @@
 
 本设计参考了本地 `emem-main/` 的 `ObservationNode`、`EpisodeNode`、`GistNode`、graph edge、空间/时间查询和 consolidation 分层，但没有直接复制其实现。
 
-本轮未能完成 OpenClaw memory analogue 核对：仓库中没有 `openclaw-main/`，当前会话也没有暴露 CodeGraph MCP 工具。因此本设计沿用 FireClaw 已有 `MissionMemoryStore`/`SqliteMemoryIndex` 边界，并在此基础上增量扩展。后续恢复 OpenClaw 源码与 CodeGraph 后，应专门复核 session memory、memory retrieval 和 local persistence 的模块形状。
+本轮未能完成 OpenClaw memory analogue 核对：仓库中没有 `openclaw/`，当前会话也没有暴露 CodeGraph MCP 工具。因此本设计沿用 FireClaw 已有 `MissionMemoryStore`/`SqliteMemoryIndex` 边界，并在此基础上增量扩展。后续恢复 OpenClaw 源码与 CodeGraph 后，应专门复核 session memory、memory retrieval 和 local persistence 的模块形状。
 
 ## 架构
 

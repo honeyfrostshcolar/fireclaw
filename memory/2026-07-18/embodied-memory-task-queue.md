@@ -14,7 +14,7 @@ pytest/environment work; Python 3.10 is available at
 - Do not create a Python 3.11 environment in this phase.
 - Do not install or run pytest in this phase.
 - The workspace is not a usable Git repository.
-- `openclaw-main/`, `.codegraph/`, and exposed CodeGraph tools are unavailable,
+- `openclaw/`, `.codegraph/`, and exposed CodeGraph tools are unavailable,
   so the required OpenClaw analogue review remains blocked and is documented as
   a deviation rather than silently skipped.
 
@@ -420,7 +420,7 @@ The ten-item queue from 2026-07-17 is now handled:
   ingestion API; current adapters mainly expose aggregate state/diagnostics.
 - Cross-store lineage reconciliation/aggregation is not yet a service; external
   mission event IDs are carried safely but not materialized as local edges.
-- OpenClaw comparison remains unavailable because `openclaw-main/`, `.codegraph/`,
+- OpenClaw comparison remains unavailable because `openclaw/`, `.codegraph/`,
   and CodeGraph tools are absent. The local eMEM reference was inspected for
   tasks 6-8.
 - Behavioral tests remain deferred by explicit user decision.
@@ -1072,7 +1072,7 @@ Analogue review:
 - rejected eMEM's text-only formatted results, free semantic location, and
   direct Store-oriented assumptions in favor of typed evidence and FireClaw
   safety controls;
-- the configured CodeGraph tools were not exposed and `openclaw-main/` is not
+- the configured CodeGraph tools were not exposed and `openclaw/` is not
   present in this workspace, so the OpenClaw session/tool analogue could not be
   inspected in this run and remains a future upstream review item.
 

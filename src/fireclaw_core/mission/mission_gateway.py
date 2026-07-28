@@ -709,7 +709,16 @@ class MissionGateway:
             subagent_registry=self.subagent_registry,
         )
         findings = doctor.diagnose()
-        return doctor.summary(findings)
+        summary = doctor.summary(findings)
+        recovery = list(self.mission_agent.dispatch_recovery_report)
+        summary["dispatch_recovery"] = {
+            "attempted_count": len(recovery),
+            "blocked_count": sum(
+                item.get("status") == "blocked" for item in recovery
+            ),
+            "results": recovery,
+        }
+        return summary
 
     def publish_event(
         self,

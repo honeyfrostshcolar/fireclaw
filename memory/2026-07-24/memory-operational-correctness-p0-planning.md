@@ -68,7 +68,7 @@ This turn is planning-only. No production code was modified.
 - eMEM consolidation tests and episode/time-window trigger behavior through
   CodeGraph.
 
-The local `openclaw-main/` reference is absent, so no OpenClaw analogue could
+The local `openclaw/` reference is absent, so no OpenClaw analogue could
 be inspected for this plan. This limitation is recorded in the design.
 
 ### Commands Executed

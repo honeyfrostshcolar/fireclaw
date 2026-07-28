@@ -686,7 +686,7 @@ raw exception messages. Exposed fields:
 ## OpenClaw Analogue Status
 
 The required OpenClaw-first comparison could not be completed because this
-workspace has no `openclaw-main/`, no `.codegraph/`, and no exposed CodeGraph
+workspace has no `openclaw/`, no `.codegraph/`, and no exposed CodeGraph
 tools. This contract therefore extends the existing FireClaw embodied-memory
 boundary and must be reviewed against OpenClaw session/local-persistence patterns
 when that reference becomes available.

@@ -898,7 +898,7 @@ Run:
 ```bash
 rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]|api_key\\s*=\\s*\"[^\"]+\"|api-key\\s+\"[^\"]+\"|token-plan" \
   fireclaw.example.toml README.md docs examples src tests \
-  -g '!openclaw-main/**'
+  -g '!openclaw/**'
 ```
 
 Expected: no real API keys. Placeholder values such as `your-api-key`, `sk-test`, and redaction tests are acceptable.

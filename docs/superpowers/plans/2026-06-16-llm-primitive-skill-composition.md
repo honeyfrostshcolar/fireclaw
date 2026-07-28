@@ -12,7 +12,7 @@
 
 ## OpenClaw Analogue Checked
 
-- `openclaw-main/src/agents/openclaw-tools.ts::createOpenClawTools()` builds the tool inventory exposed to the model from core tools, optional tools, config, allow/deny lists, hooks, workspace context, and runtime state.
+- `openclaw/src/agents/openclaw-tools.ts::createOpenClawTools()` builds the tool inventory exposed to the model from core tools, optional tools, config, allow/deny lists, hooks, workspace context, and runtime state.
 - FireClaw should not copy OpenClaw's UI/channel assumptions. The reusable structure is:
   - build runtime tool inventory from config and runtime state;
   - expose that inventory to the model;

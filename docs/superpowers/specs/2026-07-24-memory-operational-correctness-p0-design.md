@@ -75,7 +75,7 @@ consolidation. FireClaw reuses the useful trigger concept, but does not reuse
 eMEM's mutable active episode, unpersisted safety-observation buffer, implicit
 coordinate assumptions, or mutable retention tiers.
 
-The repository does not currently contain `openclaw-main/`, so the requested
+The repository does not currently contain `openclaw/`, so the requested
 OpenClaw analogue inspection cannot be performed for this design. The design
 therefore preserves FireClaw's existing append-only Store, runtime assembly,
 Gateway, and reconciliation boundaries rather than inventing a replacement

@@ -23,7 +23,7 @@ Plan the next implementation phase for making FireClaw behave more like OpenClaw
   - `structured_task_from_mission_subtask()` already accepts `capability_skill_chains`.
   - `MissionAgent.submit_subtask()` does not pass capability skill chains.
   - `MissionRuntimePaths` currently loads `RobotRegistry` from `robots.json`.
-- Used CodeGraph on `openclaw-main/` to inspect config/session/gateway analogues. The useful architectural lesson is config/profile-driven runtime composition, not copying UI/session code.
+- Used CodeGraph on `openclaw/` to inspect config/session/gateway analogues. The useful architectural lesson is config/profile-driven runtime composition, not copying UI/session code.
 
 ## Plan Created
 

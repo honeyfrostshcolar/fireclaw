@@ -6,7 +6,7 @@ Change FireClaw Gateway's HTTP control plane from blocking task execution to Ope
 
 ## OpenClaw Reference
 
-CodeGraph inspection of `openclaw-main` showed the relevant pattern:
+CodeGraph inspection of `openclaw` showed the relevant pattern:
 
 - `chat.send` accepts a structured request and returns a `runId`.
 - `registerChatAbortController(...)` tracks active chat runs by `runId`.

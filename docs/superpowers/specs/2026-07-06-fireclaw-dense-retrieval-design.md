@@ -31,7 +31,7 @@ The existing FireClaw RAG pipeline already provides:
 
 Dense retrieval must use only records where `indexable == true`, embed `clean_text`, preserve metadata, return small chunk hits first, and optionally expand those hits into parent chunks.
 
-The repository guide asks agents to inspect OpenClaw analogues first when available. In this workspace, `openclaw-main/` is not present, so this design follows the existing FireClaw RAG JSONL and CLI patterns rather than an OpenClaw source implementation.
+The repository guide asks agents to inspect OpenClaw analogues first when available. In this workspace, `openclaw/` is not present, so this design follows the existing FireClaw RAG JSONL and CLI patterns rather than an OpenClaw source implementation.
 
 ## Non-Goals
 

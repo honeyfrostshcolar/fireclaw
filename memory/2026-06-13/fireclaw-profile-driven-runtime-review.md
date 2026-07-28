@@ -81,7 +81,7 @@ Result:
 Secret scan:
 
 ```bash
-rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]{12,}|api_key\\s*=\\s*\"[^\"]+\"|api-key\\s+\"[^\"]+\"|token-plan" fireclaw.example.toml README.md docs examples src tests -g '!openclaw-main/**'
+rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]{12,}|api_key\\s*=\\s*\"[^\"]+\"|api-key\\s+\"[^\"]+\"|token-plan" fireclaw.example.toml README.md docs examples src tests -g '!openclaw/**'
 ```
 
 Result:

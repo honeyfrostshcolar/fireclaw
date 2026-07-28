@@ -719,7 +719,7 @@ In profile-driven mode, profile chooses the adapter and ROS config; dry_run choo
 Run:
 
 ```bash
-rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]{12,}|api_key\\s*=\\s*\"[^\"]+\"|api-key\\s+\"[^\"]+\"" fireclaw.example.toml README.md docs -g '!openclaw-main/**'
+rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]{12,}|api_key\\s*=\\s*\"[^\"]+\"|api-key\\s+\"[^\"]+\"" fireclaw.example.toml README.md docs -g '!openclaw/**'
 ```
 
 Expected:
@@ -788,7 +788,7 @@ Run:
 ```bash
 rg -n "tp-[A-Za-z0-9]|sk-[A-Za-z0-9]{12,}|api_key\\s*=\\s*\"[^\"]+\"|api-key\\s+\"[^\"]+\"" \
   fireclaw.example.toml README.md docs examples src tests \
-  -g '!openclaw-main/**'
+  -g '!openclaw/**'
 ```
 
 Expected:

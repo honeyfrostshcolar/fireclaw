@@ -36,14 +36,14 @@ M tests/test_plugin_policy.py
 
 OpenClaw references inspected for this planning pass:
 
-- `openclaw-main/src/tasks/task-registry.store.ts`
-- `openclaw-main/src/tasks/task-flow-registry.store.ts`
-- `openclaw-main/src/acp/session-lineage-meta.ts`
-- `openclaw-main/src/plugins/plugin-control-plane-context.ts`
-- `openclaw-main/extensions/memory-core/src/memory/qmd-manager.ts`
-- `openclaw-main/src/acp/translator.ts`
-- `openclaw-main/src/agents/acp-spawn.ts`
-- `openclaw-main/src/agents/model-fallback.ts`
+- `openclaw/src/tasks/task-registry.store.ts`
+- `openclaw/src/tasks/task-flow-registry.store.ts`
+- `openclaw/src/acp/session-lineage-meta.ts`
+- `openclaw/src/plugins/plugin-control-plane-context.ts`
+- `openclaw/extensions/memory-core/src/memory/qmd-manager.ts`
+- `openclaw/src/acp/translator.ts`
+- `openclaw/src/agents/acp-spawn.ts`
+- `openclaw/src/agents/model-fallback.ts`
 
 ## Current Capability Assessment
 

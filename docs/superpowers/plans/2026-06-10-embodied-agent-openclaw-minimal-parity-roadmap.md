@@ -29,12 +29,12 @@ operator command
 
 OpenClaw features that are useful for this embodied-agent goal:
 
-- Task/source-of-truth patterns from `openclaw-main/src/tasks/task-registry.store.ts`.
-- Task-flow grouping/observer patterns from `openclaw-main/src/tasks/task-flow-registry.store.ts`.
-- Session lineage and resume ownership checks from `openclaw-main/src/acp/session-lineage-meta.ts` and `openclaw-main/src/agents/acp-spawn.ts`.
-- Plugin control-plane fingerprints from `openclaw-main/src/plugins/plugin-control-plane-context.ts`.
-- Provider fallback observability from `openclaw-main/src/agents/model-fallback.ts`.
-- Approval follow-up idempotency from `openclaw-main/src/agents/bash-tools.exec-approval-followup-state.ts`.
+- Task/source-of-truth patterns from `openclaw/src/tasks/task-registry.store.ts`.
+- Task-flow grouping/observer patterns from `openclaw/src/tasks/task-flow-registry.store.ts`.
+- Session lineage and resume ownership checks from `openclaw/src/acp/session-lineage-meta.ts` and `openclaw/src/agents/acp-spawn.ts`.
+- Plugin control-plane fingerprints from `openclaw/src/plugins/plugin-control-plane-context.ts`.
+- Provider fallback observability from `openclaw/src/agents/model-fallback.ts`.
+- Approval follow-up idempotency from `openclaw/src/agents/bash-tools.exec-approval-followup-state.ts`.
 
 OpenClaw features that are not required for the current embodied-agent target:
 

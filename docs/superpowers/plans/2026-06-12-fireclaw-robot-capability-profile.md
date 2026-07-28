@@ -12,16 +12,16 @@
 
 ## OpenClaw References Inspected
 
-- `/home/nankai/fireclaw/openclaw-main/src/agents/openclaw-tools.ts`
+- `/home/nankai/fireclaw/openclaw/src/agents/openclaw-tools.ts`
   - `createOpenClawTools(...)` collects tool factories from config, plugins, workspace, session context, and policy gates before presenting tools to model runs.
   - Pattern to reuse: model provider config is not the tool binding; tool visibility is resolved from runtime config and context.
-- `/home/nankai/fireclaw/openclaw-main/src/plugins/tools.ts`
+- `/home/nankai/fireclaw/openclaw/src/plugins/tools.ts`
   - Plugin tools expose a stable `execute(...)` boundary and are resolved before invocation.
   - Pattern to reuse: tool metadata and execution remain separated, and validation happens before execution.
-- `/home/nankai/fireclaw/openclaw-main/src/gateway/server-methods/tools-invoke.js|ts`
+- `/home/nankai/fireclaw/openclaw/src/gateway/server-methods/tools-invoke.js|ts`
   - Gateway-side tool invocation is a controlled runtime boundary, not arbitrary model output execution.
   - Pattern to reuse: FireClaw LLM chooses skills, but `SafetyGate` and adapter execution remain authoritative.
-- `/home/nankai/fireclaw/openclaw-main/openclaw.mjs`
+- `/home/nankai/fireclaw/openclaw/openclaw.mjs`
   - Config path resolution searches user/state config paths and separates launcher config from runtime tools.
   - Pattern to reuse later: FireClaw can add user-level robot profiles, but this plan keeps repo-local TOML first.
 

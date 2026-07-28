@@ -765,6 +765,31 @@ def test_fleet_doctor():
         gw.stop()
 
 
+def test_fleet_doctor_exposes_dispatch_recovery_report():
+    registry = _make_registry()
+    client = FakeSubagentClient()
+    agent = _make_agent(registry=registry, subagent_client=client)
+    agent.dispatch_recovery_report = [{
+        "status": "blocked",
+        "mission_id": "mission-recovery",
+        "message": "Robot state unavailable.",
+    }]
+    gw = _make_gateway(
+        agent,
+        registry=registry,
+        subagent_client=client,
+    )
+
+    result = gw.fleet_doctor()
+
+    assert result["dispatch_recovery"]["attempted_count"] == 1
+    assert result["dispatch_recovery"]["blocked_count"] == 1
+    assert (
+        result["dispatch_recovery"]["results"][0]["mission_id"]
+        == "mission-recovery"
+    )
+
+
 def test_fleet_doctor_empty_registry():
     registry = RobotRegistry([])
     client = FakeSubagentClient()
