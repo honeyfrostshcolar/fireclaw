@@ -67,6 +67,7 @@ def start_server(
     robot_profiles: tuple[str, ...] | None = None,
     embodied_runtime_mode: str | None = None,
     memory_rag: RagRuntimeConfig | None = None,
+    external_knowledge_rag: RagRuntimeConfig | None = None,
 ) -> MissionGateway:
     """Assemble and start the MissionGateway HTTP server.
 
@@ -113,6 +114,7 @@ def start_server(
         reusable_knowledge=data_dir / "reusable-knowledge.jsonl",
         embodied_runtime_mode=embodied_runtime_mode,
         memory_rag=memory_rag,
+        external_knowledge_rag=external_knowledge_rag,
     )
 
     agent = build_mission_agent_from_paths(
@@ -172,6 +174,7 @@ def run_server_blocking(
     robot_profiles: tuple[str, ...] | None = None,
     embodied_runtime_mode: str | None = None,
     memory_rag: RagRuntimeConfig | None = None,
+    external_knowledge_rag: RagRuntimeConfig | None = None,
 ) -> None:
     """Start the server and block until interrupted (Ctrl+C)."""
     gw = start_server(
@@ -193,6 +196,7 @@ def run_server_blocking(
         robot_profiles=robot_profiles,
         embodied_runtime_mode=embodied_runtime_mode,
         memory_rag=memory_rag,
+        external_knowledge_rag=external_knowledge_rag,
     )
 
     shutdown_requested = False

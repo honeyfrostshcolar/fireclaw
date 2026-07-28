@@ -34,6 +34,7 @@ from fireclaw_core.rag.runtime_retrieval import (
     build_runtime_rag_retriever,
     embedding_provider_from_config,
 )
+from fireclaw_core.rag.knowledge_grounding import ExternalKnowledgeRagAdapter
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class MissionRuntimePaths:
     consolidation_state: Path | None = None
     consolidation_lock: Path | None = None
     memory_rag: RagRuntimeConfig | None = None
+    external_knowledge_rag: RagRuntimeConfig | None = None
 
 
 def build_operator_context(
@@ -84,6 +86,8 @@ def build_mission_agent_from_paths(
     plugin_runtime=None,
     rag_embedding_provider=None,
     rag_reranker=None,
+    knowledge_rag_embedding_provider=None,
+    knowledge_rag_reranker=None,
     source: str = "runtime",
 ) -> MissionAgent:
     embodied_memory_producer = None
@@ -155,6 +159,26 @@ def build_mission_agent_from_paths(
         )
     elif paths.memory_index is not None:
         memory_retriever = MemoryRetriever(index=SqliteMemoryIndex(paths.memory_index))
+    external_knowledge_retriever = None
+    if paths.external_knowledge_rag is not None:
+        if paths.external_knowledge_rag.source_kind != "external_knowledge":
+            raise ValueError(
+                "External knowledge retrieval requires "
+                "RAG source_kind='external_knowledge'"
+            )
+        knowledge_embedding_provider = (
+            knowledge_rag_embedding_provider
+            or embedding_provider_from_config(paths.external_knowledge_rag)
+        )
+        knowledge_rag_retriever = build_runtime_rag_retriever(
+            paths.external_knowledge_rag,
+            embedding_provider=knowledge_embedding_provider,
+            reranker=knowledge_rag_reranker,
+        )
+        external_knowledge_retriever = ExternalKnowledgeRagAdapter(
+            knowledge_rag_retriever,
+            candidate_multiplier=paths.external_knowledge_rag.candidate_multiplier,
+        )
     task_registry = JsonlTaskRegistryStore(paths.task_registry) if paths.task_registry else None
     subagent_registry = JsonlSubagentRegistry(paths.subagent_registry) if paths.subagent_registry else None
     mission_planning_audit_sink = (
@@ -282,6 +306,7 @@ def build_mission_agent_from_paths(
         mission_memory=memory_store,
         facade=facade,
         lifecycle=memory_lifecycle,
+        external_knowledge_retriever=external_knowledge_retriever,
         plugin_runtime=plugin_runtime,
     )
 

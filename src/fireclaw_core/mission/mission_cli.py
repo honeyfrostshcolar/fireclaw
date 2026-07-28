@@ -136,6 +136,7 @@ def main() -> int:
         help="Enable embodied memory in an explicit runtime domain.",
     )
     _add_memory_rag_options(serve, optional_defaults=True)
+    _add_external_knowledge_rag_options(serve, optional_defaults=True)
     serve.add_argument("--planner", choices=["deterministic", "llm"], default=None, help="Planner backend.")
     serve.add_argument("--provider-base-url", default=None, help="LLM provider base URL.")
     serve.add_argument("--provider-api-key", default=None, help="LLM provider API key.")
@@ -281,6 +282,17 @@ def main() -> int:
             "memory_rag_device": args.memory_rag_device,
             "memory_rag_candidate_multiplier": args.memory_rag_candidate_multiplier,
             "memory_rag_rrf_k": args.memory_rag_rrf_k,
+            "knowledge_rag_backend": args.knowledge_rag_backend,
+            "knowledge_rag_bm25_index_dir": args.knowledge_rag_bm25_index_dir,
+            "knowledge_rag_dense_index_dir": args.knowledge_rag_dense_index_dir,
+            "knowledge_rag_generation_root": args.knowledge_rag_generation_root,
+            "knowledge_rag_embedding_provider": args.knowledge_rag_embedding_provider,
+            "knowledge_rag_embedding_model_path": args.knowledge_rag_embedding_model_path,
+            "knowledge_rag_reranker_provider": args.knowledge_rag_reranker_provider,
+            "knowledge_rag_reranker_model_path": args.knowledge_rag_reranker_model_path,
+            "knowledge_rag_device": args.knowledge_rag_device,
+            "knowledge_rag_candidate_multiplier": args.knowledge_rag_candidate_multiplier,
+            "knowledge_rag_rrf_k": args.knowledge_rag_rrf_k,
         })
         memory_rag = _build_memory_rag_config(
             argparse.Namespace(**{
@@ -297,6 +309,24 @@ def main() -> int:
                     "memory_rag_device",
                     "memory_rag_candidate_multiplier",
                     "memory_rag_rrf_k",
+                )
+            })
+        )
+        external_knowledge_rag = _build_external_knowledge_rag_config(
+            argparse.Namespace(**{
+                key: merged.get(key)
+                for key in (
+                    "knowledge_rag_backend",
+                    "knowledge_rag_bm25_index_dir",
+                    "knowledge_rag_dense_index_dir",
+                    "knowledge_rag_generation_root",
+                    "knowledge_rag_embedding_provider",
+                    "knowledge_rag_embedding_model_path",
+                    "knowledge_rag_reranker_provider",
+                    "knowledge_rag_reranker_model_path",
+                    "knowledge_rag_device",
+                    "knowledge_rag_candidate_multiplier",
+                    "knowledge_rag_rrf_k",
                 )
             })
         )
@@ -323,6 +353,7 @@ def main() -> int:
                 else None
             ),
             memory_rag=memory_rag,
+            external_knowledge_rag=external_knowledge_rag,
         )
         return 0
     if args.command_name == "mission":
@@ -638,6 +669,7 @@ def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--memory-path", default=None, help="Path to mission memory JSONL.")
     parser.add_argument("--memory-index", default=None, help="Path to SQLite memory index.")
     _add_memory_rag_options(parser)
+    _add_external_knowledge_rag_options(parser)
     parser.add_argument(
         "--embodied-runtime-mode",
         choices=("real", "simulation", "replay"),
@@ -695,6 +727,49 @@ def _add_memory_rag_options(
     )
 
 
+def _add_external_knowledge_rag_options(
+    parser: argparse.ArgumentParser,
+    *,
+    optional_defaults: bool = False,
+) -> None:
+    parser.add_argument(
+        "--knowledge-rag-backend",
+        choices=("bm25", "dense", "hybrid", "hybrid_rerank"),
+        default=None,
+        help="Ground mission planning with an external firefighting knowledge index.",
+    )
+    parser.add_argument("--knowledge-rag-bm25-index-dir", default=None)
+    parser.add_argument("--knowledge-rag-dense-index-dir", default=None)
+    parser.add_argument(
+        "--knowledge-rag-generation-root",
+        default=None,
+        help="Prebuilt managed generation root for hot-reloading external knowledge.",
+    )
+    parser.add_argument(
+        "--knowledge-rag-embedding-provider",
+        choices=("fake", "bge-m3"),
+        default=None,
+    )
+    parser.add_argument("--knowledge-rag-embedding-model-path", default=None)
+    parser.add_argument(
+        "--knowledge-rag-reranker-provider",
+        choices=("fake", "bge-reranker"),
+        default=None,
+    )
+    parser.add_argument("--knowledge-rag-reranker-model-path", default=None)
+    parser.add_argument("--knowledge-rag-device", default=None)
+    parser.add_argument(
+        "--knowledge-rag-candidate-multiplier",
+        type=int,
+        default=None if optional_defaults else 3,
+    )
+    parser.add_argument(
+        "--knowledge-rag-rrf-k",
+        type=int,
+        default=None if optional_defaults else 60,
+    )
+
+
 def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePaths:
     robot_profiles = tuple(Path(p) for p in (getattr(args, "robot_profile", None) or ()))
     robot_registry = getattr(args, "robot_registry", None)
@@ -718,6 +793,7 @@ def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePath
         robot_profiles=robot_profiles,
         mission_planning_audit=Path(p) if (p := getattr(args, "mission_planning_audit_path", None)) else None,
         memory_rag=_build_memory_rag_config(args),
+        external_knowledge_rag=_build_external_knowledge_rag_config(args),
     )
 
 
@@ -760,6 +836,50 @@ def _build_memory_rag_config(args: argparse.Namespace) -> RagRuntimeConfig | Non
             getattr(args, "memory_rag_candidate_multiplier", None) or 3
         ),
         rrf_k=getattr(args, "memory_rag_rrf_k", None) or 60,
+    )
+
+
+def _build_external_knowledge_rag_config(
+    args: argparse.Namespace,
+) -> RagRuntimeConfig | None:
+    backend = getattr(args, "knowledge_rag_backend", None)
+    if backend is None:
+        return None
+    return RagRuntimeConfig(
+        backend=backend,
+        source_kind="external_knowledge",
+        bm25_index_dir=(
+            Path(value)
+            if (value := getattr(args, "knowledge_rag_bm25_index_dir", None))
+            else None
+        ),
+        dense_index_dir=(
+            Path(value)
+            if (value := getattr(args, "knowledge_rag_dense_index_dir", None))
+            else None
+        ),
+        generation_root=(
+            Path(value)
+            if (value := getattr(args, "knowledge_rag_generation_root", None))
+            else None
+        ),
+        embedding_provider=getattr(args, "knowledge_rag_embedding_provider", None),
+        embedding_model_path=(
+            Path(value)
+            if (value := getattr(args, "knowledge_rag_embedding_model_path", None))
+            else None
+        ),
+        reranker_provider=getattr(args, "knowledge_rag_reranker_provider", None),
+        reranker_model_path=(
+            Path(value)
+            if (value := getattr(args, "knowledge_rag_reranker_model_path", None))
+            else None
+        ),
+        device=getattr(args, "knowledge_rag_device", None),
+        candidate_multiplier=(
+            getattr(args, "knowledge_rag_candidate_multiplier", None) or 3
+        ),
+        rrf_k=getattr(args, "knowledge_rag_rrf_k", None) or 60,
     )
 
 

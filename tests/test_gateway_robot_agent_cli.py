@@ -104,3 +104,37 @@ profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
     cfg = load_config(config_path)
 
     assert cfg["robot_gateway_profile_path"] == "examples/robot_profiles/gazebo_turtlebot3.toml"
+
+
+def test_config_loads_mission_external_knowledge_rag(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[mission]
+robot_profiles = ["robot.toml"]
+embodied_runtime_mode = "simulation"
+
+[mission.knowledge_rag]
+backend = "hybrid"
+bm25_index_dir = "/srv/fireclaw/knowledge/bm25"
+dense_index_dir = "/srv/fireclaw/knowledge/dense"
+embedding_provider = "bge-m3"
+embedding_model_path = "/srv/fireclaw/models/bge-m3"
+device = "cuda"
+candidate_multiplier = 4
+rrf_k = 40
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["embodied_runtime_mode"] == "simulation"
+    assert cfg["knowledge_rag_backend"] == "hybrid"
+    assert cfg["knowledge_rag_bm25_index_dir"] == "/srv/fireclaw/knowledge/bm25"
+    assert cfg["knowledge_rag_dense_index_dir"] == "/srv/fireclaw/knowledge/dense"
+    assert cfg["knowledge_rag_embedding_provider"] == "bge-m3"
+    assert cfg["knowledge_rag_embedding_model_path"] == "/srv/fireclaw/models/bge-m3"
+    assert cfg["knowledge_rag_device"] == "cuda"
+    assert cfg["knowledge_rag_candidate_multiplier"] == 4
+    assert cfg["knowledge_rag_rrf_k"] == 40

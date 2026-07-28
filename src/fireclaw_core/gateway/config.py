@@ -132,6 +132,31 @@ def load_config(path: Path) -> dict[str, Any]:
     # [mission]
     mission = raw.get("mission", {})
     cfg["mission_robot_profiles"] = mission.get("robot_profiles")
+    cfg["embodied_runtime_mode"] = mission.get("embodied_runtime_mode")
+
+    rag_fields = (
+        "backend",
+        "bm25_index_dir",
+        "dense_index_dir",
+        "generation_root",
+        "embedding_provider",
+        "embedding_model_path",
+        "reranker_provider",
+        "reranker_model_path",
+        "device",
+        "candidate_multiplier",
+        "rrf_k",
+    )
+    for section_name, key_prefix in (
+        ("memory_rag", "memory_rag"),
+        ("knowledge_rag", "knowledge_rag"),
+    ):
+        section = mission.get(section_name, {})
+        if not isinstance(section, dict):
+            section = {}
+        for field_name in rag_fields:
+            flat_key = f"{key_prefix}_{field_name}"
+            cfg[flat_key] = section.get(field_name, raw.get(flat_key))
 
     return cfg
 

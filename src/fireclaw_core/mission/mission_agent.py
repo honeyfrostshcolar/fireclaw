@@ -731,6 +731,7 @@ class MissionAgent:
         mission_id: str,
         max_memories: int = 5,
         max_corrections: int = 3,
+        max_external_knowledge: int = 5,
     ) -> PlannerMemoryContextResult:
         """Build scoped planner memory context via the Builder."""
         scopes = frozenset(
@@ -751,6 +752,7 @@ class MissionAgent:
                 scopes=scopes,
                 max_memories=max_memories,
                 max_corrections=max_corrections,
+                max_external_knowledge=max_external_knowledge,
             )
         )
 
@@ -822,6 +824,7 @@ class MissionAgent:
             ],
             retrieved_memories=list(memory_context_result.memories),
             operator_corrections=list(memory_context_result.corrections),
+            external_knowledge=list(memory_context_result.external_knowledge),
         )
         planning_result = self.planner.plan(command, context=context)
 

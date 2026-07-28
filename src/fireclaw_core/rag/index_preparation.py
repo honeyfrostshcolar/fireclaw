@@ -32,6 +32,7 @@ class IndexRecord:
     indexable: bool
     retrieval_weight: float
     cleaning_flags: list[str]
+    source_kind: str = "external_knowledge"
     title: str | None = None
     source_url: str | None = None
     publisher: str | None = None
@@ -324,4 +325,3 @@ def _average(values: list[int]) -> float:
 
 def _normalized_line_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
-

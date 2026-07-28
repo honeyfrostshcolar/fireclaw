@@ -97,7 +97,7 @@ def test_prepare_index_records_writes_jsonl_and_report(tmp_path):
         for line in (output_dir / "small_index_records.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert records[0]["chunk_id"] == "doc__parent_00001__small_001"
+    assert records[0]["source_kind"] == "external_knowledge"
     assert records[0]["clean_text"]
     assert records[1]["indexable"] is False
     assert (output_dir / "index_preparation_report.json").exists()
-

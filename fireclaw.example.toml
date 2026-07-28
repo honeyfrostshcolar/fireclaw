@@ -18,6 +18,20 @@ model = ""
 
 [mission]
 robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
+# embodied_runtime_mode = "simulation"  # real | simulation | replay
+
+# External firefighting knowledge used to ground the LLM mission planner.
+# Rebuild indexes after running the RAG prepare-index pipeline so records carry
+# source_kind = "external_knowledge".
+#[mission.knowledge_rag]
+#backend = "bm25"  # bm25 | dense | hybrid | hybrid_rerank
+#bm25_index_dir = "/srv/lpp-extra/fireclaw/indexes/fire-knowledge/bm25"
+#dense_index_dir = "/srv/lpp-extra/fireclaw/indexes/fire-knowledge/dense"
+#embedding_provider = "bge-m3"
+#embedding_model_path = "/srv/lpp-extra/fireclaw/models/bge-m3"
+#device = "cuda"
+#candidate_multiplier = 3
+#rrf_k = 60
 
 # Robot-Local Gateway 配置
 [robot_gateway]

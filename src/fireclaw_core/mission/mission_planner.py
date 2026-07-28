@@ -34,6 +34,7 @@ class MissionPlan:
     intent: str
     command: str
     subtasks: list[MissionSubtask] = field(default_factory=list)
+    knowledge_refs: list[str] = field(default_factory=list)
 
     @property
     def execution_groups(self) -> int:
@@ -47,6 +48,7 @@ class MissionPlan:
             "command": self.command,
             "execution_groups": self.execution_groups,
             "subtasks": [s.to_dict() for s in self.subtasks],
+            "knowledge_refs": list(self.knowledge_refs),
         }
 
 
@@ -64,6 +66,7 @@ class MissionPlannerContext:
     available_robots: list[RobotRegistryEntry] = field(default_factory=list)
     retrieved_memories: list[dict[str, Any]] = field(default_factory=list)
     operator_corrections: list[dict[str, Any]] = field(default_factory=list)
+    external_knowledge: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --- Protocol ---

@@ -1245,6 +1245,49 @@ def test_serve_help_exposes_robot_profile_flag():
     assert "--robot-profile" in completed.stdout
 
 
+def test_build_external_knowledge_rag_config_uses_separate_namespace(tmp_path):
+    from argparse import Namespace
+    from fireclaw_core.mission.mission_cli import (
+        _build_external_knowledge_rag_config,
+    )
+
+    config = _build_external_knowledge_rag_config(Namespace(
+        knowledge_rag_backend="hybrid",
+        knowledge_rag_bm25_index_dir=str(tmp_path / "bm25"),
+        knowledge_rag_dense_index_dir=str(tmp_path / "dense"),
+        knowledge_rag_generation_root=None,
+        knowledge_rag_embedding_provider="fake",
+        knowledge_rag_embedding_model_path=None,
+        knowledge_rag_reranker_provider=None,
+        knowledge_rag_reranker_model_path=None,
+        knowledge_rag_device="cpu",
+        knowledge_rag_candidate_multiplier=4,
+        knowledge_rag_rrf_k=40,
+    ))
+
+    assert config is not None
+    assert config.source_kind == "external_knowledge"
+    assert config.backend == "hybrid"
+    assert config.bm25_index_dir == tmp_path / "bm25"
+    assert config.dense_index_dir == tmp_path / "dense"
+    assert config.candidate_multiplier == 4
+    assert config.rrf_k == 40
+
+
+def test_serve_help_exposes_external_knowledge_rag_flags():
+    completed = subprocess.run(
+        [sys.executable, "-m", "fireclaw_core", "serve", "--help"],
+        check=True,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    assert "--knowledge-rag-backend" in completed.stdout
+    assert "--knowledge-rag-bm25-index-dir" in completed.stdout
+    assert "--knowledge-rag-embedding-model-path" in completed.stdout
+
+
 def test_robot_profile_discover_writes_suggested_rules(tmp_path, monkeypatch):
     profile_path = tmp_path / "robot.toml"
     output_path = tmp_path / "discovered.toml"

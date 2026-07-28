@@ -27,9 +27,11 @@ from fireclaw_core.memory.mission_memory_facade import (
 )
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission.mission_planning_audit import GuardDecision
+from fireclaw_core.rag.knowledge_grounding import ExternalKnowledgeRagAdapter
 
 MAX_PLANNER_MEMORIES = 100
 MAX_PLANNER_CORRECTIONS = 100
+MAX_EXTERNAL_KNOWLEDGE = 20
 MAX_KNOWLEDGE_DIAGNOSTIC_RECORDS = 500
 
 
@@ -58,6 +60,7 @@ class PlannerMemoryContextRequest:
     scopes: frozenset[str] = frozenset()
     max_memories: int = 5
     max_corrections: int = 3
+    max_external_knowledge: int = 5
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -75,6 +78,8 @@ class PlannerMemoryContextRequest:
             raise ValueError("max_memories must be between 0 and 100")
         if not 0 <= self.max_corrections <= MAX_PLANNER_CORRECTIONS:
             raise ValueError("max_corrections must be between 0 and 100")
+        if not 0 <= self.max_external_knowledge <= MAX_EXTERNAL_KNOWLEDGE:
+            raise ValueError("max_external_knowledge must be between 0 and 20")
 
 
 @dataclass(frozen=True)
@@ -103,10 +108,12 @@ class MemoryContextWarning:
 class PlannerMemoryContextResult:
     memories: tuple[dict[str, Any], ...] = ()
     corrections: tuple[dict[str, Any], ...] = ()
+    external_knowledge: tuple[dict[str, Any], ...] = ()
     warnings: tuple[MemoryContextWarning, ...] = ()
     omitted_counts: dict[str, int] = field(default_factory=dict)
     restricted_access_granted: bool = False
     reusable_knowledge_available: bool = False
+    external_knowledge_available: bool = False
 
     def guard_decision(self) -> GuardDecision:
         degraded = bool(self.warnings)
@@ -126,10 +133,17 @@ class PlannerMemoryContextResult:
             details={
                 "accepted_memories": len(self.memories),
                 "accepted_corrections": len(self.corrections),
+                "accepted_external_knowledge": len(self.external_knowledge),
+                "external_knowledge_ids": [
+                    item["knowledge_id"]
+                    for item in self.external_knowledge
+                    if isinstance(item.get("knowledge_id"), str)
+                ],
                 "omitted_counts": dict(sorted(self.omitted_counts.items())),
                 "warning_codes": sorted({warning.code for warning in self.warnings}),
                 "restricted_access_granted": self.restricted_access_granted,
                 "reusable_knowledge_available": self.reusable_knowledge_available,
+                "external_knowledge_available": self.external_knowledge_available,
             },
         )
 
@@ -151,12 +165,14 @@ class PlannerMemoryContextBuilder:
         mission_memory: MissionMemoryStore | None = None,
         facade: MissionMemoryFacade | None = None,
         lifecycle: MissionMemoryLifecycleStore | None = None,
+        external_knowledge_retriever: ExternalKnowledgeRagAdapter | None = None,
         plugin_runtime: Any | None = None,
     ) -> None:
         self._memory_retriever = memory_retriever
         self._mission_memory = mission_memory
         self._facade = facade
         self._lifecycle = lifecycle
+        self._external_knowledge_retriever = external_knowledge_retriever
         self._plugin_runtime = plugin_runtime
 
     def status(self) -> dict[str, bool]:
@@ -170,6 +186,9 @@ class PlannerMemoryContextBuilder:
             "has_mission_memory": self._mission_memory is not None,
             "has_facade": self._facade is not None,
             "has_lifecycle": self._lifecycle is not None,
+            "has_external_knowledge_retriever": (
+                self._external_knowledge_retriever is not None
+            ),
             "has_plugin_runtime": self._plugin_runtime is not None,
         }
 
@@ -236,29 +255,15 @@ class PlannerMemoryContextBuilder:
     def build(self, request: PlannerMemoryContextRequest) -> PlannerMemoryContextResult:
         """Build the planner memory context for the given request.
 
-        Returns an empty valid result when runtime_mode is None.
+        Mission-scoped memory is empty when runtime_mode is None. External
+        knowledge remains available because it is not mission state.
         """
-        if request.runtime_mode is None:
-            return PlannerMemoryContextResult(
-                restricted_access_granted=(
-                    "admin" in request.scopes
-                    or MEMORY_RESTRICTED_READ_SCOPE in request.scopes
-                ),
-                reusable_knowledge_available=False,
-            )
-
-        allowed_sensitivities = self._allowed_sensitivities(request)
         restricted_access_granted = (
             "admin" in request.scopes
             or MEMORY_RESTRICTED_READ_SCOPE in request.scopes
         )
-        reusable_knowledge_available = False
-
-        memories: list[dict[str, Any]] = []
-        corrections: list[dict[str, Any]] = []
         warnings: list[MemoryContextWarning] = []
         omitted_counts: dict[str, int] = {}
-        seen_record_ids: set[str] = set()
 
         def omit(
             code: str,
@@ -282,6 +287,38 @@ class PlannerMemoryContextBuilder:
                 record_id=record_id,
                 exception_class=resolved_exception_class,
             ))
+
+        external_knowledge: list[dict[str, Any]] = []
+        external_knowledge_available = False
+        if self._external_knowledge_retriever is not None:
+            try:
+                external_knowledge = self._external_knowledge_retriever.retrieve(
+                    request.command,
+                    limit=request.max_external_knowledge,
+                )
+                external_knowledge_available = True
+            except Exception as exc:
+                omit(
+                    "external_knowledge_unavailable",
+                    "external_knowledge_rag",
+                    exception=exc,
+                )
+
+        if request.runtime_mode is None:
+            return PlannerMemoryContextResult(
+                external_knowledge=tuple(external_knowledge),
+                warnings=tuple(warnings),
+                omitted_counts=omitted_counts,
+                restricted_access_granted=restricted_access_granted,
+                reusable_knowledge_available=False,
+                external_knowledge_available=external_knowledge_available,
+            )
+
+        allowed_sensitivities = self._allowed_sensitivities(request)
+        reusable_knowledge_available = False
+        memories: list[dict[str, Any]] = []
+        corrections: list[dict[str, Any]] = []
+        seen_record_ids: set[str] = set()
 
         # Step 1: Build authority map from mission memory
         authority_available = False
@@ -721,10 +758,12 @@ class PlannerMemoryContextBuilder:
         return PlannerMemoryContextResult(
             memories=tuple(final_memories),
             corrections=tuple(final_corrections),
+            external_knowledge=tuple(external_knowledge),
             warnings=tuple(warnings),
             omitted_counts=omitted_counts,
             restricted_access_granted=restricted_access_granted,
             reusable_knowledge_available=reusable_knowledge_available,
+            external_knowledge_available=external_knowledge_available,
         )
 
     def _resolve_enrichment_record(

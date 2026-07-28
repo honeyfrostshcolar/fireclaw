@@ -9,6 +9,7 @@ from fireclaw_core.mission.mission_planning_audit import GuardDecision, JsonlMis
 from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
 from fireclaw_core.memory.memory_retrieval import MemoryRetrievalScope
 from fireclaw_core.memory.rag_indexing import build_memory_rag_indexes
+from fireclaw_core.rag.bm25_retrieval import build_bm25_index
 from fireclaw_core.rag.runtime_retrieval import RagRuntimeConfig
 
 
@@ -258,6 +259,91 @@ def test_build_mission_agent_uses_rag_as_memory_retrieval_backend(tmp_path: Path
 
     assert [item.record_id for item in results] == ["event-1"]
     assert results[0].source == "rag_bm25"
+
+
+def test_external_knowledge_rag_reaches_mission_planner_context(tmp_path: Path):
+    registry_path = tmp_path / "robots.json"
+    _write_robot_registry(registry_path, [
+        {
+            "robot_id": "r1",
+            "base_url": "http://r1:8765",
+            "capabilities": ["search_for_victims"],
+        },
+    ])
+    records_path = tmp_path / "knowledge-records.jsonl"
+    records_path.write_text(
+        json.dumps({
+            "source_kind": "external_knowledge",
+            "chunk_id": "search-guide-1",
+            "doc_id": "search-guide",
+            "clean_text": "thermal victim primary search procedure",
+            "indexable": True,
+            "source_file": "manuals/search-guide.pdf",
+            "source_url": "https://example.test/search-guide.pdf",
+            "page_start": 4,
+            "page_end": 4,
+            "title": "Primary Search Guide",
+            "publisher": "Example Fire Academy",
+            "authority_level": "training_standard",
+            "allowed_use": "planning_reference",
+            "domain": "search_and_rescue",
+            "language": "en",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    index_dir = tmp_path / "knowledge-bm25"
+    build_bm25_index(records_path, index_dir)
+    planner = MagicMock()
+    planner.plan.return_value = MissionPlanningResult(
+        status="planned",
+        message="planned",
+        intent="search",
+        plan=MissionPlan(
+            intent="search",
+            command="thermal victim search",
+            subtasks=[
+                MissionSubtask(
+                    robot_id="r1",
+                    command="search",
+                    floor=2,
+                    capability_required="search_for_victims",
+                )
+            ],
+        ),
+        audit_record=_mission_planning_audit_record("thermal victim search"),
+    )
+    paths = MissionRuntimePaths(
+        robot_registry=registry_path,
+        mission_registry=tmp_path / "missions.jsonl",
+        external_knowledge_rag=RagRuntimeConfig(
+            backend="bm25",
+            source_kind="external_knowledge",
+            bm25_index_dir=index_dir,
+        ),
+    )
+    agent = build_mission_agent_from_paths(
+        paths,
+        operator_id="op-a",
+        role="operator",
+        planner=planner,
+    )
+    agent.subagent_client = FakeRuntimeSubagentClient()
+
+    result = agent.plan_and_submit(
+        "thermal victim search",
+        session_id="mission-knowledge",
+        use_scheduler=False,
+    )
+
+    assert result["status"] == "planned"
+    context = planner.plan.call_args.kwargs["context"]
+    assert [item["knowledge_id"] for item in context.external_knowledge] == [
+        "search-guide-1"
+    ]
+    assert context.external_knowledge[0]["can_authorize_action"] is False
+    assert agent.planner_memory_context_builder.status()[
+        "has_external_knowledge_retriever"
+    ] is True
 
 
 def test_build_mission_agent_wires_managed_rag_generation(tmp_path: Path):
