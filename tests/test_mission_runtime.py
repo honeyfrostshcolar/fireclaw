@@ -7,6 +7,9 @@ from unittest.mock import MagicMock
 from fireclaw_core.mission.mission_planner import MissionPlan, MissionPlanningResult, MissionSubtask
 from fireclaw_core.mission.mission_planning_audit import GuardDecision, JsonlMissionPlanningAuditSink, MissionPlanningAuditRecord
 from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
+from fireclaw_core.memory.memory_retrieval import MemoryRetrievalScope
+from fireclaw_core.memory.rag_indexing import build_memory_rag_indexes
+from fireclaw_core.rag.runtime_retrieval import RagRuntimeConfig
 
 
 def _write_robot_registry(path: Path, entries: list[dict]) -> None:
@@ -200,3 +203,144 @@ def test_build_mission_agent_wires_builder_without_embodied_mode(tmp_path: Path)
     assert status["has_mission_memory"] is True
     assert status["has_facade"] is False
     assert status["has_lifecycle"] is False
+
+
+def test_build_mission_agent_uses_rag_as_memory_retrieval_backend(tmp_path: Path):
+    registry_path = tmp_path / "robots.json"
+    _write_robot_registry(registry_path, [
+        {"robot_id": "r1", "base_url": "http://r1:8765"},
+    ])
+    memory_path = tmp_path / "memory.jsonl"
+    memory_path.write_text(
+        json.dumps({
+            "record_id": "event-1",
+            "mission_id": "mission-1",
+            "record_type": "observation",
+            "content": {
+                "note": "thermal camera found a victim",
+                "_embodied": {
+                    "runtime_mode": "simulation",
+                    "sensitivity": "standard",
+                },
+            },
+            "robot_id": "r1",
+            "subtask_id": None,
+            "created_at": "2026-07-27T00:00:00+00:00",
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    build_memory_rag_indexes(memory_path, tmp_path / "memory-rag")
+    paths = MissionRuntimePaths(
+        robot_registry=registry_path,
+        mission_registry=tmp_path / "missions.jsonl",
+        mission_memory=memory_path,
+        memory_rag=RagRuntimeConfig(
+            backend="bm25",
+            source_kind="mission_memory",
+            bm25_index_dir=tmp_path / "memory-rag" / "bm25",
+        ),
+    )
+
+    agent = build_mission_agent_from_paths(
+        paths,
+        operator_id="op-a",
+        role="operator",
+    )
+    results = agent.memory_retriever.retrieve(
+        "thermal victim",
+        scope=MemoryRetrievalScope(
+            mission_ids=("mission-1",),
+            runtime_modes=("simulation",),
+            allowed_sensitivities=("standard",),
+        ),
+        limit=5,
+    )
+
+    assert [item.record_id for item in results] == ["event-1"]
+    assert results[0].source == "rag_bm25"
+
+
+def test_build_mission_agent_wires_managed_rag_generation(tmp_path: Path):
+    registry_path = tmp_path / "robots.json"
+    _write_robot_registry(registry_path, [
+        {"robot_id": "r1", "base_url": "http://r1:8765"},
+    ])
+    memory_path = tmp_path / "memory.jsonl"
+    memory_path.write_text(
+        json.dumps({
+            "record_id": "event-1",
+            "mission_id": "mission-1",
+            "record_type": "observation",
+            "content": {
+                "note": "thermal camera found a victim",
+                "_embodied": {
+                    "runtime_mode": "simulation",
+                    "sensitivity": "standard",
+                },
+            },
+            "robot_id": "r1",
+            "subtask_id": None,
+            "created_at": "2026-07-27T00:00:00+00:00",
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    generation_root = tmp_path / "memory-rag-generations"
+    paths = MissionRuntimePaths(
+        robot_registry=registry_path,
+        mission_registry=tmp_path / "missions.jsonl",
+        mission_memory=memory_path,
+        embodied_runtime_mode="simulation",
+        memory_rag=RagRuntimeConfig(
+            backend="bm25",
+            source_kind="mission_memory",
+            generation_root=generation_root,
+        ),
+    )
+
+    agent = build_mission_agent_from_paths(
+        paths,
+        operator_id="op-a",
+        role="operator",
+    )
+    results = agent.memory_retriever.retrieve(
+        "thermal victim",
+        scope=MemoryRetrievalScope(
+            mission_ids=("mission-1",),
+            runtime_modes=("simulation",),
+            allowed_sensitivities=("standard",),
+        ),
+        limit=5,
+    )
+
+    assert [item.record_id for item in results] == ["event-1"]
+    assert agent.consolidation_coordinator is not None
+    assert (generation_root / "current.json").exists()
+
+
+def test_managed_rag_requires_embodied_runtime_for_terminal_refresh(
+    tmp_path: Path,
+):
+    registry_path = tmp_path / "robots.json"
+    _write_robot_registry(registry_path, [
+        {"robot_id": "r1", "base_url": "http://r1:8765"},
+    ])
+    paths = MissionRuntimePaths(
+        robot_registry=registry_path,
+        mission_registry=tmp_path / "missions.jsonl",
+        mission_memory=tmp_path / "memory.jsonl",
+        memory_rag=RagRuntimeConfig(
+            backend="bm25",
+            source_kind="mission_memory",
+            generation_root=tmp_path / "memory-rag-generations",
+        ),
+    )
+
+    try:
+        build_mission_agent_from_paths(
+            paths,
+            operator_id="op-a",
+            role="operator",
+        )
+        raise AssertionError("expected managed RAG runtime validation failure")
+    except ValueError as exc:
+        assert "requires embodied_runtime_mode" in str(exc)

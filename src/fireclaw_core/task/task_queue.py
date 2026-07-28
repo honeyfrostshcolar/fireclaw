@@ -173,21 +173,43 @@ class JsonlTaskQueue:
         if not self.path.exists():
             return []
         entries: list[dict[str, Any]] = []
-        with self.path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                value = json.loads(stripped)
-                if isinstance(value, dict):
-                    entries.append(value)
+        lines = self.path.read_bytes().splitlines(keepends=True)
+        for index, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                value = json.loads(stripped.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                is_uncommitted_tail = (
+                    index == len(lines) - 1
+                    and not raw_line.endswith((b"\n", b"\r"))
+                )
+                if is_uncommitted_tail:
+                    break
+                raise
+            if isinstance(value, dict):
+                entries.append(value)
         return entries
 
     def _append(self, entry: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True))
-            handle.write("\n")
+        encoded = (
+            json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        with self.path.open("a+b") as handle:
+            handle.seek(0)
+            existing = handle.read()
+            if existing and not existing.endswith((b"\n", b"\r")):
+                tail_start = max(existing.rfind(b"\n"), existing.rfind(b"\r")) + 1
+                tail = existing[tail_start:].strip()
+                try:
+                    json.loads(tail.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    handle.truncate(tail_start)
+                else:
+                    handle.write(b"\n")
+            handle.write(encoded)
 
 
 def queue_record_to_task_record(

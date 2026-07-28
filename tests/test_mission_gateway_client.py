@@ -299,7 +299,9 @@ class TestMissionGatewayClient:
             client.get_fleet_state()
             req = captured[-1]
             assert req["headers"].get("Authorization") == "Bearer test-token-123"
-            assert req["headers"].get("X-Operator-Scopes") == "admin"
+            assert req["headers"].get("X-Operator-Scopes") == (
+                "mission.approve,state.read,task.submit"
+            )
         finally:
             server.shutdown()
 
@@ -317,7 +319,9 @@ class TestMissionGatewayClient:
             client.get_fleet_state()
             req = captured[-1]
             assert "Authorization" not in req["headers"]
-            assert req["headers"].get("X-Operator-Scopes") == "admin"
+            assert req["headers"].get("X-Operator-Scopes") == (
+                "mission.approve,state.read,task.submit"
+            )
         finally:
             server.shutdown()
 

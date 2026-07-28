@@ -11,6 +11,7 @@ def test_operator_console_prints_human_readable_progress(tmp_path):
             robot_id="operator-test",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
             workspace_skills_dir=None,
         )
     )

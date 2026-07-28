@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 from fireclaw_core.gateway.config import load_config
 
 
 def test_gateway_cli_exposes_robot_agent_flags():
     completed = subprocess.run(
-        [".venv/bin/python", "-m", "fireclaw_core", "serve", "--help"],
+        [sys.executable, "-m", "fireclaw_core", "serve", "--help"],
         check=True,
         text=True,
         capture_output=True,
@@ -22,7 +23,7 @@ def test_gateway_cli_exposes_robot_agent_flags():
 
 def test_robot_gateway_cli_exposes_config_flag():
     completed = subprocess.run(
-        [".venv/bin/python", "-m", "fireclaw_core", "robot-gateway", "--help"],
+        [sys.executable, "-m", "fireclaw_core", "robot-gateway", "--help"],
         check=True,
         text=True,
         capture_output=True,
@@ -35,7 +36,7 @@ def test_robot_gateway_cli_exposes_config_flag():
 
 def test_gateway_package_module_cli_exposes_config_flag():
     completed = subprocess.run(
-        [".venv/bin/python", "-m", "fireclaw_core.gateway", "--help"],
+        [sys.executable, "-m", "fireclaw_core.gateway", "--help"],
         check=True,
         text=True,
         capture_output=True,

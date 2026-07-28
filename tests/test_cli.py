@@ -8,7 +8,7 @@ def test_module_cli_runs_rescue_command_and_writes_memory(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -30,7 +30,7 @@ def test_module_cli_runs_rescue_command_and_writes_memory(tmp_path):
 def test_module_cli_accepts_robot_id(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -53,7 +53,7 @@ def test_module_cli_accepts_robot_id(tmp_path):
 def test_module_cli_accepts_simulator_adapter(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -80,7 +80,7 @@ def test_module_cli_accepts_simulator_adapter(tmp_path):
 def test_module_cli_accepts_mock_ros1_adapter(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -127,7 +127,7 @@ def test_module_cli_accepts_ros1_config_for_adapter_skeleton(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -158,7 +158,7 @@ def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
     task_queue_path = tmp_path / "demo-tasks.jsonl"
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "--demo",
@@ -198,7 +198,7 @@ def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
 def test_module_cli_accepts_session_id(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -223,7 +223,7 @@ def test_module_cli_treats_recall_as_successful_command(tmp_path):
     memory_path = tmp_path / "cli-memory.jsonl"
     subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -238,7 +238,7 @@ def test_module_cli_treats_recall_as_successful_command(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "之前做过什么",
@@ -260,7 +260,7 @@ def test_module_cli_retrieves_memory_records_for_same_session(tmp_path):
     memory_path = tmp_path / "cli-memory.jsonl"
     subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",
@@ -277,7 +277,7 @@ def test_module_cli_retrieves_memory_records_for_same_session(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "之前二楼救人成功了吗",
@@ -322,7 +322,7 @@ def test_module_cli_confirms_pending_high_risk_skill_across_processes(tmp_path):
 
     pending = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "运行 smoke_entry",
@@ -345,7 +345,7 @@ def test_module_cli_confirms_pending_high_risk_skill_across_processes(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "确认执行",
@@ -374,7 +374,7 @@ def test_module_cli_treats_skill_listing_as_successful_command(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "你有哪些技能",
@@ -413,7 +413,7 @@ def test_module_cli_loads_workspace_skills_by_default(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "你有哪些技能",
@@ -452,7 +452,7 @@ def test_module_cli_blocks_workspace_skill_when_available_sensor_is_missing(tmp_
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "运行 gas_policy",
@@ -496,7 +496,7 @@ def test_module_cli_accepts_available_sensor_for_workspace_skill(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "运行 thermal_policy",
@@ -537,7 +537,7 @@ def test_module_cli_can_disable_workspace_skill_loading(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "你有哪些技能",
@@ -560,7 +560,7 @@ def test_module_cli_can_disable_workspace_skill_loading(tmp_path):
 def test_module_cli_directly_invokes_workspace_skill(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "运行 echo_policy 处理 二楼",
@@ -582,7 +582,7 @@ def test_module_cli_directly_invokes_workspace_skill(tmp_path):
 def test_module_cli_direct_invocation_of_missing_skill_exits_nonzero(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "运行 missing_skill",
@@ -604,7 +604,7 @@ def test_module_cli_direct_invocation_of_missing_skill_exits_nonzero(tmp_path):
 def test_module_cli_rescue_plan_runs_workspace_policy_first(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人 使用 echo_policy",
@@ -633,7 +633,7 @@ def test_module_cli_rescue_plan_runs_workspace_policy_first(tmp_path):
 def test_module_cli_rescue_plan_missing_policy_exits_nonzero(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人 使用 missing_policy",
@@ -655,7 +655,7 @@ def test_module_cli_rescue_plan_missing_policy_exits_nonzero(tmp_path):
 def test_module_cli_real_run_blocks_default_rescue_skills(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "去二楼救人",

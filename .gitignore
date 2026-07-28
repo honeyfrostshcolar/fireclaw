@@ -8,7 +8,8 @@ __pycache__/
 *.py[cod]
 
 # Local reference checkout; keep it available for CodeGraph/reference use, not as FireClaw source.
-openclaw-main/
+openclaw/
+emem-main/
 
 # Runtime logs and generated local traces.
 *.jsonl

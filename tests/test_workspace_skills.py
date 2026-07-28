@@ -38,6 +38,25 @@ def test_load_workspace_skills_discovers_valid_manifests_and_ignores_unrelated_f
     assert result.errors == []
 
 
+def test_load_workspace_skills_resolves_python_placeholder(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_manifest(
+        skills_dir / "python.skill.json",
+        command=[
+            "{python}",
+            "-c",
+            "import json; print(json.dumps({'ok': True, 'data': {'python': 'current'}}))",
+        ],
+    )
+
+    result = load_workspace_skills(skills_dir)
+
+    assert result.errors == []
+    action = result.skills[0].run({})
+    assert action.ok is True
+    assert action.data == {"python": "current"}
+
+
 def test_load_workspace_skills_reports_invalid_manifests_without_crashing(tmp_path):
     skills_dir = tmp_path / "skills"
     _write_manifest(skills_dir / "valid.skill.json", name="valid_skill")

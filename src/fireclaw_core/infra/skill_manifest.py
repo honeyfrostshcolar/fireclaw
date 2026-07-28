@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ def load_subprocess_skill_from_manifest(path: str | Path) -> Skill:
     command = manifest.get("command")
     if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
         raise ValueError("Skill manifest field 'command' must be a non-empty list of strings.")
+    command = [sys.executable if item == "{python}" else item for item in command]
 
     timeout_seconds = manifest.get("timeout_seconds", 30.0)
     if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:

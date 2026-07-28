@@ -9,6 +9,7 @@ behaviour exactly.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,21 @@ class EmbeddingProvider(Protocol):
     @property
     def dimensions(self) -> int:
         """Return the dimensionality of embeddings."""
+        ...
+
+
+@runtime_checkable
+class RagRetriever(Protocol):
+    """Protocol for FireClaw RAG retrievers used as memory candidate sources.
+
+    The memory layer intentionally does not know whether the implementation is
+    BM25, dense, hybrid, or reranked.  RAG owns those retrieval details; memory
+    only consumes scoped candidate IDs and revalidates them against the
+    authoritative mission-memory store.
+    """
+
+    def query(self, query: str, *, top_k: int = 5) -> Sequence[Any]:
+        """Return ranked RAG hits for ``query``."""
         ...
 
 
@@ -85,6 +101,205 @@ class RetrievedMemory:
     created_at: str = ""
     robot_id: str | None = None
     subtask_id: str | None = None
+
+
+class RagMemoryRetrieverAdapter:
+    """Adapt an existing RAG retriever to the ``MemoryRetriever`` interface.
+
+    The adapter is deliberately narrow: it does not create embeddings, build
+    vector indexes, or trust RAG payloads as authority.  A RAG hit must carry a
+    FireClaw memory identity and scope metadata before it can become a
+    ``RetrievedMemory`` candidate:
+
+    - ``record_id`` identifies the authoritative mission-memory record;
+    - ``source_kind`` must identify the configured memory namespace;
+    - ``mission_id``, ``runtime_mode``, and ``sensitivity`` must satisfy the
+      requested ``MemoryRetrievalScope``.
+
+    Planner-facing code still canonicalizes accepted IDs from the mission
+    memory store, so this adapter only changes candidate recall/ranking.
+    """
+
+    def __init__(
+        self,
+        retriever: RagRetriever,
+        *,
+        source: str = "rag",
+        expected_source_kind: str = "mission_memory",
+        candidate_multiplier: int = 3,
+    ) -> None:
+        if candidate_multiplier <= 0:
+            raise ValueError("candidate_multiplier must be positive")
+        if not expected_source_kind.strip():
+            raise ValueError("expected_source_kind must not be empty")
+        self._retriever = retriever
+        self._source = source
+        self._expected_source_kind = expected_source_kind
+        self._candidate_multiplier = candidate_multiplier
+
+    def status(self) -> dict[str, Any]:
+        """Return a cheap diagnostic status matching ``MemoryRetriever`` style."""
+        nested_status = None
+        status_fn = getattr(self._retriever, "status", None)
+        if callable(status_fn):
+            try:
+                nested_status = status_fn()
+            except Exception:
+                nested_status = {"available": False}
+        return {
+            "rag_retriever_configured": True,
+            "source": self._source,
+            "expected_source_kind": self._expected_source_kind,
+            "candidate_multiplier": self._candidate_multiplier,
+            "rag_status": nested_status,
+        }
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        scope: MemoryRetrievalScope,
+        limit: int = 10,
+    ) -> list[RetrievedMemory]:
+        if limit <= 0:
+            return []
+
+        hits = self._retriever.query(
+            query,
+            top_k=max(limit, 1) * self._candidate_multiplier,
+        )
+        results: list[RetrievedMemory] = []
+        seen: set[str] = set()
+        for hit in hits:
+            candidate = _retrieved_memory_from_rag_hit(hit, source=self._source)
+            if candidate is None:
+                continue
+            record = _rag_hit_record(hit)
+            if record is None or record.get("source_kind") != self._expected_source_kind:
+                continue
+            if candidate.record_id in seen:
+                continue
+            if not scope.admits({
+                "mission_id": candidate.mission_id,
+                "runtime_mode": _runtime_mode_for(candidate),
+                "sensitivity": _sensitivity_for(candidate),
+            }):
+                continue
+            seen.add(candidate.record_id)
+            results.append(candidate)
+            if len(results) >= limit:
+                break
+        return results
+
+
+def _retrieved_memory_from_rag_hit(
+    hit: Any,
+    *,
+    source: str,
+) -> RetrievedMemory | None:
+    record = _rag_hit_record(hit)
+    if record is None:
+        return None
+
+    embodied = record.get("_embodied")
+    if not isinstance(embodied, dict):
+        content = record.get("content")
+        if isinstance(content, dict) and isinstance(content.get("_embodied"), dict):
+            embodied = content["_embodied"]
+        else:
+            embodied = {}
+
+    record_id = _first_nonempty_string(
+        record.get("record_id"),
+        record.get("event_id"),
+        embodied.get("event_id"),
+    )
+    mission_id = _first_nonempty_string(record.get("mission_id"), embodied.get("mission_id"))
+    runtime_mode = _first_nonempty_string(
+        record.get("runtime_mode"),
+        embodied.get("runtime_mode"),
+    )
+    sensitivity = _first_nonempty_string(
+        record.get("sensitivity"),
+        embodied.get("sensitivity"),
+    )
+    if (
+        record_id is None
+        or mission_id is None
+        or runtime_mode is None
+        or sensitivity is None
+    ):
+        return None
+
+    content_value = record.get("content")
+    content = dict(content_value) if isinstance(content_value, dict) else dict(record)
+    content.setdefault("_embodied", {})
+    if isinstance(content["_embodied"], dict):
+        content["_embodied"].setdefault("runtime_mode", runtime_mode)
+        content["_embodied"].setdefault("sensitivity", sensitivity)
+        content["_embodied"].setdefault("mission_id", mission_id)
+
+    return RetrievedMemory(
+        record_id=record_id,
+        mission_id=mission_id,
+        record_type=_first_nonempty_string(
+            record.get("record_type"),
+            record.get("event_type"),
+            embodied.get("event_type"),
+        ) or "unknown",
+        content=content,
+        score=_rag_hit_score(hit),
+        source=source,
+        created_at=_first_nonempty_string(record.get("created_at"), embodied.get("created_at")) or "",
+        robot_id=_first_nonempty_string(record.get("robot_id"), embodied.get("robot_id")),
+        subtask_id=_first_nonempty_string(record.get("subtask_id"), embodied.get("subtask_id")),
+    )
+
+
+def _rag_hit_record(hit: Any) -> dict[str, Any] | None:
+    if isinstance(hit, dict):
+        candidate = hit.get("record", hit)
+    else:
+        candidate = getattr(hit, "record", None)
+    if not isinstance(candidate, dict):
+        return None
+    return candidate
+
+
+def _rag_hit_score(hit: Any) -> float:
+    if isinstance(hit, dict):
+        value = hit.get("score")
+    else:
+        value = getattr(hit, "score", None)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _first_nonempty_string(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _runtime_mode_for(candidate: RetrievedMemory) -> str | None:
+    embodied = candidate.content.get("_embodied")
+    if isinstance(embodied, dict):
+        value = embodied.get("runtime_mode")
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _sensitivity_for(candidate: RetrievedMemory) -> str | None:
+    embodied = candidate.content.get("_embodied")
+    if isinstance(embodied, dict):
+        value = embodied.get("sensitivity")
+        if isinstance(value, str):
+            return value
+    return None
 
 
 # ---------------------------------------------------------------------------

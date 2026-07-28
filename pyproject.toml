@@ -7,10 +7,10 @@ name = "fireclaw"
 version = "0.1.0"
 description = "Python dry-run core for FireClaw firefighting robot agents."
 readme = "AGENTS.zh-CN.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
   "httpx>=0.27",
-  "numpy>=1.26",
+  "numpy==1.26.4",
 ]
 
 [project.scripts]
@@ -18,7 +18,13 @@ fireclaw = "fireclaw_core.mission_cli:main"
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0",
+  "pytest==8.4.2",
+]
+rag = [
+  "FlagEmbedding==1.4.0",
+  "huggingface-hub==0.36.2",
+  "torch==2.8.0",
+  "transformers==4.57.6",
 ]
 
 [tool.setuptools.packages.find]

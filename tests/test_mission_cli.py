@@ -44,7 +44,7 @@ def _wait_for_cli_trace(mission_registry_path, robot_registry_path, mission_id):
     while time.time() < deadline:
         completed = subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "trace",
@@ -99,7 +99,7 @@ def test_mission_cli_submit_subtask_records_mission(tmp_path):
 
         completed = subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
@@ -155,7 +155,7 @@ def test_mission_cli_trace_aggregates_robot_subagent_trace(tmp_path):
         )
         subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
@@ -211,7 +211,7 @@ def test_mission_cli_cancel_requests_robot_subagent_cancellation(tmp_path):
         )
         subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
@@ -234,7 +234,7 @@ def test_mission_cli_cancel_requests_robot_subagent_cancellation(tmp_path):
 
         completed = subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "cancel",
@@ -303,7 +303,7 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
 
         completed = subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "plan-mission",
@@ -355,7 +355,7 @@ def test_mission_cli_rejects_submit_without_mission_scope(tmp_path):
         )
         completed = subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
@@ -388,7 +388,7 @@ def test_mission_cli_rejects_submit_without_mission_scope(tmp_path):
 def _run_memory_cli(tmp_path, *extra_args):
     memory_path = tmp_path / "mission_memory.jsonl"
     argv = [
-        ".venv/bin/python",
+        sys.executable,
         "-m",
         "fireclaw_core.mission.mission_cli",
         "memory",
@@ -561,7 +561,7 @@ def test_mission_cli_corrections(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.mission.mission_cli",
             "corrections",
@@ -608,7 +608,7 @@ def test_mission_cli_events(tmp_path):
         # Submit a mission first so the mission exists
         subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
@@ -631,7 +631,7 @@ def test_mission_cli_events(tmp_path):
 
         completed = subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "events",
@@ -659,7 +659,7 @@ def test_mission_cli_events(tmp_path):
 def _run_approval_cli(tmp_path, *extra_args):
     approval_path = tmp_path / "mission_approvals.jsonl"
     argv = [
-        ".venv/bin/python",
+        sys.executable,
         "-m",
         "fireclaw_core.mission.mission_cli",
         "approval",
@@ -811,7 +811,7 @@ def test_mission_cli_replay(tmp_path):
         # Submit a mission first
         subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "submit-subtask",
@@ -834,7 +834,7 @@ def test_mission_cli_replay(tmp_path):
 
         completed = subprocess.run(
             [
-                ".venv/bin/python",
+                sys.executable,
                 "-m",
                 "fireclaw_core.mission.mission_cli",
                 "replay",
@@ -875,7 +875,7 @@ def test_mission_cli_replay_not_found(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.mission.mission_cli",
             "replay",
@@ -911,7 +911,7 @@ def test_lifecycle_check_cli_outputs_report(tmp_path: Path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.mission.mission_cli",
             "lifecycle-check",
@@ -993,7 +993,7 @@ def test_mission_cli_plan_mission_llm_missing_required_flags(tmp_path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.mission.mission_cli",
             "plan-mission",
@@ -1027,7 +1027,7 @@ def test_mission_cli_plan_mission_deterministic_default(tmp_path):
     # No --planner flag, should default to deterministic
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.mission.mission_cli",
             "plan-mission",
@@ -1051,7 +1051,7 @@ def test_mission_cli_plan_mission_deterministic_default(tmp_path):
 def test_serve_subcommand_help():
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.mission.mission_cli",
             "serve",
@@ -1073,7 +1073,7 @@ def test_serve_subcommand_help():
 def test_mission_subcommand_help():
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.mission.mission_cli",
             "mission",
@@ -1093,7 +1093,7 @@ def test_main_module_routes_to_mission_cli():
     """Verify `python -m fireclaw_core` dispatches to mission_cli.main()."""
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "--help",
@@ -1127,7 +1127,7 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core",
             "robot-profile",
@@ -1222,7 +1222,7 @@ def test_build_mission_runtime_paths_includes_mission_planning_audit_path(tmp_pa
 
 def test_plan_mission_help_exposes_robot_profile_flag():
     completed = subprocess.run(
-        [".venv/bin/python", "-m", "fireclaw_core", "plan-mission", "--help"],
+        [sys.executable, "-m", "fireclaw_core", "plan-mission", "--help"],
         check=True,
         cwd=".",
         text=True,

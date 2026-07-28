@@ -14,6 +14,7 @@ from fireclaw_core.planner.planner_builder import build_planner
 from fireclaw_core.agent.robot_registry import load_robot_registry
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.memory.reconciliation import EmbodiedMemoryReconciler
+from fireclaw_core.rag.runtime_retrieval import RagRuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ def start_server(
     robot_agent_model: str | None = None,
     robot_profiles: tuple[str, ...] | None = None,
     embodied_runtime_mode: str | None = None,
+    memory_rag: RagRuntimeConfig | None = None,
 ) -> MissionGateway:
     """Assemble and start the MissionGateway HTTP server.
 
@@ -110,6 +112,7 @@ def start_server(
         memory_audit_dir=data_dir / "memory-audit",
         reusable_knowledge=data_dir / "reusable-knowledge.jsonl",
         embodied_runtime_mode=embodied_runtime_mode,
+        memory_rag=memory_rag,
     )
 
     agent = build_mission_agent_from_paths(
@@ -168,6 +171,7 @@ def run_server_blocking(
     robot_agent_model: str | None = None,
     robot_profiles: tuple[str, ...] | None = None,
     embodied_runtime_mode: str | None = None,
+    memory_rag: RagRuntimeConfig | None = None,
 ) -> None:
     """Start the server and block until interrupted (Ctrl+C)."""
     gw = start_server(
@@ -188,6 +192,7 @@ def run_server_blocking(
         robot_agent_model=robot_agent_model,
         robot_profiles=robot_profiles,
         embodied_runtime_mode=embodied_runtime_mode,
+        memory_rag=memory_rag,
     )
 
     shutdown_requested = False

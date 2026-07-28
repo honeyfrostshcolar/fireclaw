@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from fireclaw_core.ros.ros1_proof_bundle import create_ros1_proof_bundle
@@ -57,7 +58,7 @@ def test_ros1_proof_bundle_cli(tmp_path: Path):
 
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.ros.ros1_proof_bundle",
             "--output-dir", str(output_dir),

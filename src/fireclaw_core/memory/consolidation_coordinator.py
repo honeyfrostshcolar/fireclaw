@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fireclaw_core.memory.consolidation import (
     ConsolidationResult,
@@ -47,11 +47,13 @@ class MemoryConsolidationCoordinator:
         state_store: ConsolidationStateStore,
         store: EmbodiedMemoryStore,
         lock_path: Path | str,
+        post_boundary_hook: Callable[[ConsolidationBoundary], Any] | None = None,
     ) -> None:
         self._engine = engine
         self._state_store = state_store
         self._store = store
         self._lock_path = Path(lock_path)
+        self._post_boundary_hook = post_boundary_hook
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
 
@@ -191,6 +193,7 @@ class MemoryConsolidationCoordinator:
                 status="covered_without_episode",
                 through_sequence=boundary.through_sequence,
             )
+            self._run_post_boundary_hook(boundary)
             return
 
         # Consolidate the exact source set
@@ -212,6 +215,19 @@ class MemoryConsolidationCoordinator:
                 boundary.boundary_id,
                 status="completed",
                 through_sequence=boundary.through_sequence,
+            )
+        self._run_post_boundary_hook(boundary)
+
+    def _run_post_boundary_hook(self, boundary: ConsolidationBoundary) -> None:
+        if self._post_boundary_hook is None:
+            return
+        try:
+            self._post_boundary_hook(boundary)
+        except Exception:
+            logger.warning(
+                "post-consolidation boundary hook failed",
+                extra={"boundary_id": boundary.boundary_id},
+                exc_info=True,
             )
 
     def _select_eligible_sources(self, boundary: ConsolidationBoundary) -> list[str]:

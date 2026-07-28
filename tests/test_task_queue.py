@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from fireclaw_core.task.task_queue import JsonlTaskQueue, TaskQueueRecord
 
 
@@ -89,3 +93,45 @@ def test_task_queue_marks_non_terminal_records_lost(tmp_path):
     assert queue.get("task-running").status == "lost"
     assert queue.get("task-running").error == "Gateway restarted before terminal result."
     assert queue.get("task-done").status == "completed"
+
+
+def test_task_queue_ignores_uncommitted_trailing_record(tmp_path):
+    path = tmp_path / "tasks.jsonl"
+    queue = JsonlTaskQueue(path)
+    queue.create(
+        task_id="task-complete",
+        session_id="session-1",
+        command="return to staging",
+        created_at="2026-06-08T01:00:00+00:00",
+    )
+    with path.open("ab") as handle:
+        handle.write(b'{"task_id":"task-truncated')
+
+    assert [record.task_id for record in queue.list_records()] == ["task-complete"]
+
+    queue.create(
+        task_id="task-after-recovery",
+        session_id="session-1",
+        command="resume",
+        created_at="2026-06-08T01:00:01+00:00",
+    )
+
+    assert [record.task_id for record in queue.list_records()] == [
+        "task-complete",
+        "task-after-recovery",
+    ]
+
+
+def test_task_queue_rejects_corruption_before_final_record(tmp_path):
+    path = tmp_path / "tasks.jsonl"
+    path.write_text(
+        '{"task_id":"task-1","session_id":"s","command":"hold",'
+        '"status":"completed","created_at":"2026-06-08T01:00:00+00:00"}\n'
+        '{"task_id":broken}\n'
+        '{"task_id":"task-2","session_id":"s","command":"return",'
+        '"status":"completed","created_at":"2026-06-08T01:00:01+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        JsonlTaskQueue(path).list_records()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
@@ -9,6 +10,7 @@ from fireclaw_core.memory.memory_retrieval import (
     EmbeddingProvider,
     MemoryRetrievalScope,
     MemoryRetriever,
+    RagMemoryRetrieverAdapter,
     RetrievedMemory,
 )
 from fireclaw_core.mission.mission_memory import MissionMemoryStore
@@ -43,6 +45,23 @@ class FakeEmbeddingProvider:
     @property
     def dimensions(self) -> int:
         return self._dimensions
+
+
+@dataclass(frozen=True)
+class FakeRagHit:
+    rank: int
+    score: float
+    record: dict[str, Any]
+
+
+class FakeRagRetriever:
+    def __init__(self, hits: list[Any]) -> None:
+        self.hits = hits
+        self.queries: list[tuple[str, int]] = []
+
+    def query(self, query: str, *, top_k: int = 5) -> list[Any]:
+        self.queries.append((query, top_k))
+        return self.hits[:top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +379,165 @@ class TestMemoryRetrieverEmpty:
         retriever = MemoryRetriever(idx)
         results = retriever.retrieve("nonexistent_term_xyz", scope=_test_scope())
         assert results == []
+
+
+class TestRagMemoryRetrieverAdapter:
+    def test_maps_scoped_rag_hits_to_retrieved_memory(self):
+        rag = FakeRagRetriever([
+            FakeRagHit(
+                rank=1,
+                score=0.91,
+                record={
+                    "record_id": "mem-1",
+                    "source_kind": "mission_memory",
+                    "mission_id": "mission-1",
+                    "record_type": "observation",
+                    "content": {
+                        "note": "smoke in corridor",
+                        "_embodied": {
+                            "runtime_mode": "simulation",
+                            "sensitivity": "standard",
+                        },
+                    },
+                    "robot_id": "robot-1",
+                    "subtask_id": "subtask-1",
+                    "created_at": "2026-07-27T12:00:00+00:00",
+                },
+            )
+        ])
+        retriever = RagMemoryRetrieverAdapter(rag, source="rag_dense")
+
+        results = retriever.retrieve("smoke corridor", scope=_test_scope(), limit=1)
+
+        assert rag.queries == [("smoke corridor", 3)]
+        assert len(results) == 1
+        assert results[0] == RetrievedMemory(
+            record_id="mem-1",
+            mission_id="mission-1",
+            record_type="observation",
+            content={
+                "note": "smoke in corridor",
+                "_embodied": {
+                    "runtime_mode": "simulation",
+                    "sensitivity": "standard",
+                    "mission_id": "mission-1",
+                },
+            },
+            score=0.91,
+            source="rag_dense",
+            created_at="2026-07-27T12:00:00+00:00",
+            robot_id="robot-1",
+            subtask_id="subtask-1",
+        )
+
+    def test_filters_hits_outside_scope(self):
+        rag = FakeRagRetriever([
+            FakeRagHit(
+                rank=1,
+                score=1.0,
+                record={
+                    "record_id": "mem-other",
+                    "source_kind": "mission_memory",
+                    "mission_id": "other-mission",
+                    "record_type": "observation",
+                    "content": {
+                        "_embodied": {
+                            "runtime_mode": "simulation",
+                            "sensitivity": "standard",
+                        },
+                    },
+                },
+            ),
+            FakeRagHit(
+                rank=2,
+                score=0.8,
+                record={
+                    "record_id": "mem-restricted",
+                    "source_kind": "mission_memory",
+                    "mission_id": "mission-1",
+                    "record_type": "observation",
+                    "content": {
+                        "_embodied": {
+                            "runtime_mode": "simulation",
+                            "sensitivity": "restricted",
+                        },
+                    },
+                },
+            ),
+        ])
+        retriever = RagMemoryRetrieverAdapter(rag)
+
+        assert retriever.retrieve("smoke", scope=_test_scope(), limit=5) == []
+
+    def test_fails_closed_for_plain_rag_corpus_chunks(self):
+        rag = FakeRagRetriever([
+            FakeRagHit(
+                rank=1,
+                score=0.77,
+                record={
+                    "chunk_id": "chunk-scba",
+                    "parent_id": "parent-scba",
+                    "clean_text": "SCBA rehabilitation guidance",
+                },
+            )
+        ])
+        retriever = RagMemoryRetrieverAdapter(rag)
+
+        assert retriever.retrieve("SCBA", scope=_test_scope(), limit=5) == []
+
+    def test_rejects_external_corpus_even_with_memory_like_metadata(self):
+        rag = FakeRagRetriever([
+            FakeRagHit(
+                rank=1,
+                score=0.77,
+                record={
+                    "record_id": "external-1",
+                    "source_kind": "external_knowledge",
+                    "mission_id": "mission-1",
+                    "record_type": "observation",
+                    "runtime_mode": "simulation",
+                    "sensitivity": "standard",
+                    "content": {"note": "manual guidance"},
+                },
+            )
+        ])
+        retriever = RagMemoryRetrieverAdapter(rag)
+
+        assert retriever.retrieve("guidance", scope=_test_scope(), limit=5) == []
+
+    def test_deduplicates_rag_hits_by_record_id(self):
+        rag = FakeRagRetriever([
+            {
+                "score": 0.9,
+                "record": {
+                    "record_id": "mem-1",
+                    "source_kind": "mission_memory",
+                    "mission_id": "mission-1",
+                    "record_type": "lesson",
+                    "runtime_mode": "simulation",
+                    "sensitivity": "standard",
+                    "content": {"lesson": "check stairwell"},
+                },
+            },
+            {
+                "score": 0.8,
+                "record": {
+                    "record_id": "mem-1",
+                    "source_kind": "mission_memory",
+                    "mission_id": "mission-1",
+                    "record_type": "lesson",
+                    "runtime_mode": "simulation",
+                    "sensitivity": "standard",
+                    "content": {"lesson": "duplicate chunk"},
+                },
+            },
+        ])
+        retriever = RagMemoryRetrieverAdapter(rag, candidate_multiplier=1)
+
+        results = retriever.retrieve("stairwell", scope=_test_scope(), limit=5)
+
+        assert [result.record_id for result in results] == ["mem-1"]
+        assert results[0].content["lesson"] == "check stairwell"
 
 
 class TestMemoryRetrieverFallback:

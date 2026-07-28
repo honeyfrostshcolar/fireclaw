@@ -489,6 +489,52 @@ def test_insufficient_closed_range_advances_watermark_without_episode(tmp_path: 
     assert wm.through_sequence == 1
 
 
+def test_successful_boundary_runs_post_boundary_hook(tmp_path: Path) -> None:
+    from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer, EmbodiedMemoryStore
+    from fireclaw_core.memory.consolidation import FireClawConsolidationEngine, ConsolidationConfig
+    from fireclaw_core.memory.consolidation_state import ConsolidationStateStore
+    from fireclaw_core.memory.consolidation_coordinator import MemoryConsolidationCoordinator
+
+    store = EmbodiedMemoryStore(tmp_path / "embodied.jsonl")
+    producer = EmbodiedMemoryProducer(
+        store,
+        producer_type="memory_consolidator",
+        producer_id="test",
+    )
+    engine = FireClawConsolidationEngine(
+        store=store,
+        producer=producer,
+        config=ConsolidationConfig(min_events_per_episode=3),
+    )
+    state_store = ConsolidationStateStore(tmp_path / "state.jsonl")
+    observed_boundaries = []
+    coordinator = MemoryConsolidationCoordinator(
+        engine=engine,
+        state_store=state_store,
+        store=store,
+        lock_path=tmp_path / "consolidation.lock",
+        post_boundary_hook=observed_boundaries.append,
+    )
+    event = _make_test_events(count=1)[0]
+    store.append_event(event)
+    coordinator.request_terminal_boundary(
+        mission_id="m1",
+        runtime_mode="real",
+        scope_kind="subtask",
+        robot_id="robot-a",
+        subtask_id="sub-1",
+        terminal_event_id="evt-terminal",
+        terminal_status="succeeded",
+        through_sequence=1,
+    )
+
+    result = coordinator.run_pending_once()
+
+    assert result.processed == 1
+    assert result.errors == 0
+    assert [item.boundary_id for item in observed_boundaries]
+
+
 def test_delayed_event_is_processed_only_by_later_boundary(tmp_path: Path) -> None:
     from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer, EmbodiedMemoryStore
     from fireclaw_core.memory.consolidation import FireClawConsolidationEngine

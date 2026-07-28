@@ -55,7 +55,7 @@ class BGEM3EmbeddingProvider:
             except ImportError as exc:
                 raise ImportError(
                     "FlagEmbedding and torch are required for --provider bge-m3. "
-                    "Use .\\.venv-bge-m3\\Scripts\\python.exe."
+                    "Install FireClaw with the 'rag' extra in the active environment."
                 ) from exc
 
             if self.device is not None:

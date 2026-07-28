@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from fireclaw_core.devtools.doctor import run_doctor
@@ -215,7 +216,7 @@ remap:
 def test_doctor_module_cli_outputs_json_report(tmp_path):
     completed = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "-m",
             "fireclaw_core.devtools.doctor",
             "--adapter",
@@ -410,7 +411,14 @@ def _create_test_memory_index(path: Path) -> None:
         "mission_id": "m1",
         "record_type": "outcome",
         "robot_id": "bot1",
-        "content": {"command": "search floor 2", "status": "succeeded"},
+        "content": {
+            "command": "search floor 2",
+            "status": "succeeded",
+            "_embodied": {
+                "runtime_mode": "real",
+                "sensitivity": "standard",
+            },
+        },
         "created_at": "",
     })
 
@@ -512,6 +520,7 @@ def test_doctor_memory_eval_passes_when_threshold_met(tmp_path):
         memory_index_path=str(index_path),
         memory_eval_fixture=str(fixture_path),
         memory_eval_threshold=0.5,
+        memory_eval_mission_id="m1",
     )
 
     eval_check = _check(report, "memory_eval")

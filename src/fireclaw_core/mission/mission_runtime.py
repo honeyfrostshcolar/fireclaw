@@ -7,7 +7,8 @@ from typing import Any, Callable, Iterable
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
-from fireclaw_core.memory.memory_retrieval import MemoryRetriever
+from fireclaw_core.memory.memory_retrieval import MemoryRetriever, RagMemoryRetrieverAdapter
+from fireclaw_core.memory.rag_index_lifecycle import MemoryRagIndexLifecycleManager
 from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer, EmbodiedMemoryStore
 from fireclaw_core.memory.entity_memory import EntityMemoryService
 from fireclaw_core.memory.mission_memory_facade import MissionMemoryFacade
@@ -28,6 +29,11 @@ from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
 from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore
 from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 from fireclaw_core.safety.validation_sidecar import ValidationSidecar
+from fireclaw_core.rag.runtime_retrieval import (
+    RagRuntimeConfig,
+    build_runtime_rag_retriever,
+    embedding_provider_from_config,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,7 @@ class MissionRuntimePaths:
     consolidation_jobs: Path | None = None
     consolidation_state: Path | None = None
     consolidation_lock: Path | None = None
+    memory_rag: RagRuntimeConfig | None = None
 
 
 def build_operator_context(
@@ -75,6 +82,8 @@ def build_mission_agent_from_paths(
     scopes: Iterable[str] | None = None,
     planner=None,
     plugin_runtime=None,
+    rag_embedding_provider=None,
+    rag_reranker=None,
     source: str = "runtime",
 ) -> MissionAgent:
     embodied_memory_producer = None
@@ -106,7 +115,45 @@ def build_mission_agent_from_paths(
     else:
         memory_store = MissionMemoryStore(paths.mission_memory) if paths.mission_memory else None
     memory_retriever = None
-    if paths.memory_index is not None:
+    rag_index_manager = None
+    if paths.memory_rag is not None:
+        if paths.mission_memory is None:
+            raise ValueError("memory_rag requires mission_memory authority")
+        if paths.memory_rag.source_kind != "mission_memory":
+            raise ValueError(
+                "Mission memory retrieval requires RAG source_kind='mission_memory'"
+            )
+        if (
+            paths.memory_rag.generation_root is not None
+            and paths.embodied_runtime_mode is None
+        ):
+            raise ValueError(
+                "managed memory_rag generation refresh requires embodied_runtime_mode"
+            )
+        effective_embedding_provider = (
+            rag_embedding_provider
+            or embedding_provider_from_config(paths.memory_rag)
+        )
+        if paths.memory_rag.generation_root is not None:
+            rag_index_manager = MemoryRagIndexLifecycleManager(
+                memory_path=paths.mission_memory,
+                generation_root=paths.memory_rag.generation_root,
+                rag_config=paths.memory_rag,
+                embedding_provider=effective_embedding_provider,
+            )
+            rag_index_manager.refresh(trigger_reason="runtime_startup")
+        rag_retriever = build_runtime_rag_retriever(
+            paths.memory_rag,
+            embedding_provider=effective_embedding_provider,
+            reranker=rag_reranker,
+        )
+        memory_retriever = RagMemoryRetrieverAdapter(
+            rag_retriever,
+            source=f"rag_{paths.memory_rag.backend}",
+            expected_source_kind=paths.memory_rag.source_kind,
+            candidate_multiplier=paths.memory_rag.candidate_multiplier,
+        )
+    elif paths.memory_index is not None:
         memory_retriever = MemoryRetriever(index=SqliteMemoryIndex(paths.memory_index))
     task_registry = JsonlTaskRegistryStore(paths.task_registry) if paths.task_registry else None
     subagent_registry = JsonlSubagentRegistry(paths.subagent_registry) if paths.subagent_registry else None
@@ -218,6 +265,16 @@ def build_mission_agent_from_paths(
             state_store=consolidation_state_store,
             store=embodied_store,
             lock_path=lock_path,
+            post_boundary_hook=(
+                (
+                    lambda boundary: rag_index_manager.refresh(
+                        trigger_reason=boundary.trigger_reason,
+                        boundary_id=boundary.boundary_id,
+                    )
+                )
+                if rag_index_manager is not None
+                else None
+            ),
         )
 
     planner_memory_context_builder = PlannerMemoryContextBuilder(

@@ -2,7 +2,7 @@
   "name": "echo_policy",
   "description": "Example external subprocess skill for algorithm wrappers.",
   "runtime": "subprocess",
-  "command": ["../../.venv/bin/python", "echo_policy.py"],
+  "command": ["{python}", "echo_policy.py"],
   "timeout_seconds": 5,
   "dry_run_only": true,
   "max_attempts": 1,
