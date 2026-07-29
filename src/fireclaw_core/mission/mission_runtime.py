@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.agent.loop_checkpoint import (
+    JsonlAgentLoopCheckpointStore,
+)
 from fireclaw_core.gateway.control import ControlPolicy, OperatorContext, scopes_for_role
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 from fireclaw_core.memory.memory_retrieval import MemoryRetriever, RagMemoryRetrieverAdapter
@@ -50,6 +53,7 @@ class MissionRuntimePaths:
     task_flow: Path | None = None
     approvals: Path | None = None
     mission_planning_audit: Path | None = None
+    agent_loop_checkpoints: Path | None = None
     memory_lifecycle: Path | None = None
     memory_audit_dir: Path | None = None
     reusable_knowledge: Path | None = None
@@ -311,6 +315,13 @@ def build_mission_agent_from_paths(
         external_knowledge_retriever=external_knowledge_retriever,
         plugin_runtime=plugin_runtime,
     )
+    mission_registry_path = Path(paths.mission_registry)
+    agent_loop_checkpoint_path = (
+        paths.agent_loop_checkpoints
+        or mission_registry_path.with_name(
+            f"{mission_registry_path.name}.agent-loops.jsonl"
+        )
+    )
 
     # Hydrate working memory from authoritative store at startup
     mission_registry = JsonlMissionRegistry(paths.mission_registry)
@@ -352,6 +363,9 @@ def build_mission_agent_from_paths(
         mission_memory_tools=mission_memory_tools,
         memory_lifecycle=memory_lifecycle,
         planner_memory_context_builder=planner_memory_context_builder,
+        agent_loop_checkpoint_store=JsonlAgentLoopCheckpointStore(
+            agent_loop_checkpoint_path
+        ),
         consolidation_coordinator=consolidation_coordinator,
         working_memory_hydration_report=hydration_report,
     )

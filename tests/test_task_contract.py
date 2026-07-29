@@ -32,7 +32,7 @@ def test_structured_task_from_mission_subtask_maps_floor_and_skill():
     assert task.robot_id == "robot-1"
     assert task.task_type == "search"
     assert task.target == {"floor": 2}
-    assert task.required_skills == ["navigate_to_floor", "search_for_victims", "report_status"]
+    assert task.required_skills == ["search_for_victims", "report_status"]
     assert task.command == "去2楼搜索受困人员"
 
 
@@ -144,10 +144,70 @@ def test_skills_from_capability_uses_profile_skill_chain():
 
 def test_skills_from_capability_preserves_default_mapping():
     assert skills_from_capability("search_for_victims") == [
-        "navigate_to_floor",
         "search_for_victims",
         "report_status",
     ]
+
+
+def test_point_target_populates_navigation_skill_inputs():
+    task = StructuredRobotTask(
+        task_id="task-point",
+        task_type="navigation",
+        target={
+            "frame_id": "map",
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.25},
+        },
+        required_skills=["navigate_to_point"],
+    )
+
+    result = planning_result_from_structured_task(task)
+
+    assert result.status == "planned"
+    assert result.target_floor is None
+    assert result.target_pose == {
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.25,
+        "frame_id": "map",
+    }
+    assert result.plan.steps[0].inputs == result.target_pose
+
+
+def test_point_target_prepends_navigation_to_default_capability_chain():
+    subtask = MissionSubtask(
+        robot_id="robot-1",
+        command="去坐标 (2.0, 1.5) 搜索受困人员",
+        floor=None,
+        capability_required="search_for_victims",
+        target={
+            "frame_id": "map",
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+        },
+    )
+
+    task = structured_task_from_mission_subtask(
+        mission_id="mission-1",
+        subtask=subtask,
+    )
+
+    assert task.required_skills == [
+        "navigate_to_point",
+        "search_for_victims",
+        "report_status",
+    ]
+
+
+def test_point_target_rejects_non_finite_coordinates():
+    task = StructuredRobotTask(
+        task_id="task-point",
+        task_type="navigation",
+        target={"pose": {"x": float("nan"), "y": 1.5}},
+        required_skills=["navigate_to_point"],
+    )
+
+    errors = validate_structured_robot_task(task)
+
+    assert "target.pose requires finite numeric x and y" in errors
 
 
 def test_structured_task_preserves_allowed_skills():

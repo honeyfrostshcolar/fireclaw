@@ -157,9 +157,9 @@ def test_profile_driven_flow_without_chain_falls_back_to_default(tmp_path: Path)
 
     captured = client.last_structured_task
     assert captured is not None
-    # Default mapping for search_for_victims is the same 3-skill sequence
+    # Default single-floor mapping searches locally without implicit navigation.
     assert captured["required_skills"] == [
-        "navigate_to_floor", "search_for_victims", "report_status",
+        "search_for_victims", "report_status",
     ]
 
 

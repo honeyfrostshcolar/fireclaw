@@ -1,8 +1,10 @@
-"""Lifecycle maintenance runner for FireClaw task and subagent registries.
+"""Lifecycle maintenance for FireClaw task and Robot Agent run registries.
 
 Wraps ``LifecycleReconciler`` behind a single ``run()`` entry point that
 returns a structured report suitable for operator dashboards, CLI output,
 and automated health checks.
+
+Persisted field names containing ``subagent`` remain compatibility identifiers.
 
 This module does **not** run any background threads or timers.  Callers
 invoke ``run()`` explicitly whenever they want a maintenance pass.
@@ -76,7 +78,7 @@ class LifecycleMaintenanceRunner:
                 }
 
         .. note::
-            This runner marks orphaned subagent records as terminal via
+            This runner marks orphaned Robot Agent run records as terminal via
             ``LifecycleReconciler``.  It does **not** replay or resume
             physical robot work.  Operators **must** inspect actual robot
             state before issuing new commands after a ``"warn"`` report.

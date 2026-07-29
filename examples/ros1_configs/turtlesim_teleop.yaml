@@ -1,3 +1,5 @@
+# Legacy ROS1 transport-only example. It does not implement FireClaw's
+# current single-floor navigate_to_point spatial contract.
 # ROS1 turtlesim teleop example
 # Use with: rosrun turtlesim turtlesim_node
 robot_id: "turtle1"

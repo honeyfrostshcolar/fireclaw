@@ -14,6 +14,13 @@ from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry, TERM
 
 
 class RobotSubagentClient:
+    """Client for a persistent Robot Agent.
+
+    The class name is retained for API compatibility. A Robot Agent is not an
+    ephemeral delegated subagent; it is a long-lived robot-side runtime
+    coordinated by the Mission Coordinator.
+    """
+
     def __init__(
         self,
         *,
@@ -259,7 +266,7 @@ class RobotSubagentClient:
 def _decode_json_response(raw: bytes) -> dict[str, Any]:
     value = json.loads(raw.decode("utf-8"))
     if not isinstance(value, dict):
-        raise ValueError("Robot subagent response must be a JSON object.")
+        raise ValueError("Robot Agent response must be a JSON object.")
     return value
 
 

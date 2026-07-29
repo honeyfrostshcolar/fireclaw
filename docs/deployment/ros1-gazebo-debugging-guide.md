@@ -160,7 +160,7 @@ Key endpoints:
 
 | FireClaw Action | ROS Interface | ROS Name | Purpose |
 |---|---|---|---|
-| `navigate_to_floor` | action (move_base) | `/move_base` | Navigate to floor waypoint |
+| `navigate_to_point` | action (move_base) | `/move_base` | Navigate to a point in the active map |
 | `search_for_victims` | topic | `/fireclaw/search_request` | Trigger victim search |
 | `report_status` | topic | `/fireclaw/operator_report` | Report status to operator |
 | `return_to_safe_zone` | action (move_base) | `/move_base` | Return to safe zone |
@@ -173,14 +173,14 @@ Edit the YAML config to match your ROS graph:
 1. Change `robot_id` to identify your robot
 2. Update endpoint `name` values to match your ROS topic/service/action names
 3. Adjust `goal_template` to match your robot's frame and coordinate system
-4. Update `targets` with actual waypoint positions from your map
+4. Update `targets.safe_zone` with the reviewed safe-zone pose
 
 ## Architecture
 
 ```text
 MissionGateway
   → MissionAgent (task decomposition)
-    → RobotSubagentClient (dispatch)
+    → RobotSubagentClient (legacy-named Robot Agent transport)
       → FireClawGateway (adapter=ros1)
         → Ros1RobotAdapter (supports_real_execution=True)
           → Ros1Transport (topic/service/action)

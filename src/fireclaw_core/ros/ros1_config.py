@@ -7,6 +7,7 @@ from typing import Any
 
 
 ROS1_ACTION_NAMES = (
+    "navigate_to_point",
     "navigate_to_floor",
     "search_for_victims",
     "assess_victim",

@@ -25,8 +25,8 @@ adapter = "ros1"
 ros1_config = "{ROS1_CONFIG_YAML}"
 data_dir = "{tmp_path / 'data'}"
 capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+enabled_skills = ["navigate_to_point", "search_for_victims", "report_status"]
+llm_exposed_skills = ["navigate_to_point", "search_for_victims", "report_status"]
 """.strip(),
         encoding="utf-8",
     )

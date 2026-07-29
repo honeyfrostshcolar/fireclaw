@@ -25,6 +25,29 @@ FLOOR_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+LOCAL_CONTEXT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "floor": {
+            "type": "integer",
+            "description": "Legacy multi-floor compatibility field.",
+        },
+    },
+    "additionalProperties": False,
+}
+
+POINT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "yaw": {"type": "number", "default": 0.0},
+        "frame_id": {"type": "string", "minLength": 1, "default": "map"},
+    },
+    "required": ["x", "y"],
+    "additionalProperties": False,
+}
+
 EMPTY_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {},
@@ -49,6 +72,19 @@ NAVIGATE_OUTPUT_SCHEMA: dict[str, Any] = {
         "from_floor": {"type": "integer"},
     },
     "required": ["robot_id", "floor"],
+}
+
+NAVIGATE_POINT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "robot_id": {"type": "string"},
+        "dry_run": {"type": "boolean"},
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "yaw": {"type": "number"},
+        "frame_id": {"type": "string"},
+    },
+    "required": ["robot_id", "x", "y", "yaw", "frame_id"],
 }
 
 SEARCH_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -210,6 +246,14 @@ def _robot_skill_handler(
     return handler
 
 
+def _current_floor_input(robot: RobotAdapter, inputs: dict[str, Any]) -> int:
+    floor = inputs.get("floor")
+    if isinstance(floor, int) and not isinstance(floor, bool):
+        return floor
+    current_floor = getattr(robot, "current_floor", None)
+    return current_floor if isinstance(current_floor, int) else 1
+
+
 def create_default_skill_registry(
     robot: RobotAdapter,
     action_runtime: RobotActionRuntime | None = None,
@@ -217,6 +261,47 @@ def create_default_skill_registry(
     runtime_dry_run_only = bool(getattr(robot, "dry_run", True))
     return SkillRegistry(
         skills={
+            "navigate_to_point": Skill(
+                name="navigate_to_point",
+                description=(
+                    "Navigate within the current single-floor map to a target "
+                    "point expressed in an explicit coordinate frame."
+                ),
+                handler=_robot_skill_handler(
+                    robot=robot,
+                    action_runtime=action_runtime,
+                    skill_name="navigate_to_point",
+                    action_type="navigate_to_point",
+                    input_builder=lambda inputs: {
+                        "x": float(inputs["x"]),
+                        "y": float(inputs["y"]),
+                        "yaw": float(inputs.get("yaw", 0.0)),
+                        "frame_id": str(inputs.get("frame_id", "map")),
+                    },
+                    direct_handler=lambda inputs: robot.navigate_to_point(
+                        float(inputs["x"]),
+                        float(inputs["y"]),
+                        float(inputs.get("yaw", 0.0)),
+                        str(inputs.get("frame_id", "map")),
+                    ),
+                ),
+                input_schema=dict(POINT_INPUT_SCHEMA),
+                output_schema=dict(NAVIGATE_POINT_OUTPUT_SCHEMA),
+                domain="navigation",
+                preconditions=["robot_online", "target_point_reachable"],
+                required_sensors=["lidar"],
+                degraded_mode_policy="retry",
+                idempotent=True,
+                dry_run_only=runtime_dry_run_only,
+                allow_real_robot=True,
+                metadata={
+                    "kind": "primitive",
+                    "primitive_capability": "navigation",
+                    "spatial_scope": "single_floor_2d",
+                    "safety_class": "motion",
+                    "requires_approval": False,
+                },
+            ),
             "navigate_to_floor": Skill(
                 name="navigate_to_floor",
                 description="Navigate robot to a target floor.",
@@ -240,6 +325,8 @@ def create_default_skill_registry(
                 metadata={
                     "kind": "primitive",
                     "primitive_capability": "navigation",
+                    "legacy": True,
+                    "spatial_scope": "multi_floor_extension",
                     "input_schema": {
                         "type": "object",
                         "properties": {"floor": {"type": "integer", "minimum": 1}},
@@ -251,16 +338,20 @@ def create_default_skill_registry(
             ),
             "search_for_victims": Skill(
                 name="search_for_victims",
-                description="Search for victims on a target floor.",
+                description="Search for victims in the robot's current operating area.",
                 handler=_robot_skill_handler(
                     robot=robot,
                     action_runtime=action_runtime,
                     skill_name="search_for_victims",
                     action_type="search_for_victims",
-                    input_builder=lambda inputs: {"floor": int(inputs["floor"])},
-                    direct_handler=lambda inputs: robot.search_for_victims(int(inputs["floor"])),
+                    input_builder=lambda inputs: {
+                        "floor": _current_floor_input(robot, inputs)
+                    },
+                    direct_handler=lambda inputs: robot.search_for_victims(
+                        _current_floor_input(robot, inputs)
+                    ),
                 ),
-                input_schema=dict(FLOOR_INPUT_SCHEMA),
+                input_schema=dict(LOCAL_CONTEXT_INPUT_SCHEMA),
                 output_schema=dict(SEARCH_OUTPUT_SCHEMA),
                 domain="perception",
                 preconditions=["robot_online", "camera_available"],
@@ -274,7 +365,7 @@ def create_default_skill_registry(
                     "input_schema": {
                         "type": "object",
                         "properties": {"floor": {"type": "integer", "minimum": 1}},
-                        "required": ["floor"],
+                        "required": [],
                     },
                     "safety_class": "perception",
                     "requires_approval": False,
@@ -282,16 +373,20 @@ def create_default_skill_registry(
             ),
             "assess_victim": Skill(
                 name="assess_victim",
-                description="Assess victim condition on a floor.",
+                description="Assess victim condition in the current operating area.",
                 handler=_robot_skill_handler(
                     robot=robot,
                     action_runtime=action_runtime,
                     skill_name="assess_victim",
                     action_type="assess_victim",
-                    input_builder=lambda inputs: {"floor": int(inputs["floor"])},
-                    direct_handler=lambda inputs: robot.assess_victim(int(inputs["floor"])),
+                    input_builder=lambda inputs: {
+                        "floor": _current_floor_input(robot, inputs)
+                    },
+                    direct_handler=lambda inputs: robot.assess_victim(
+                        _current_floor_input(robot, inputs)
+                    ),
                 ),
-                input_schema=dict(FLOOR_INPUT_SCHEMA),
+                input_schema=dict(LOCAL_CONTEXT_INPUT_SCHEMA),
                 output_schema=dict(ASSESS_OUTPUT_SCHEMA),
                 domain="perception",
                 preconditions=["robot_online", "victim_detected"],
@@ -305,7 +400,7 @@ def create_default_skill_registry(
                     "input_schema": {
                         "type": "object",
                         "properties": {"floor": {"type": "integer", "minimum": 1}},
-                        "required": ["floor"],
+                        "required": [],
                     },
                     "safety_class": "perception",
                     "requires_approval": False,
@@ -319,10 +414,14 @@ def create_default_skill_registry(
                     action_runtime=action_runtime,
                     skill_name="report_status",
                     action_type="report_status",
-                    input_builder=lambda inputs: {"floor": int(inputs["floor"])},
-                    direct_handler=lambda inputs: robot.report_status(int(inputs["floor"])),
+                    input_builder=lambda inputs: {
+                        "floor": _current_floor_input(robot, inputs)
+                    },
+                    direct_handler=lambda inputs: robot.report_status(
+                        _current_floor_input(robot, inputs)
+                    ),
                 ),
-                input_schema=dict(FLOOR_INPUT_SCHEMA),
+                input_schema=dict(LOCAL_CONTEXT_INPUT_SCHEMA),
                 output_schema=dict(REPORT_OUTPUT_SCHEMA),
                 domain="communication",
                 preconditions=["robot_online"],
@@ -336,7 +435,7 @@ def create_default_skill_registry(
                     "input_schema": {
                         "type": "object",
                         "properties": {"floor": {"type": "integer", "minimum": 1}},
-                        "required": ["floor"],
+                        "required": [],
                     },
                     "safety_class": "reporting",
                     "requires_approval": False,

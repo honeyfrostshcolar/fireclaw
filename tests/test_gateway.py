@@ -8,8 +8,20 @@ import time
 from urllib import request
 from urllib.error import HTTPError
 
+from fireclaw_core.agent.loop_checkpoint import (
+    AgentLoopCheckpoint,
+    AgentLoopPendingOperation,
+    JsonlAgentLoopCheckpointStore,
+)
+from fireclaw_core.agent.robot_deliberation import (
+    RobotAgentDecision,
+    RobotAgentDeliberationRuntime,
+    _task_contract_hash,
+)
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.monitoring.event_ledger import EventLedger
 from fireclaw_core.monitoring.stream_events import StreamEvent
+from fireclaw_core.task.task_contract import StructuredRobotTask
 from fireclaw_core.task.task_queue import JsonlTaskQueue
 
 
@@ -145,7 +157,7 @@ def test_gateway_returns_health_and_state(tmp_path):
     assert health["robot_id"] == "robot-gateway"
     assert health["adapter"] == "simulator"
     assert state["robot_state"]["mode"] == "simulator"
-    assert state["environment_state"]["reachable_floors"] == [1, 2, 3]
+    assert state["environment_state"]["reachable_floors"] == [1]
 
 
 def test_gateway_accepts_ros1_config_path_for_real_adapter_skeleton(tmp_path):
@@ -154,7 +166,7 @@ def test_gateway_accepts_ros1_config_path_for_real_adapter_skeleton(tmp_path):
         """
 robot_id: gateway-ros1
 remap:
-  navigate_to_floor:
+  navigate_to_point:
     profile: move_base
     name: /move_base
 """.lstrip(),
@@ -196,7 +208,7 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人", "session_id": "operator-a"},
+            {"command": "去坐标 (2.0, 1.5) 救人", "session_id": "operator-a"},
         )
         result = _wait_for_task_result(gateway, accepted["task_id"])
         recent = _json_request(
@@ -221,14 +233,14 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert result["task_id"] == accepted["task_id"]
     assert result["session"]["session_id"] == "operator-a"
     assert result["execution"]["steps"][0]["output"]["mode"] == "simulator"
-    assert recent["records"][0]["command"] == "去二楼救人"
+    assert recent["records"][0]["command"] == "去坐标 (2.0, 1.5) 救人"
     assert task["result"]["task_id"] == result["task_id"]
     assert task["state"]["task"]["status"] == "succeeded"
     assert task["state"]["task"]["skill_count"] == 5
     assert task["state"]["task"]["action_count"] == 5
-    assert task["state"]["skills"][0]["skill_name"] == "navigate_to_floor"
+    assert task["state"]["skills"][0]["skill_name"] == "navigate_to_point"
     assert task["state"]["skills"][0]["action_ids"][0].startswith("action-")
-    assert task["state"]["actions"][0]["action_type"] == "navigate_to_floor"
+    assert task["state"]["actions"][0]["action_type"] == "navigate_to_point"
     assert task["state"]["actions"][0]["status"] == "succeeded"
     event_types = [event["type"] for event in events["events"]]
     assert event_types == [
@@ -271,9 +283,9 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     ]
     first_action = next(event for event in events["events"] if event["type"] == "action.requested")
     assert first_action["payload"]["task_id"] == accepted["task_id"]
-    assert first_action["payload"]["skill_name"] == "navigate_to_floor"
+    assert first_action["payload"]["skill_name"] == "navigate_to_point"
     assert recent_events["events"][0]["type"] == "task.completed"
-    assert events["events"][5]["payload"]["skill_name"] == "navigate_to_floor"
+    assert events["events"][5]["payload"]["skill_name"] == "navigate_to_point"
     assert events["events"][9]["payload"]["attempt_number"] == 1
 
 
@@ -292,7 +304,12 @@ def test_gateway_persists_task_queue_lifecycle(tmp_path):
     )
     gateway.start()
     try:
-        accepted = _json_request(gateway.base_url, "POST", "/tasks", {"command": "去二楼救人"})
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去坐标 (2.0, 1.5) 救人"},
+        )
         result = _wait_for_task_result(gateway, accepted["task_id"])
         trace = gateway.task_trace(accepted["task_id"])
         records = gateway.task_queue.list_records()
@@ -460,6 +477,225 @@ def test_gateway_marks_stale_non_terminal_queue_records_lost_on_startup(tmp_path
     assert state["task_queue"]["terminal_task_count"] == 1
 
 
+def test_gateway_schedules_recoverable_robot_loop_on_startup(
+    tmp_path,
+    monkeypatch,
+):
+    queue_path = tmp_path / "tasks.jsonl"
+    event_path = tmp_path / "events.jsonl"
+    checkpoint_path = tmp_path / "agent-loops.jsonl"
+    queue = JsonlTaskQueue(queue_path)
+    queue.create(
+        task_id="gateway-task-1",
+        session_id="mission-1",
+        command="去二楼",
+        created_at="2026-07-29T01:00:00+00:00",
+    )
+    queue.update(
+        "gateway-task-1",
+        status="running",
+        started_at="2026-07-29T01:00:01+00:00",
+    )
+    task = StructuredRobotTask(
+        task_id="structured-1",
+        mission_id="mission-1",
+        robot_id="robot-gateway",
+        task_type="navigate",
+        command="去二楼",
+        target={"floor": 2},
+        required_skills=["navigate_to_floor"],
+    )
+    ledger = EventLedger(event_path)
+    ledger.append(
+        task_id="gateway-task-1",
+        session_id="mission-1",
+        type="task.structured_received",
+        payload=task.to_dict(),
+    )
+    ledger.append(
+        task_id="gateway-task-1",
+        session_id="mission-1",
+        type="operator.identified",
+        payload={
+            "operator_id": "operator-1",
+            "role": "operator",
+            "control_scopes": ["task.submit"],
+        },
+    )
+    checkpoint_key = "robot:robot-gateway:task:structured-1"
+    pending = AgentLoopPendingOperation(
+        operation_id=f"{checkpoint_key}:operation:1",
+        iteration=1,
+        operation="execute_skill",
+        decision={
+            "operation": "execute_skill",
+            "message": "navigate",
+            "tool_name": "navigate_to_floor",
+            "inputs": {"floor": 2},
+        },
+        prepared_at="2026-07-29T01:00:02+00:00",
+    )
+    JsonlAgentLoopCheckpointStore(checkpoint_path).append(
+        AgentLoopCheckpoint(
+            checkpoint_key=checkpoint_key,
+            role="robot_agent",
+            run_id=checkpoint_key,
+            status="running",
+            next_iteration=1,
+            started_at="2026-07-29T01:00:02+00:00",
+            elapsed_seconds=0.1,
+            attempts=(),
+            observations=(),
+            pending_operation=pending,
+            adapter_state={
+                "task_contract_hash": _task_contract_hash(task),
+                "task_id": task.task_id,
+                "mission_id": task.mission_id,
+                "robot_id": task.robot_id,
+                "succeeded_skills": [],
+                "skill_execution_count": 0,
+                "context_query_count": 0,
+            },
+            updated_at="2026-07-29T01:00:02+00:00",
+        )
+    )
+
+    class NeverPolicy:
+        def decide(self, request):
+            raise AssertionError("startup scheduling must not call policy")
+
+    def build_runtime(gateway):
+        return RobotAgentDeliberationRuntime(
+            policy=NeverPolicy(),
+            checkpoint_store=gateway.agent_loop_checkpoints,
+        )
+
+    scheduled = []
+
+    def capture_worker(gateway, control, operator, *, resumed=False):
+        scheduled.append((control, operator, resumed))
+
+    monkeypatch.setattr(
+        FireClawGateway,
+        "_build_robot_agent_runtime",
+        build_runtime,
+    )
+    monkeypatch.setattr(
+        FireClawGateway,
+        "_start_task_worker",
+        capture_worker,
+    )
+
+    gateway = FireClawGateway(
+        GatewayConfig(
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(event_path),
+            task_queue_path=str(queue_path),
+            robot_agent_checkpoint_path=str(checkpoint_path),
+            workspace_skills_dir=None,
+            robot_agent_enabled=True,
+            robot_agent_planner="llm",
+        )
+    )
+
+    assert len(scheduled) == 1
+    control, operator, resumed = scheduled[0]
+    assert control.task_id == "gateway-task-1"
+    assert control.structured_task == task.to_dict()
+    assert operator.operator_id == "operator-1"
+    assert resumed is True
+    assert gateway.task_queue.get("gateway-task-1").status == "running"
+    assert gateway.events.events_for_task("gateway-task-1")[-1]["type"] == (
+        "task.resume_scheduled"
+    )
+
+
+def test_gateway_persists_physical_dispatch_boundaries(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            robot_agent_checkpoint_path=str(
+                tmp_path / "agent-loops.jsonl"
+            ),
+            workspace_skills_dir=None,
+        )
+    )
+
+    class SequencePolicy:
+        def __init__(self):
+            self.decisions = [
+                    RobotAgentDecision(
+                        operation="execute_skill",
+                        message="report",
+                        tool_name="report_status",
+                        inputs={},
+                ),
+                RobotAgentDecision(
+                    operation="complete",
+                    message="done",
+                ),
+            ]
+
+        def decide(self, request):
+            return self.decisions.pop(0)
+
+    gateway.robot_agent_runtime = RobotAgentDeliberationRuntime(
+        policy=SequencePolicy(),
+        checkpoint_store=gateway.agent_loop_checkpoints,
+    )
+    task = StructuredRobotTask(
+        task_id="structured-audit",
+        mission_id="mission-1",
+            robot_id="robot-gateway",
+            task_type="report",
+            command="上报当前区域状态",
+            target={
+                "pose": {
+                    "x": 2.0,
+                    "y": 1.5,
+                    "frame_id": "map",
+                }
+            },
+        required_skills=["report_status"],
+    )
+    agent = gateway._create_agent(
+        task_id="gateway-task-audit",
+        session_id="mission-1",
+    )
+
+    result = gateway._run_robot_agent_structured_task(
+        agent=agent,
+        task_object=task,
+        session_id="mission-1",
+        task_id="gateway-task-audit",
+    )
+
+    assert result["status"] == "completed"
+    events = gateway.events.events_for_task("gateway-task-audit")
+    started = next(
+        event
+        for event in events
+        if event["type"] == "robot_agent.skill_dispatch_started"
+    )
+    finished = next(
+        event
+        for event in events
+        if event["type"] == "robot_agent.skill_dispatch_finished"
+    )
+    operation_id = started["payload"]["operation_id"]
+    assert operation_id
+    assert finished["payload"]["operation_id"] == operation_id
+    assert finished["payload"]["output"]["execution"]["status"] == (
+        "succeeded"
+    )
+
+
 def test_gateway_lists_skills(tmp_path):
     gateway = FireClawGateway(
         GatewayConfig(
@@ -478,7 +714,7 @@ def test_gateway_lists_skills(tmp_path):
         gateway.stop()
 
     assert result["status"] == "skills"
-    assert "navigate_to_floor" in [skill["name"] for skill in result["skills"]]
+    assert "navigate_to_point" in [skill["name"] for skill in result["skills"]]
 
 
 def test_gateway_records_operator_and_control_decision_for_task_submission(tmp_path):
@@ -500,7 +736,7 @@ def test_gateway_records_operator_and_control_decision_for_task_submission(tmp_p
             "POST",
             "/tasks",
             {
-                "command": "去二楼救人",
+                "command": "去坐标 (2.0, 1.5) 救人",
                 "session_id": "operator-a",
                 "operator": {
                     "operator_id": "op-1",
@@ -538,7 +774,10 @@ def test_gateway_sync_run_agent_still_returns_completed_result(tmp_path):
         )
     )
 
-    result = gateway.run_agent("去二楼救人", session_id="operator-a")
+    result = gateway.run_agent(
+        "去坐标 (2.0, 1.5) 救人",
+        session_id="operator-a",
+    )
 
     assert result["status"] == "succeeded"
     assert result["task_id"].startswith("task-")
@@ -698,7 +937,10 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+            {
+                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "session_id": "operator-a",
+            },
         )
         _wait_for_event_type(gateway, accepted["task_id"], "skill.started")
         cancel = _json_request(gateway.base_url, "POST", f"/tasks/{accepted['task_id']}/cancel")
@@ -742,7 +984,10 @@ def test_gateway_observer_cannot_cancel_active_task(tmp_path):
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+            {
+                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "session_id": "operator-a",
+            },
         )
         _wait_for_event_type(gateway, accepted["task_id"], "skill.started")
         status_code, denied = _json_error_request(
@@ -785,14 +1030,17 @@ def test_gateway_rejects_second_execution_task_when_robot_is_busy(tmp_path):
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+            {
+                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "session_id": "operator-a",
+            },
         )
         _wait_for_event_type(gateway, first["task_id"], "skill.started")
         status_code, busy = _json_error_request(
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去三楼救人", "session_id": "operator-b"},
+            {"command": "去坐标 (3.0, 2.0) 救人", "session_id": "operator-b"},
         )
         state = _json_request(gateway.base_url, "GET", "/state")
         gateway.cancel_task(first["task_id"])
@@ -829,7 +1077,10 @@ def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_even
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+            {
+                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "session_id": "operator-a",
+            },
         )
         _wait_for_event_type(gateway, active["task_id"], "skill.started")
         stopped = _json_request(
@@ -885,7 +1136,10 @@ def test_gateway_operator_emergency_stop_is_denied_without_cancelling_task(tmp_p
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人 使用 slow_policy", "session_id": "operator-a"},
+            {
+                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "session_id": "operator-a",
+            },
         )
         _wait_for_event_type(gateway, active["task_id"], "skill.started")
         status_code, denied = _json_error_request(
@@ -933,7 +1187,7 @@ def test_gateway_events_endpoint_returns_recent_events(tmp_path):
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人", "session_id": "operator-a"},
+            {"command": "去坐标 (2.0, 1.5) 救人", "session_id": "operator-a"},
         )
         result = _wait_for_task_result(gateway, accepted["task_id"])
         events_response = _json_request(gateway.base_url, "GET", "/events")
@@ -968,13 +1222,13 @@ def test_gateway_events_endpoint_filters_by_task_id(tmp_path):
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人", "session_id": "operator-a"},
+            {"command": "去坐标 (2.0, 1.5) 救人", "session_id": "operator-a"},
         )
         second = _json_request(
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去三楼搜索", "session_id": "operator-b"},
+            {"command": "去坐标 (3.0, 2.0) 搜索", "session_id": "operator-b"},
         )
         _wait_for_task_result(gateway, first["task_id"])
         _wait_for_task_result(gateway, second["task_id"])
@@ -1011,7 +1265,7 @@ def test_gateway_events_endpoint_respects_limit(tmp_path):
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去二楼救人", "session_id": "operator-a"},
+            {"command": "去坐标 (2.0, 1.5) 救人", "session_id": "operator-a"},
         )
         _wait_for_task_result(gateway, accepted["task_id"])
         limited = _json_request(gateway.base_url, "GET", "/events?limit=3")
@@ -1038,7 +1292,10 @@ def test_gateway_returns_401_without_token_when_api_token_set(tmp_path):
     try:
         status_code, body = _json_request_with_headers(gateway.base_url, "GET", "/state")
         post_status, post_body = _json_request_with_headers(
-            gateway.base_url, "POST", "/tasks", {"command": "去二楼救人"}
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "去坐标 (2.0, 1.5) 救人"},
         )
     finally:
         gateway.stop()
@@ -1190,7 +1447,10 @@ class TestGatewaySSEStream:
                 gateway.base_url,
                 "POST",
                 "/tasks",
-                {"command": "去二楼救人", "session_id": "operator-a"},
+                {
+                    "command": "去坐标 (2.0, 1.5) 救人",
+                    "session_id": "operator-a",
+                },
             )
             result = _wait_for_task_result(gateway, accepted["task_id"])
         finally:

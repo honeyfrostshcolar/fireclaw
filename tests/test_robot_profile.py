@@ -136,8 +136,8 @@ def test_profile_validation_accepts_gazebo_profile() -> None:
         ros1_config="examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
         data_dir=Path("data/robots/debug-robot-1"),
         capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"),
-        llm_exposed_skills=("navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"),
+        enabled_skills=("navigate_to_point", "search_for_victims", "report_status", "return_to_safe_zone"),
+        llm_exposed_skills=("navigate_to_point", "search_for_victims", "report_status", "return_to_safe_zone"),
     )
     registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
     ros1_config = load_ros1_adapter_config(profile.ros1_config)
@@ -222,7 +222,7 @@ def test_example_gazebo_turtlebot3_profile_loads_and_validates() -> None:
 
     assert profile.robot_id == "gazebo_turtlebot3"
     assert profile.adapter == "ros1"
-    assert "navigate_to_floor" in profile.llm_exposed_skills
+    assert "navigate_to_point" in profile.llm_exposed_skills
     assert validate_robot_capability_profile(profile, registry, ros1_config=ros1_config) == []
 
 

@@ -220,12 +220,18 @@ def test_gateway_robot_agent_mode_emits_robot_agent_events(tmp_path):
             "POST",
             "/tasks",
             {
-                "command": "去2楼搜索受困人员",
+                "command": "去坐标 (2.0, 1.5) 搜索受困人员",
                 "structured_task": {
                     "task_id": "structured-robot-agent-1",
                     "task_type": "search",
-                    "target": {"floor": 2},
-                    "required_skills": ["navigate_to_floor", "report_status"],
+                    "target": {
+                        "pose": {
+                            "x": 2.0,
+                            "y": 1.5,
+                            "frame_id": "map",
+                        }
+                    },
+                    "required_skills": ["navigate_to_point", "report_status"],
                 },
             },
         )
@@ -237,6 +243,114 @@ def test_gateway_robot_agent_mode_emits_robot_agent_events(tmp_path):
         assert any(event.get("type") == "robot_agent.plan_accepted" for event in events)
     finally:
         gateway.stop()
+
+
+def test_gateway_robot_agent_deliberation_executes_one_skill_per_turn(
+    tmp_path,
+):
+    from fireclaw_core.agent.robot_deliberation import (
+        RobotAgentDecision,
+        RobotAgentDeliberationRuntime,
+    )
+
+    class Policy:
+        def __init__(self):
+            self.requests = []
+
+        def decide(self, request):
+            self.requests.append(request)
+            if not request.observations:
+                return RobotAgentDecision(
+                    operation="execute_skill",
+                    message="navigate",
+                    tool_name="navigate_to_point",
+                    inputs={
+                        "x": 2.0,
+                        "y": 1.5,
+                        "frame_id": "map",
+                    },
+                )
+            if len(request.observations) == 1:
+                return RobotAgentDecision(
+                    operation="execute_skill",
+                    message="search",
+                    tool_name="search_for_victims",
+                    inputs={},
+                )
+            return RobotAgentDecision(
+                operation="complete",
+                message="search complete",
+            )
+
+    policy = Policy()
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="debug-robot-1",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            workspace_skills_dir=None,
+            robot_agent_enabled=True,
+            robot_agent_planner="deterministic",
+        )
+    )
+    gateway.robot_agent_runtime = RobotAgentDeliberationRuntime(
+        policy=policy,
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {
+                "command": "去坐标 (2.0, 1.5) 搜索受困人员",
+                "structured_task": {
+                    "task_id": "robot-deliberation-1",
+                    "task_type": "search",
+                    "target": {
+                        "pose": {
+                            "x": 2.0,
+                            "y": 1.5,
+                            "frame_id": "map",
+                        }
+                    },
+                    "required_skills": [
+                        "navigate_to_point",
+                        "search_for_victims",
+                    ],
+                },
+            },
+        )
+        trace = _wait_for_task_done(
+            gateway.base_url,
+            accepted["task_id"],
+        )
+        events = _events_for_task(
+            gateway.base_url,
+            accepted["task_id"],
+        )
+    finally:
+        gateway.stop()
+
+    result = trace["result"]
+    assert result["status"] == "completed"
+    assert result["execution"]["status"] == "succeeded"
+    assert [
+        item["skill_name"] for item in result["execution"]["steps"]
+    ] == ["navigate_to_point", "search_for_victims"]
+    assert len(policy.requests) == 3
+    assert (
+        policy.requests[1].observations[0].tool_name
+        == "navigate_to_point"
+    )
+    event_types = [event["type"] for event in events]
+    assert "robot_agent.deliberation_started" in event_types
+    assert "robot_agent.observation" in event_types
+    assert "robot_agent.deliberation_finished" in event_types
 
 
 def test_gateway_robot_agent_context_includes_skill_tools(tmp_path):

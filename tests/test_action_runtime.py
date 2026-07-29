@@ -38,6 +38,29 @@ def test_robot_action_runtime_emits_lifecycle_events_for_adapter_action():
     assert events[2][1]["status"] == "succeeded"
 
 
+def test_robot_action_runtime_executes_single_floor_point_navigation():
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+    runtime = RobotActionRuntime(
+        backend=RobotAdapterActionBackend(robot),
+        task_id="task-point",
+    )
+
+    result = runtime.run(
+        skill_name="navigate_to_point",
+        action_type="navigate_to_point",
+        inputs={"x": 2.0, "y": 1.5, "yaw": 0.25, "frame_id": "map"},
+        dry_run=True,
+        risk_level="low",
+        timeout_seconds=None,
+    )
+
+    assert result.ok is True
+    assert result.action == "navigate_to_point"
+    assert result.data["x"] == 2.0
+    assert result.data["y"] == 1.5
+    assert result.data["frame_id"] == "map"
+
+
 class FeedbackBackend:
     def execute(self, action_type, inputs, feedback_sink=None):
         if feedback_sink is not None:

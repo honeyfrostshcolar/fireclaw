@@ -122,8 +122,12 @@ class SafetyGate:
         if planning_result.plan is None:
             return SafetyDecision(status="block", reasons=["Planner did not produce an executable plan."])
 
-        if planning_result.intent == "rescue_victim" and planning_result.target_floor is None:
-            return SafetyDecision(status="block", reasons=["Target floor is missing."])
+        if (
+            planning_result.intent == "rescue_victim"
+            and planning_result.target_pose is None
+            and planning_result.target_floor is None
+        ):
+            return SafetyDecision(status="block", reasons=["Target point is missing."])
 
         state_blocks, state_warnings, state_confirmations = self._evaluate_state(
             planning_result,
@@ -269,6 +273,7 @@ class SafetyGate:
             "planning_status": planning_result.status,
             "intent": planning_result.intent,
             "target_floor": planning_result.target_floor,
+            "target_pose": planning_result.target_pose,
             "robot_state": _robot_state_summary(robot_state),
             "environment_state": _environment_state_summary(environment_state),
         }

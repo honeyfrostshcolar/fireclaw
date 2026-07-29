@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from fireclaw_core.agent.robot import (
     DryRunRobotAdapter,
     MockRos1RobotAdapter,
@@ -28,6 +30,37 @@ def test_dry_run_robot_adapter_returns_structured_success_result():
     assert result.error is None
     assert isinstance(result.timestamp, str)
     assert robot.actions == [{"action": "navigate_to_floor", "floor": 2, "dry_run": True}]
+
+
+def test_dry_run_robot_adapter_navigates_to_point_in_current_map():
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+
+    result = robot.navigate_to_point(2.0, 1.5, yaw=0.25)
+
+    assert result.ok is True
+    assert result.action == "navigate_to_point"
+    assert result.data["frame_id"] == "map"
+    assert result.data["x"] == 2.0
+    assert result.data["y"] == 1.5
+    assert result.data["yaw"] == 0.25
+    assert robot.actions == [{
+        "action": "navigate_to_point",
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.25,
+        "frame_id": "map",
+        "dry_run": True,
+    }]
+
+
+def test_robot_adapter_rejects_non_finite_navigation_point():
+    robot = DryRunRobotAdapter(robot_id="robot-1")
+
+    with pytest.raises(
+        ValueError,
+        match="navigation point x, y, and yaw must be finite",
+    ):
+        robot.navigate_to_point(float("inf"), 1.5)
 
 
 def test_dry_run_robot_adapter_returns_structured_failure_result():
@@ -129,8 +162,8 @@ def test_dry_run_adapter_exposes_robot_and_environment_state():
     assert robot_state.online is True
     assert robot_state.current_floor == 1
     assert robot_state.supports_real_execution is False
-    assert environment_state.reachable_floors == [1, 2, 3]
-    assert environment_state.victims_by_floor == {2: 1}
+    assert environment_state.reachable_floors == [1]
+    assert environment_state.victims_by_floor == {1: 1}
 
 
 def test_mock_ros2_adapter_exposes_state_without_ros_dependency():
@@ -470,10 +503,16 @@ def test_ros1_robot_adapter_dry_run_skips_transport() -> None:
     config = load_ros1_adapter_config("examples/ros1_configs/gazebo_turtlebot3_move_base.yaml")
     adapter = Ros1RobotAdapter(config=config, transport=FailingRos1Transport(), dry_run=True)
 
-    result = adapter.navigate_to_floor(2)
+    result = adapter.navigate_to_point(2.0, 1.5, yaw=0.25)
 
     assert result.ok is True
     assert result.status == "succeeded"
     assert result.dry_run is True
     assert result.data["dry_run"] is True
     assert result.data["ros1_name"] == "/move_base"
+    assert result.data["ros1_payload"]["target_pose"]["header"]["frame_id"] == "map"
+    assert result.data["ros1_payload"]["target_pose"]["pose"]["position"] == {
+        "x": 2.0,
+        "y": 1.5,
+        "z": 0.0,
+    }

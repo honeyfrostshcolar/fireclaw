@@ -25,7 +25,7 @@ def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_state(tmp_p
     assert result["state"]["task"]["status"] == "succeeded"
     assert result["state"]["task"]["action_count"] == 5
     assert len(result["state"]["actions"]) == 5
-    assert result["action_events"][0]["payload"]["action_type"] == "navigate_to_floor"
+    assert result["action_events"][0]["payload"]["action_type"] == "navigate_to_point"
 
 
 def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_feedback(tmp_path):
@@ -41,6 +41,10 @@ def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_feedback(tm
     assert len(feedback_events) >= 2
     assert feedback_events[0]["payload"]["progress"] == 0.25
     assert feedback_events[-1]["payload"]["progress"] == 0.75
-    navigate_state = next(action for action in result["state"]["actions"] if action["action_type"] == "navigate_to_floor")
+    navigate_state = next(
+        action
+        for action in result["state"]["actions"]
+        if action["action_type"] == "navigate_to_point"
+    )
     assert navigate_state["feedback_count"] == 2
-    assert navigate_state["last_feedback"]["message"] == "near target floor"
+    assert navigate_state["last_feedback"]["message"] == "approaching target point"

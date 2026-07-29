@@ -120,8 +120,18 @@ DEFAULT_TASK_TYPE_DEFINITIONS = (
     ),
     TaskTypeDefinition(
         task_type="navigation",
-        allowed_capabilities=("navigate", "navigate_to_floor", "navigate_to_pose"),
-        success_skills=("navigate", "navigate_to_floor", "navigate_to_pose"),
+        allowed_capabilities=(
+            "navigate",
+            "navigate_to_point",
+            "navigate_to_pose",
+            "navigate_to_floor",
+        ),
+        success_skills=(
+            "navigate",
+            "navigate_to_point",
+            "navigate_to_pose",
+            "navigate_to_floor",
+        ),
         default_timeout_seconds=120.0,
         recovery_policy="replan",
         risk_level="medium",

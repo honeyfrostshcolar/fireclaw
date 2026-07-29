@@ -57,10 +57,19 @@ class OperatorEventProjector:
         floor = inputs.get("floor")
         floor_text = str(floor) if floor is not None else "目标"
 
+        if skill_name == "navigate_to_point":
+            x = inputs.get("x")
+            y = inputs.get("y")
+            frame_id = _text(inputs.get("frame_id"), "map")
+            if x is not None and y is not None:
+                return f"正在前往 {frame_id} 坐标系中的目标点 ({x}, {y})。"
+            return "正在前往目标点。"
         if skill_name == "navigate_to_floor":
             return f"正在前往{floor_text}楼。"
         if skill_name == "search_for_victims":
-            return f"正在搜索{floor_text}楼被困人员。"
+            if floor is not None:
+                return f"正在搜索{floor_text}楼被困人员。"
+            return "正在搜索当前目标区域的被困人员。"
         if skill_name == "assess_victim":
             return "正在评估被困人员状态。"
         if skill_name == "report_status":

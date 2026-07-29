@@ -12,8 +12,15 @@ def test_robot_agent_runs_structured_task_without_natural_language_planner():
     task = StructuredRobotTask(
         task_id="task-structured",
         task_type="search",
-        target={"floor": 2},
-        required_skills=["navigate_to_floor", "search_for_victims", "report_status"],
+        target={
+            "frame_id": "map",
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+        },
+        required_skills=[
+            "navigate_to_point",
+            "search_for_victims",
+            "report_status",
+        ],
         mission_id="mission-1",
         robot_id="robot-1",
         command="human readable only",
@@ -24,7 +31,7 @@ def test_robot_agent_runs_structured_task_without_natural_language_planner():
     assert result["status"] == "succeeded"
     assert result["structured_task"]["task_id"] == "task-structured"
     assert [action["action"] for action in robot.actions] == [
-        "navigate_to_floor",
+        "navigate_to_point",
         "search_for_victims",
         "report_status",
     ]

@@ -73,9 +73,9 @@ def test_robot_subagent_client_submits_task_and_reads_trace(tmp_path):
         state = client.get_state(entry)
         submitted = client.submit_task(
             entry,
-            command="去二楼救人",
-            session_id="mission-1",
-            dedupe_key="mission-1-robot-1-floor-2",
+                command="去坐标 (2.0, 1.5) 救人",
+                session_id="mission-1",
+                dedupe_key="mission-1-robot-1-point-2-1.5",
         )
         result = _wait_for_result(client, entry, submitted["task_id"])
         trace = client.get_task_trace(entry, submitted["task_id"])
@@ -263,7 +263,11 @@ def test_robot_subagent_client_sends_auth_token_header(tmp_path):
         state = client_with_token.get_state(entry)
         assert state["robot_state"]["robot_id"] == "robot-1"
 
-        submitted = client_with_token.submit_task(entry, command="去二楼救人", session_id="mission-1")
+        submitted = client_with_token.submit_task(
+            entry,
+            command="去坐标 (2.0, 1.5) 救人",
+            session_id="mission-1",
+        )
         assert submitted["status"] == "accepted"
         result = _wait_for_result(client_with_token, entry, submitted["task_id"])
         assert result["status"] == "succeeded"

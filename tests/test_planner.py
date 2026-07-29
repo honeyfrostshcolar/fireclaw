@@ -43,7 +43,29 @@ def test_unknown_command_requests_clarification():
 
     assert result.status == "clarify"
     assert result.plan is None
-    assert "楼层" in result.message
+    assert "目标点" in result.message
+
+
+def test_single_floor_rescue_command_generates_point_navigation_plan():
+    result = RuleBasedPlanner().plan("去坐标 (2.0, 1.5) 救人")
+
+    assert result.status == "planned"
+    assert result.target_floor is None
+    assert result.target_pose == {
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.0,
+        "frame_id": "map",
+    }
+    assert [step.skill_name for step in result.plan.steps] == [
+        "navigate_to_point",
+        "search_for_victims",
+        "assess_victim",
+        "report_status",
+        "return_to_safe_zone",
+    ]
+    assert result.plan.steps[0].inputs == result.target_pose
+    assert result.plan.steps[1].inputs == {}
 
 
 def test_direct_skill_invocation_with_run_keyword_generates_one_step_plan():

@@ -8,6 +8,11 @@ import uuid
 from typing import Any
 
 from fireclaw_core.planner.llm_trace import LLMTraceRecord, LLMTraceStore
+from fireclaw_core.mission.active_observation import (
+    ACTIVE_OBSERVATION_CAPABILITIES,
+    MissionObservationRequest,
+    UNRESOLVED_BELIEF_STATUSES,
+)
 from fireclaw_core.mission.mission_deliberation import (
     MissionDeliberationDecision,
     MissionDeliberationRequest,
@@ -246,6 +251,60 @@ MISSION_STATE_INSPECTION_TOOL: dict[str, Any] = {
     },
 }
 
+REQUEST_ACTIVE_OBSERVATION_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "request_observation",
+        "description": (
+            "请求宿主调度机器人补充一项现场观测；本工具本身不会调用机器人或传感器"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "belief_id": {"type": "string"},
+                "target": {
+                    "type": "object",
+                    "properties": {
+                        "frame_id": {"type": "string"},
+                        "floor": {"type": "integer", "minimum": 1},
+                        "area_id": {"type": "string"},
+                        "entity_id": {"type": "string"},
+                        "pose": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "z": {"type": "number"},
+                                "yaw": {"type": "number"},
+                            },
+                            "required": ["x", "y"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["frame_id"],
+                    "anyOf": [
+                        {"required": ["floor"]},
+                        {"required": ["area_id"]},
+                        {"required": ["entity_id"]},
+                        {"required": ["pose"]},
+                    ],
+                    "additionalProperties": False,
+                },
+                "capability_required": {"type": "string"},
+                "required_sensor": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": [
+                "belief_id",
+                "target",
+                "capability_required",
+                "reason",
+            ],
+            "additionalProperties": False,
+        },
+    },
+}
+
 REQUEST_CLARIFICATION_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -378,13 +437,52 @@ def build_constrained_graph_proposal_tool(
 def build_mission_deliberation_tools(
     context: MissionPlannerContext,
 ) -> list[dict[str, Any]]:
-    return [
+    tools = [
         deepcopy(MISSION_STATE_INSPECTION_TOOL),
         build_constrained_graph_proposal_tool(context),
         build_constrained_mission_plan_tool(context, tool_name="propose_plan"),
+    ]
+    observation_tool = build_constrained_active_observation_tool(context)
+    if observation_tool is not None:
+        tools.append(observation_tool)
+    tools.extend([
         deepcopy(REQUEST_CLARIFICATION_TOOL),
         deepcopy(ESCALATE_MISSION_TOOL),
-    ]
+    ])
+    return tools
+
+
+def build_constrained_active_observation_tool(
+    context: MissionPlannerContext,
+) -> dict[str, Any] | None:
+    snapshot = (
+        context.state_snapshot
+        if isinstance(context.state_snapshot, dict)
+        else {}
+    )
+    exposed_ids = set(context.tool_exposed_belief_ids or ())
+    unresolved_ids = sorted({
+        belief["belief_id"]
+        for belief in snapshot.get("environment_beliefs", [])
+        if isinstance(belief, dict)
+        and belief.get("status") in UNRESOLVED_BELIEF_STATUSES
+        and isinstance(belief.get("belief_id"), str)
+        and belief["belief_id"] in exposed_ids
+    })
+    capabilities = sorted({
+        capability
+        for robot in context.available_robots
+        if robot.enabled
+        for capability in robot.capabilities
+        if capability in ACTIVE_OBSERVATION_CAPABILITIES
+    })
+    if not unresolved_ids or not capabilities:
+        return None
+    tool = deepcopy(REQUEST_ACTIVE_OBSERVATION_TOOL)
+    properties = tool["function"]["parameters"]["properties"]
+    properties["belief_id"]["enum"] = unresolved_ids
+    properties["capability_required"]["enum"] = capabilities
+    return tool
 
 
 def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str:
@@ -398,6 +496,8 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
         "environment_facts 是可审计的原始观测；environment_beliefs 是宿主完成时效、来源和冲突处理后的规划依据。",
         "belief.status 为 uncertain、conflicted 或 stale 时，不得把其 value 当作已确认事实；应侦察、澄清或升级。",
         "查询结果会在下一轮作为 observation 返回。",
+        "只有先查询并看到未解决 belief 后，runtime 才会开放 request_observation。",
+        "request_observation 只提交补证意图；宿主将校验目标、能力、传感器和机器人状态后再决定是否调度。",
         "信息充分时优先调用 propose_task_graph；缺少操作员关键信息时调用 request_clarification；",
         "状态危险、不确定或无法形成有效计划时调用 escalate。",
         "propose_task_graph 只描述任务语义、目标、依赖和完成条件；不要选择机器人。",
@@ -1076,6 +1176,20 @@ class LLMMissionPlanner:
                 expected_tool_name="propose_plan",
             )
             return MissionDeliberationDecision.propose(planning_result)
+        if tool_call.name == "request_observation":
+            try:
+                observation_request = MissionObservationRequest.from_dict(
+                    arguments
+                )
+            except (TypeError, ValueError) as exc:
+                return self._malformed_deliberation_decision(str(exc))
+            return MissionDeliberationDecision.observe(
+                observation_request,
+                message=(
+                    "Request active observation for belief "
+                    f"{observation_request.belief_id}."
+                ),
+            )
         if tool_call.name == "request_clarification":
             message = arguments.get("message")
             if not isinstance(message, str) or not message.strip():

@@ -11,7 +11,7 @@ def test_module_cli_runs_rescue_command_and_writes_memory(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--memory-path",
             str(memory_path),
         ],
@@ -23,7 +23,13 @@ def test_module_cli_runs_rescue_command_and_writes_memory(tmp_path):
 
     result = json.loads(completed.stdout)
     assert result["status"] == "succeeded"
-    assert result["planning"]["target_floor"] == 2
+    assert result["planning"]["target_floor"] is None
+    assert result["planning"]["target_pose"] == {
+        "frame_id": "map",
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.0,
+    }
     assert memory_path.exists()
 
 
@@ -33,7 +39,7 @@ def test_module_cli_accepts_robot_id(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
             "--robot-id",
@@ -56,7 +62,7 @@ def test_module_cli_accepts_simulator_adapter(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--adapter",
             "simulator",
             "--memory-path",
@@ -74,7 +80,9 @@ def test_module_cli_accepts_simulator_adapter(tmp_path):
     assert result["status"] == "succeeded"
     assert result["robot_state"]["mode"] == "simulator"
     assert result["execution"]["steps"][0]["output"]["mode"] == "simulator"
-    assert result["execution"]["steps"][0]["output"]["from_floor"] == 1
+    assert result["execution"]["steps"][0]["output"]["x"] == 2.0
+    assert result["execution"]["steps"][0]["output"]["y"] == 1.5
+    assert result["execution"]["steps"][0]["output"]["frame_id"] == "map"
 
 
 def test_module_cli_accepts_mock_ros1_adapter(tmp_path):
@@ -83,7 +91,7 @@ def test_module_cli_accepts_mock_ros1_adapter(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--adapter",
             "mock-ros1",
             "--memory-path",
@@ -112,10 +120,10 @@ def test_module_cli_accepts_ros1_config_for_adapter_skeleton(tmp_path):
             {
                 "robot_id": "real-ros1-cli",
                 "endpoints": {
-                    "navigate_to_floor": {
+                    "navigate_to_point": {
                         "interface": "action",
                         "name": "/fireclaw/real-ros1-cli/navigation",
-                        "type": "fireclaw_msgs/NavigateFloorAction",
+                        "type": "move_base_msgs/MoveBaseAction",
                         "cancel_supported": True,
                         "feedback_supported": True,
                     }
@@ -130,7 +138,7 @@ def test_module_cli_accepts_ros1_config_for_adapter_skeleton(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--adapter",
             "ros1",
             "--ros1-config",
@@ -201,7 +209,7 @@ def test_module_cli_accepts_session_id(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
             "--session-id",
@@ -226,7 +234,7 @@ def test_module_cli_treats_recall_as_successful_command(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--memory-path",
             str(memory_path),
         ],
@@ -263,7 +271,7 @@ def test_module_cli_retrieves_memory_records_for_same_session(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去一楼救人",
             "--session-id",
             "cli-retrieval",
             "--memory-path",
@@ -280,7 +288,7 @@ def test_module_cli_retrieves_memory_records_for_same_session(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "之前二楼救人成功了吗",
+            "之前一楼救人成功了吗",
             "--session-id",
             "cli-retrieval",
             "--memory-path",
@@ -294,8 +302,8 @@ def test_module_cli_retrieves_memory_records_for_same_session(tmp_path):
 
     result = json.loads(completed.stdout)
     assert result["status"] == "retrieved"
-    assert result["memory"]["records"][0]["command"] == "去二楼救人"
-    assert result["memory"]["query"]["target_floor"] == 2
+    assert result["memory"]["records"][0]["command"] == "去一楼救人"
+    assert result["memory"]["query"]["target_floor"] == 1
 
 
 def test_module_cli_confirms_pending_high_risk_skill_across_processes(tmp_path):
@@ -390,7 +398,8 @@ def test_module_cli_treats_skill_listing_as_successful_command(tmp_path):
 
     result = json.loads(completed.stdout)
     assert result["status"] == "skills"
-    assert len(result["skills"]) == 5
+    assert len(result["skills"]) == 6
+    assert "navigate_to_point" in [skill["name"] for skill in result["skills"]]
     assert not memory_path.exists()
 
 
@@ -607,7 +616,7 @@ def test_module_cli_rescue_plan_runs_workspace_policy_first(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人 使用 echo_policy",
+            "去坐标 (2.0, 1.5) 救人 使用 echo_policy",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
         ],
@@ -621,13 +630,18 @@ def test_module_cli_rescue_plan_runs_workspace_policy_first(tmp_path):
     assert result["status"] == "succeeded"
     assert [step["skill_name"] for step in result["execution"]["steps"]] == [
         "echo_policy",
-        "navigate_to_floor",
+        "navigate_to_point",
         "search_for_victims",
         "assess_victim",
         "report_status",
         "return_to_safe_zone",
     ]
-    assert result["execution"]["steps"][0]["output"]["received"]["floor"] == 2
+    assert result["execution"]["steps"][0]["output"]["received"]["target"] == {
+        "frame_id": "map",
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.0,
+    }
 
 
 def test_module_cli_rescue_plan_missing_policy_exits_nonzero(tmp_path):
@@ -636,7 +650,7 @@ def test_module_cli_rescue_plan_missing_policy_exits_nonzero(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人 使用 missing_policy",
+            "去坐标 (2.0, 1.5) 救人 使用 missing_policy",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
         ],
@@ -658,7 +672,7 @@ def test_module_cli_real_run_blocks_default_rescue_skills(tmp_path):
             sys.executable,
             "-m",
             "fireclaw_core",
-            "去二楼救人",
+            "去坐标 (2.0, 1.5) 救人",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
             "--real-run",
@@ -673,4 +687,4 @@ def test_module_cli_real_run_blocks_default_rescue_skills(tmp_path):
     result = json.loads(completed.stdout)
     assert result["status"] == "block"
     assert result["dry_run"] is False
-    assert "Skill is not allowed for real robot execution: navigate_to_floor" in result["message"]
+    assert "Skill is not allowed for real robot execution: navigate_to_point" in result["message"]

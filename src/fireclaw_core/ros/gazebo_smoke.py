@@ -12,7 +12,7 @@ def build_robot_registry_payload(*, robot_id: str, base_url: str) -> dict:
                 "robot_id": robot_id,
                 "base_url": base_url.rstrip("/"),
                 "capabilities": [
-                    "navigate_to_floor",
+                    "navigate_to_point",
                     "search_for_victims",
                     "report_status",
                     "return_to_safe_zone",

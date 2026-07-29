@@ -2,7 +2,7 @@
 
 Exercises the full pipeline:
   operator command -> MissionGateway.submit_mission -> MissionAgent.plan_and_submit
-  -> robot subagent dispatch -> events -> task-flow -> lineage -> memory
+  -> Robot Agent dispatch -> events -> task-flow -> lineage -> memory
 """
 
 from __future__ import annotations

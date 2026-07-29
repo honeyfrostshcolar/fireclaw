@@ -70,6 +70,69 @@ def test_policy_rejects_mutated_floor():
     assert any("floor" in reason for reason in decision.reasons)
 
 
+def test_policy_allows_point_navigation_matching_task_target():
+    envelope = RobotAgentTaskEnvelope(
+        task_id="task-point",
+        mission_id="mission-1",
+        robot_id="robot-1",
+        command="去坐标 (2.0, 1.5) 搜索",
+        task_type="search",
+        target={
+            "frame_id": "map",
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+        },
+        allowed_skills=["navigate_to_point"],
+        required_skills=["navigate_to_point"],
+        constraints={},
+        risk_level="low",
+        operator_id="operator-1",
+    )
+    plan = RobotLocalPlan(
+        intent="search",
+        steps=[
+            RobotLocalPlanStep(
+                "navigate_to_point",
+                {"x": 2.0, "y": 1.5, "yaw": 0.0, "frame_id": "map"},
+            )
+        ],
+    )
+
+    assert RobotAgentPolicy().validate(envelope, plan).status == "allow"
+
+
+def test_policy_rejects_mutated_point_navigation_target():
+    envelope = RobotAgentTaskEnvelope(
+        task_id="task-point",
+        mission_id="mission-1",
+        robot_id="robot-1",
+        command="去坐标 (2.0, 1.5) 搜索",
+        task_type="search",
+        target={
+            "frame_id": "map",
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+        },
+        allowed_skills=["navigate_to_point"],
+        required_skills=["navigate_to_point"],
+        constraints={},
+        risk_level="low",
+        operator_id="operator-1",
+    )
+    plan = RobotLocalPlan(
+        intent="search",
+        steps=[
+            RobotLocalPlanStep(
+                "navigate_to_point",
+                {"x": 3.0, "y": 1.5, "yaw": 0.0, "frame_id": "map"},
+            )
+        ],
+    )
+
+    decision = RobotAgentPolicy().validate(envelope, plan)
+
+    assert decision.status == "reject"
+    assert any("uses x" in reason for reason in decision.reasons)
+
+
 def test_policy_rejects_missing_required_skill():
     plan = RobotLocalPlan(
         intent="search",

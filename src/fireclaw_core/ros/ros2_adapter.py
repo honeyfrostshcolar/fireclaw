@@ -24,6 +24,18 @@ class Ros2AdapterProtocol(Protocol):
     mode: str  # "ros2"
     dry_run: bool
 
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+        **kwargs: Any,
+    ) -> Any:
+        """Navigate within the current map to a 2D target point."""
+        ...
+
+    # Legacy extension point for future multi-floor deployments.
     def navigate_to_floor(self, floor: int, **kwargs: Any) -> Any:
         """Navigate robot to specified floor."""
         ...

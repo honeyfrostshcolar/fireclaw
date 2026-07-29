@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import cos, isfinite, sin
 from typing import Any
 from typing import Protocol
 
@@ -60,6 +61,7 @@ class AdapterCapabilities:
 
 
 ALL_ROBOT_ACTIONS = {
+    "navigate_to_point",
     "navigate_to_floor",
     "search_for_victims",
     "assess_victim",
@@ -67,6 +69,33 @@ ALL_ROBOT_ACTIONS = {
     "return_to_safe_zone",
     "emergency_stop",
 }
+
+
+def _navigation_point_payload(
+    *,
+    x: float,
+    y: float,
+    yaw: float = 0.0,
+    frame_id: str = "map",
+) -> dict[str, Any]:
+    normalized_x = float(x)
+    normalized_y = float(y)
+    normalized_yaw = float(yaw)
+    if not all(isfinite(value) for value in (
+        normalized_x,
+        normalized_y,
+        normalized_yaw,
+    )):
+        raise ValueError("navigation point x, y, and yaw must be finite")
+    normalized_frame = str(frame_id).strip()
+    if not normalized_frame:
+        raise ValueError("frame_id must not be empty")
+    return {
+        "x": normalized_x,
+        "y": normalized_y,
+        "yaw": normalized_yaw,
+        "frame_id": normalized_frame,
+    }
 
 
 def validate_simulator_real_separation(
@@ -92,6 +121,16 @@ class RobotAdapter(Protocol):
     mode: str
     dry_run: bool
 
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+    ) -> RobotActionResult:
+        ...
+
+    # Legacy compatibility for future multi-floor deployments.
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         ...
 
@@ -129,10 +168,22 @@ class DryRunRobotAdapter:
     mode: str = "dry_run"
     current_floor: int = 1
     available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
-    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
-    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    reachable_floors: list[int] = field(default_factory=lambda: [1])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {1: 1})
     emergency_stopped: bool = False
     emergency_stop_reason: str | None = None
+
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+    ) -> RobotActionResult:
+        return self._record(
+            "navigate_to_point",
+            _navigation_point_payload(x=x, y=y, yaw=yaw, frame_id=frame_id),
+        )
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         return self._record("navigate_to_floor", {"floor": floor})
@@ -187,7 +238,15 @@ class DryRunRobotAdapter:
         )
 
     def _record(self, action: str, data: dict[str, Any]) -> RobotActionResult:
-        action_record = {"action": action, **{key: value for key, value in data.items() if key == "floor"}, "dry_run": True}
+        action_record = {
+            "action": action,
+            **{
+                key: value
+                for key, value in data.items()
+                if key in {"floor", "x", "y", "yaw", "frame_id"}
+            },
+            "dry_run": True,
+        }
         self.actions.append(action_record)
         timestamp = datetime.now(timezone.utc).isoformat()
         if action in self.fail_actions:
@@ -232,10 +291,29 @@ class MockRos1RobotAdapter:
     mode: str = "mock_ros1"
     current_floor: int = 1
     available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
-    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
-    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    reachable_floors: list[int] = field(default_factory=lambda: [1])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {1: 1})
     emergency_stopped: bool = False
     emergency_stop_reason: str | None = None
+
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+    ) -> RobotActionResult:
+        return self._record(
+            name=f"/fireclaw/{self.robot_id}/navigation",
+            action="navigate_to_point",
+            payload=_navigation_point_payload(
+                x=x,
+                y=y,
+                yaw=yaw,
+                frame_id=frame_id,
+            ),
+            feedback_supported=True,
+        )
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         return self._record(
@@ -312,6 +390,25 @@ class MockRos1RobotAdapter:
         )
 
     def action_feedback(self, action_type: str, inputs: dict[str, Any]) -> list[dict[str, Any]]:
+        if action_type == "navigate_to_point":
+            target = _navigation_point_payload(
+                x=inputs["x"],
+                y=inputs["y"],
+                yaw=inputs.get("yaw", 0.0),
+                frame_id=inputs.get("frame_id", "map"),
+            )
+            return [
+                {
+                    "progress": 0.25,
+                    "message": "navigation goal accepted",
+                    "target": target,
+                },
+                {
+                    "progress": 0.75,
+                    "message": "approaching target point",
+                    "target": target,
+                },
+            ]
         if action_type != "navigate_to_floor":
             return []
         floor = int(inputs["floor"])
@@ -397,6 +494,35 @@ class Ros1RobotAdapter:
     @property
     def robot_id(self) -> str:
         return self.config.robot_id
+
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+        feedback_sink: FeedbackSink | None = None,
+        cancellation_requested: CancellationCheck | None = None,
+    ) -> RobotActionResult:
+        payload = _navigation_point_payload(
+            x=x,
+            y=y,
+            yaw=yaw,
+            frame_id=frame_id,
+        )
+        half_yaw = payload["yaw"] / 2.0
+        payload["orientation"] = {
+            "x": 0.0,
+            "y": 0.0,
+            "z": sin(half_yaw),
+            "w": cos(half_yaw),
+        }
+        return self._record_configured_action(
+            "navigate_to_point",
+            payload,
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
     def navigate_to_floor(
         self,
@@ -637,10 +763,28 @@ class MockRos2RobotAdapter:
     mode: str = "mock_ros2"
     current_floor: int = 1
     available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
-    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
-    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    reachable_floors: list[int] = field(default_factory=lambda: [1])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {1: 1})
     emergency_stopped: bool = False
     emergency_stop_reason: str | None = None
+
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+    ) -> RobotActionResult:
+        return self._record(
+            topic=f"/fireclaw/{self.robot_id}/navigation",
+            action="navigate_to_point",
+            payload=_navigation_point_payload(
+                x=x,
+                y=y,
+                yaw=yaw,
+                frame_id=frame_id,
+            ),
+        )
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         return self._record(
@@ -739,8 +883,8 @@ class MockRos2RobotAdapter:
 class SimulatorRobotAdapter:
     robot_id: str
     current_floor: int = 1
-    reachable_floors: list[int] = field(default_factory=lambda: [1, 2, 3])
-    victims_by_floor: dict[int, int] = field(default_factory=lambda: {2: 1})
+    reachable_floors: list[int] = field(default_factory=lambda: [1])
+    victims_by_floor: dict[int, int] = field(default_factory=lambda: {1: 1})
     hazards: list[str] = field(default_factory=list)
     available_sensors: list[str] = field(default_factory=lambda: ["rgb_camera", "thermal_camera", "lidar"])
     online: bool = True
@@ -751,6 +895,34 @@ class SimulatorRobotAdapter:
     emergency_stopped: bool = False
     emergency_stop_reason: str | None = None
     sensor_discovery: SensorDiscoveryBackend | None = None
+    current_pose: dict[str, Any] = field(
+        default_factory=lambda: {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": 0.0,
+            "frame_id": "map",
+        }
+    )
+
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+    ) -> RobotActionResult:
+        target = _navigation_point_payload(
+            x=x,
+            y=y,
+            yaw=yaw,
+            frame_id=frame_id,
+        )
+        origin = dict(self.current_pose)
+        self.current_pose = dict(target)
+        return self._record(
+            "navigate_to_point",
+            {"from_pose": origin, **target},
+        )
 
     def navigate_to_floor(self, floor: int) -> RobotActionResult:
         from_floor = self.current_floor

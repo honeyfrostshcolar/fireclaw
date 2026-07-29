@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from math import isfinite
 from typing import Any
 
 from fireclaw_core.mission.mission_planner import MissionSubtask
@@ -10,6 +11,7 @@ from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
 VALID_PRIORITIES = {"low", "normal", "high", "emergency"}
 VALID_RISK_LEVELS = {"low", "medium", "high", "critical"}
 FLOOR_SKILLS = {"navigate_to_floor", "search_for_victims", "assess_victim", "report_status"}
+POINT_SKILLS = {"navigate_to_point"}
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,11 @@ def structured_task_from_mission_subtask(
         subtask.capability_required,
         capability_skill_chains=capability_skill_chains,
     )
+    if (
+        isinstance(subtask.target.get("pose"), dict)
+        and "navigate_to_point" not in required_skills
+    ):
+        required_skills.insert(0, "navigate_to_point")
     target = (
         dict(subtask.target)
         if subtask.target
@@ -159,6 +166,37 @@ def validate_structured_robot_task(task: StructuredRobotTask) -> list[str]:
     floor = task.target.get("floor")
     if floor is not None and (not isinstance(floor, int) or floor <= 0):
         errors.append("target.floor must be a positive integer when provided")
+    pose = task.target.get("pose")
+    if pose is not None:
+        if not isinstance(pose, dict):
+            errors.append("target.pose must be an object when provided")
+        else:
+            coordinates = [pose.get(axis) for axis in ("x", "y")]
+            if not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and isfinite(float(value))
+                for value in coordinates
+            ):
+                errors.append("target.pose requires finite numeric x and y")
+            yaw = pose.get("yaw")
+            if (
+                yaw is not None
+                and (
+                    not isinstance(yaw, (int, float))
+                    or isinstance(yaw, bool)
+                    or not isfinite(float(yaw))
+                )
+            ):
+                errors.append("target.pose yaw must be finite when provided")
+            frame_id = task.target.get("frame_id", pose.get("frame_id"))
+            if frame_id is not None and (
+                not isinstance(frame_id, str)
+                or not frame_id.strip()
+            ):
+                errors.append(
+                    "target frame_id must be a non-empty string when provided"
+                )
     if task.allowed_skills:
         allowed = set(task.allowed_skills)
         for skill_name in task.required_skills:
@@ -183,11 +221,23 @@ def planning_result_from_structured_task(task: StructuredRobotTask) -> PlanningR
 
     floor = task.target.get("floor")
     target_floor = floor if isinstance(floor, int) else None
+    target_pose = (
+        task.target.get("pose")
+        if isinstance(task.target.get("pose"), dict)
+        else None
+    )
     steps: list[PlanStep] = []
     for skill_name in task.required_skills:
         inputs: dict[str, Any] = {}
         if skill_name in FLOOR_SKILLS and target_floor is not None:
             inputs["floor"] = target_floor
+        if skill_name in POINT_SKILLS and target_pose is not None:
+            inputs.update({
+                "x": float(target_pose["x"]),
+                "y": float(target_pose["y"]),
+                "yaw": float(target_pose.get("yaw", 0.0)),
+                "frame_id": str(task.target.get("frame_id") or "map"),
+            })
         if task.constraints:
             inputs["constraints"] = dict(task.constraints)
         steps.append(PlanStep(skill_name=skill_name, inputs=inputs))
@@ -196,6 +246,16 @@ def planning_result_from_structured_task(task: StructuredRobotTask) -> PlanningR
         message="Structured robot task converted to executable plan.",
         intent=task.task_type,
         target_floor=target_floor,
+        target_pose=(
+            {
+                "x": float(target_pose["x"]),
+                "y": float(target_pose["y"]),
+                "yaw": float(target_pose.get("yaw", 0.0)),
+                "frame_id": str(task.target.get("frame_id") or "map"),
+            }
+            if target_pose is not None
+            else None
+        ),
         plan=Plan(intent=task.task_type, steps=steps),
     )
 
@@ -218,7 +278,7 @@ def skills_from_capability(
 
 def _skills_from_capability(capability: str) -> list[str]:
     if capability == "search_for_victims":
-        return ["navigate_to_floor", "search_for_victims", "report_status"]
+        return ["search_for_victims", "report_status"]
     return [capability]
 
 

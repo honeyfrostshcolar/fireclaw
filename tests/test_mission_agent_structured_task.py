@@ -39,7 +39,7 @@ def test_mission_agent_submit_subtask_sends_structured_task():
 
     result = agent.submit_subtask(
         "robot-1",
-        "去2楼搜索受困人员",
+        "去坐标 (2.0, 1.5) 搜索受困人员",
         session_id="session-1",
         operator={"operator_id": "operator-1"},
     )
@@ -48,8 +48,19 @@ def test_mission_agent_submit_subtask_sends_structured_task():
     structured_task = client.calls[0][1]["structured_task"]
     assert structured_task["mission_id"] == "session-1"
     assert structured_task["robot_id"] == "robot-1"
-    assert structured_task["target"] == {"floor": 2}
-    assert structured_task["required_skills"] == ["navigate_to_floor", "search_for_victims", "report_status"]
+    assert structured_task["target"] == {
+        "frame_id": "map",
+        "pose": {
+            "x": 2.0,
+            "y": 1.5,
+            "yaw": 0.0,
+        }
+    }
+    assert structured_task["required_skills"] == [
+        "navigate_to_point",
+        "search_for_victims",
+        "report_status",
+    ]
 
 
 def test_mission_agent_structured_task_uses_mission_subtask_floor_not_command_text():

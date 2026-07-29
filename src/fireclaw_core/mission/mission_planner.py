@@ -130,6 +130,23 @@ def _extract_floors(command: str) -> list[int]:
     return floors
 
 
+def _extract_points(command: str) -> list[dict[str, float]]:
+    """Extract 2D target points from the current map."""
+    points: list[dict[str, float]] = []
+    for match in re.finditer(
+        r"(?:坐标|目标点|点)\s*[（(]?\s*"
+        r"(-?\d+(?:\.\d+)?)\s*[,，]\s*"
+        r"(-?\d+(?:\.\d+)?)\s*[)）]?",
+        command,
+    ):
+        points.append({
+            "x": float(match.group(1)),
+            "y": float(match.group(2)),
+            "yaw": 0.0,
+        })
+    return points
+
+
 def _detect_intent(command: str) -> tuple[str, str] | None:
     """Return (intent, capability_required) or None if no intent matched."""
     for pattern, intent, capability in _INTENT_PATTERNS:
@@ -154,7 +171,7 @@ def _floor_command(floor: int, intent: str) -> str:
 # --- Planner ---
 
 class MissionPlanner:
-    """Deterministic rule-based mission planner for multi-floor/multi-robot commands."""
+    """Deterministic planner for single-floor targets and legacy floor tasks."""
 
     def plan(self, command: str, context: MissionPlannerContext | None = None) -> MissionPlanningResult:
         intent_match = _detect_intent(command)
@@ -165,11 +182,15 @@ class MissionPlanner:
             )
         intent, capability_required = intent_match
 
+        points = _extract_points(command)
         floors = _extract_floors(command)
-        if not floors:
+        if not points and not floors:
             return MissionPlanningResult(
                 status="clarify",
-                message="请指定目标楼层，例如：去二楼搜索受困人员。",
+                message=(
+                    "请指定当前地图中的目标点，"
+                    "例如：去坐标 (2.0, 1.5) 搜索受困人员。"
+                ),
             )
 
         available_robots = context.available_robots if context is not None else []
@@ -184,7 +205,21 @@ class MissionPlanner:
                 message=f"没有可用的机器人具备 {capability_required} 能力。",
             )
 
-        subtasks = _assign_robots(floors, capable_robots, intent, capability_required)
+        subtasks = (
+            _assign_point_targets(
+                points,
+                capable_robots,
+                intent,
+                capability_required,
+            )
+            if points
+            else _assign_robots(
+                floors,
+                capable_robots,
+                intent,
+                capability_required,
+            )
+        )
         plan = MissionPlan(intent=intent, command=command, subtasks=subtasks)
 
         return MissionPlanningResult(
@@ -220,4 +255,32 @@ def _assign_robots(
             execution_group=execution_group,
         ))
 
+    return subtasks
+
+
+def _assign_point_targets(
+    points: list[dict[str, float]],
+    capable_robots: list[RobotRegistryEntry],
+    intent: str,
+    capability_required: str,
+) -> list[MissionSubtask]:
+    """Assign single-floor map points across capable robots."""
+    subtasks: list[MissionSubtask] = []
+    robot_count = len(capable_robots)
+    for index, pose in enumerate(points):
+        robot = capable_robots[index % robot_count]
+        execution_group = index // robot_count
+        x = pose["x"]
+        y = pose["y"]
+        subtasks.append(MissionSubtask(
+            robot_id=robot.robot_id,
+            command=f"在当前地图坐标 ({x}, {y}) 执行 {intent}",
+            floor=None,
+            capability_required=capability_required,
+            execution_group=execution_group,
+            target={
+                "frame_id": "map",
+                "pose": dict(pose),
+            },
+        ))
     return subtasks

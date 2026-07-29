@@ -20,6 +20,7 @@ from fireclaw_core.task.task_contract import StructuredRobotTask, planning_resul
 SAFE_SUPPLEMENTAL_SKILLS = ("report_status", "return_to_safe_zone")
 # Used by RobotAgentPolicy (floor-mutation guard) and DeterministicRobotAgentPlanner.
 FLOOR_SKILLS = {"navigate_to_floor", "search_for_victims", "assess_victim", "report_status"}
+POINT_SKILLS = {"navigate_to_point"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class RobotLocalPlanStep:
     skill_name: str
     inputs: dict[str, Any]
     reason: str | None = None
+    operation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,14 @@ def planning_result_from_local_plan(
         message="Robot-local agent produced an executable plan.",
         intent=local_plan.intent or envelope.task_type,
         target_floor=target_floor,
+        target_pose=(
+            {
+                **dict(envelope.target["pose"]),
+                "frame_id": str(envelope.target.get("frame_id") or "map"),
+            }
+            if isinstance(envelope.target.get("pose"), dict)
+            else None
+        ),
         plan=Plan(intent=local_plan.intent or envelope.task_type, steps=steps),
     )
 
@@ -128,23 +138,8 @@ class RobotAgentPolicy:
         envelope: RobotAgentTaskEnvelope,
         plan: RobotLocalPlan,
     ) -> RobotAgentPolicyDecision:
-        reasons: list[str] = []
-        allowed = set(envelope.allowed_skills)
+        reasons = self._step_errors(envelope, plan.steps)
         planned = [step.skill_name for step in plan.steps]
-
-        for skill_name in planned:
-            if skill_name not in allowed:
-                reasons.append(f"skill {skill_name!r} is outside allowed_skills")
-
-        expected_floor = envelope.target.get("floor")
-        if isinstance(expected_floor, int):
-            for step in plan.steps:
-                if step.skill_name in FLOOR_SKILLS:
-                    actual_floor = step.inputs.get("floor")
-                    if actual_floor != expected_floor:
-                        reasons.append(
-                            f"skill {step.skill_name!r} uses floor {actual_floor!r}, expected {expected_floor!r}"
-                        )
 
         if envelope.task_type == "primitive_composition" and not plan.steps:
             reasons.append("primitive composition produced no executable steps")
@@ -163,6 +158,78 @@ class RobotAgentPolicy:
             )
 
         return RobotAgentPolicyDecision(status="allow", reasons=[])
+
+    def validate_step(
+        self,
+        envelope: RobotAgentTaskEnvelope,
+        step: RobotLocalPlanStep,
+    ) -> RobotAgentPolicyDecision:
+        """Validate one proposed action in a multi-round Robot Agent loop."""
+
+        reasons = self._step_errors(envelope, [step])
+        if reasons:
+            return RobotAgentPolicyDecision(status="reject", reasons=reasons)
+        if envelope.risk_level in {"high", "critical"}:
+            return RobotAgentPolicyDecision(
+                status="approval_required",
+                reasons=[
+                    f"risk level {envelope.risk_level!r} requires approval "
+                    "before robot-local execution"
+                ],
+            )
+        return RobotAgentPolicyDecision(status="allow", reasons=[])
+
+    @staticmethod
+    def _step_errors(
+        envelope: RobotAgentTaskEnvelope,
+        steps: list[RobotLocalPlanStep],
+    ) -> list[str]:
+        reasons: list[str] = []
+        allowed = set(envelope.allowed_skills)
+        expected_floor = envelope.target.get("floor")
+        expected_pose = envelope.target.get("pose")
+        expected_frame = envelope.target.get("frame_id", "map")
+        for step in steps:
+            if step.skill_name not in allowed:
+                reasons.append(
+                    f"skill {step.skill_name!r} is outside allowed_skills"
+                )
+            if (
+                isinstance(expected_floor, int)
+                and step.skill_name in FLOOR_SKILLS
+                and step.inputs.get("floor") != expected_floor
+            ):
+                reasons.append(
+                    f"skill {step.skill_name!r} uses floor "
+                    f"{step.inputs.get('floor')!r}, expected {expected_floor!r}"
+                )
+            if step.skill_name in POINT_SKILLS:
+                if not isinstance(expected_pose, dict):
+                    reasons.append(
+                        f"skill {step.skill_name!r} requires target.pose"
+                    )
+                    continue
+                for axis in ("x", "y"):
+                    if step.inputs.get(axis) != expected_pose.get(axis):
+                        reasons.append(
+                            f"skill {step.skill_name!r} uses {axis} "
+                            f"{step.inputs.get(axis)!r}, expected "
+                            f"{expected_pose.get(axis)!r}"
+                        )
+                expected_yaw = expected_pose.get("yaw", 0.0)
+                if step.inputs.get("yaw", 0.0) != expected_yaw:
+                    reasons.append(
+                        f"skill {step.skill_name!r} uses yaw "
+                        f"{step.inputs.get('yaw', 0.0)!r}, expected "
+                        f"{expected_yaw!r}"
+                    )
+                if step.inputs.get("frame_id", "map") != expected_frame:
+                    reasons.append(
+                        f"skill {step.skill_name!r} uses frame_id "
+                        f"{step.inputs.get('frame_id', 'map')!r}, expected "
+                        f"{expected_frame!r}"
+                    )
+        return reasons
 
 
 class RobotAgentPlannerError(Exception):
@@ -212,7 +279,7 @@ def build_robot_agent_messages(
             "实体记忆是可能过时的建议性证据，不能替代当前传感器或绕过 SafetyGate。"
         )
     system = (
-        "你是消防机器人本地子 agent。"
+        "你是消防机器人本地 Robot Agent。"
         "你只能在 allowed_skills 内规划，不能改变 target，不能扩大任务权限。"
         f"{memory_instruction}"
         "planning_context.authoritative 是本轮权威任务和本机状态；"
@@ -223,7 +290,7 @@ def build_robot_agent_messages(
         "优先使用可用 composite skill 完成明确的消防任务。",
         "没有合适 composite skill 时，可以组合 primitive skills。",
         "只能使用 allowed_skills 中的技能。",
-        "不能扩大目标、楼层、区域、风险级别。",
+        "不能扩大目标、坐标范围、区域、风险级别。",
         "运动类 primitive 必须保持在 target/constraints 允许范围内。",
         "不确定时返回空 steps 并说明需要澄清。",
     ]
@@ -524,11 +591,19 @@ class DeterministicRobotAgentPlanner:
         cancellation_requested: Callable[[], bool] | None = None,
     ) -> RobotLocalPlan:
         floor = envelope.target.get("floor")
+        pose = envelope.target.get("pose")
         steps = []
         for skill_name in envelope.required_skills:
             inputs: dict[str, Any] = {}
             if skill_name in FLOOR_SKILLS and isinstance(floor, int):
                 inputs["floor"] = floor
+            if skill_name in POINT_SKILLS and isinstance(pose, dict):
+                inputs.update({
+                    "x": pose.get("x"),
+                    "y": pose.get("y"),
+                    "yaw": pose.get("yaw", 0.0),
+                    "frame_id": envelope.target.get("frame_id", "map"),
+                })
             steps.append(RobotLocalPlanStep(skill_name=skill_name, inputs=inputs))
         return RobotLocalPlan(
             intent=envelope.task_type,

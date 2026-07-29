@@ -16,33 +16,38 @@
 
 ## 目标系统形态
 
-FireClaw 应该构建为一个 mission-level 主智能体，协调多个具身机器人子智能体：
+FireClaw 包含两种常驻 Agent：mission-level 的 Mission Coordinator 和多个
+已注册的具身 Robot Agent。`subagent` 只表示未来可选的临时委派 worker，
+不再作为机器人的架构名称。完整规范见
+[`fireclaw-agent-terminology.md`](fireclaw-agent-terminology.md)。
 
 ```text
 Operator
--> FireClaw Main Mission Agent
-   -> Robot FireClaw Subagent A
-   -> Robot FireClaw Subagent B
-   -> Robot FireClaw Subagent C
+-> FireClaw Mission Coordinator
+   -> Registered Robot Agent A
+   -> Registered Robot Agent B
+   -> Registered Robot Agent C
       -> Local Gateway
       -> Local Planner / Safety Gate / Skills
       -> ROS / Simulator / Robot SDK Adapter
 ```
 
-主智能体负责任务级推理与协调。每个机器人子智能体负责本地具身执行权限。主智能体不能绕过机器人子智能体直接调用 ROS topic、service、action、电机、水炮、机械臂或其他硬件接口。
+Mission Coordinator 负责任务级推理与协调。每个 Robot Agent 拥有本机具身
+执行权限。Mission Coordinator 不能绕过 Robot Agent 直接调用 ROS topic、
+service、action、电机、水炮、机械臂或其他硬件接口。
 
 ## OpenClaw 概念映射
 
-| OpenClaw 概念 | FireClaw 主层 | FireClaw 机器人子层 | 当前 FireClaw 状态 |
+| OpenClaw 概念 | FireClaw mission 层 | FireClaw Robot Agent 层 | 当前 FireClaw 状态 |
 |---|---|---|---|
-| Agent | `MissionAgent` | `FireClawAgent` | 主层和机器人本地 agent 都已有基础实现。 |
+| Agent | `MissionAgent` / Mission Coordinator | `FireClawAgent` / Robot Agent | 两种常驻 Agent 都已有实现。 |
 | Session | mission/operator session | 机器人本地 task/session context | 机器人本地 session 已有；mission session 目前主要通过 mission ID 隐式表达。 |
-| Subagent | 机器人 FireClaw 节点作为可调用子智能体 | 后续可增加本地诊断 worker | 通过 `RobotSubagentClient` 已有基础子智能体契约。 |
+| Subagent | 可选的临时委派 worker | 可选的本地诊断或推理 worker | 不是 Robot Agent 的架构名称。 |
 | Gateway/control plane | 未来的 mission Gateway/API/CLI | `FireClawGateway` | 机器人本地 Gateway 已有；mission CLI 已有；mission HTTP API 缺失。 |
 | Task registry | `JsonlMissionRegistry` | `JsonlTaskQueue` | 两层 registry/queue 都已有。 |
 | Task runtime progress | mission trace aggregation | event ledger、task trace、action feedback | 机器人 trace 已有；mission trace 聚合已有；mission live stream 缺失。 |
 | Permissions/scopes | mission-level authorization scopes | 机器人本地 operator authorization | 两层都有基础实现。 |
-| Safety/sandbox | mission 调用策略和 subagent 边界 | safety gate、emergency stop、ROS transport gating | 机器人本地安全已有；mission failure policy 还不完整。 |
+| Safety/sandbox | mission 调用策略和 Robot Agent 契约 | safety gate、emergency stop、ROS transport gating | 机器人本地安全已有；mission failure policy 还不完整。 |
 | Memory | mission memory 和 fleet lessons | 机器人本地 task/environment memory | 机器人本地 memory 已有；mission memory 还没有完整设计。 |
 | Provider runtime | mission-level model selection | 机器人本地/边缘模型 fallback | 尚未实现。 |
 | Tools/skills/plugins | mission tools: plan、assign、cancel、query、aggregate | robot skills: navigate、search、assess、report、stop | 机器人 skill runtime 已有；mission tools 目前还是 Python/CLI 方法。 |
@@ -71,7 +76,7 @@ Operator
 - approval workflow UI；
 - 多机器人 mission operator console。
 
-### 2. Main Mission Agent Layer
+### 2. Mission Coordinator Layer
 
 职责：
 
@@ -79,7 +84,7 @@ Operator
 - 把 mission plan 分解为机器人 subtask；
 - 检查 fleet presence；
 - 执行 mission-level authorization；
-- 向机器人子智能体提交 subtask；
+- 向已注册的 Robot Agent 提交 subtask；
 - 通过传播 cancel 请求取消 mission；
 - 把机器人本地 trace 聚合成 mission trace。
 
@@ -99,11 +104,11 @@ Operator
 - mission memory 读写路径；
 - mission HTTP Gateway。
 
-### 3. Fleet/Subagent Contract Layer
+### 3. Fleet/Robot Agent Contract Layer
 
 职责：
 
-- 存储已知机器人子智能体；
+- 存储已知 Robot Agent；
 - 描述机器人能力、区域、启用状态和在线状态；
 - 通过稳定 API 调用机器人本地 Gateway；
 - 让 mission planning 不关心底层 transport 细节。
@@ -115,6 +120,10 @@ Operator
 - `RobotSubagentClient`
 - 针对 state、submit、trace、cancel、presence 的基础 HTTP 调用。
 
+`RobotSubagentClient` 是为了兼容保留的 legacy identifier。它实际调用的是
+已经注册并在线的物理或仿真 Robot Agent。Mission Coordinator 不会生成机器人，
+只会选择和调用常驻 Robot Agent。
+
 缺失：
 
 - fleet config validation / doctor；
@@ -123,7 +132,7 @@ Operator
 - retry/backoff/circuit-breaker 行为；
 - HTTP 之外的 transport abstraction。
 
-### 4. Robot Subagent Control Plane
+### 4. Robot Agent Control Plane
 
 职责：
 
@@ -141,12 +150,16 @@ Operator
 - 机器人本地 authorization
 - emergency stop
 - async task execution 和 cancellation
+- `BoundedAgentLoop` 的 append-only checkpoint/resume；
+- Gateway 重启后按结构化任务合同和 checkpoint 自动恢复；
+- 物理技能使用稳定 `operation_id` 记录 dispatch started/finished，结果未知时
+  升级且禁止自动重放。
 
 缺失：
 
 - SSE/WebSocket 或同类 event streaming endpoint；
 - 更强的 queue compaction / retention policy；
-- process restart 后除了标记 stale task 为 lost 之外的恢复策略；
+- 多个可恢复任务超过本机并发容量时的持久化等待队列；
 - 真实部署认证。
 
 ### 5. Robot Agent, Planner, and Skill Runtime
@@ -253,7 +266,7 @@ operator command
 -> fleet presence check
 -> mission planning
 -> mission registry record
--> subtask submission to robot subagents
+-> subtask submission to registered Robot Agents
 -> robot-local task queue and execution
 -> robot-local event/task traces
 -> mission trace aggregation
@@ -272,7 +285,7 @@ subtask request
 -> ROS/simulator/SDK call
 -> feedback/cancel/result
 -> event ledger and task queue
--> trace response to main agent
+-> trace response to Mission Coordinator
 ```
 
 ### Cancellation
@@ -282,7 +295,7 @@ operator cancel mission
 -> mission authorization
 -> mission registry lookup
 -> skip terminal subtasks
--> call robot subagent cancel endpoints
+-> call Robot Agent cancel endpoints
 -> robot-local cancel event
 -> action runtime cancellation
 -> ROS action cancel_goal when applicable
@@ -308,7 +321,7 @@ operator cancel mission
 
 ## 框架完成路线图
 
-### Phase 1: 稳定 Main/Subagent 骨架
+### Phase 1: 稳定 Mission Coordinator/Robot Agent 契约
 
 目标：让当前架构真正表现为一个一致的多机器人框架。
 
@@ -323,7 +336,7 @@ operator cancel mission
 
 ### Phase 2: 完成机器人本地具身运行时
 
-目标：让每个机器人子智能体成为可信的本地具身 agent。
+目标：让每个 Robot Agent 成为可信的本地具身 agent。
 
 任务：
 
@@ -389,4 +402,3 @@ operator cancel mission
 - denied / offline / failed / cancelled subtasks 会产生明确的 mission-level decision；
 - mission registry 会记录 scheduling decisions；
 - 测试覆盖多机器人并行计划和单机器人顺序计划。
-

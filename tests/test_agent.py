@@ -73,13 +73,15 @@ def test_agent_runs_full_rescue_flow_and_writes_memory(tmp_path):
         memory=JsonlMemoryStore(memory_path),
     )
 
-    result = agent.run("去二楼救人")
+    result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     assert result["status"] == "succeeded"
-    assert result["planning"]["target_floor"] == 2
+    assert result["planning"]["target_floor"] is None
+    assert result["planning"]["target_pose"]["x"] == 2.0
+    assert result["planning"]["target_pose"]["y"] == 1.5
     assert result["safety"]["status"] == "allow"
     assert [step["skill_name"] for step in result["execution"]["steps"]] == [
-        "navigate_to_floor",
+        "navigate_to_point",
         "search_for_victims",
         "assess_victim",
         "report_status",
@@ -88,7 +90,7 @@ def test_agent_runs_full_rescue_flow_and_writes_memory(tmp_path):
 
     records = JsonlMemoryStore(memory_path).list_records()
     assert len(records) == 1
-    assert records[0]["command"] == "去二楼救人"
+    assert records[0]["command"] == "去坐标 (2.0, 1.5) 救人"
     assert records[0]["status"] == "succeeded"
 
 
@@ -104,7 +106,7 @@ def test_agent_records_robot_and_environment_state_snapshots(tmp_path):
         memory=JsonlMemoryStore(memory_path),
     )
 
-    result = agent.run("去二楼救人")
+    result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     assert result["status"] == "succeeded"
     assert result["robot_state"]["robot_id"] == "sim-1"
@@ -176,7 +178,7 @@ def test_agent_serializes_execution_attempt_history(tmp_path):
         memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
     )
 
-    result = agent.run("去二楼救人")
+    result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     first_step = result["execution"]["steps"][0]
     assert first_step["attempt_count"] == 1
@@ -184,7 +186,7 @@ def test_agent_serializes_execution_attempt_history(tmp_path):
     assert first_step["operator_action"] is None
     assert first_step["attempts"][0]["attempt_number"] == 1
     assert first_step["attempts"][0]["status"] == "succeeded"
-    assert first_step["attempts"][0]["output"]["action"] == "navigate_to_floor"
+    assert first_step["attempts"][0]["output"]["action"] == "navigate_to_point"
 
 
 def test_agent_emits_robot_action_events_for_default_skills(tmp_path):
@@ -196,7 +198,7 @@ def test_agent_emits_robot_action_events_for_default_skills(tmp_path):
         task_id="task-1",
     )
 
-    result = agent.run("去二楼救人")
+    result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     assert result["status"] == "succeeded"
     event_types = [event_type for event_type, _payload in events]
@@ -205,8 +207,8 @@ def test_agent_emits_robot_action_events_for_default_skills(tmp_path):
     assert "action.succeeded" in event_types
     requested = [payload for event_type, payload in events if event_type == "action.requested"]
     assert requested[0]["task_id"] == "task-1"
-    assert requested[0]["skill_name"] == "navigate_to_floor"
-    assert requested[0]["action_type"] == "navigate_to_floor"
+    assert requested[0]["skill_name"] == "navigate_to_point"
+    assert requested[0]["action_type"] == "navigate_to_point"
 
 
 def test_agent_unknown_command_returns_clarification_without_execution(tmp_path):
@@ -224,7 +226,10 @@ def test_agent_unknown_command_returns_clarification_without_execution(tmp_path)
 
 def test_agent_resolves_floor_after_previous_clarification_in_same_session(tmp_path):
     agent = FireClawAgent(
-        robot=DryRunRobotAdapter(robot_id="robot-1"),
+        robot=DryRunRobotAdapter(
+            robot_id="robot-1",
+            reachable_floors=[1, 2, 3],
+        ),
         memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
         session_id="rescue-session",
     )
@@ -241,13 +246,36 @@ def test_agent_resolves_floor_after_previous_clarification_in_same_session(tmp_p
     assert second["session"]["turn_index"] == 2
 
 
+def test_agent_resolves_point_after_previous_clarification_in_same_session(tmp_path):
+    agent = FireClawAgent(
+        robot=DryRunRobotAdapter(robot_id="robot-1"),
+        memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
+        session_id="point-rescue-session",
+    )
+
+    first = agent.run("救人")
+    second = agent.run("坐标 (2.0, 1.5)")
+
+    assert first["status"] == "clarify"
+    assert second["status"] == "succeeded"
+    assert second["planning"]["target_floor"] is None
+    assert second["planning"]["target_pose"] == {
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.0,
+        "frame_id": "map",
+    }
+    assert second["session"]["resolved_command"] == "去坐标 (2.0, 1.5) 救人"
+    assert second["session"]["context_used"] is True
+
+
 def test_agent_reports_memory_write_errors():
     agent = FireClawAgent(
         robot=DryRunRobotAdapter(robot_id="robot-1"),
         memory=FailingMemoryStore(),
     )
 
-    result = agent.run("去二楼救人")
+    result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     assert result["status"] == "succeeded"
     assert result["memory_error"] == "memory disk unavailable"
@@ -421,6 +449,7 @@ def test_agent_lists_available_skills_without_executing_or_writing_memory(tmp_pa
     assert [skill["name"] for skill in result["skills"]] == [
         "assess_victim",
         "navigate_to_floor",
+        "navigate_to_point",
         "report_status",
         "return_to_safe_zone",
         "search_for_victims",
@@ -674,19 +703,26 @@ def test_agent_rescue_plan_runs_workspace_policy_before_rescue_steps(tmp_path):
         workspace_skills_dir="skills",
     )
 
-    result = agent.run("去二楼救人 使用 echo_policy")
+    result = agent.run("去坐标 (2.0, 1.5) 救人 使用 echo_policy")
 
     assert result["status"] == "succeeded"
     assert [step["skill_name"] for step in result["execution"]["steps"]] == [
         "echo_policy",
-        "navigate_to_floor",
+        "navigate_to_point",
         "search_for_victims",
         "assess_victim",
         "report_status",
         "return_to_safe_zone",
     ]
-    assert result["execution"]["steps"][0]["output"]["received"]["floor"] == 2
-    assert result["execution"]["steps"][0]["output"]["received"]["command"] == "去二楼救人 使用 echo_policy"
+    assert result["execution"]["steps"][0]["output"]["received"]["target"] == {
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.0,
+        "frame_id": "map",
+    }
+    assert result["execution"]["steps"][0]["output"]["received"]["command"] == (
+        "去坐标 (2.0, 1.5) 救人 使用 echo_policy"
+    )
     records = JsonlMemoryStore(memory_path).list_records()
     assert records[-1]["status"] == "succeeded"
     assert records[-1]["execution"]["steps"][0]["skill_name"] == "echo_policy"
@@ -697,14 +733,14 @@ def test_agent_blocks_missing_rescue_policy_before_execution_and_writes_memory(t
     robot = DryRunRobotAdapter(robot_id="robot-1")
     agent = FireClawAgent(robot=robot, memory=JsonlMemoryStore(memory_path))
 
-    result = agent.run("去二楼救人 使用 missing_policy")
+    result = agent.run("去坐标 (2.0, 1.5) 救人 使用 missing_policy")
 
     assert result["status"] == "block"
     assert result["execution"] is None
     assert "Missing skill: missing_policy" in result["message"]
     assert robot.actions == []
     records = JsonlMemoryStore(memory_path).list_records()
-    assert records[-1]["command"] == "去二楼救人 使用 missing_policy"
+    assert records[-1]["command"] == "去坐标 (2.0, 1.5) 救人 使用 missing_policy"
     assert records[-1]["status"] == "block"
 
 
@@ -716,7 +752,7 @@ def test_agent_runs_rescue_flow_with_mock_ros2_adapter(tmp_path):
         dry_run=True,
     )
 
-    result = agent.run("去二楼救人")
+    result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     assert result["status"] == "succeeded"
     assert result["execution"]["steps"][0]["output"]["mode"] == "mock_ros2"
@@ -732,7 +768,7 @@ def test_agent_forwards_executor_live_events(tmp_path):
         event_sink=lambda event_type, payload: events.append((event_type, payload)),
     )
 
-    result = agent.run("去二楼救人")
+    result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     assert result["status"] == "succeeded"
     assert [event_type for event_type, _payload in events[:8]] == [
@@ -746,8 +782,8 @@ def test_agent_forwards_executor_live_events(tmp_path):
         "skill.succeeded",
     ]
     assert events[0][1]["intent"] == "rescue_victim"
-    assert events[2][1]["skill_name"] == "navigate_to_floor"
-    assert events[3][1]["action_type"] == "navigate_to_floor"
+    assert events[2][1]["skill_name"] == "navigate_to_point"
+    assert events[3][1]["action_type"] == "navigate_to_point"
     assert [event_type for event_type, _payload in events].count("skill.started") == 5
 
 

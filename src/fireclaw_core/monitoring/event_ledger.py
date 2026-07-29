@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -28,9 +29,13 @@ class EventLedger:
             "payload": payload,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True))
-            handle.write("\n")
+        encoded = (
+            json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        with self.path.open("ab") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
         return event
 
     def list_events(self) -> list[dict[str, Any]]:

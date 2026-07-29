@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -49,6 +49,14 @@ class Planner(Protocol):
         context: PlannerContext | None = None,
     ) -> PlanningResult:
         ...
+
+
+@dataclass(frozen=True)
+class DeliberatedStepExecution:
+    """One SafetyGate-checked Robot Agent step and its internal result."""
+
+    payload: dict[str, Any]
+    execution_result: ExecutionResult | None
 
 
 class FireClawAgent:
@@ -276,6 +284,168 @@ class FireClawAgent:
         self._append_memory_result(result)
         return result
 
+    def execute_deliberated_step(
+        self,
+        *,
+        command: str,
+        planning_result: PlanningResult,
+        structured_task: StructuredRobotTask,
+    ) -> DeliberatedStepExecution:
+        """Safety-check and execute one step without finalizing the task.
+
+        A recoverable failed step remains local evidence for the next Robot
+        Agent turn. Mission invalidation is produced only when the bounded
+        deliberation itself terminates unsuccessfully.
+        """
+
+        if planning_result.plan is None or len(planning_result.plan.steps) != 1:
+            raise ValueError(
+                "Robot Agent deliberation requires exactly one planned step"
+            )
+        robot_state_object = self._get_robot_state()
+        environment_state_object = self._get_environment_state()
+        memory_snapshot = self._record_robot_snapshot(
+            robot_state_object,
+            environment_state_object,
+        )
+        safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
+            planning_result,
+            self.registry,
+            dry_run=self.dry_run,
+            available_sensors=self._safety_available_sensors(),
+            operator_confirmed=True,
+            robot_state=robot_state_object,
+            environment_state=environment_state_object,
+            mission_id=self.session_id,
+            subtask_id=self.task_id,
+            evidence_event_ids=memory_snapshot.evidence_event_ids,
+        )
+        self._emit_event(
+            "robot_agent.step_planned",
+            self._planning_to_dict(planning_result),
+        )
+        self._emit_event("safety.decided", asdict(safety_decision))
+
+        execution_result: ExecutionResult | None = None
+        if safety_decision.status == "allow":
+            execution_result = self.executor.execute(
+                planning_result.plan,
+                parent_memory_event_id=safety_event_id,
+            )
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "command": command,
+            "status": self._resolve_status(
+                safety_decision,
+                execution_result,
+            ),
+            "message": self._resolve_message(
+                planning_result,
+                safety_decision,
+                execution_result,
+            ),
+            "dry_run": self.dry_run,
+            "planning": self._planning_to_dict(planning_result),
+            "safety": asdict(safety_decision),
+            "execution": self._execution_to_dict(execution_result),
+            "confirmation": self._confirmation_to_dict(safety_decision),
+            "robot_state": self._state_snapshot(self._get_robot_state()),
+            "environment_state": self._state_snapshot(
+                self._get_environment_state()
+            ),
+            "structured_task": structured_task.to_dict(),
+            "memory_error": None,
+        }
+        return DeliberatedStepExecution(
+            payload=payload,
+            execution_result=execution_result,
+        )
+
+    def finalize_deliberated_task(
+        self,
+        *,
+        command: str,
+        structured_task: StructuredRobotTask,
+        loop_result: Any,
+        step_executions: list[DeliberatedStepExecution],
+    ) -> dict[str, Any]:
+        """Create one terminal task result from a bounded Robot Agent run."""
+
+        execution_steps = [
+            step
+            for run in step_executions
+            if run.execution_result is not None
+            for step in run.execution_result.steps
+        ]
+        if loop_result.status == "completed":
+            execution_status = "succeeded"
+            status = "completed"
+        elif loop_result.status == "cancelled":
+            execution_status = "cancelled"
+            status = "cancelled"
+        else:
+            execution_status = "failed"
+            last_observation = (
+                loop_result.observations[-1]
+                if loop_result.observations
+                else None
+            )
+            status = (
+                "awaiting_confirmation"
+                if (
+                    loop_result.status == "escalated"
+                    and getattr(last_observation, "status", None)
+                    == "approval_required"
+                )
+                else loop_result.status
+            )
+        aggregate_execution = ExecutionResult(
+            status=execution_status,
+            steps=execution_steps,
+        )
+        latest_step = (
+            step_executions[-1].payload if step_executions else None
+        )
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "command": command,
+            "status": status,
+            "message": loop_result.message,
+            "dry_run": self.dry_run,
+            "planning": {
+                "status": "deliberated",
+                "message": loop_result.message,
+                "intent": structured_task.task_type,
+                "target_floor": structured_task.target.get("floor"),
+                "plan": None,
+            },
+            "safety": (
+                latest_step.get("safety")
+                if isinstance(latest_step, dict)
+                else None
+            ),
+            "execution": self._execution_to_dict(aggregate_execution),
+            "confirmation": (
+                latest_step.get("confirmation")
+                if isinstance(latest_step, dict)
+                else None
+            ),
+            "robot_state": self._state_snapshot(self._get_robot_state()),
+            "environment_state": self._state_snapshot(
+                self._get_environment_state()
+            ),
+            "structured_task": structured_task.to_dict(),
+            "robot_agent_deliberation": loop_result.to_dict(),
+            "memory_error": None,
+        }
+        self._attach_execution_event(
+            result,
+            execution_result=aggregate_execution,
+            structured_task=structured_task,
+        )
+        self._append_memory_result(result)
+        return result
+
     def _attach_execution_event(
         self,
         result: dict[str, Any],
@@ -331,6 +501,20 @@ class FireClawAgent:
     def _resolve_command_from_session(self, command: str) -> tuple[str, bool]:
         if "救人" in command:
             return command, False
+        point_match = re.search(
+            r"(?:坐标|目标点|点)?\s*[（(]?\s*"
+            r"(-?\d+(?:\.\d+)?)\s*[,，]\s*"
+            r"(-?\d+(?:\.\d+)?)\s*[)）]?",
+            command,
+        )
+        if point_match is not None:
+            previous = self._latest_session_record()
+            if previous is not None and previous.get("status") == "clarify":
+                return (
+                    "去坐标 "
+                    f"({point_match.group(1)}, {point_match.group(2)}) 救人",
+                    True,
+                )
         floor_match = re.search(r"([0-9]+|[一二三四五六七八九十])楼", command)
         if floor_match is None:
             return command, False
@@ -444,6 +628,7 @@ class FireClawAgent:
             "message": planning_result.message,
             "intent": planning_result.intent,
             "target_floor": planning_result.target_floor,
+            "target_pose": planning_result.target_pose,
             "plan": asdict(planning_result.plan) if planning_result.plan is not None else None,
         }
 
@@ -826,6 +1011,11 @@ class FireClawAgent:
             message=str(planning.get("message") or "Recovered pending plan."),
             intent=planning.get("intent"),
             target_floor=planning.get("target_floor"),
+            target_pose=(
+                dict(planning["target_pose"])
+                if isinstance(planning.get("target_pose"), dict)
+                else None
+            ),
             plan=plan,
         )
 

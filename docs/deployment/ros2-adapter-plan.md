@@ -144,10 +144,10 @@ transport:
   wait_for_server_seconds: 10.0
   wait_for_result_seconds: 60.0
 endpoints:
-  navigate_to_floor:
+  navigate_to_point:
     interface: action
-    name: "/fireclaw/robot_01/navigation"
-    type: "fireclaw_msgs/NavigateFloorAction"
+    name: "/navigate_to_pose"
+    type: "nav2_msgs/NavigateToPose"
     cancel_supported: true
     feedback_supported: true
   search_for_victims:

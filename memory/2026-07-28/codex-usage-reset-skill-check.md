@@ -1,0 +1,28 @@
+## Codex usage reset skill check
+
+- Timestamp: 2026-07-28 13:59:47 +08
+- Task goal: Check whether GitHub has a Codex skill that can show Codex usage-limit reset card / banked reset information.
+- Commands executed:
+  - `python3 /home/lpp/.codex/skills/.system/skill-installer/scripts/list-skills.py --format json`
+  - `python3 /home/lpp/.codex/skills/.system/skill-installer/scripts/list-skills.py --path skills/.experimental --format json`
+  - `node /home/lpp/.codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs`
+  - `rg -n "usage|reset|limit|banked|redeem" /tmp/openai-docs-cache/codex-manual.md`
+- Sources checked:
+  - Official `openai/skills` curated catalog via `skill-installer`.
+  - `openai/skills` GitHub repository.
+  - GitHub search for `codex usage reset skill`, `usage limit reset`, and `Redeem usage limit reset`.
+  - OpenAI Codex manual cached at `/tmp/openai-docs-cache/codex-manual.md`.
+  - OpenAI Help Center snippets for Codex banked rate-limit resets and referral promotions.
+- Observed results:
+  - Curated official skills did not include any obvious usage/reset/card skill.
+  - `skills/.experimental` path was not found by the installer script.
+  - GitHub search found `openai/codex#28805`, an open feature request asking Codex to show banked reset count, expiration, eligibility, and reset events across usage surfaces.
+  - Current Codex manual documents `/usage` as a built-in CLI command: view account token activity or redeem an available earned reset.
+  - Manual app-server API notes expose `account/rateLimits/read`, `account/rateLimitResetCredit/consume`, and fields including `rateLimitResetCredits`, but this is a programmatic/internal app-server surface rather than an installable skill.
+- Current conclusion:
+  - There does not appear to be a ready-made public Codex skill for displaying reset-card details.
+  - The supported user-facing path is Codex built-in `/usage` or the profile menu usage summary.
+  - Detailed reset-card visibility is still an open product feature request, not solved by an official skill.
+- Next recommended step:
+  - Use `/usage` in the current TUI to view usage or redeem the available reset.
+  - If deeper automation is needed, investigate Codex app-server JSON-RPC auth/account methods, but treat them as unstable/internal unless documented for user scripts.

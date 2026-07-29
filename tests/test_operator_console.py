@@ -18,7 +18,7 @@ def test_operator_console_prints_human_readable_progress(tmp_path):
     out = StringIO()
 
     result = run_operator_command(
-        "去二楼救人",
+        "去坐标 (2.0, 1.5) 救人",
         gateway=gateway,
         session_id="operator-a",
         out=out,
@@ -27,10 +27,10 @@ def test_operator_console_prints_human_readable_progress(tmp_path):
 
     text = out.getvalue()
     assert result["status"] == "succeeded"
-    assert "已接收任务：去二楼救人。" in text
+    assert "已接收任务：去坐标 (2.0, 1.5) 救人。" in text
     assert "正在规划救援任务。" in text
     assert "安全检查通过。" in text
-    assert "正在前往2楼。" in text
-    assert "正在搜索2楼被困人员。" in text
+    assert "正在前往 map 坐标系中的目标点 (2.0, 1.5)。" in text
+    assert "正在搜索当前目标区域的被困人员。" in text
     assert "任务完成：FireClaw dry-run rescue plan completed." in text
     assert '"status"' not in text

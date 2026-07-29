@@ -10,7 +10,7 @@ from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 
 def run_rescue_demo(
     *,
-    command: str = "去二楼救人",
+    command: str = "去坐标 (2.0, 1.5) 救人",
     memory_path: str = "memory/fireclaw-demo.jsonl",
     event_path: str = "memory/fireclaw-demo-events.jsonl",
     task_queue_path: str = "memory/fireclaw-demo-tasks.jsonl",

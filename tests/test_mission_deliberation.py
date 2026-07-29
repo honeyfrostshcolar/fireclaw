@@ -1,5 +1,11 @@
 from dataclasses import replace
 
+import pytest
+
+from fireclaw_core.agent.bounded_loop import BoundedAgentLoop
+from fireclaw_core.agent.loop_checkpoint import (
+    JsonlAgentLoopCheckpointStore,
+)
 from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.mission.mission_deliberation import (
     MissionDeliberationDecision,
@@ -131,6 +137,47 @@ def test_runtime_can_inspect_snapshot_before_proposing() -> None:
     assert len(policy.requests[1].observations) == 1
 
 
+def test_runtime_resumes_after_last_committed_read(tmp_path) -> None:
+    store = JsonlAgentLoopCheckpointStore(
+        tmp_path / "mission-loop.jsonl"
+    )
+
+    class InspectThenLoseProcess:
+        calls = 0
+
+        def decide(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return MissionDeliberationDecision.inspect(
+                    "robot_state",
+                    subject_id="robot-a",
+                )
+            raise SystemExit("simulated coordinator process loss")
+
+    with pytest.raises(
+        SystemExit,
+        match="simulated coordinator process loss",
+    ):
+        _run(
+            InspectThenLoseProcess(),
+            checkpoint_store=store,
+        )
+
+    policy = _SequencePolicy([
+        MissionDeliberationDecision.propose(_planning_result()),
+    ])
+    result = _run(policy, checkpoint_store=store)
+
+    assert result.status == "proposed"
+    assert [attempt.outcome for attempt in result.attempts] == [
+        "observed",
+        "accepted",
+    ]
+    assert policy.requests[0].iteration == 2
+    assert len(policy.requests[0].observations) == 1
+    assert policy.requests[0].observations[0].kind == "robot_state"
+
+
 def test_runtime_rejects_repeated_snapshot_read_without_progress() -> None:
     policy = _SequencePolicy([
         MissionDeliberationDecision.inspect("fleet_state"),
@@ -257,6 +304,43 @@ def test_runtime_honors_cancellation_before_policy_call() -> None:
     assert result.status == "cancelled"
     assert result.attempts == ()
     assert policy.requests == []
+
+
+def test_runtime_uses_shared_bounded_agent_loop(monkeypatch) -> None:
+    calls = []
+    original_run = BoundedAgentLoop.run
+
+    def tracking_run(self, **kwargs):
+        calls.append(kwargs["run_id"])
+        return original_run(self, **kwargs)
+
+    monkeypatch.setattr(BoundedAgentLoop, "run", tracking_run)
+    result = _run(_SequencePolicy([
+        MissionDeliberationDecision.propose(_planning_result()),
+    ]))
+
+    assert result.status == "proposed"
+    assert calls == [result.run_id]
+
+
+def test_runtime_honors_cancellation_after_policy_call() -> None:
+    cancelled = False
+
+    class CancellingPolicy:
+        def decide(self, request):
+            nonlocal cancelled
+            cancelled = True
+            return MissionDeliberationDecision.propose(_planning_result())
+
+    result = _run(
+        CancellingPolicy(),
+        cancellation_requested=lambda: cancelled,
+    )
+
+    assert result.status == "cancelled"
+    assert result.reason_code == "cancelled"
+    assert result.attempts[0].operation == "propose_plan"
+    assert result.attempts[0].outcome == "cancelled"
 
 
 def test_runtime_blocks_mismatched_planner_snapshot() -> None:

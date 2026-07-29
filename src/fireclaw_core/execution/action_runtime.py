@@ -36,6 +36,18 @@ class RobotAdapterActionBackend:
         cancellation_requested: CancellationCheck | None = None,
     ) -> RobotActionResult:
         self._emit_robot_feedback(action_type, inputs, feedback_sink)
+        if action_type == "navigate_to_point":
+            return self._call_robot_action(
+                "navigate_to_point",
+                {
+                    "x": float(inputs["x"]),
+                    "y": float(inputs["y"]),
+                    "yaw": float(inputs.get("yaw", 0.0)),
+                    "frame_id": str(inputs.get("frame_id", "map")),
+                },
+                feedback_sink,
+                cancellation_requested,
+            )
         if action_type == "navigate_to_floor":
             return self._call_robot_action("navigate_to_floor", {"floor": int(inputs["floor"])}, feedback_sink, cancellation_requested)
         if action_type == "search_for_victims":

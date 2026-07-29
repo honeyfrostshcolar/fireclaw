@@ -94,7 +94,10 @@ def _events_for_current_task(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a human-facing FireClaw operator console.")
-    parser.add_argument("command", help="Operator command, for example: 去二楼救人")
+    parser.add_argument(
+        "command",
+        help="Operator command, for example: 去坐标 (2.0, 1.5) 救人",
+    )
     parser.add_argument("--adapter", choices=ADAPTER_CHOICES, default="simulator")
     parser.add_argument("--robot-id", default="fireclaw-operator")
     parser.add_argument("--session-id", default="operator")

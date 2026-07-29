@@ -19,6 +19,9 @@ from fireclaw_core.gateway.method_scopes import authorize_method
 from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent, TelemetryTracker
 
 from fireclaw_core.agent.agent import FireClawAgent
+from fireclaw_core.agent.loop_checkpoint import (
+    JsonlAgentLoopCheckpointStore,
+)
 from fireclaw_core.gateway.control import AuthorizationRequest, ControlPolicy, OperatorContext, operator_from_payload
 from fireclaw_core.monitoring.event_ledger import EventLedger
 from fireclaw_core.memory.memory import JsonlMemoryStore
@@ -29,11 +32,15 @@ from fireclaw_core.memory.entity_memory import EntityMemoryService
 from fireclaw_core.memory.entity_extraction import EntityExtractionPipeline
 from fireclaw_core.memory.entity_tools import EntityMemoryTools
 from fireclaw_core.memory.reconciliation import EmbodiedMemoryReplicationExporter
+from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
 from fireclaw_core.planner.planner_builder import build_provider_runtime
 from fireclaw_core.agent.robot_agent import (
     DeterministicRobotAgentPlanner,
-    LLMRobotAgentPlanner,
     RobotAgentRuntime,
+)
+from fireclaw_core.agent.robot_deliberation import (
+    LLMRobotAgentDecisionPolicy,
+    RobotAgentDeliberationRuntime,
 )
 from fireclaw_core.agent.skill_inventory import build_robot_skill_inventory
 from fireclaw_core.agent.robot_tools import build_robot_skill_tools
@@ -53,6 +60,7 @@ class GatewayConfig:
     memory_path: str = "memory/fireclaw-gateway.jsonl"
     event_path: str = "memory/fireclaw-gateway-events.jsonl"
     task_queue_path: str = "memory/fireclaw-gateway-tasks.jsonl"
+    robot_agent_checkpoint_path: str | None = None
     workspace_skills_dir: str | None = "skills"
     dry_run: bool = True
     available_sensors: tuple[str, ...] = ()
@@ -227,6 +235,13 @@ class FireClawGateway:
             )
         self.events = EventLedger(resolved_config.event_path)
         self.task_queue = JsonlTaskQueue(resolved_config.task_queue_path)
+        checkpoint_path = (
+            resolved_config.robot_agent_checkpoint_path
+            or f"{resolved_config.task_queue_path}.agent-loops.jsonl"
+        )
+        self.agent_loop_checkpoints = JsonlAgentLoopCheckpointStore(
+            checkpoint_path
+        )
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._event_lock = threading.Lock()
@@ -238,8 +253,8 @@ class FireClawGateway:
         self._pending_authorizations_by_session: dict[str, AuthorizationRequest] = {}
         self._event_bus = EventBus()
         self._telemetry = TelemetryTracker()
-        self._reconcile_stale_task_queue_records()
         self.robot_agent_runtime = self._build_robot_agent_runtime()
+        self._reconcile_stale_task_queue_records()
 
     def _validate_robot_profile(self) -> None:
         if self.robot_profile is None:
@@ -399,6 +414,26 @@ class FireClawGateway:
                 "control": control_decision.to_dict(),
             }
 
+        self._start_task_worker(
+            control,
+            resolved_operator,
+        )
+        return {
+            "status": "accepted",
+            "task_id": task_id,
+            "session_id": resolved_session_id,
+            "message": "任务已接收，正在后台执行。",
+        }
+
+    def _start_task_worker(
+        self,
+        control: TaskControl,
+        operator: OperatorContext,
+        *,
+        resumed: bool = False,
+    ) -> None:
+        task_id = control.task_id
+
         def worker() -> None:
             try:
                 self.task_queue.update(
@@ -406,24 +441,34 @@ class FireClawGateway:
                     status="running",
                     started_at=datetime.now(timezone.utc).isoformat(),
                 )
+                if resumed:
+                    self._append_event(
+                        task_id=task_id,
+                        session_id=control.session_id,
+                        type="task.resume_started",
+                        payload={
+                            "status": "running",
+                            "task_id": task_id,
+                        },
+                    )
                 self._publish_stream_event(
                     "task.running",
                     task_id=task_id,
                 )
                 self._execute_agent_task(
-                    command=command,
-                    session_id=resolved_session_id,
+                    command=control.command,
+                    session_id=control.session_id,
                     task_id=task_id,
                     record_received=False,
                     cancellation_requested=control.cancel_event.is_set,
-                    operator=resolved_operator,
+                    operator=operator,
                     structured_task=control.structured_task,
                 )
             except Exception as exc:
                 failed_result = {
                     "status": "failed",
                     "task_id": task_id,
-                    "session_id": resolved_session_id,
+                    "session_id": control.session_id,
                     "message": str(exc),
                 }
                 self.task_queue.update(
@@ -435,7 +480,7 @@ class FireClawGateway:
                 )
                 self._append_event(
                     task_id=task_id,
-                    session_id=resolved_session_id,
+                    session_id=control.session_id,
                     type="task.failed",
                     payload={
                         "status": "failed",
@@ -448,16 +493,14 @@ class FireClawGateway:
                     self._task_threads.pop(task_id, None)
                     self._task_controls.pop(task_id, None)
 
-        thread = threading.Thread(target=worker, daemon=True, name=f"fireclaw-task-{task_id}")
+        thread = threading.Thread(
+            target=worker,
+            daemon=True,
+            name=f"fireclaw-task-{task_id}",
+        )
         with self._task_lock:
             self._task_threads[task_id] = thread
         thread.start()
-        return {
-            "status": "accepted",
-            "task_id": task_id,
-            "session_id": resolved_session_id,
-            "message": "任务已接收，正在后台执行。",
-        }
 
     def cancel_task(self, task_id: str, operator: OperatorContext | None = None) -> dict[str, Any]:
         resolved_operator = operator or operator_from_payload(None)
@@ -633,7 +676,9 @@ class FireClawGateway:
                 )
         return cancelled_task_ids
 
-    def _build_robot_agent_runtime(self) -> RobotAgentRuntime | None:
+    def _build_robot_agent_runtime(
+        self,
+    ) -> RobotAgentRuntime | RobotAgentDeliberationRuntime | None:
         if not self.config.robot_agent_enabled:
             return None
         if self.config.robot_agent_planner == "deterministic":
@@ -645,15 +690,9 @@ class FireClawGateway:
                 model=self.config.robot_agent_model,
                 model_catalog_path=self.config.robot_agent_model_catalog_path,
             )
-            return RobotAgentRuntime(
-                planner=LLMRobotAgentPlanner(
-                    runtime,
-                    memory_tool_executor=(
-                        self.entity_memory_tools.execute
-                        if self.entity_memory_tools is not None
-                        else None
-                    ),
-                )
+            return RobotAgentDeliberationRuntime(
+                policy=LLMRobotAgentDecisionPolicy(runtime),
+                checkpoint_store=self.agent_loop_checkpoints,
             )
         raise ValueError(f"unsupported robot_agent_planner: {self.config.robot_agent_planner}")
 
@@ -677,7 +716,11 @@ class FireClawGateway:
             )
 
         # Start with task-required skills plus always-exposed skills
-        candidate_skills = set(task_object.required_skills) | {"report_status", "return_to_safe_zone"}
+        candidate_skills = (
+            set(task_object.required_skills)
+            | set(task_object.allowed_skills)
+            | {"report_status", "return_to_safe_zone"}
+        )
 
         # If profile is loaded, constrain to profile's llm_exposed_skills
         if self.robot_profile is not None:
@@ -699,29 +742,195 @@ class FireClawGateway:
             if metadata["name"] in exposed_skill_names
         ]
 
-        robot_state_object = agent._get_robot_state()
-        robot_state = agent._state_snapshot(robot_state_object)
-        runtime_sensors = robot_state.get("available_sensors")
-        context = {
-            "robot_state": robot_state,
-            "environment_state": agent._state_snapshot(agent._get_environment_state()),
-            "available_sensors": sorted(runtime_sensors if runtime_sensors is not None else agent.available_sensors),
-            "skill_tools": skill_tools,
-            "skill_metadata": skill_metadata,
-            "skill_inventory": build_robot_skill_inventory(
-                registry=agent.registry,
-                primitive_skills=self.robot_profile.primitive_skills if self.robot_profile else tuple(agent.registry.names()),
-                composite_chains=self.robot_profile.capability_skill_chains if self.robot_profile else {},
-                verified_sensors=set(runtime_sensors if runtime_sensors is not None else agent.available_sensors),
-            ),
-            "session_history": agent._recent_session_records(limit=50),
-        }
-        if self.entity_memory_tools is not None and task_object.mission_id:
-            context["memory_tools"] = self.entity_memory_tools.tool_schemas()
+        def build_context() -> dict[str, Any]:
+            robot_state = agent._state_snapshot(agent._get_robot_state())
+            runtime_sensors = (
+                robot_state.get("available_sensors")
+                if isinstance(robot_state, dict)
+                else None
+            )
+            verified_sensors = set(
+                runtime_sensors
+                if runtime_sensors is not None
+                else agent.available_sensors
+            )
+            context = {
+                "robot_state": robot_state,
+                "environment_state": agent._state_snapshot(
+                    agent._get_environment_state()
+                ),
+                "available_sensors": sorted(verified_sensors),
+                "skill_tools": skill_tools,
+                "skill_metadata": skill_metadata,
+                "skill_inventory": build_robot_skill_inventory(
+                    registry=agent.registry,
+                    primitive_skills=(
+                        self.robot_profile.primitive_skills
+                        if self.robot_profile
+                        else tuple(agent.registry.names())
+                    ),
+                    composite_chains=(
+                        self.robot_profile.capability_skill_chains
+                        if self.robot_profile
+                        else {}
+                    ),
+                    verified_sensors=verified_sensors,
+                ),
+                "session_history": agent._recent_session_records(limit=50),
+            }
+            if self.entity_memory_tools is not None and task_object.mission_id:
+                context["memory_tools"] = (
+                    self.entity_memory_tools.tool_schemas()
+                )
+            return context
+
+        if isinstance(
+            self.robot_agent_runtime,
+            RobotAgentDeliberationRuntime,
+        ):
+            step_executions = []
+
+            def execute_skill(step):
+                if not step.operation_id:
+                    raise ValueError(
+                        "Robot Agent physical skill requires operation_id"
+                    )
+                target_floor = task_object.target.get("floor")
+                planning_result = PlanningResult(
+                    status="planned",
+                    message="Robot Agent proposed one policy-checked skill.",
+                    intent=task_object.task_type,
+                    target_floor=(
+                        target_floor
+                        if isinstance(target_floor, int)
+                        else None
+                    ),
+                    target_pose=(
+                        {
+                            **dict(task_object.target["pose"]),
+                            "frame_id": str(
+                                task_object.target.get("frame_id") or "map"
+                            ),
+                        }
+                        if isinstance(task_object.target.get("pose"), dict)
+                        else None
+                    ),
+                    plan=Plan(
+                        intent=task_object.task_type,
+                        steps=[
+                            PlanStep(
+                                skill_name=step.skill_name,
+                                inputs=dict(step.inputs),
+                            )
+                        ],
+                    ),
+                )
+                emit(
+                    "robot_agent.skill_dispatch_started",
+                    {
+                        "operation_id": step.operation_id,
+                        "skill_name": step.skill_name,
+                        "inputs": dict(step.inputs),
+                    },
+                )
+                run = agent.execute_deliberated_step(
+                    command=task_object.command or task_object.task_type,
+                    planning_result=planning_result,
+                    structured_task=task_object,
+                )
+                step_executions.append(run)
+                emit(
+                    "robot_agent.skill_dispatch_finished",
+                    {
+                        "operation_id": step.operation_id,
+                        "skill_name": step.skill_name,
+                        "output": run.payload,
+                    },
+                )
+                return run.payload
+
+            def reconcile_skill(
+                operation_id: str,
+                step,
+            ) -> dict[str, Any] | None:
+                started = False
+                for event in self.events.events_for_task(task_id):
+                    payload = event.get("payload")
+                    if (
+                        not isinstance(payload, dict)
+                        or payload.get("operation_id") != operation_id
+                    ):
+                        continue
+                    if event.get("type") == (
+                        "robot_agent.skill_dispatch_started"
+                    ):
+                        started = True
+                    if event.get("type") == (
+                        "robot_agent.skill_dispatch_finished"
+                    ):
+                        output = payload.get("output")
+                        if isinstance(output, dict):
+                            return dict(output)
+                        return {"reconciliation_status": "unknown"}
+                if started:
+                    return {"reconciliation_status": "unknown"}
+                return {"reconciliation_status": "not_started"}
+
+            def query_context(
+                tool_name: str,
+                arguments: dict[str, Any],
+            ) -> dict[str, Any]:
+                if (
+                    self.entity_memory_tools is None
+                    or task_object.mission_id is None
+                ):
+                    return {
+                        "status": "error",
+                        "message": "Robot Agent context tools are unavailable.",
+                        "advisory_only": True,
+                    }
+                try:
+                    result = self.entity_memory_tools.execute(
+                        tool_name,
+                        arguments,
+                        mission_id=task_object.mission_id,
+                    )
+                except (TypeError, ValueError) as exc:
+                    return {
+                        "status": "error",
+                        "message": str(exc),
+                        "advisory_only": True,
+                    }
+                if isinstance(result, dict):
+                    return dict(result)
+                return {
+                    "status": "error",
+                    "message": "Context tool returned a non-object result.",
+                    "advisory_only": True,
+                }
+
+            emit("task.structured_received", task_object.to_dict())
+            loop_result = self.robot_agent_runtime.run(
+                task_object,
+                fallback_robot_id=self.config.robot_id,
+                context_provider=build_context,
+                execute_skill=execute_skill,
+                query_context=query_context,
+                reconcile_skill=reconcile_skill,
+                event_sink=emit,
+                cancellation_requested=cancellation_requested,
+            )
+            return agent.finalize_deliberated_task(
+                command=task_object.command or task_object.task_type,
+                structured_task=task_object,
+                loop_result=loop_result,
+                step_executions=step_executions,
+            )
+
         planning_result = self.robot_agent_runtime.plan_structured_task(
             task_object,
             fallback_robot_id=self.config.robot_id,
-            context=context,
+            context=build_context(),
             event_sink=emit,
             cancellation_requested=cancellation_requested,
         )
@@ -1244,20 +1453,99 @@ class FireClawGateway:
 
     def _reconcile_stale_task_queue_records(self) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        lost_records = self.task_queue.mark_non_terminal_lost(
-            ended_at=now,
-            error="Gateway restarted before terminal result.",
+        recoverable = (
+            self.agent_loop_checkpoints.recoverable()
+            if isinstance(
+                self.robot_agent_runtime,
+                RobotAgentDeliberationRuntime,
+            )
+            else {}
         )
-        for record in lost_records:
+        for record in self.task_queue.list_records():
+            if record.is_terminal:
+                continue
+            events = self.events.events_for_task(record.task_id)
+            structured_payload = next(
+                (
+                    event.get("payload")
+                    for event in reversed(events)
+                    if event.get("type") == "task.structured_received"
+                    and isinstance(event.get("payload"), dict)
+                ),
+                None,
+            )
+            task_object = (
+                StructuredRobotTask.from_dict(structured_payload)
+                if isinstance(structured_payload, dict)
+                else None
+            )
+            checkpoint = None
+            if task_object is not None:
+                robot_id = task_object.robot_id or self.config.robot_id
+                checkpoint = recoverable.get(
+                    f"robot:{robot_id}:task:{task_object.task_id}"
+                )
+            with self._task_lock:
+                has_capacity = (
+                    len(self._task_controls)
+                    < self.config.max_active_execution_tasks
+                )
+            if checkpoint is not None and has_capacity:
+                operator_payload = next(
+                    (
+                        event.get("payload")
+                        for event in reversed(events)
+                        if event.get("type") == "operator.identified"
+                        and isinstance(event.get("payload"), dict)
+                    ),
+                    None,
+                )
+                control = TaskControl(
+                    task_id=record.task_id,
+                    session_id=record.session_id,
+                    command=record.command,
+                    started_at=record.started_at or record.created_at,
+                    structured_task=structured_payload,
+                )
+                with self._task_lock:
+                    self._task_controls[record.task_id] = control
+                self._append_event(
+                    task_id=record.task_id,
+                    session_id=record.session_id,
+                    type="task.resume_scheduled",
+                    payload={
+                        "status": "accepted",
+                        "task_id": record.task_id,
+                        "checkpoint_key": checkpoint.checkpoint_key,
+                        "pending_operation_id": (
+                            checkpoint.pending_operation.operation_id
+                            if checkpoint.pending_operation is not None
+                            else None
+                        ),
+                    },
+                )
+                self._start_task_worker(
+                    control,
+                    operator_from_payload(operator_payload),
+                    resumed=True,
+                )
+                continue
+
+            lost_record = self.task_queue.update(
+                record.task_id,
+                status="lost",
+                ended_at=now,
+                error="Gateway restarted before terminal result.",
+            )
             self._append_event(
-                task_id=record.task_id,
-                session_id=record.session_id,
+                task_id=lost_record.task_id,
+                session_id=lost_record.session_id,
                 type="task.lost",
                 payload={
                     "status": "lost",
-                    "task_id": record.task_id,
+                    "task_id": lost_record.task_id,
                     "message": "Gateway restarted before terminal result; task was not replayed.",
-                    "queue_record": record.to_dict(),
+                    "queue_record": lost_record.to_dict(),
                 },
             )
 

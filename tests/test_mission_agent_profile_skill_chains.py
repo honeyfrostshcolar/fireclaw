@@ -104,7 +104,10 @@ def test_mission_agent_falls_back_to_default_when_no_chains(tmp_path: Path) -> N
     assert result["status"] == "accepted"
     assert client.last_structured_task is not None
     # Without chains, should fall back to default _skills_from_capability
-    assert client.last_structured_task["required_skills"] == ["navigate_to_floor", "search_for_victims", "report_status"]
+    assert client.last_structured_task["required_skills"] == [
+        "search_for_victims",
+        "report_status",
+    ]
 
 
 def test_mission_agent_generated_subtask_uses_chains(tmp_path: Path) -> None:

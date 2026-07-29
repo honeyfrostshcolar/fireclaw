@@ -131,7 +131,7 @@ def test_mission_agent_rejects_unknown_robot_without_submitting():
     assert result == {
         "status": "not_found",
         "robot_id": "robot-missing",
-        "message": "Robot subagent is not registered.",
+        "message": "Robot Agent is not registered.",
         "subtasks": [],
     }
     assert client.calls == []
@@ -1031,7 +1031,7 @@ def test_mission_agent_mission_events_returns_aggregated_events(tmp_path):
     submitted = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
     mission_id = submitted["mission_id"]
 
-    # Set up fake events from the robot subagent
+    # Set up fake events from the Robot Agent.
     client.events_by_entry[("robot-1", "task-robot-1")] = [
         {"type": "sensor_update", "timestamp": "2026-06-08T12:00:01Z", "data": {"temp": 42}},
         {"type": "task.completed", "timestamp": "2026-06-08T12:00:02Z", "data": {"status": "succeeded"}},

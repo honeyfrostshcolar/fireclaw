@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any, Protocol
 from uuid import uuid4
@@ -9,6 +10,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.agent.loop_checkpoint import AgentLoopCheckpointStore
 from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
 from fireclaw_core.infra.log_redaction import redact_dict
 from fireclaw_core.memory.mission_memory_facade import MemoryAccessContext
@@ -29,6 +31,15 @@ from fireclaw_core.memory.embodied_memory import (
 )
 from fireclaw_core.memory.working_memory import EmbodiedWorkingMemory
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
+from fireclaw_core.mission.active_observation import (
+    ActiveObservationError,
+    MissionActiveObservationLimits,
+    MissionObservationCompiler,
+    TERMINAL_OBSERVATION_FAILURE_STATUSES,
+    TERMINAL_OBSERVATION_SUCCESS_STATUSES,
+    environment_fact_from_observation_trace,
+    observation_trace_status,
+)
 from fireclaw_core.mission.mission_planning_audit import (
     GuardDecision,
     MissionPlanningAuditRecord,
@@ -123,7 +134,11 @@ class MissionAgent:
         planner_memory_context_builder: PlannerMemoryContextBuilder | None = None,
         mission_state_snapshot_builder: MissionStateSnapshotBuilder | None = None,
         mission_deliberation_runtime: MissionDeliberationRuntime | None = None,
+        agent_loop_checkpoint_store: (
+            AgentLoopCheckpointStore | None
+        ) = None,
         mission_plan_revision_coordinator: MissionPlanRevisionCoordinator | None = None,
+        active_observation_limits: MissionActiveObservationLimits | None = None,
         consolidation_coordinator: Any | None = None,
         working_memory_hydration_report: Any | None = None,
     ) -> None:
@@ -161,6 +176,7 @@ class MissionAgent:
                 MissionDeliberationRuntime(
                     registry=registry,
                     policy=planner_policy,
+                    checkpoint_store=agent_loop_checkpoint_store,
                 )
                 if planner_policy is not None
                 else None
@@ -191,6 +207,12 @@ class MissionAgent:
                 if self.mission_deliberation_runtime is not None
                 else None
             )
+        )
+        self.active_observation_limits = (
+            active_observation_limits or MissionActiveObservationLimits()
+        )
+        self.mission_observation_compiler = MissionObservationCompiler(
+            registry
         )
         self._latest_mission_state_refs: dict[str, tuple[int, str]] = {}
         self._active_task_graphs: dict[str, MissionTaskGraph] = {}
@@ -579,6 +601,265 @@ class MissionAgent:
             )
         return event_id
 
+    def _run_active_observation_loop(
+        self,
+        *,
+        mission_id: str,
+        command: str,
+        operator: dict[str, Any] | None,
+        memory_context_result: PlannerMemoryContextResult,
+        command_event_id: str | None,
+        state_snapshot: MissionStateSnapshot,
+        state_snapshot_event_id: str | None,
+        deliberation_result: MissionDeliberationResult,
+    ) -> tuple[
+        MissionDeliberationResult,
+        MissionStateSnapshot,
+        str | None,
+        set[str],
+        list[dict[str, Any]],
+        str | None,
+    ]:
+        rounds: list[dict[str, Any]] = []
+        online_robot_ids = {
+            robot.robot_id
+            for robot in state_snapshot.robots
+            if robot.online and not robot.stale
+        }
+        while deliberation_result.status == "observation_required":
+            deliberation_event_id = self._record_mission_deliberation(
+                deliberation_result,
+                derived_from=tuple(
+                    item
+                    for item in (
+                        command_event_id,
+                        state_snapshot_event_id,
+                    )
+                    if item is not None
+                ),
+            )
+            if len(rounds) >= self.active_observation_limits.max_rounds:
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    "Mission planning exceeded its active observation limit.",
+                )
+            observation_request = deliberation_result.observation_request
+            if observation_request is None:
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    "Mission deliberation returned no active observation request.",
+                )
+            try:
+                compiled = self.mission_observation_compiler.compile(
+                    observation_request,
+                    snapshot=state_snapshot,
+                )
+            except ActiveObservationError as exc:
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    str(exc),
+                )
+            round_number = len(rounds) + 1
+            dispatch = self.submit_subtask(
+                compiled.robot_id,
+                compiled.subtask.command,
+                session_id=mission_id,
+                dedupe_key=(
+                    f"{mission_id}-active-observation-"
+                    f"{round_number}-{compiled.subtask.node_id}"
+                ),
+                operator=operator,
+                mission={
+                    "mission_id": mission_id,
+                    "purpose": "active_observation",
+                    "belief_id": observation_request.belief_id,
+                },
+                mission_subtask=compiled.subtask,
+                mission_node_id=compiled.subtask.node_id,
+                memory_command_event_id=command_event_id,
+                memory_plan_event_id=deliberation_event_id,
+            )
+            task_id = dispatch.get("task_id")
+            round_record: dict[str, Any] = {
+                "round": round_number,
+                "snapshot_id": state_snapshot.snapshot_id,
+                "request": observation_request.to_dict(),
+                "compiled": compiled.to_dict(),
+                "dispatch": dispatch,
+            }
+            rounds.append(round_record)
+            if not isinstance(task_id, str) or not task_id:
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    "Active observation dispatch returned no task_id.",
+                )
+            trace = dispatch.get("subagent_result")
+            if not isinstance(trace, dict):
+                trace = {}
+            status = observation_trace_status(trace)
+            deadline = (
+                time.monotonic()
+                + self.active_observation_limits.timeout_seconds
+            )
+            entry = self.registry.get(compiled.robot_id)
+            if entry is None:
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    "Active observation robot is no longer registered.",
+                )
+            while (
+                status not in TERMINAL_OBSERVATION_SUCCESS_STATUSES
+                and status not in TERMINAL_OBSERVATION_FAILURE_STATUSES
+                and time.monotonic() < deadline
+            ):
+                try:
+                    trace = self.subagent_client.get_task_trace(
+                        entry,
+                        task_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to poll active observation task"
+                    )
+                    trace = {"status": "unknown"}
+                status = observation_trace_status(trace)
+                if (
+                    status not in TERMINAL_OBSERVATION_SUCCESS_STATUSES
+                    and status
+                    not in TERMINAL_OBSERVATION_FAILURE_STATUSES
+                ):
+                    time.sleep(
+                        self.active_observation_limits.poll_interval_seconds
+                    )
+            round_record["terminal_status"] = status
+            if status not in TERMINAL_OBSERVATION_SUCCESS_STATUSES:
+                reason = (
+                    "Active observation task timed out."
+                    if status not in TERMINAL_OBSERVATION_FAILURE_STATUSES
+                    else f"Active observation task ended with status {status}."
+                )
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    reason,
+                )
+            try:
+                fact = environment_fact_from_observation_trace(
+                    trace,
+                    compiled=compiled,
+                    mission_id=mission_id,
+                    task_id=task_id,
+                )
+            except ActiveObservationError as exc:
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    str(exc),
+                )
+            round_record["environment_fact"] = fact.to_dict()
+            presence = self.check_fleet_presence()
+            online_robot_ids = {
+                robot_id
+                for robot_id, info in presence.items()
+                if info.get("online")
+            }
+            try:
+                refreshed = self._build_mission_state_snapshot(
+                    mission_id,
+                    presence,
+                )
+                facts_by_id = {
+                    item.fact_id: item
+                    for item in (
+                        *state_snapshot.environment_facts,
+                        *refreshed.environment_facts,
+                        fact,
+                    )
+                }
+                state_snapshot = (
+                    self.mission_state_snapshot_builder.with_environment_facts(
+                        refreshed,
+                        tuple(facts_by_id.values()),
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to refresh state after active observation"
+                )
+                return (
+                    deliberation_result,
+                    state_snapshot,
+                    state_snapshot_event_id,
+                    online_robot_ids,
+                    rounds,
+                    "Active observation succeeded but the new mission state "
+                    "snapshot could not be built.",
+                )
+            state_snapshot_event_id = (
+                self._record_mission_state_snapshot(state_snapshot)
+            )
+            round_record["next_snapshot_id"] = state_snapshot.snapshot_id
+            context = MissionPlannerContext(
+                available_robots=[
+                    entry
+                    for entry in self.registry.enabled_entries()
+                    if entry.robot_id in online_robot_ids
+                ],
+                state_snapshot=state_snapshot.to_dict(),
+                retrieved_memories=list(
+                    memory_context_result.memories
+                ),
+                operator_corrections=list(
+                    memory_context_result.corrections
+                ),
+                external_knowledge=list(
+                    memory_context_result.external_knowledge
+                ),
+            )
+            assert self.mission_deliberation_runtime is not None
+            deliberation_result = (
+                self.mission_deliberation_runtime.deliberate(
+                    mission_id=mission_id,
+                    command=command,
+                    state_snapshot=state_snapshot,
+                    planner_context=context,
+                )
+            )
+        return (
+            deliberation_result,
+            state_snapshot,
+            state_snapshot_event_id,
+            online_robot_ids,
+            rounds,
+            None,
+        )
+
     def active_task_graph(self, mission_id: str) -> MissionTaskGraph | None:
         return self._active_task_graphs.get(mission_id)
 
@@ -926,14 +1207,14 @@ class MissionAgent:
             return {
                 "status": "not_found",
                 "robot_id": robot_id,
-                "message": "Robot subagent is not registered.",
+                "message": "Robot Agent is not registered.",
                 "subtasks": [],
             }
         if not entry.enabled:
             return {
                 "status": "disabled",
                 "robot_id": robot_id,
-                "message": "Robot subagent is disabled.",
+                "message": "Robot Agent is disabled.",
                 "subtasks": [],
             }
         mission_id = _mission_id(session_id)
@@ -957,9 +1238,29 @@ class MissionAgent:
                 capability_skill_chains=self.profile_skill_chains_by_robot.get(robot_id),
             ).to_dict()
         else:
-            floor = RuleBasedPlanner()._extract_floor(command)
+            planner = RuleBasedPlanner()
+            point = planner._extract_point(command)
+            floor = planner._extract_floor(command)
             capability = _capability_from_entry(entry)
-            if floor is not None and capability != "unknown":
+            if point is not None and capability != "unknown":
+                pose = dict(point)
+                frame_id = str(pose.pop("frame_id", "map"))
+                generated_subtask = MissionSubtask(
+                    robot_id=robot_id,
+                    command=command,
+                    floor=None,
+                    capability_required=capability,
+                    execution_group=0,
+                    target={"frame_id": frame_id, "pose": pose},
+                )
+                structured_task = structured_task_from_mission_subtask(
+                    mission_id=mission_id,
+                    subtask=generated_subtask,
+                    operator_id=(operator or {}).get("operator_id") if isinstance(operator, dict) else None,
+                    task_id=mission_node_id,
+                    capability_skill_chains=self.profile_skill_chains_by_robot.get(robot_id),
+                ).to_dict()
+            elif floor is not None and capability != "unknown":
                 generated_subtask = MissionSubtask(
                     robot_id=robot_id,
                     command=command,
@@ -1282,6 +1583,33 @@ class MissionAgent:
             state_snapshot=state_snapshot,
             planner_context=context,
         )
+        (
+            deliberation_result,
+            state_snapshot,
+            state_snapshot_event_id,
+            online_robot_ids,
+            active_observation_rounds,
+            active_observation_error,
+        ) = self._run_active_observation_loop(
+            mission_id=mission_id,
+            command=command,
+            operator=operator,
+            memory_context_result=memory_context_result,
+            command_event_id=command_event_id,
+            state_snapshot=state_snapshot,
+            state_snapshot_event_id=state_snapshot_event_id,
+            deliberation_result=deliberation_result,
+        )
+        if active_observation_error is not None:
+            return {
+                "status": "blocked",
+                "message": active_observation_error,
+                "mission_id": mission_id,
+                "state_snapshot": state_snapshot.to_dict(),
+                "deliberation": deliberation_result.to_dict(),
+                "active_observation_rounds": active_observation_rounds,
+                "subtask_results": [],
+            }
         planning_result = deliberation_result.planning_result
         if planning_result is None:
             planning_result = MissionPlanningResult(
@@ -1347,6 +1675,9 @@ class MissionAgent:
             if fallback is not None:
                 fallback["state_snapshot"] = state_snapshot.to_dict()
                 fallback["deliberation"] = deliberation_result.to_dict()
+                fallback["active_observation_rounds"] = (
+                    active_observation_rounds
+                )
                 return fallback
 
         if planning_result.status != "planned" or planning_result.plan is None:
@@ -1357,6 +1688,7 @@ class MissionAgent:
                 "mission_id": mission_id,
                 "state_snapshot": state_snapshot.to_dict(),
                 "deliberation": deliberation_result.to_dict(),
+                "active_observation_rounds": active_observation_rounds,
                 "subtask_results": [],
             }
             if deliberation_result.validation_errors:
@@ -1371,6 +1703,7 @@ class MissionAgent:
                 "message": "Mission deliberation returned no validated task graph.",
                 "state_snapshot": state_snapshot.to_dict(),
                 "deliberation": deliberation_result.to_dict(),
+                "active_observation_rounds": active_observation_rounds,
                 "subtask_results": [],
             }
         plan_artifact = {
@@ -1428,6 +1761,7 @@ class MissionAgent:
                 "errors": validation_errors,
                 "state_snapshot": state_snapshot.to_dict(),
                 "deliberation": deliberation_result.to_dict(),
+                "active_observation_rounds": active_observation_rounds,
                 "task_graph": task_graph.to_dict(),
                 "subtask_results": [],
             }
@@ -1446,6 +1780,7 @@ class MissionAgent:
             return {
                 "status": "blocked",
                 "message": audit_error,
+                "active_observation_rounds": active_observation_rounds,
                 "subtask_results": [],
             }
         self._active_task_graphs[mission_id] = task_graph
@@ -1550,6 +1885,7 @@ class MissionAgent:
                 "plan": planning_result.plan.to_dict(),
                 "state_snapshot": state_snapshot.to_dict(),
                 "deliberation": deliberation_result.to_dict(),
+                "active_observation_rounds": active_observation_rounds,
                 "task_graph": task_graph.to_dict(),
                 "subtask_results": subtask_results,
                 "group_results": scheduler_result.get("group_results", []),
@@ -1639,6 +1975,7 @@ class MissionAgent:
             "plan": planning_result.plan.to_dict(),
             "state_snapshot": state_snapshot.to_dict(),
             "deliberation": deliberation_result.to_dict(),
+            "active_observation_rounds": active_observation_rounds,
             "task_graph": task_graph.to_dict(),
             "subtask_results": subtask_results,
         }

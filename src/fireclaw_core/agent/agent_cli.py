@@ -11,7 +11,11 @@ from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw dry-run agent.")
-    parser.add_argument("command", nargs="?", help="Operator command, for example: 去二楼救人")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        help="Operator command, for example: 去坐标 (2.0, 1.5) 救人",
+    )
     parser.add_argument(
         "--demo",
         choices=("rescue",),
@@ -77,7 +81,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.demo == "rescue":
         result = run_rescue_demo(
-            command=args.command or "去二楼救人",
+            command=args.command or "去坐标 (2.0, 1.5) 救人",
             memory_path=args.memory_path,
             event_path=args.event_path,
             task_queue_path=args.task_queue_path,

@@ -2,12 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import hashlib
 import logging
 import time
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
+from fireclaw_core.agent.bounded_loop import (
+    AgentLoopLimits,
+    AgentLoopResult,
+    AgentLoopTransition,
+    AgentLoopTurn,
+    BoundedAgentLoop,
+)
+from fireclaw_core.agent.loop_checkpoint import (
+    AgentLoopCheckpoint,
+    AgentLoopCheckpointStore,
+)
 from fireclaw_core.agent.robot_registry import RobotRegistry
+from fireclaw_core.mission.active_observation import (
+    MissionObservationRequest,
+    UNRESOLVED_BELIEF_STATUSES,
+)
 from fireclaw_core.mission.graph_proposal import (
     MissionGraphCompilationError,
     MissionGraphCompiler,
@@ -47,6 +63,7 @@ VALID_READ_KINDS = frozenset({
 VALID_DELIBERATION_OPERATIONS = frozenset({
     "inspect_state",
     "propose_plan",
+    "request_observation",
     "request_clarification",
     "escalate",
 })
@@ -96,6 +113,22 @@ class MissionStateObservation:
             result["subject_id"] = self.subject_id
         return result
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> MissionStateObservation:
+        data = value.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("Mission observation data must be an object")
+        return cls(
+            kind=str(value.get("kind") or ""),
+            data=dict(data),
+            iteration=int(value.get("iteration") or 0),
+            subject_id=(
+                value["subject_id"]
+                if isinstance(value.get("subject_id"), str)
+                else None
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class MissionDeliberationRequest:
@@ -119,6 +152,7 @@ class MissionDeliberationDecision:
     message: str
     planning_result: MissionPlanningResult | None = None
     read_request: MissionStateReadRequest | None = None
+    observation_request: MissionObservationRequest | None = None
     reason_code: str | None = None
     context_manifest: MissionPlanningContextManifest | None = None
 
@@ -145,6 +179,19 @@ class MissionDeliberationDecision:
             operation="propose_plan",
             message=planning_result.message,
             planning_result=planning_result,
+        )
+
+    @classmethod
+    def observe(
+        cls,
+        observation_request: MissionObservationRequest,
+        *,
+        message: str = "Request an active robot observation.",
+    ) -> MissionDeliberationDecision:
+        return cls(
+            operation="request_observation",
+            message=message,
+            observation_request=observation_request,
         )
 
     @classmethod
@@ -347,6 +394,7 @@ class MissionDeliberationAttempt:
     duration_ms: float
     reason_code: str | None = None
     read_request: MissionStateReadRequest | None = None
+    observation_request: MissionObservationRequest | None = None
     validation_errors: tuple[str, ...] = ()
     context_id: str | None = None
     context_manifest: dict[str, Any] | None = None
@@ -365,11 +413,70 @@ class MissionDeliberationAttempt:
             result["reason_code"] = self.reason_code
         if self.read_request is not None:
             result["read_request"] = self.read_request.to_dict()
+        if self.observation_request is not None:
+            result["observation_request"] = (
+                self.observation_request.to_dict()
+            )
         if self.context_id is not None:
             result["context_id"] = self.context_id
         if self.context_manifest is not None:
             result["context_manifest"] = dict(self.context_manifest)
         return result
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: dict[str, Any],
+    ) -> MissionDeliberationAttempt:
+        read_request = value.get("read_request")
+        observation_request = value.get("observation_request")
+        manifest = value.get("context_manifest")
+        return cls(
+            iteration=int(value.get("iteration") or 0),
+            operation=str(value.get("operation") or ""),
+            outcome=str(value.get("outcome") or ""),
+            started_at=str(value.get("started_at") or ""),
+            completed_at=str(value.get("completed_at") or ""),
+            duration_ms=float(value.get("duration_ms") or 0.0),
+            reason_code=(
+                value["reason_code"]
+                if isinstance(value.get("reason_code"), str)
+                else None
+            ),
+            read_request=(
+                MissionStateReadRequest(
+                    kind=str(read_request.get("kind") or ""),
+                    subject_id=(
+                        read_request["subject_id"]
+                        if isinstance(
+                            read_request.get("subject_id"),
+                            str,
+                        )
+                        else None
+                    ),
+                )
+                if isinstance(read_request, dict)
+                else None
+            ),
+            observation_request=(
+                MissionObservationRequest.from_dict(observation_request)
+                if isinstance(observation_request, dict)
+                else None
+            ),
+            validation_errors=tuple(
+                str(item)
+                for item in value.get("validation_errors", [])
+                if isinstance(item, str)
+            ),
+            context_id=(
+                value["context_id"]
+                if isinstance(value.get("context_id"), str)
+                else None
+            ),
+            context_manifest=(
+                dict(manifest) if isinstance(manifest, dict) else None
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -387,6 +494,7 @@ class MissionDeliberationResult:
     task_graph: MissionTaskGraph | None = None
     reason_code: str | None = None
     validation_errors: tuple[str, ...] = ()
+    observation_request: MissionObservationRequest | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -405,6 +513,10 @@ class MissionDeliberationResult:
         }
         if self.reason_code is not None:
             result["reason_code"] = self.reason_code
+        if self.observation_request is not None:
+            result["observation_request"] = (
+                self.observation_request.to_dict()
+            )
         if self.task_graph is not None:
             result["task_graph"] = self.task_graph.to_dict()
         if self.planning_result is not None:
@@ -415,6 +527,59 @@ class MissionDeliberationResult:
                     self.planning_result.graph_proposal.to_dict()
                 )
         return result
+
+
+@dataclass(frozen=True)
+class _MissionLoopObservation:
+    """Internal progress marker; authoritative observations stay snapshot-bound."""
+
+    iteration: int
+    outcome: str
+    reason_code: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "iteration": self.iteration,
+            "outcome": self.outcome,
+            "reason_code": self.reason_code,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: dict[str, Any],
+    ) -> _MissionLoopObservation:
+        return cls(
+            iteration=int(value.get("iteration") or 0),
+            outcome=str(value.get("outcome") or ""),
+            reason_code=(
+                value["reason_code"]
+                if isinstance(value.get("reason_code"), str)
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _MissionLoopTerminal:
+    status: str
+    message: str
+    planning_result: MissionPlanningResult
+    reason_code: str | None = None
+    task_graph: MissionTaskGraph | None = None
+    validation_errors: tuple[str, ...] = ()
+    observation_request: MissionObservationRequest | None = None
+
+
+@dataclass(frozen=True)
+class _MissionLoopDecision:
+    operation: str
+    started_at: str
+    started: float
+    decision: MissionDeliberationDecision | None = None
+    context_manifest: MissionPlanningContextManifest | None = None
+    validation_errors: tuple[str, ...] = ()
+    terminal: _MissionLoopTerminal | None = None
 
 
 class MissionDeliberationRuntime:
@@ -430,6 +595,7 @@ class MissionDeliberationRuntime:
         graph_compiler: MissionGraphCompiler | None = None,
         context_assembler: MissionPlanningContextAssembler | None = None,
         cancellation_requested: Callable[[], bool] | None = None,
+        checkpoint_store: AgentLoopCheckpointStore | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -442,6 +608,7 @@ class MissionDeliberationRuntime:
             context_assembler or MissionPlanningContextAssembler()
         )
         self.cancellation_requested = cancellation_requested
+        self.checkpoint_store = checkpoint_store
         self._monotonic = monotonic
         self._now = now or (lambda: datetime.now(timezone.utc))
 
@@ -456,9 +623,16 @@ class MissionDeliberationRuntime:
         supersedes_plan_id: str | None = None,
         invalidation_evidence_ids: tuple[str, ...] = (),
     ) -> MissionDeliberationResult:
-        run_id = f"deliberation-{uuid4().hex}"
-        started_at = self._timestamp()
-        started = self._monotonic()
+        command_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
+        checkpoint_key = (
+            f"mission:{mission_id}:snapshot:{state_snapshot.snapshot_id}:"
+            f"revision:{plan_revision}:command:{command_hash[:16]}"
+        )
+        run_id = (
+            checkpoint_key
+            if self.checkpoint_store is not None
+            else f"deliberation-{uuid4().hex}"
+        )
         attempts: list[MissionDeliberationAttempt] = []
         observations: list[MissionStateObservation] = []
         validation_errors = tuple(
@@ -475,6 +649,7 @@ class MissionDeliberationRuntime:
                 "Planner context state_snapshot does not match deliberation state snapshot.",
             )
         if validation_errors:
+            started_at = self._timestamp()
             return self._result(
                 run_id=run_id,
                 mission_id=mission_id,
@@ -492,20 +667,99 @@ class MissionDeliberationRuntime:
                 ),
             )
 
-        seen_reads: set[tuple[str, str | None]] = set()
-        last_planning_result: MissionPlanningResult | None = None
-        for iteration in range(1, self.limits.max_iterations + 1):
-            terminal = self._pre_attempt_terminal(
-                run_id=run_id,
-                mission_id=mission_id,
-                state_snapshot=state_snapshot,
-                started_at=started_at,
-                started=started,
-                attempts=attempts,
-                observations=observations,
+        resume_checkpoint: AgentLoopCheckpoint | None = None
+        adapter_state: dict[str, Any] = {}
+        if self.checkpoint_store is not None:
+            latest = self.checkpoint_store.latest(checkpoint_key)
+            if latest is not None and latest.is_recoverable:
+                adapter_state = dict(latest.adapter_state or {})
+                if (
+                    adapter_state.get("mission_id") != mission_id
+                    or adapter_state.get("snapshot_id")
+                    != state_snapshot.snapshot_id
+                    or adapter_state.get("command_hash") != command_hash
+                    or adapter_state.get("plan_revision") != plan_revision
+                ):
+                    raise ValueError(
+                        "Mission checkpoint does not match the frozen "
+                        "snapshot, command, or plan revision"
+                    )
+                resume_checkpoint = latest
+                attempts = [
+                    MissionDeliberationAttempt.from_dict(item)
+                    for item in adapter_state.get("mission_attempts", [])
+                    if isinstance(item, dict)
+                ]
+                observations = [
+                    MissionStateObservation.from_dict(item)
+                    for item in adapter_state.get(
+                        "mission_observations",
+                        [],
+                    )
+                    if isinstance(item, dict)
+                ]
+                validation_errors = tuple(
+                    str(item)
+                    for item in adapter_state.get(
+                        "validation_errors",
+                        [],
+                    )
+                    if isinstance(item, str)
+                )
+
+        seen_reads: set[tuple[str, str | None]] = {
+            (
+                str(item[0]),
+                item[1] if isinstance(item[1], str) else None,
             )
-            if terminal is not None:
-                return terminal
+            for item in adapter_state.get("seen_reads", [])
+            if isinstance(item, list) and len(item) == 2
+        }
+        last_planning_result = _planning_result_from_checkpoint(
+            adapter_state.get("last_planning_result")
+        )
+        controls: dict[int, _MissionLoopDecision] = {}
+
+        def current_adapter_state() -> dict[str, Any]:
+            return {
+                "mission_id": mission_id,
+                "snapshot_id": state_snapshot.snapshot_id,
+                "command_hash": command_hash,
+                "plan_revision": plan_revision,
+                "supersedes_plan_id": supersedes_plan_id,
+                "invalidation_evidence_ids": list(
+                    invalidation_evidence_ids
+                ),
+                "mission_attempts": [
+                    attempt.to_dict() for attempt in attempts
+                ],
+                "mission_observations": [
+                    observation.to_dict()
+                    for observation in observations
+                ],
+                "validation_errors": list(validation_errors),
+                "seen_reads": [
+                    [kind, subject_id]
+                    for kind, subject_id in sorted(
+                        seen_reads,
+                        key=lambda item: (
+                            item[0],
+                            item[1] or "",
+                        ),
+                    )
+                ],
+                "last_planning_result": (
+                    _planning_result_to_checkpoint(
+                        last_planning_result
+                    )
+                    if last_planning_result is not None
+                    else None
+                ),
+            }
+
+        def decide(
+            turn: AgentLoopTurn[_MissionLoopObservation],
+        ) -> _MissionLoopDecision:
             attempt_started = self._monotonic()
             attempt_started_at = self._timestamp()
             try:
@@ -514,7 +768,7 @@ class MissionDeliberationRuntime:
                     command=command,
                     state_snapshot=state_snapshot,
                     planner_context=planner_context,
-                    iteration=iteration,
+                    iteration=turn.iteration,
                     observations=observations,
                     validation_errors=validation_errors,
                     last_planning_result=last_planning_result,
@@ -526,46 +780,37 @@ class MissionDeliberationRuntime:
                 )
             except MissionPlanningContextAssemblyError as exc:
                 context_errors = (str(exc),)
-                attempts.append(
-                    self._attempt(
-                        iteration=iteration,
-                        operation="assemble_context",
-                        outcome="rejected",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        reason_code="context_budget_exceeded",
-                        validation_errors=context_errors,
-                    )
-                )
-                return self._result(
-                    run_id=run_id,
-                    mission_id=mission_id,
-                    snapshot_id=state_snapshot.snapshot_id,
-                    status="blocked",
-                    message=(
-                        "Mission planning context failed deterministic "
-                        "assembly."
-                    ),
-                    started_at=started_at,
-                    attempts=attempts,
-                    observations=observations,
-                    reason_code="context_budget_exceeded",
+                control = _MissionLoopDecision(
+                    operation="assemble_context",
+                    started_at=attempt_started_at,
+                    started=attempt_started,
                     validation_errors=context_errors,
-                    planning_result=MissionPlanningResult(
+                    terminal=_MissionLoopTerminal(
                         status="blocked",
                         message=(
-                            "Mission planning context failed "
-                            "deterministic assembly."
+                            "Mission planning context failed deterministic "
+                            "assembly."
+                        ),
+                        reason_code="context_budget_exceeded",
+                        validation_errors=context_errors,
+                        planning_result=MissionPlanningResult(
+                            status="blocked",
+                            message=(
+                                "Mission planning context failed "
+                                "deterministic assembly."
+                            ),
                         ),
                     ),
                 )
+                controls[turn.iteration] = control
+                return control
             context_manifest = context_assembly.envelope.manifest
             request = MissionDeliberationRequest(
                 mission_id=mission_id,
                 command=command,
                 state_snapshot=state_snapshot,
                 planner_context=context_assembly.planner_context,
-                iteration=iteration,
+                iteration=turn.iteration,
                 observations=tuple(observations),
                 validation_errors=validation_errors,
                 last_planning_result=last_planning_result,
@@ -578,493 +823,655 @@ class MissionDeliberationRuntime:
                 decision = self.policy.decide(request)
             except Exception:
                 logger.exception("Mission deliberation policy failed")
-                attempts.append(
-                    self._attempt(
-                        iteration=iteration,
-                        operation="policy_error",
-                        outcome="failed",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        reason_code="policy_error",
-                        context_manifest=context_manifest,
-                    )
-                )
-                return self._result(
-                    run_id=run_id,
-                    mission_id=mission_id,
-                    snapshot_id=state_snapshot.snapshot_id,
-                    status="escalated",
-                    message="Mission deliberation policy failed.",
-                    started_at=started_at,
-                    attempts=attempts,
-                    observations=observations,
-                    reason_code="policy_error",
-                    planning_result=MissionPlanningResult(
-                        status="error",
+                control = _MissionLoopDecision(
+                    operation="policy_error",
+                    started_at=attempt_started_at,
+                    started=attempt_started,
+                    context_manifest=context_manifest,
+                    terminal=_MissionLoopTerminal(
+                        status="escalated",
                         message="Mission deliberation policy failed.",
+                        reason_code="policy_error",
+                        planning_result=MissionPlanningResult(
+                            status="error",
+                            message="Mission deliberation policy failed.",
+                        ),
                     ),
                 )
+                controls[turn.iteration] = control
+                return control
 
             if not isinstance(decision, MissionDeliberationDecision):
-                validation_errors = (
+                errors = (
                     "Mission deliberation policy returned an invalid decision type.",
                 )
-                attempts.append(
-                    self._attempt(
-                        iteration=iteration,
-                        operation="invalid_decision",
-                        outcome="rejected",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        reason_code="invalid_runtime_decision",
-                        validation_errors=validation_errors,
-                        context_manifest=context_manifest,
-                    )
+                control = _MissionLoopDecision(
+                    operation="invalid_decision",
+                    started_at=attempt_started_at,
+                    started=attempt_started,
+                    context_manifest=context_manifest,
+                    validation_errors=errors,
                 )
-                continue
+                controls[turn.iteration] = control
+                return control
 
             if decision.context_manifest is not None:
                 context_manifest = decision.context_manifest
+            control = _MissionLoopDecision(
+                operation=decision.operation,
+                started_at=attempt_started_at,
+                started=attempt_started,
+                decision=decision,
+                context_manifest=context_manifest,
+            )
+            controls[turn.iteration] = control
+            return control
 
-            if self.cancellation_requested is not None and self.cancellation_requested():
+        def execute(
+            control: _MissionLoopDecision,
+            turn: AgentLoopTurn[_MissionLoopObservation],
+        ) -> AgentLoopTransition[
+            _MissionLoopObservation,
+            _MissionLoopTerminal,
+        ]:
+            nonlocal last_planning_result, validation_errors
+
+            def record(
+                *,
+                outcome: str,
+                reason_code: str | None = None,
+                read_request: MissionStateReadRequest | None = None,
+                observation_request: MissionObservationRequest | None = None,
+                errors: tuple[str, ...] = (),
+            ) -> None:
                 attempts.append(
                     self._attempt(
-                        iteration=iteration,
-                        operation=decision.operation,
-                        outcome="cancelled",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        reason_code="cancelled",
-                        context_manifest=context_manifest,
+                        iteration=turn.iteration,
+                        operation=control.operation,
+                        outcome=outcome,
+                        started_at=control.started_at,
+                        started=control.started,
+                        reason_code=reason_code,
+                        read_request=read_request,
+                        observation_request=observation_request,
+                        validation_errors=errors,
+                        context_manifest=control.context_manifest,
                     )
                 )
-                return self._result(
-                    run_id=run_id,
-                    mission_id=mission_id,
-                    snapshot_id=state_snapshot.snapshot_id,
-                    status="cancelled",
-                    message="Mission deliberation was cancelled.",
-                    started_at=started_at,
-                    attempts=attempts,
-                    observations=observations,
-                    reason_code="cancelled",
-                    planning_result=MissionPlanningResult(
-                        status="cancelled",
-                        message="Mission deliberation was cancelled.",
+
+            def continuing(
+                *,
+                outcome: str,
+                reason_code: str | None = None,
+            ) -> AgentLoopTransition[
+                _MissionLoopObservation,
+                _MissionLoopTerminal,
+            ]:
+                return AgentLoopTransition.continuing(
+                    operation=control.operation,
+                    message="Mission deliberation will continue.",
+                    observation=_MissionLoopObservation(
+                        iteration=turn.iteration,
+                        outcome=outcome,
+                        reason_code=reason_code,
                     ),
+                    reason_code=reason_code,
                 )
 
-            if self._timed_out(started):
-                attempts.append(
-                    self._attempt(
-                        iteration=iteration,
-                        operation=decision.operation,
-                        outcome="timed_out",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        reason_code="deliberation_timeout",
-                        context_manifest=context_manifest,
-                    )
-                )
-                return self._result(
-                    run_id=run_id,
-                    mission_id=mission_id,
-                    snapshot_id=state_snapshot.snapshot_id,
-                    status="timed_out",
-                    message="Mission deliberation exceeded its time limit.",
-                    started_at=started_at,
-                    attempts=attempts,
-                    observations=observations,
-                    reason_code="deliberation_timeout",
-                    planning_result=MissionPlanningResult(
-                        status="timed_out",
-                        message="Mission deliberation exceeded its time limit.",
-                    ),
+            def terminal(
+                value: _MissionLoopTerminal,
+            ) -> AgentLoopTransition[
+                _MissionLoopObservation,
+                _MissionLoopTerminal,
+            ]:
+                shared_status = {
+                    "blocked": "blocked",
+                    "escalated": "escalated",
+                    "cancelled": "cancelled",
+                    "timed_out": "timed_out",
+                }.get(value.status, "completed")
+                return AgentLoopTransition(
+                    status=shared_status,  # type: ignore[arg-type]
+                    operation=control.operation,
+                    message=value.message,
+                    reason_code=value.reason_code,
+                    result=value,
                 )
 
+            if control.terminal is not None:
+                record(
+                    outcome=(
+                        "failed"
+                        if control.terminal.reason_code == "policy_error"
+                        else "rejected"
+                    ),
+                    reason_code=control.terminal.reason_code,
+                    errors=control.validation_errors,
+                )
+                return terminal(control.terminal)
+
+            if control.decision is None:
+                record(
+                    outcome="rejected",
+                    reason_code="invalid_runtime_decision",
+                    errors=control.validation_errors,
+                )
+                validation_errors = control.validation_errors
+                return continuing(
+                    outcome="rejected",
+                    reason_code="invalid_runtime_decision",
+                )
+
+            decision = control.decision
             decision_errors = self._decision_errors(decision)
             if decision_errors:
                 if decision.planning_result is not None:
                     last_planning_result = decision.planning_result
-                attempts.append(
-                    self._attempt(
-                        iteration=iteration,
-                        operation=decision.operation,
-                        outcome="rejected",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        reason_code="invalid_runtime_decision",
-                        validation_errors=tuple(decision_errors),
-                        context_manifest=context_manifest,
-                    )
+                errors = tuple(decision_errors)
+                record(
+                    outcome="rejected",
+                    reason_code="invalid_runtime_decision",
+                    errors=errors,
                 )
-                validation_errors = tuple(decision_errors)
-                continue
+                validation_errors = errors
+                return continuing(
+                    outcome="rejected",
+                    reason_code="invalid_runtime_decision",
+                )
 
             if decision.operation == "inspect_state":
                 if len(observations) >= self.limits.max_observations:
-                    attempts.append(
-                        self._attempt(
-                            iteration=iteration,
-                            operation=decision.operation,
-                            outcome="rejected",
-                            started_at=attempt_started_at,
-                            started=attempt_started,
-                            reason_code="observation_limit",
-                            read_request=decision.read_request,
-                            context_manifest=context_manifest,
-                        )
+                    record(
+                        outcome="rejected",
+                        reason_code="observation_limit",
+                        read_request=decision.read_request,
                     )
-                    return self._result(
-                        run_id=run_id,
-                        mission_id=mission_id,
-                        snapshot_id=state_snapshot.snapshot_id,
+                    return terminal(_MissionLoopTerminal(
                         status="blocked",
                         message="Mission deliberation exceeded its observation limit.",
-                        started_at=started_at,
-                        attempts=attempts,
-                        observations=observations,
                         reason_code="observation_limit",
                         planning_result=MissionPlanningResult(
                             status="blocked",
                             message="Mission deliberation exceeded its observation limit.",
                         ),
-                    )
+                    ))
                 assert decision.read_request is not None
                 read_key = (
                     decision.read_request.kind,
                     decision.read_request.subject_id,
                 )
                 if read_key in seen_reads:
-                    attempts.append(
-                        self._attempt(
-                            iteration=iteration,
-                            operation=decision.operation,
-                            outcome="rejected",
-                            started_at=attempt_started_at,
-                            started=attempt_started,
-                            reason_code="repeated_state_read",
-                            read_request=decision.read_request,
-                            context_manifest=context_manifest,
-                        )
+                    record(
+                        outcome="rejected",
+                        reason_code="repeated_state_read",
+                        read_request=decision.read_request,
                     )
-                    return self._result(
-                        run_id=run_id,
-                        mission_id=mission_id,
-                        snapshot_id=state_snapshot.snapshot_id,
+                    return terminal(_MissionLoopTerminal(
                         status="blocked",
                         message="Mission deliberation repeated a state read without progress.",
-                        started_at=started_at,
-                        attempts=attempts,
-                        observations=observations,
                         reason_code="repeated_state_read",
                         planning_result=MissionPlanningResult(
                             status="blocked",
                             message="Mission deliberation repeated a state read without progress.",
                         ),
-                    )
+                    ))
                 try:
                     observation = self.snapshot_reader.read(
                         state_snapshot,
                         decision.read_request,
-                        iteration=iteration,
+                        iteration=turn.iteration,
                     )
                 except ValueError as exc:
-                    attempts.append(
-                        self._attempt(
-                            iteration=iteration,
-                            operation=decision.operation,
-                            outcome="rejected",
-                            started_at=attempt_started_at,
-                            started=attempt_started,
-                            reason_code="invalid_state_read",
-                            read_request=decision.read_request,
-                            validation_errors=(str(exc),),
-                            context_manifest=context_manifest,
-                        )
+                    errors = (str(exc),)
+                    record(
+                        outcome="rejected",
+                        reason_code="invalid_state_read",
+                        read_request=decision.read_request,
+                        errors=errors,
                     )
-                    validation_errors = (str(exc),)
-                    continue
+                    validation_errors = errors
+                    return continuing(
+                        outcome="rejected",
+                        reason_code="invalid_state_read",
+                    )
                 seen_reads.add(read_key)
                 observations.append(observation)
-                attempts.append(
-                    self._attempt(
-                        iteration=iteration,
-                        operation=decision.operation,
-                        outcome="observed",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        read_request=decision.read_request,
-                        context_manifest=context_manifest,
-                    )
+                record(
+                    outcome="observed",
+                    read_request=decision.read_request,
                 )
                 validation_errors = ()
-                continue
+                return continuing(outcome="observed")
+
+            if decision.operation == "request_observation":
+                assert decision.observation_request is not None
+                observation_request = decision.observation_request
+                belief = next(
+                    (
+                        item
+                        for item in state_snapshot.environment_beliefs
+                        if item.belief_id == observation_request.belief_id
+                    ),
+                    None,
+                )
+                request_errors: list[str] = []
+                if belief is None:
+                    request_errors.append(
+                        "Active observation request references a belief "
+                        "absent from the frozen snapshot."
+                    )
+                elif belief.status not in UNRESOLVED_BELIEF_STATUSES:
+                    request_errors.append(
+                        "Active observation request must target an "
+                        "unresolved belief."
+                    )
+                if not _observations_contain_belief(
+                    observations,
+                    observation_request.belief_id,
+                ):
+                    request_errors.append(
+                        "Active observation request must first inspect its "
+                        "belief in the frozen snapshot."
+                    )
+                errors = tuple(request_errors)
+                reason_code = (
+                    "active_observation_requested"
+                    if not request_errors
+                    else "invalid_observation_request"
+                )
+                record(
+                    outcome="requested" if not request_errors else "rejected",
+                    reason_code=reason_code,
+                    observation_request=observation_request,
+                    errors=errors,
+                )
+                if request_errors:
+                    validation_errors = errors
+                    return continuing(
+                        outcome="rejected",
+                        reason_code=reason_code,
+                    )
+                return terminal(_MissionLoopTerminal(
+                    status="observation_required",
+                    message=decision.message,
+                    reason_code="active_observation_requested",
+                    planning_result=MissionPlanningResult(
+                        status="observe",
+                        message=decision.message,
+                    ),
+                    observation_request=observation_request,
+                ))
 
             if decision.operation == "propose_plan":
                 assert decision.planning_result is not None
-                accepted_planning_result = decision.planning_result
-                task_graph: MissionTaskGraph | None = None
-                try:
-                    if decision.planning_result.graph_proposal is not None:
-                        compiled = self.graph_compiler.compile(
-                            decision.planning_result.graph_proposal,
-                            state_snapshot=state_snapshot,
-                            mission_id=mission_id,
-                            plan_id=f"{mission_id}:plan:{plan_revision}",
-                            revision=plan_revision,
-                            supersedes_plan_id=supersedes_plan_id,
-                            invalidation_evidence_ids=invalidation_evidence_ids,
-                        )
-                        task_graph = compiled.task_graph
-                        accepted_planning_result = replace(
-                            decision.planning_result,
-                            plan=compiled.plan,
-                        )
-                    else:
-                        assert decision.planning_result.plan is not None
-                        task_graph = task_graph_from_mission_plan(
-                            decision.planning_result.plan,
-                            mission_id=mission_id,
-                            plan_id=f"{mission_id}:plan:{plan_revision}",
-                            state_snapshot_id=state_snapshot.snapshot_id,
-                            revision=plan_revision,
-                            supersedes_plan_id=supersedes_plan_id,
-                            invalidation_evidence_ids=invalidation_evidence_ids,
-                        )
-                    assert accepted_planning_result.plan is not None
-                    proposal_errors = MissionPlanValidator().validate(
-                        accepted_planning_result.plan,
-                        self.registry,
-                        task_graph=task_graph,
-                    )
-                    unresolved_belief_ids = sorted(
-                        belief.belief_id
-                        for belief in state_snapshot.environment_beliefs
-                        if belief.status != "confirmed"
-                        and not _observations_contain_belief(
-                            observations,
-                            belief.belief_id,
-                        )
-                    )
-                    if unresolved_belief_ids:
-                        proposal_errors.append(
-                            "Mission plan proposal must inspect unresolved "
-                            "environment beliefs before proposal: "
-                            f"{unresolved_belief_ids}."
-                        )
-                    if (
-                        decision.planning_result.graph_proposal is not None
-                    ):
-                        assumed_belief_ids = sorted({
-                            assumption.belief_id
-                            for node in (
-                                decision.planning_result.graph_proposal.nodes
-                            )
-                            for assumption in node.belief_assumptions
-                        })
-                        unobserved_assumption_ids = [
-                            belief_id
-                            for belief_id in assumed_belief_ids
-                            if not _observations_contain_belief(
-                                observations,
-                                belief_id,
-                            )
-                        ]
-                        if unobserved_assumption_ids:
-                            proposal_errors.append(
-                                "Mission graph belief assumptions must be "
-                                "inspected before proposal: "
-                                f"{unobserved_assumption_ids}."
-                            )
-                    if plan_revision > 1:
-                        unknown_evidence_ids = sorted(
-                            set(invalidation_evidence_ids)
-                            - set(state_snapshot.evidence_ids)
-                        )
-                        if unknown_evidence_ids:
-                            proposal_errors.append(
-                                "Mission plan revision cites evidence absent from its "
-                                f"state snapshot: {unknown_evidence_ids}."
-                            )
-                        unobserved_evidence_ids = sorted(
-                            evidence_id
-                            for evidence_id in invalidation_evidence_ids
-                            if not _observations_contain_evidence(
-                                observations,
-                                evidence_id,
-                                required_kind=(
-                                    "environment_beliefs"
-                                    if state_snapshot.belief_projection_version == 1
-                                    else "environment_facts"
-                                ),
-                            )
-                        )
-                        if unobserved_evidence_ids:
-                            evidence_surface = (
-                                "beliefs"
-                                if state_snapshot.belief_projection_version == 1
-                                else "facts"
-                            )
-                            proposal_errors.append(
-                                "Mission plan revision must inspect environment "
-                                f"{evidence_surface} containing its invalidation evidence "
-                                f"before proposal: {unobserved_evidence_ids}."
-                            )
-                except MissionGraphCompilationError as exc:
-                    proposal_errors = list(exc.errors)
-                except Exception:
-                    logger.exception(
-                        "Mission deliberation could not project a plan proposal"
-                    )
-                    proposal_errors = [
-                        "Mission plan proposal could not be projected for validation."
-                    ]
-                attempts.append(
-                    self._attempt(
-                        iteration=iteration,
-                        operation=decision.operation,
-                        outcome="accepted" if not proposal_errors else "rejected",
-                        started_at=attempt_started_at,
-                        started=attempt_started,
-                        reason_code=(
-                            None if not proposal_errors else "invalid_plan_proposal"
-                        ),
-                        validation_errors=tuple(proposal_errors),
-                        context_manifest=context_manifest,
-                    )
+                (
+                    accepted_planning_result,
+                    task_graph,
+                    proposal_errors,
+                ) = self._validate_plan_proposal(
+                    decision,
+                    mission_id=mission_id,
+                    state_snapshot=state_snapshot,
+                    observations=observations,
+                    plan_revision=plan_revision,
+                    supersedes_plan_id=supersedes_plan_id,
+                    invalidation_evidence_ids=invalidation_evidence_ids,
+                )
+                errors = tuple(proposal_errors)
+                record(
+                    outcome="accepted" if not proposal_errors else "rejected",
+                    reason_code=(
+                        None if not proposal_errors else "invalid_plan_proposal"
+                    ),
+                    errors=errors,
                 )
                 if proposal_errors:
-                    validation_errors = tuple(proposal_errors)
+                    validation_errors = errors
                     last_planning_result = decision.planning_result
-                    continue
+                    return continuing(
+                        outcome="rejected",
+                        reason_code="invalid_plan_proposal",
+                    )
                 assert task_graph is not None
-                return self._result(
-                    run_id=run_id,
-                    mission_id=mission_id,
-                    snapshot_id=state_snapshot.snapshot_id,
+                return terminal(_MissionLoopTerminal(
                     status="proposed",
                     message=decision.message,
-                    started_at=started_at,
-                    attempts=attempts,
-                    observations=observations,
                     reason_code="validated_plan_proposal",
                     planning_result=accepted_planning_result,
                     task_graph=task_graph,
-                )
+                ))
 
-            attempts.append(
-                self._attempt(
-                    iteration=iteration,
-                    operation=decision.operation,
-                    outcome="terminal",
-                    started_at=attempt_started_at,
-                    started=attempt_started,
-                    reason_code=decision.reason_code,
-                    context_manifest=context_manifest,
-                )
+            record(
+                outcome="terminal",
+                reason_code=decision.reason_code,
             )
             if decision.operation == "request_clarification":
                 planning_result = decision.planning_result or MissionPlanningResult(
                     status="clarify",
                     message=decision.message,
                 )
-                return self._result(
-                    run_id=run_id,
-                    mission_id=mission_id,
-                    snapshot_id=state_snapshot.snapshot_id,
+                return terminal(_MissionLoopTerminal(
                     status="clarification_required",
                     message=decision.message,
-                    started_at=started_at,
-                    attempts=attempts,
-                    observations=observations,
                     reason_code=decision.reason_code,
                     planning_result=planning_result,
                     validation_errors=validation_errors,
-                )
+                ))
             planning_result = decision.planning_result or MissionPlanningResult(
                 status="escalated",
                 message=decision.message,
             )
-            return self._result(
-                run_id=run_id,
-                mission_id=mission_id,
-                snapshot_id=state_snapshot.snapshot_id,
+            return terminal(_MissionLoopTerminal(
                 status=(
                     "blocked"
                     if planning_result.status == "blocked"
                     else "escalated"
                 ),
                 message=decision.message,
-                started_at=started_at,
-                attempts=attempts,
-                observations=observations,
                 reason_code=decision.reason_code,
                 planning_result=planning_result,
                 validation_errors=validation_errors,
-            )
+            ))
 
+        loop_result = BoundedAgentLoop[
+            _MissionLoopDecision,
+            _MissionLoopObservation,
+            _MissionLoopTerminal,
+        ](
+            limits=AgentLoopLimits(
+                max_iterations=self.limits.max_iterations,
+                timeout_seconds=self.limits.timeout_seconds,
+            ),
+            cancellation_requested=self.cancellation_requested,
+            checkpoint_store=self.checkpoint_store,
+            checkpoint_role="mission_coordinator",
+            monotonic=self._monotonic,
+            now=self._now,
+        ).run(
+            run_id=run_id,
+            decide=decide,
+            execute=execute,
+            checkpoint_key=checkpoint_key,
+            resume_checkpoint=resume_checkpoint,
+            observation_from_checkpoint=(
+                lambda value: _MissionLoopObservation.from_dict(value)
+            ),
+            adapter_state_provider=current_adapter_state,
+        )
+        self._append_unexecuted_loop_attempts(
+            loop_result=loop_result,
+            controls=controls,
+            attempts=attempts,
+        )
+        final = self._mission_terminal_from_loop(
+            loop_result,
+            validation_errors=validation_errors,
+        )
         return self._result(
             run_id=run_id,
             mission_id=mission_id,
             snapshot_id=state_snapshot.snapshot_id,
-            status="blocked",
-            message="Mission deliberation exceeded its iteration limit.",
-            started_at=started_at,
+            status=final.status,
+            message=final.message,
+            started_at=loop_result.started_at,
+            completed_at=loop_result.completed_at,
             attempts=attempts,
             observations=observations,
-            reason_code="iteration_limit",
-            validation_errors=validation_errors,
-            planning_result=MissionPlanningResult(
-                status="blocked",
-                message="Mission deliberation exceeded its iteration limit.",
-            ),
+            reason_code=final.reason_code,
+            validation_errors=final.validation_errors,
+            planning_result=final.planning_result,
+            task_graph=final.task_graph,
+            observation_request=final.observation_request,
         )
 
-    def _pre_attempt_terminal(
+    def _validate_plan_proposal(
         self,
+        decision: MissionDeliberationDecision,
         *,
-        run_id: str,
         mission_id: str,
         state_snapshot: MissionStateSnapshot,
-        started_at: str,
-        started: float,
-        attempts: list[MissionDeliberationAttempt],
         observations: list[MissionStateObservation],
-    ) -> MissionDeliberationResult | None:
-        if self.cancellation_requested is not None and self.cancellation_requested():
-            return self._result(
-                run_id=run_id,
-                mission_id=mission_id,
-                snapshot_id=state_snapshot.snapshot_id,
+        plan_revision: int,
+        supersedes_plan_id: str | None,
+        invalidation_evidence_ids: tuple[str, ...],
+    ) -> tuple[
+        MissionPlanningResult,
+        MissionTaskGraph | None,
+        list[str],
+    ]:
+        assert decision.planning_result is not None
+        accepted_planning_result = decision.planning_result
+        task_graph: MissionTaskGraph | None = None
+        try:
+            if decision.planning_result.graph_proposal is not None:
+                compiled = self.graph_compiler.compile(
+                    decision.planning_result.graph_proposal,
+                    state_snapshot=state_snapshot,
+                    mission_id=mission_id,
+                    plan_id=f"{mission_id}:plan:{plan_revision}",
+                    revision=plan_revision,
+                    supersedes_plan_id=supersedes_plan_id,
+                    invalidation_evidence_ids=invalidation_evidence_ids,
+                )
+                task_graph = compiled.task_graph
+                accepted_planning_result = replace(
+                    decision.planning_result,
+                    plan=compiled.plan,
+                )
+            else:
+                assert decision.planning_result.plan is not None
+                task_graph = task_graph_from_mission_plan(
+                    decision.planning_result.plan,
+                    mission_id=mission_id,
+                    plan_id=f"{mission_id}:plan:{plan_revision}",
+                    state_snapshot_id=state_snapshot.snapshot_id,
+                    revision=plan_revision,
+                    supersedes_plan_id=supersedes_plan_id,
+                    invalidation_evidence_ids=invalidation_evidence_ids,
+                )
+            assert accepted_planning_result.plan is not None
+            proposal_errors = MissionPlanValidator().validate(
+                accepted_planning_result.plan,
+                self.registry,
+                task_graph=task_graph,
+            )
+            unresolved_belief_ids = sorted(
+                belief.belief_id
+                for belief in state_snapshot.environment_beliefs
+                if belief.status != "confirmed"
+                and not _observations_contain_belief(
+                    observations,
+                    belief.belief_id,
+                )
+            )
+            if unresolved_belief_ids:
+                proposal_errors.append(
+                    "Mission plan proposal must inspect unresolved "
+                    "environment beliefs before proposal: "
+                    f"{unresolved_belief_ids}."
+                )
+            if decision.planning_result.graph_proposal is not None:
+                assumed_belief_ids = sorted({
+                    assumption.belief_id
+                    for node in decision.planning_result.graph_proposal.nodes
+                    for assumption in node.belief_assumptions
+                })
+                unobserved_assumption_ids = [
+                    belief_id
+                    for belief_id in assumed_belief_ids
+                    if not _observations_contain_belief(
+                        observations,
+                        belief_id,
+                    )
+                ]
+                if unobserved_assumption_ids:
+                    proposal_errors.append(
+                        "Mission graph belief assumptions must be "
+                        "inspected before proposal: "
+                        f"{unobserved_assumption_ids}."
+                    )
+            if plan_revision > 1:
+                unknown_evidence_ids = sorted(
+                    set(invalidation_evidence_ids)
+                    - set(state_snapshot.evidence_ids)
+                )
+                if unknown_evidence_ids:
+                    proposal_errors.append(
+                        "Mission plan revision cites evidence absent from its "
+                        f"state snapshot: {unknown_evidence_ids}."
+                    )
+                unobserved_evidence_ids = sorted(
+                    evidence_id
+                    for evidence_id in invalidation_evidence_ids
+                    if not _observations_contain_evidence(
+                        observations,
+                        evidence_id,
+                        required_kind=(
+                            "environment_beliefs"
+                            if state_snapshot.belief_projection_version == 1
+                            else "environment_facts"
+                        ),
+                    )
+                )
+                if unobserved_evidence_ids:
+                    evidence_surface = (
+                        "beliefs"
+                        if state_snapshot.belief_projection_version == 1
+                        else "facts"
+                    )
+                    proposal_errors.append(
+                        "Mission plan revision must inspect environment "
+                        f"{evidence_surface} containing its invalidation evidence "
+                        f"before proposal: {unobserved_evidence_ids}."
+                    )
+        except MissionGraphCompilationError as exc:
+            proposal_errors = list(exc.errors)
+        except Exception:
+            logger.exception(
+                "Mission deliberation could not project a plan proposal"
+            )
+            proposal_errors = [
+                "Mission plan proposal could not be projected for validation."
+            ]
+        return accepted_planning_result, task_graph, proposal_errors
+
+    def _append_unexecuted_loop_attempts(
+        self,
+        *,
+        loop_result: AgentLoopResult[
+            _MissionLoopObservation,
+            _MissionLoopTerminal,
+        ],
+        controls: dict[int, _MissionLoopDecision],
+        attempts: list[MissionDeliberationAttempt],
+    ) -> None:
+        recorded_iterations = {attempt.iteration for attempt in attempts}
+        for loop_attempt in loop_result.attempts:
+            if loop_attempt.iteration in recorded_iterations:
+                continue
+            control = controls.get(loop_attempt.iteration)
+            decision = control.decision if control is not None else None
+            context_manifest = (
+                control.context_manifest if control is not None else None
+            )
+            reason_code = (
+                "deliberation_timeout"
+                if loop_attempt.reason_code == "loop_timeout"
+                else loop_attempt.reason_code
+            )
+            attempts.append(MissionDeliberationAttempt(
+                iteration=loop_attempt.iteration,
+                operation=(
+                    control.operation
+                    if control is not None
+                    else loop_attempt.operation
+                ),
+                outcome=loop_attempt.outcome,
+                started_at=loop_attempt.started_at,
+                completed_at=loop_result.completed_at,
+                duration_ms=loop_attempt.duration_ms,
+                reason_code=reason_code,
+                read_request=(
+                    decision.read_request if decision is not None else None
+                ),
+                observation_request=(
+                    decision.observation_request
+                    if decision is not None
+                    else None
+                ),
+                validation_errors=(
+                    control.validation_errors
+                    if control is not None
+                    else ()
+                ),
+                context_id=(
+                    context_manifest.context_id
+                    if context_manifest is not None
+                    else None
+                ),
+                context_manifest=(
+                    context_manifest.to_dict()
+                    if context_manifest is not None
+                    else None
+                ),
+            ))
+
+    @staticmethod
+    def _mission_terminal_from_loop(
+        loop_result: AgentLoopResult[
+            _MissionLoopObservation,
+            _MissionLoopTerminal,
+        ],
+        *,
+        validation_errors: tuple[str, ...],
+    ) -> _MissionLoopTerminal:
+        if loop_result.result is not None:
+            return loop_result.result
+        if loop_result.status == "cancelled":
+            message = "Mission deliberation was cancelled."
+            return _MissionLoopTerminal(
                 status="cancelled",
-                message="Mission deliberation was cancelled.",
-                started_at=started_at,
-                attempts=attempts,
-                observations=observations,
+                message=message,
                 reason_code="cancelled",
                 planning_result=MissionPlanningResult(
                     status="cancelled",
-                    message="Mission deliberation was cancelled.",
+                    message=message,
                 ),
             )
-        if self._timed_out(started):
-            return self._result(
-                run_id=run_id,
-                mission_id=mission_id,
-                snapshot_id=state_snapshot.snapshot_id,
+        if loop_result.status == "timed_out":
+            message = "Mission deliberation exceeded its time limit."
+            return _MissionLoopTerminal(
                 status="timed_out",
-                message="Mission deliberation exceeded its time limit.",
-                started_at=started_at,
-                attempts=attempts,
-                observations=observations,
+                message=message,
                 reason_code="deliberation_timeout",
                 planning_result=MissionPlanningResult(
                     status="timed_out",
-                    message="Mission deliberation exceeded its time limit.",
+                    message=message,
                 ),
             )
-        return None
+        if loop_result.reason_code == "iteration_limit":
+            message = "Mission deliberation exceeded its iteration limit."
+            return _MissionLoopTerminal(
+                status="blocked",
+                message=message,
+                reason_code="iteration_limit",
+                validation_errors=validation_errors,
+                planning_result=MissionPlanningResult(
+                    status="blocked",
+                    message=message,
+                ),
+            )
+        message = "Mission deliberation runtime failed closed."
+        return _MissionLoopTerminal(
+            status="escalated",
+            message=message,
+            reason_code=loop_result.reason_code,
+            validation_errors=validation_errors,
+            planning_result=MissionPlanningResult(
+                status="error",
+                message=message,
+            ),
+        )
 
     def _decision_errors(
         self,
@@ -1099,6 +1506,19 @@ class MissionDeliberationRuntime:
             errors.append(
                 f"{decision.operation} must not include a read_request."
             )
+        if decision.operation == "request_observation":
+            if not isinstance(
+                decision.observation_request,
+                MissionObservationRequest,
+            ):
+                errors.append(
+                    "request_observation requires an observation_request."
+                )
+        elif decision.observation_request is not None:
+            errors.append(
+                f"{decision.operation} must not include an "
+                "observation_request."
+            )
         if decision.operation == "propose_plan":
             if (
                 decision.planning_result is None
@@ -1119,9 +1539,6 @@ class MissionDeliberationRuntime:
                 )
         return errors
 
-    def _timed_out(self, started: float) -> bool:
-        return self._monotonic() - started >= self.limits.timeout_seconds
-
     def _attempt(
         self,
         *,
@@ -1132,6 +1549,7 @@ class MissionDeliberationRuntime:
         started: float,
         reason_code: str | None = None,
         read_request: MissionStateReadRequest | None = None,
+        observation_request: MissionObservationRequest | None = None,
         validation_errors: tuple[str, ...] = (),
         context_manifest: MissionPlanningContextManifest | None = None,
     ) -> MissionDeliberationAttempt:
@@ -1144,6 +1562,7 @@ class MissionDeliberationRuntime:
             duration_ms=max(0.0, (self._monotonic() - started) * 1000),
             reason_code=reason_code,
             read_request=read_request,
+            observation_request=observation_request,
             validation_errors=validation_errors,
             context_id=(
                 context_manifest.context_id
@@ -1172,6 +1591,8 @@ class MissionDeliberationRuntime:
         reason_code: str | None = None,
         task_graph: MissionTaskGraph | None = None,
         validation_errors: tuple[str, ...] = (),
+        observation_request: MissionObservationRequest | None = None,
+        completed_at: str | None = None,
     ) -> MissionDeliberationResult:
         return MissionDeliberationResult(
             run_id=run_id,
@@ -1180,13 +1601,14 @@ class MissionDeliberationRuntime:
             status=status,
             message=message,
             started_at=started_at,
-            completed_at=self._timestamp(),
+            completed_at=completed_at or self._timestamp(),
             attempts=tuple(attempts),
             observations=tuple(observations),
             planning_result=planning_result,
             task_graph=task_graph,
             reason_code=reason_code,
             validation_errors=validation_errors,
+            observation_request=observation_request,
         )
 
     def _timestamp(self) -> str:
@@ -1223,3 +1645,35 @@ def _contains_value(value: Any, expected: str) -> bool:
     if isinstance(value, (list, tuple)):
         return any(_contains_value(item, expected) for item in value)
     return value == expected
+
+
+def _planning_result_to_checkpoint(
+    result: MissionPlanningResult,
+) -> dict[str, Any]:
+    return {
+        "status": result.status,
+        "message": result.message,
+        "intent": result.intent,
+    }
+
+
+def _planning_result_from_checkpoint(
+    value: Any,
+) -> MissionPlanningResult | None:
+    if not isinstance(value, dict):
+        return None
+    status = value.get("status")
+    message = value.get("message")
+    if not isinstance(status, str) or not isinstance(message, str):
+        raise ValueError(
+            "Mission checkpoint last_planning_result is invalid"
+        )
+    return MissionPlanningResult(
+        status=status,
+        message=message,
+        intent=(
+            value["intent"]
+            if isinstance(value.get("intent"), str)
+            else None
+        ),
+    )

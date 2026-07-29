@@ -347,8 +347,8 @@ as authority for physical action without current SafetyGate validation.
 
 `MissionMemoryFacade` is the single mission-level read boundary over the
 append-only embodied Store, the recent Working Memory projection, Episode/Gist
-artifacts, reconciled Entity Memory, and registered robot state. The main Agent
-does not receive a SQLite connection or choose a Store path. Every call receives
+artifacts, reconciled Entity Memory, and registered robot state. The Mission
+Coordinator does not receive a SQLite connection or choose a Store path. Every call receives
 a server-created `MemoryAccessContext` containing `mission_id`, `runtime_mode`,
 requester identity, and granted scopes; none of these isolation fields appear in
 the LLM tool arguments.

@@ -105,9 +105,12 @@ targets:                        # Static values for template substitution
 ### Example Configs
 
 See `examples/ros1_configs/` for:
-- `turtlesim_teleop.yaml` — Basic turtlesim topic control
-- `fibonacci_action.yaml` — Actionlib Fibonacci goal
+- `turtlesim_teleop.yaml` — legacy topic transport exercise, not point navigation
+- `fibonacci_action.yaml` — legacy actionlib transport exercise, not point navigation
 - `fireclaw_robot.yaml` — Full firefighting robot template
+
+Current deployments must expose `navigate_to_point`; see
+[`fireclaw-spatial-scope.md`](../architecture/fireclaw-spatial-scope.md).
 
 ## Startup
 

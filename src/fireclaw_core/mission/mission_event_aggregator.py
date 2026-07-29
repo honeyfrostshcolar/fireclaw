@@ -10,7 +10,7 @@ from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore, Ta
 
 
 class MissionEventAggregator:
-    """Collects events from multiple robot subagents and merges them
+    """Collects events from multiple Robot Agents and merges them
     into a unified mission-level timeline."""
 
     def __init__(
@@ -38,7 +38,7 @@ class MissionEventAggregator:
         event_type: str | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
-        """Collect events from all robot subagents for a mission.
+        """Collect events from all Robot Agents for a mission.
 
         Returns:
             {

@@ -20,7 +20,11 @@ VICTIM_SEARCH_ALTERNATIVES: dict[str, frozenset[str]] = {
     "thermal_camera": frozenset({"rgb_camera"}),
 }
 
-NAVIGATION_SKILLS = frozenset({"navigate_to_floor", "return_to_safe_zone"})
+NAVIGATION_SKILLS = frozenset({
+    "navigate_to_point",
+    "navigate_to_floor",
+    "return_to_safe_zone",
+})
 VICTIM_SEARCH_SKILLS = frozenset({"search_for_victims", "assess_victim"})
 
 

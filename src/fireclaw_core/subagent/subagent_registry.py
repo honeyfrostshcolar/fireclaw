@@ -1,8 +1,9 @@
-"""Robot subagent run lineage registry for FireClaw.
+"""Legacy-named Robot Agent run-lineage registry for FireClaw.
 
 Provides ``SubagentRunRecord`` and ``JsonlSubagentRegistry`` -- a durable
 append-only JSONL store that tracks parent/child lineage for every robot
-subagent run dispatched by the mission agent.
+dispatch coordinated by the Mission Coordinator. Public type and field names
+retain ``subagent`` for compatibility with existing APIs and persisted state.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ TERMINAL_SUBAGENT_STATUSES = {
 
 @dataclass(frozen=True)
 class SubagentRunRecord:
-    """Tracks a single robot subagent dispatch and its lifecycle."""
+    """Tracks one Robot Agent dispatch; the type name is legacy-compatible."""
 
     run_id: str
     parent_mission_id: str
@@ -98,7 +99,7 @@ _UNSET = object()
 
 
 class JsonlSubagentRegistry:
-    """Append-only JSONL store for ``SubagentRunRecord``.
+    """Append-only Robot Agent run store with a legacy-compatible name.
 
     Follows the same corrupt-line-tolerant pattern as ``JsonlTaskRegistryStore``.
     """

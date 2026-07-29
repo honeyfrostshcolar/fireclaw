@@ -16,33 +16,39 @@ The target is not a direct copy of OpenClaw. FireClaw should reuse OpenClaw's pr
 
 ## Target System Shape
 
-FireClaw should be built as a mission-level main agent that coordinates multiple embodied robot subagents:
+FireClaw uses two persistent agent roles: a mission-level Mission Coordinator
+and multiple registered embodied Robot Agents. The term subagent is reserved
+for optional ephemeral delegated workers, not robots. See
+[`fireclaw-agent-terminology.md`](fireclaw-agent-terminology.md).
 
 ```text
 Operator
--> FireClaw Main Mission Agent
-   -> Robot FireClaw Subagent A
-   -> Robot FireClaw Subagent B
-   -> Robot FireClaw Subagent C
+-> FireClaw Mission Coordinator
+   -> Registered Robot Agent A
+   -> Registered Robot Agent B
+   -> Registered Robot Agent C
       -> Local Gateway
       -> Local Planner / Safety Gate / Skills
       -> ROS / Simulator / Robot SDK Adapter
 ```
 
-The main agent owns mission reasoning. Each robot subagent owns local embodied execution authority. The main agent must not bypass robot subagents to directly call ROS topics, services, actions, motors, nozzles, arms, or other hardware interfaces.
+The Mission Coordinator owns global mission reasoning. Each Robot Agent owns
+local embodied execution authority. The Mission Coordinator must not bypass a
+Robot Agent to directly call ROS topics, services, actions, motors, nozzles,
+arms, or other hardware interfaces.
 
 ## OpenClaw Concept Mapping
 
-| OpenClaw concept | FireClaw main layer | FireClaw robot subagent layer | Current FireClaw status |
+| OpenClaw concept | FireClaw mission layer | FireClaw Robot Agent layer | Current FireClaw status |
 |---|---|---|---|
-| Agent | `MissionAgent` | `FireClawAgent` | Main and robot-local agents exist. |
+| Agent | `MissionAgent` / Mission Coordinator | `FireClawAgent` / Robot Agent | Both persistent agent roles exist. |
 | Session | Mission/operator session | Robot-local task/session context | Robot-local sessions exist; mission sessions are implicit through mission IDs. |
-| Subagent | Robot FireClaw node as callable subagent | Optional local diagnostic workers later | Basic robot subagent contract exists through `RobotSubagentClient`. |
+| Subagent | Optional ephemeral delegated worker | Optional local diagnostic or reasoning worker | Not the architectural name for a Robot Agent. |
 | Gateway/control plane | Future mission Gateway/API/CLI | `FireClawGateway` | Robot-local Gateway exists; mission CLI exists; mission HTTP API missing. |
 | Task registry | `JsonlMissionRegistry` | `JsonlTaskQueue` | Both exist. |
 | Task runtime progress | Mission trace aggregation | Event ledger, task trace, action feedback | Robot trace exists; mission trace aggregation exists; live mission stream missing. |
 | Permissions/scopes | Mission-level authorization scopes | Robot-local operator authorization | Both exist at baseline level. |
-| Safety/sandbox | Mission call policy and subagent boundary | Safety gate, emergency stop, ROS transport gating | Robot-local safety exists; mission failure policy incomplete. |
+| Safety/sandbox | Mission call policy and Robot Agent contract | Safety gate, emergency stop, ROS transport gating | Robot-local safety exists; mission failure policy incomplete. |
 | Memory | Mission memory and fleet lessons | Robot-local task/environment memory | Robot-local memory exists; mission memory is not fully designed. |
 | Provider runtime | Mission-level model selection | Robot-local/edge model fallback | `ProviderRuntime` implemented and wired into `LLMMissionPlanner` as the main path. Supports model fallback boundary and error normalization. |
 | Tools/skills/plugins | Mission tools: plan, assign, cancel, query, aggregate | Robot skills: navigate, search, assess, report, stop | Robot skill runtime exists; mission tools are still Python/CLI methods. |
@@ -71,7 +77,7 @@ Missing:
 - approval workflow UI;
 - operator console for multi-robot missions.
 
-### 2. Main Mission Agent Layer
+### 2. Mission Coordinator Layer
 
 Responsibilities:
 
@@ -79,7 +85,7 @@ Responsibilities:
 - plan missions into robot subtasks;
 - check fleet presence;
 - authorize mission-level operations;
-- submit subtasks to robot subagents;
+- submit subtasks to registered Robot Agents;
 - cancel missions by propagating cancel requests to subtasks;
 - aggregate robot-local traces into mission traces.
 
@@ -99,11 +105,11 @@ Missing:
 - mission memory write/read path;
 - mission HTTP Gateway.
 
-### 3. Fleet/Subagent Contract Layer
+### 3. Fleet/Robot Agent Contract Layer
 
 Responsibilities:
 
-- store known robot subagents;
+- store known Robot Agents;
 - describe robot capabilities, zones, enabled state, and presence;
 - call robot-local Gateways through a stable API;
 - keep transport concerns out of mission planning.
@@ -115,7 +121,10 @@ Current implementation:
 - `RobotSubagentClient`
 - basic HTTP calls for state, submit, trace, cancel, and presence.
 
-`RobotSubagentClient` 保留 OpenClaw 对齐命名，但在 FireClaw 中它调用的是已经注册并在线的物理/仿真 `RobotAgent`。上位机不会生成机器人；它只选择和调用机器人本地常驻 Agent。
+`RobotSubagentClient` is a legacy-named compatibility identifier. In FireClaw
+it calls registered and online physical or simulated Robot Agents. The Mission
+Coordinator does not create robots; it selects and calls persistent Robot
+Agents.
 
 Missing:
 
@@ -125,7 +134,7 @@ Missing:
 - retry/backoff/circuit-breaker behavior;
 - transport abstraction beyond HTTP.
 
-### 4. Robot Subagent Control Plane
+### 4. Robot Agent Control Plane
 
 Responsibilities:
 
@@ -142,13 +151,17 @@ Current implementation:
 - `EventLedger`
 - robot-local authorization;
 - emergency stop;
-- async task execution and cancellation.
+- async task execution and cancellation;
+- append-only `BoundedAgentLoop` checkpoint/resume;
+- startup recovery bound to persisted structured task contracts;
+- stable physical-operation IDs with dispatch-started/finished evidence and
+  fail-closed escalation for unknown outcomes.
 
 Missing:
 
 - SSE/WebSocket or equivalent event streaming endpoint;
 - stronger queue compaction/retention policy;
-- process restart recovery beyond marking stale tasks lost;
+- a durable waiting queue when recoverable tasks exceed local concurrency;
 - real deployment authentication.
 
 ### 5. Robot Agent, Planner, and Skill Runtime
@@ -255,7 +268,7 @@ operator command
 -> fleet presence check
 -> mission planning
 -> mission registry record
--> subtask submission to robot subagents
+-> subtask submission to registered Robot Agents
 -> robot-local task queue and execution
 -> robot-local event/task traces
 -> mission trace aggregation
@@ -274,7 +287,7 @@ subtask request
 -> ROS/simulator/SDK call
 -> feedback/cancel/result
 -> event ledger and task queue
--> trace response to main agent
+-> trace response to Mission Coordinator
 ```
 
 ### Cancellation
@@ -284,7 +297,7 @@ operator cancel mission
 -> mission authorization
 -> mission registry lookup
 -> skip terminal subtasks
--> call robot subagent cancel endpoints
+-> call Robot Agent cancel endpoints
 -> robot-local cancel event
 -> action runtime cancellation
 -> ROS action cancel_goal when applicable
@@ -310,7 +323,7 @@ Untracked planning/config artifacts existed at that point:
 
 ## Framework Completion Roadmap
 
-### Phase 1: Stabilize the Main/Subagent Skeleton
+### Phase 1: Stabilize the Mission Coordinator/Robot Agent Contract
 
 Goal: make the current architecture behave like a coherent multi-robot framework.
 
@@ -325,7 +338,7 @@ This phase should come before adding more task types because it makes the core c
 
 ### Phase 2: Complete Robot-Local Embodied Runtime
 
-Goal: make each robot subagent a credible local embodied agent.
+Goal: make each Robot Agent a credible local embodied agent.
 
 Tasks:
 
@@ -419,4 +432,3 @@ ROS1/Gazebo adapter state must distinguish unknown values from explicit unsafe v
 FireClaw can claim code-level and simulator-level embodied-agent readiness when the gateway-to-gateway e2e test, scenario eval, memory learning loop, and proof bundle all pass.
 
 FireClaw cannot claim real firefighting robot validation until a ROS1 hardware or high-fidelity simulation run produces a proof bundle with doctor output, smoke artifacts, mission trace, event replay, and operator notes.
-

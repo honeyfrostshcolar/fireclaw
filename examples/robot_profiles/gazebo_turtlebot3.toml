@@ -5,13 +5,13 @@ adapter = "ros1"
 ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
 data_dir = "data/robots/gazebo_turtlebot3"
 capabilities = ["search_for_victims", "patrol"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status", "return_to_safe_zone"]
-primitive_skills = ["navigate_to_floor", "report_status"]
+enabled_skills = ["navigate_to_point", "search_for_victims", "report_status", "return_to_safe_zone"]
+llm_exposed_skills = ["navigate_to_point", "search_for_victims", "report_status", "return_to_safe_zone"]
+primitive_skills = ["navigate_to_point", "report_status"]
 
 [capability_skill_chains]
-search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]
-patrol = ["navigate_to_floor", "report_status"]
+search_for_victims = ["navigate_to_point", "search_for_victims", "report_status"]
+patrol = ["navigate_to_point", "report_status"]
 
 [robot.sensor_discovery]
 enabled = true

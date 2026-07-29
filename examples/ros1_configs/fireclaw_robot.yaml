@@ -7,38 +7,34 @@ transport:
   wait_for_server_seconds: 10.0
   wait_for_result_seconds: 60.0
 endpoints:
-  navigate_to_floor:
+  navigate_to_point:
     interface: action
-    name: "/navigate_to_floor"
+    name: "/move_base"
     type: "move_base_msgs/MoveBaseAction"
     cancel_supported: true
     feedback_supported: true
     goal_template:
       target_pose:
         header:
-          frame_id: "map"
+          frame_id: "${frame_id}"
         pose:
           position:
-            x: 0.0
-            y: 0.0
-            z: "${floor}"
-          orientation:
-            x: 0.0
-            y: 0.0
+            x: "${x}"
+            y: "${y}"
             z: 0.0
-            w: 1.0
+          orientation: "${orientation}"
   search_for_victims:
     interface: topic
     name: "/perception/search"
     type: "std_msgs/String"
     request_template:
-      data: "search_floor_${floor}"
+      data: "search_current_area"
   report_status:
     interface: topic
     name: "/operator_report"
     type: "std_msgs/String"
     request_template:
-      data: "status_report_floor_${floor}"
+      data: "status_report_current_area"
   return_to_safe_zone:
     interface: action
     name: "/navigate_to_safe_zone"

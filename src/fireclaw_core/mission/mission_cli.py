@@ -26,9 +26,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run FireClaw mission-control commands.")
     subparsers = parser.add_subparsers(dest="command_name", required=True)
 
-    submit = subparsers.add_parser("submit-subtask", help="Submit an explicit subtask to a robot subagent.")
+    submit = subparsers.add_parser("submit-subtask", help="Submit an explicit subtask to a Robot Agent.")
     submit.add_argument("--robot", required=True, help="Target robot_id from the robot registry.")
-    submit.add_argument("--command", required=True, help="Natural-language command for the robot subagent.")
+    submit.add_argument("--command", required=True, help="Natural-language command for the Robot Agent.")
     submit.add_argument("--session-id", default=None, help="Mission/session id.")
     submit.add_argument("--dedupe-key", default=None, help="Idempotency key for robot task submission.")
     _add_shared_paths(submit)
@@ -61,7 +61,7 @@ def main() -> int:
     _add_shared_paths(plan)
     _add_runtime_paths(plan)
 
-    events = subparsers.add_parser("events", help="Aggregate and list mission events from robot subagents.")
+    events = subparsers.add_parser("events", help="Aggregate and list mission events from Robot Agents.")
     events.add_argument("mission_id", help="Mission id to collect events for.")
     events.add_argument("--robot-id", default=None, help="Filter events by robot id.")
     events.add_argument("--type", dest="event_type", default=None, help="Filter events by event type.")
@@ -117,9 +117,13 @@ def main() -> int:
     app_decide.add_argument("--decision", required=True, choices=["approve", "deny"], help="Decision: approve or deny.")
     app_decide.add_argument("--reason", default=None, help="Reason for the decision.")
 
-    lifecycle = subparsers.add_parser("lifecycle-check", help="Check task/subagent lifecycle consistency.")
+    lifecycle = subparsers.add_parser("lifecycle-check", help="Check task/Robot Agent lifecycle consistency.")
     lifecycle.add_argument("--task-registry", required=True, help="Path to task registry JSONL.")
-    lifecycle.add_argument("--subagent-registry", required=True, help="Path to subagent registry JSONL.")
+    lifecycle.add_argument(
+        "--subagent-registry",
+        required=True,
+        help="Path to the legacy-named Robot Agent run registry JSONL.",
+    )
     lifecycle.add_argument("--stale-threshold-seconds", type=float, default=300.0, help="Seconds before a task is considered stale.")
 
     serve = subparsers.add_parser("serve", help="Start a persistent MissionGateway server.")
@@ -683,7 +687,11 @@ def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
         help="Enable policy-checked embodied memory in the explicit runtime domain.",
     )
     parser.add_argument("--task-registry", default=None, help="Path to task registry JSONL.")
-    parser.add_argument("--subagent-registry", default=None, help="Path to subagent registry JSONL.")
+    parser.add_argument(
+        "--subagent-registry",
+        default=None,
+        help="Path to the legacy-named Robot Agent run registry JSONL.",
+    )
     parser.add_argument("--session-lineage", default=None, help="Path to session lineage JSONL.")
     parser.add_argument("--task-flow", default=None, help="Path to task-flow registry JSONL.")
     parser.add_argument("--approval-path", default=None, help="Path to approval store JSONL.")

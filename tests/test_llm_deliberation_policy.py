@@ -397,6 +397,74 @@ def test_llm_policy_reads_invalidation_evidence_before_plan_revision() -> None:
     ]
 
 
+def test_llm_policy_can_request_observation_only_after_belief_inspection() -> None:
+    provider = MagicMock()
+    runtime, snapshot, context, _ = _runtime(provider)
+    fact = MissionEnvironmentFact(
+        fact_id="west-stairs-camera",
+        kind="passable",
+        value=True,
+        source="fixed_camera",
+        observed_at="2026-07-28T01:00:00+00:00",
+        evidence_ids=("camera-frame-1",),
+        confidence=0.6,
+        subject_id="west-stairs",
+    )
+    snapshot = MissionStateSnapshotBuilder(
+        registry=_registry()
+    ).with_environment_facts(snapshot, (fact,))
+    belief_id = snapshot.environment_beliefs[0].belief_id
+    context = replace(context, state_snapshot=snapshot.to_dict())
+    provider.chat_completion.side_effect = [
+        _response(
+            "inspect_mission_state",
+            {
+                "kind": "environment_beliefs",
+                "subject_id": belief_id,
+            },
+            call_id="inspect-belief",
+        ),
+        _response(
+            "request_observation",
+            {
+                "belief_id": belief_id,
+                "target": {
+                    "frame_id": "building",
+                    "floor": 2,
+                    "area_id": "west-stairs",
+                },
+                "capability_required": "search_for_victims",
+                "required_sensor": "thermal_camera",
+                "reason": "Confirm west stair passability.",
+            },
+            call_id="observe-belief",
+        ),
+    ]
+
+    result = runtime.deliberate(
+        mission_id="mission-1",
+        command="去二楼救人",
+        state_snapshot=snapshot,
+        planner_context=context,
+    )
+
+    assert result.status == "observation_required"
+    assert result.observation_request is not None
+    assert result.observation_request.belief_id == belief_id
+    calls = provider.chat_completion.call_args_list
+    first_tools = {
+        tool["function"]["name"]
+        for tool in calls[0].kwargs["tools"]
+    }
+    second_tools = {
+        tool["function"]["name"]
+        for tool in calls[1].kwargs["tools"]
+    }
+    assert "request_observation" not in first_tools
+    assert "request_observation" in second_tools
+    assert result.attempts[-1].outcome == "requested"
+
+
 def test_llm_policy_escalates_unknown_or_multiple_tool_calls() -> None:
     unknown_provider = MagicMock()
     unknown_provider.chat_completion.return_value = _response(

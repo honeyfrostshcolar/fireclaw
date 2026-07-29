@@ -15,6 +15,20 @@ class CancellationCapturingRobot(DryRunRobotAdapter):
         return super().navigate_to_floor(floor)
 
 
+def test_default_registry_exposes_typed_point_navigation_skill():
+    registry = create_default_skill_registry(
+        DryRunRobotAdapter(robot_id="robot-point")
+    )
+
+    skill = registry.get("navigate_to_point")
+
+    assert skill is not None
+    assert skill.input_schema["required"] == ["x", "y"]
+    assert skill.preconditions == ["robot_online", "target_point_reachable"]
+    assert skill.metadata["spatial_scope"] == "single_floor_2d"
+    assert registry.get("navigate_to_floor").metadata["legacy"] is True
+
+
 def test_executor_emits_live_events_for_successful_steps():
     planning_result = RuleBasedPlanner().plan("去二楼救人")
     robot = DryRunRobotAdapter(robot_id="robot-1")

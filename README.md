@@ -4,7 +4,13 @@ FireClaw 是一个面向消防机器人的 Python embodied-agent 框架，参考
 的 agent loop、tool、skill、memory、gateway 和本地持久化边界，并针对真实机器人增加
 物理安全、状态不确定性、多机器人调度、执行证据和可审计恢复机制。
 
-FireClaw 的核心研究对象是机器人本地 `RobotAgent`：每台机器人运行一个常驻 `FireClawGateway + FireClawAgent`，负责本机安全门控、技能执行、ROS/仿真适配、事件流和任务记忆。上位机 `MissionAgent/MissionGateway` 是 `MissionCoordinator`，负责理解消防员命令、选择在线机器人并下发 `StructuredRobotTask`，但不直接控制 ROS topic、service、action 或硬件执行器。
+FireClaw 的核心研究对象是机器人本地 `RobotAgent`：每台机器人运行一个常驻 `FireClawGateway + FireClawAgent`，负责本机安全门控、技能执行、ROS/仿真适配、事件流和任务记忆。中央指挥端的 `MissionAgent/MissionGateway` 是 `MissionCoordinator`，负责理解消防员命令、选择在线 Robot Agent 并下发 `StructuredRobotTask`，但不直接控制 ROS topic、service、action 或硬件执行器。
+
+本文统一使用三类术语：`Mission Coordinator` 表示中央任务协调器，
+`Robot Agent` 表示常驻机器人智能体，`Delegated Worker Subagent`
+仅表示未来按需派生的临时认知工作智能体。Robot Agent 不是由中央动态生成的
+subagent。完整规范见
+[`docs/architecture/fireclaw-agent-terminology.md`](docs/architecture/fireclaw-agent-terminology.md)。
 
 当前仓库已经不再只是最初的单机器人 dry-run demo。现有主循环覆盖：
 
@@ -15,6 +21,7 @@ operator command
 -> advisory RAG context + approved task-assumption rules
 -> deterministic context assembly, budgeting, and provenance manifest
 -> bounded LLM or deterministic planner
+-> optional host-validated active observation and a new state snapshot
 -> semantic task graph
 -> deterministic graph compiler and validators
 -> mission scheduler and robot-local gateways
@@ -27,8 +34,10 @@ operator command
 
 | Area | Current behavior |
 |---|---|
-| Mission planning | Bounded multi-round planner with read-only snapshot queries, structured graph proposals, clarification, and escalation |
-| Planning context | Central and robot-local LLM planners share model-aware token budgeting, provenance-preserving semantic compaction, trust-tiered context envelopes, and persisted inclusion/omission manifests |
+| Mission planning | Shared `BoundedAgentLoop` lifecycle controls drive a mission-specific multi-round planner with frozen-snapshot queries, host-validated active-observation requests, structured graph proposals, clarification, and escalation |
+| Planning context | Central and robot-local LLM planners share model-aware token budgeting, provenance-preserving semantic compaction, trust-tiered context envelopes, persisted inclusion/omission manifests, and deterministic token/retention evaluation |
+| Robot Agent deliberation | Shared `BoundedAgentLoop` lifecycle controls drive a robot-specific one-operation-per-turn loop; every physical skill result is returned to the next model turn |
+| Active observation | After inspecting an unresolved belief, the planner may request evidence; the host selects a safe capable robot, runs a typed observation task, builds `state:N+1`, and resumes planning |
 | Task graph | Typed targets, dependencies, completion goals, robot capabilities, resources, timeouts, risks, and recovery policies |
 | Graph compilation | The LLM describes task semantics; deterministic code allocates robots and injects completion, safety, and approved task-assumption constraints |
 | Task common sense | RAG may suggest and cite dependencies, while a versioned approved rule registry supplies enforceable requirements and fills omissions for covered task types |
@@ -42,6 +51,22 @@ operator command
 | Safety boundary | Planner code cannot directly invoke robot skills; compiled plans still pass deterministic validation and robot-local safety gates |
 | Auditability | Planner turns, observations, validation errors, graph revisions, execution evidence, checkpoints, and outcomes are persisted |
 
+### Current Spatial Scope
+
+当前 FireClaw 运行范围是**单楼层二维地图**：
+
+- 机器人只在当前 ROS map/frame 内活动；
+- 当前导航能力是 `navigate_to_point(x, y, yaw=0.0, frame_id="map")`；
+- 中央任务目标优先使用 `MissionTarget.pose`、`area_id` 或 `entity_id`；
+- 当前 Planner、Robot Agent profile 和 ROS1 示例不生成跨楼层动作；
+- `navigate_to_floor`、`target.floor`、`current_floor` 和
+  `reachable_floors` 仅作为历史数据与未来多楼层扩展的兼容接口保留。
+
+兼容字段存在不代表当前系统已经支持电梯、楼梯、跨层定位、地图切换或
+跨楼层路径规划。启用这些能力前需要单独设计状态机、安全规则和实机验证。
+正式契约见
+[`docs/architecture/fireclaw-spatial-scope.md`](docs/architecture/fireclaw-spatial-scope.md)。
+
 The framework remains research and integration software, not a certified
 firefighting control system. Real ROS1 transport exists as a configuration-driven
 adapter boundary, but every robot, sensor, emergency-stop path, confidence policy,
@@ -54,8 +79,9 @@ Known planning gaps:
   a reviewed domain ontology and a candidate-to-approval workflow;
 - belief confidence, freshness, and source-reliability defaults still require
   calibration from simulator and robot logs;
-- successful reconnaissance does not yet provide a general push-based
-  observation-refresh and plan-continuation protocol;
+- active observation currently supports a bounded synchronous request/result
+  loop; general push-based sensor streams and durable continuation across a
+  coordinator restart are not yet implemented;
 - multi-source evidence has structural provenance but not cryptographic
   attestation or learned correlation handling;
 - exact token accounting requires a locally available Hugging Face tokenizer;
@@ -75,15 +101,15 @@ relevant source under `openclaw/` and follow its scoped `AGENTS.md` files.
 
 ## Quick Demo
 
-The smallest supported rescue command is:
+The smallest supported point-target rescue command is:
 
 ```text
-去二楼救人
+去坐标 (2.0, 1.5) 救人
 ```
 
 It produces a five-step dry-run rescue plan:
 
-1. `navigate_to_floor`
+1. `navigate_to_point`
 2. `search_for_victims`
 3. `assess_victim`
 4. `report_status`
@@ -125,10 +151,10 @@ For the real ROS1 adapter skeleton, provide a JSON config:
   "robot_id": "fireclaw-01",
   "namespace": "/fireclaw/fireclaw-01",
   "endpoints": {
-    "navigate_to_floor": {
+    "navigate_to_point": {
       "interface": "action",
-      "name": "/fireclaw/fireclaw-01/navigation",
-      "type": "fireclaw_msgs/NavigateFloorAction",
+      "name": "/move_base",
+      "type": "move_base_msgs/MoveBaseAction",
       "cancel_supported": true,
       "feedback_supported": true
     }
@@ -165,20 +191,19 @@ transport:
   wait_for_result_seconds: 30.0
 
 remap:
-  navigate_to_floor:
+  navigate_to_point:
     profile: move_base
     name: /move_base
     goal_template:
       target_pose:
         header:
-          frame_id: map
+          frame_id: "${frame_id}"
         pose:
           position:
-            x: "{{ targets.floor_${floor}.x }}"
-            y: "{{ targets.floor_${floor}.y }}"
+            x: "${x}"
+            y: "${y}"
             z: 0.0
-          orientation:
-            yaw: "{{ targets.floor_${floor}.yaw }}"
+          orientation: "${orientation}"
 
   emergency_stop:
     profile: trigger_service
@@ -192,12 +217,6 @@ remap:
       target_id: "{{ target_id }}"
       duration_seconds: "{{ duration_seconds }}"
 
-targets:
-  floor_2:
-    frame_id: map
-    x: 12.4
-    y: -3.8
-    yaw: 1.57
 ```
 
 Supported profiles are:
@@ -208,12 +227,17 @@ Supported profiles are:
 
 Any remap key may be a built-in robot action or a future workspace skill name. Doctor reports workspace skills that have no ROS1 remap and custom remap entries that do not match any loaded skill manifest.
 
-When transport is enabled, FireClaw renders `goal_template` and `request_template` using skill inputs and `targets`. For example, `{{ targets.floor_${floor}.x }}` with input `{"floor": 2}` resolves to `targets.floor_2.x`. The current test suite validates this rendering and ROS1 topic/service/action transport with fake ROS modules; a real robot still requires validation in a ROS1 runtime.
+When transport is enabled, FireClaw renders `goal_template` and
+`request_template` using skill inputs and optional named `targets`. The current
+`navigate_to_point` example binds `x`, `y`, `frame_id`, and an adapter-derived
+quaternion directly into a `move_base` goal. The test suite validates this
+rendering and ROS1 topic/service/action transport with fake ROS modules; a real
+robot still requires validation in a ROS1 runtime.
 
 ## Run the Dry-Run Agent
 
 ```bash
-.venv/bin/python -m fireclaw_core "去二楼救人" --memory-path /tmp/fireclaw-demo-memory.jsonl
+.venv/bin/python -m fireclaw_core "去坐标 (2.0, 1.5) 救人" --memory-path /tmp/fireclaw-demo-memory.jsonl
 ```
 
 The command prints a structured JSON result and appends the same run record to the JSONL memory file.
@@ -254,7 +278,7 @@ The output is a compact JSON trace summary. It includes the operator identity, c
 Runtime context can be configured from the CLI:
 
 ```bash
-.venv/bin/python -m fireclaw_core "去二楼救人" \
+.venv/bin/python -m fireclaw_core "去坐标 (2.0, 1.5) 救人" \
   --adapter simulator \
   --robot-id fire-robot-01 \
   --session-id rescue-shift-a \
@@ -271,7 +295,7 @@ Runtime context can be configured from the CLI:
 `--adapter` selects the robot adapter used by built-in robot skills:
 
 - `dry-run`: default dependency-free dry-run adapter.
-- `simulator`: deterministic in-process simulator with floor, victim, sensor, and environment state.
+- `simulator`: deterministic single-floor simulator with pose, victim, sensor, and environment state.
 - `mock-ros1`: ROS1-shaped test double that records command specs without importing `rospy`.
 - `mock-ros2`: legacy alias that currently routes to the mock ROS1 adapter.
 - `ros1`: real ROS1 adapter loaded from `--ros1-config`; transport is disabled unless the config sets `transport.enabled: true`.
@@ -279,7 +303,7 @@ Runtime context can be configured from the CLI:
 For safety-gate experiments, `--real-run` sets `dry_run=false`:
 
 ```bash
-.venv/bin/python -m fireclaw_core "去二楼救人" --real-run
+.venv/bin/python -m fireclaw_core "去坐标 (2.0, 1.5) 救人" --real-run
 ```
 
 This does not create a real robot adapter. It only makes the safety gate evaluate real-robot eligibility. Default built-in dry-run skills are blocked in this mode.
@@ -290,7 +314,7 @@ The raw agent and Gateway interfaces keep JSON for programs, logs, ROS nodes, an
 For human operators, use the operator console. It projects structured task events into Chinese progress text:
 
 ```bash
-.venv/bin/python -m fireclaw_core.infra.operator_console "去二楼救人" \
+.venv/bin/python -m fireclaw_core.infra.operator_console "去坐标 (2.0, 1.5) 救人" \
   --adapter simulator \
   --robot-id robot-01 \
   --session-id operator-a \
@@ -302,11 +326,11 @@ For human operators, use the operator console. It projects structured task event
 Example output:
 
 ```text
-已接收任务：去二楼救人。
+已接收任务：去坐标 (2.0, 1.5) 救人。
 正在规划救援任务。
 安全检查通过。
-正在前往2楼。
-正在搜索2楼被困人员。
+正在前往 map 坐标系中的目标点 (2.0, 1.5)。
+正在搜索当前区域被困人员。
 正在评估被困人员状态。
 正在向操作员报告现场状态。
 正在返回安全区域。
@@ -387,7 +411,7 @@ curl http://127.0.0.1:8765/state
     {
       "task_id": "task-...",
       "session_id": "operator-a",
-      "command": "去二楼救人",
+      "command": "去坐标 (2.0, 1.5) 救人",
       "started_at": "2026-06-02T...",
       "cancel_requested": false
     }
@@ -406,7 +430,7 @@ Submit a natural-language task:
 ```bash
 curl -X POST http://127.0.0.1:8765/tasks \
   -H "Content-Type: application/json" \
-  -d '{"command": "去二楼救人", "session_id": "operator-a"}'
+  -d '{"command": "去坐标 (2.0, 1.5) 救人", "session_id": "operator-a"}'
 ```
 
 Task submissions may include a `dedupe_key` for network retry safety. If a non-terminal task with the same key already exists, Gateway returns the existing `task_id` instead of starting another robot action:
@@ -414,7 +438,7 @@ Task submissions may include a `dedupe_key` for network retry safety. If a non-t
 ```bash
 curl -X POST http://127.0.0.1:8765/tasks \
   -H "Content-Type: application/json" \
-  -d '{"command": "去二楼救人", "session_id": "operator-a", "dedupe_key": "operator-a-20260608-001"}'
+  -d '{"command": "去坐标 (2.0, 1.5) 救人", "session_id": "operator-a", "dedupe_key": "operator-a-20260608-001"}'
 ```
 
 ```json
@@ -432,7 +456,7 @@ Task submissions can also include an operator context. FireClaw records this in 
 ```bash
 curl -X POST http://127.0.0.1:8765/tasks \
   -H "Content-Type: application/json" \
-  -d '{"command": "去二楼救人", "session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}}'
+  -d '{"command": "去坐标 (2.0, 1.5) 救人", "session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}}'
 ```
 
 `POST /tasks`, `POST /confirm`, and `POST /cancel` are asynchronous HTTP entrypoints. They return immediately with HTTP `202 Accepted` and a `task_id`:
@@ -551,17 +575,28 @@ Gateway binds to localhost by default and supports an optional bearer API token.
 Do not expose it directly on a public network; production deployment still
 requires reviewed network policy, secret management, and TLS termination.
 
-## Main/Subagent Contract
+## Mission Coordinator / Robot Agent Contract
 
-FireClaw's multi-robot architecture is a main/subagent system rather than a pure central robot controller. The central mission layer calls each robot's local FireClaw Gateway as an embodied subagent:
+FireClaw is a hierarchical embodied-agent architecture rather than a pure
+central robot controller. The Mission Coordinator selects registered,
+long-running Robot Agents and calls their local FireClaw Gateways:
 
 ```text
-Main FireClaw Mission Agent
-  -> Robot FireClaw Subagent A: http://robot-a:8765
-  -> Robot FireClaw Subagent B: http://robot-b:8765
+FireClaw Mission Coordinator
+  -> Robot Agent A: http://robot-a:8765
+  -> Robot Agent B: http://robot-b:8765
 ```
 
-The main agent can submit subtasks, read state, read task traces, and request cancellation through the robot-local Gateway API. It does not bypass the robot subagent to publish low-level ROS topics or motor commands.
+The Mission Coordinator can submit subtasks, read state, read task traces, and
+request cancellation through the robot-local Gateway API. It does not bypass
+the Robot Agent to publish low-level ROS topics or motor commands. Robot Agents
+are independently deployed embodied agents; they are not ephemeral OpenClaw
+subagents spawned by the coordinator.
+
+Some existing Python identifiers, including `RobotSubagentClient` and
+`JsonlSubagentRegistry`, retain their legacy names for compatibility. They
+transport tasks to and track runs on persistent Robot Agents; new prose should
+not use those identifiers as the architectural role name.
 
 A robot registry is built automatically from profiles listed in `[mission].robot_profiles` in `fireclaw.toml`. Each profile contributes a registry entry with `robot_id`, `base_url`, `capabilities`, and other metadata. No manual `robots.json` is needed for the profile-driven workflow.
 
@@ -579,13 +614,13 @@ mission = MissionAgent(
 )
 result = mission.submit_subtask(
     "robot-1",
-    "去二楼搜索受困人员",
+    "去坐标 (2.0, 1.5) 搜索受困人员",
     session_id="mission-001",
     dedupe_key="mission-001-robot-1-floor-2",
 )
 ```
 
-The mission registry is append-only JSONL. It records the mission, assigned robot subtasks, subtask task ids, and projected mission status. The main agent can aggregate robot-local task traces into a mission trace:
+The mission registry is append-only JSONL. It records the mission, assigned robot subtasks, subtask task ids, and projected mission status. The Mission Coordinator can aggregate robot-local task traces into a mission trace:
 
 ```python
 trace = mission.mission_trace("mission-001")
@@ -658,6 +693,22 @@ environment observations, and resource reservations. The planner can perform
 bounded read-only queries against this frozen snapshot. It cannot query a live
 robot or execute a skill during mission deliberation.
 
+After the planner has inspected an `uncertain`, `conflicted`, or `stale`
+belief, the runtime may expose `request_observation`. This is a proposal, not a
+sensor tool call. `MissionObservationCompiler` verifies the belief and target,
+restricts the request to approved observation capabilities, and
+deterministically selects an online, non-stale, emergency-stop-free robot with
+the required capability, sensor, reachability, and task capacity. The task
+then travels through the existing `StructuredRobotTask` and robot-local safety
+boundary.
+
+Only a successful task trace containing a schema-valid structured observation
+can become an environment fact. Free text is rejected. The host assigns the
+fact source to the executing robot, recomputes beliefs, persists
+`state:N+1`, and starts a new bounded deliberation against that snapshot.
+FireClaw permits at most two active-observation rounds per initial planning
+request by default.
+
 Before every planner decision, `MissionPlanningContextAssembler` builds the
 exact dynamic context envelope for that turn. The envelope separates:
 
@@ -711,25 +762,90 @@ mission = MissionAgent(
     planner=MissionPlanner(),
 )
 
-result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-002")
+result = mission.plan_and_submit(
+    "去坐标 (2.0, 1.5) 搜索受困人员",
+    session_id="mission-002",
+)
 ```
 
 The deterministic compatibility planner detects intent (`search`, `patrol`,
-`firefight`, `recon`, or `transport`), extracts target floors, matches enabled
-robots by capability, and emits parallel/sequential execution groups. New
-research and embodied-agent work should use semantic graph proposals rather
-than extending that rule table.
+`firefight`, `recon`, or `transport`), extracts current-map target points,
+matches enabled robots by capability, and emits parallel/sequential execution
+groups. It can still read legacy floor commands for compatibility. New research
+and embodied-agent work should use semantic graph proposals rather than
+extending that rule table.
 
 CLI usage:
 
 ```bash
 .venv/bin/python -m fireclaw_core.mission.mission_cli plan-mission \
-  --command "去二楼和三楼搜索受困人员" \
+  --command "去坐标 (2.0, 1.5) 搜索受困人员" \
   --robot-registry robots.json \
   --mission-registry memory/fireclaw-missions.jsonl
 ```
 
-Each robot subagent remains authoritative over embodied execution. It may block, reject, cancel, ask for confirmation, or emergency-stop based on local state, safety rules, permissions, ROS availability, and hardware constraints.
+Each Robot Agent remains authoritative over local embodied execution. It may block, reject, cancel, ask for confirmation, or emergency-stop based on local state, safety rules, permissions, ROS availability, and hardware constraints.
+
+### Shared Bounded Agent Loop
+
+FireClaw does not make the Robot Agent inherit `MissionAgent`. The two roles
+have different state, tools, authority, and deployment lifecycles.
+`BoundedAgentLoop` is the shared runtime foundation for iteration and timeout
+limits, cancellation, one typed decision per turn, a required observation for
+continuation, terminal states, and an auditable attempt trace. Both
+`MissionDeliberationRuntime` and `RobotAgentDeliberationRuntime` now execute
+through this lifecycle implementation. Their adapters remain different:
+Mission owns immutable snapshots, belief inspection, active-observation
+requests, graph compilation, and plan validation; Robot owns local context,
+task-envelope enforcement, `SafetyGate`, and physical skill execution.
+
+In robot-local LLM mode, `FireClawGateway` uses
+`RobotAgentDeliberationRuntime`:
+
+```text
+StructuredRobotTask
+-> refresh robot and environment state
+-> LLM proposes exactly one operation
+-> task-envelope policy validation
+-> SafetyGate validation for a physical skill
+-> execute one skill
+-> return the structured result to the next LLM turn
+-> complete / blocked / escalated / cancelled / timed out
+```
+
+The default robot-local bounds are eight model turns, six physical skill
+executions, two advisory context queries, and 30 seconds. A `complete`
+decision is rejected until every `required_skill` has succeeded. A local
+`SafetyGate` block terminates the loop; the LLM cannot try another action to
+bypass it. Recoverable skill failures remain local observations, and only a
+terminal unrecovered failure is projected into a mission invalidation event.
+
+The shared loop also has an append-only durable checkpoint protocol. Mission
+planning checkpoints preserve the frozen-snapshot identity, completed reads,
+validation feedback, attempt trace, and next model turn. Robot Agent
+checkpoints additionally persist a stable `operation_id` before every physical
+skill dispatch. The Gateway writes
+`robot_agent.skill_dispatch_started` and
+`robot_agent.skill_dispatch_finished` with that same ID.
+
+After a process restart:
+
+```text
+finished evidence exists -> absorb the recorded result and continue
+no started evidence       -> record "not started" and deliberate again
+started without finished  -> escalate as outcome unknown
+```
+
+The third case is never replayed automatically. The unresolved pending
+operation remains recoverable and auditable until the operator or runtime can
+provide conclusive evidence. Gateway startup schedules non-terminal structured
+tasks only when their Robot Agent loop checkpoint and persisted task contract
+match; stale tasks without a valid checkpoint retain the existing `lost`
+behavior.
+
+`LLMRobotAgentPlanner` and `RobotAgentRuntime.plan_structured_task` remain as
+static-plan compatibility APIs. The Gateway's `llm` Robot Agent mode uses the
+deliberation runtime instead.
 
 ### Model Provider Runtime v1
 
@@ -742,7 +858,7 @@ FireClaw supports LLM-driven mission planning through an OpenAI-compatible provi
 ```bash
 # LLM-driven planning
 python -m fireclaw_core.mission.mission_cli plan-mission \
-  --command "去二楼和三楼搜索受困人员" \
+  --command "去坐标 (2.0, 1.5) 搜索受困人员" \
   --planner llm \
   --provider-base-url https://api.deepseek.com \
   --provider-api-key sk-xxx \
@@ -754,7 +870,7 @@ python -m fireclaw_core.mission.mission_cli plan-mission \
 
 # Deterministic planning (default, backward compatible)
 python -m fireclaw_core.mission.mission_cli plan-mission \
-  --command "去二楼搜索受困人员" \
+  --command "去坐标 (2.0, 1.5) 搜索受困人员" \
   --robot-registry robots.json \
   --mission-registry missions.jsonl
 ```
@@ -821,6 +937,13 @@ input allowance, actual token count, compacted source references, and omitted
 items. Robot-local gateways may use a separate catalog with
 `--robot-agent-catalog` or `[robot_agent.provider].catalog`.
 
+`fireclaw_core.context.evaluation.evaluate_context_case` provides a
+deterministic baseline for comparing unmanaged and managed requests. It
+reports raw/managed input tokens, savings, compacted source counts, omitted
+advisory items, and exact preservation of authoritative and continuity
+sections. This evaluates context policy behavior; plan-quality equivalence
+still requires model-backed mission benchmarks.
+
 ### Mission Authorization v1
 
 MissionAgent supports mission-level authorization scopes, aligned with OpenClaw's operator scope pattern. When a `ControlPolicy` and `OperatorContext` are configured, MissionAgent checks authorization before executing mission operations.
@@ -864,7 +987,11 @@ mission = MissionAgent(
 )
 
 # Allowed: operator has mission.submit
-result = mission.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+result = mission.submit_subtask(
+    "robot-1",
+    "去坐标 (2.0, 1.5) 搜索",
+    session_id="mission-1",
+)
 
 # Denied: observer lacks mission.submit
 observer = OperatorContext(
@@ -877,7 +1004,11 @@ mission_observer = MissionAgent(
     control_policy=policy,
     operator=observer,
 )
-result = mission_observer.submit_subtask("robot-1", "去二楼搜索", session_id="mission-1")
+result = mission_observer.submit_subtask(
+    "robot-1",
+    "去坐标 (2.0, 1.5) 搜索",
+    session_id="mission-1",
+)
 # result["status"] == "denied"
 ```
 
@@ -887,12 +1018,12 @@ result = mission_observer.submit_subtask("robot-1", "去二楼搜索", session_i
 # Submit task via gateway (default operator has all mission scopes)
 curl -X POST http://127.0.0.1:8765/tasks \
   -H "Content-Type: application/json" \
-  -d '{"command": "去二楼搜索", "session_id": "mission-001"}'
+  -d '{"command": "去坐标 (2.0, 1.5) 搜索", "session_id": "mission-001"}'
 ```
 
 ### Fleet Presence v1
 
-MissionAgent can check which robot subagents are online before planning. `check_fleet_presence()` pings each enabled robot's `/state` endpoint and updates the registry with `last_seen_at` timestamps.
+`MissionAgent` can check which Robot Agents are online before planning. `check_fleet_presence()` pings each enabled robot's `/state` endpoint and updates the registry with `last_seen_at` timestamps.
 
 ```python
 from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
@@ -910,7 +1041,10 @@ presence = mission.check_fleet_presence()
 # presence["r2"]["online"] == False (if unreachable)
 
 # plan_and_submit automatically filters offline robots
-result = mission.plan_and_submit("去二楼和三楼搜索受困人员", session_id="mission-003")
+result = mission.plan_and_submit(
+    "去坐标 (2.0, 1.5) 搜索受困人员",
+    session_id="mission-003",
+)
 # Only online robots receive subtasks
 ```
 
@@ -1099,7 +1233,7 @@ agent = MissionAgent(
 
 ### Cross-Robot Event Aggregation v1
 
-Aggregates events from multiple robot subagents into a unified mission-level timeline.
+Aggregates events from multiple Robot Agents into a unified mission-level timeline.
 
 #### CLI Usage
 
@@ -1124,7 +1258,7 @@ result = aggregator.aggregate("mission-1", robot_id="robot-a", event_type="skill
 
 #### Gateway Endpoint
 
-Robot subagents expose `GET /events` for fetching local events:
+Robot Agents expose `GET /events` for fetching local events:
 ```
 GET /events?task_id=<id>&limit=<N>
 ```
@@ -1210,16 +1344,16 @@ Skills now carry typed `output_schema`, `domain`, `preconditions`, and `degraded
 
 ```python
 from fireclaw_core.execution.skills import (
-    NAVIGATE_OUTPUT_SCHEMA,
+    NAVIGATE_POINT_OUTPUT_SCHEMA,
     create_default_skill_registry,
 )
 
 registry = create_default_skill_registry(robot)
-nav = registry.get("navigate_to_floor")
+nav = registry.get("navigate_to_point")
 
-nav.output_schema  # {"type": "object", "properties": {"floor": {...}, ...}}
+nav.output_schema  # {"type": "object", "properties": {"x": {...}, "y": {...}, ...}}
 nav.domain          # "navigation"
-nav.preconditions   # ["robot_online", "floor_reachable"]
+nav.preconditions   # ["robot_online", "target_point_reachable"]
 nav.degraded_mode_policy  # "retry"
 ```
 
@@ -1242,7 +1376,7 @@ caps = adapter.capabilities()
 # caps.supported_actions, caps.is_simulator, caps.supports_real_execution, ...
 
 # Simulator/real-robot separation check
-error = validate_simulator_real_separation("simulator", dry_run=False, action="navigate_to_floor")
+error = validate_simulator_real_separation("simulator", dry_run=False, action="navigate_to_point")
 # error: "Simulator adapter must not execute real actions"
 ```
 
@@ -1256,7 +1390,7 @@ Structured failure reasons replace ad-hoc status strings:
 from fireclaw_core.safety.local_failure import FailureCategory, LocalFailureReason
 
 reason = LocalFailureReason.from_robot_result(
-    status="failed", error="Connection timed out", action="navigate_to_floor", robot_id="r1",
+    status="failed", error="Connection timed out", action="navigate_to_point", robot_id="r1",
 )
 reason.category   # FailureCategory.TIMEOUT
 reason.retryable   # True
@@ -1277,7 +1411,7 @@ Every task result includes session metadata:
   "session": {
     "session_id": "rescue-shift-a",
     "turn_index": 1,
-    "resolved_command": "去二楼救人",
+    "resolved_command": "去坐标 (2.0, 1.5) 救人",
     "context_used": false
   }
 }
@@ -1291,7 +1425,12 @@ Use `--session-id` to keep memory and recall scoped to a conversation:
   --memory-path /tmp/fireclaw-demo-memory.jsonl
 ```
 
-FireClaw also supports a minimal deterministic clarification flow within a session. If one turn asks for clarification and the next turn only supplies a floor, such as `二楼`, the agent resolves it to `去二楼救人` before planning while preserving the original command in the result.
+FireClaw also supports a minimal deterministic clarification flow within a
+session. If one turn asks for clarification and the next turn only supplies a
+point, such as `坐标 (2.0, 1.5)`, the agent resolves it to
+`去坐标 (2.0, 1.5) 救人` before planning while preserving the original command
+in the result. Floor-only continuation remains available only for legacy
+records.
 
 ## Planner Interface
 
@@ -1360,7 +1499,8 @@ You can also ask the agent to recall recent tasks from the same memory file:
 
 Recall commands return recent memory records and do not execute skills or append another memory entry.
 
-FireClaw also supports minimal structured memory retrieval for common operator questions:
+FireClaw also supports minimal structured memory retrieval for common operator
+questions. The floor-filter example below documents legacy memory compatibility:
 
 ```bash
 .venv/bin/python -m fireclaw_core "之前二楼救人成功了吗" \
@@ -1372,7 +1512,10 @@ FireClaw also supports minimal structured memory retrieval for common operator q
   --memory-path /tmp/fireclaw-demo-memory.jsonl
 ```
 
-Retrieval commands filter JSONL memory by session, status, intent, and target floor when those fields are present in the command. They return `status="retrieved"`, do not execute skills, and do not append another memory entry.
+Retrieval commands filter JSONL memory by session, status, and intent. Legacy
+records can additionally be filtered by target floor. They return
+`status="retrieved"`, do not execute skills, and do not append another memory
+entry.
 
 You can inspect the currently registered skills:
 
@@ -1500,11 +1643,13 @@ Direct skill invocation still goes through the planner, safety gate, executor, a
 
 ## Rescue Plans With Policy Skills
 
-Rescue commands can include a named policy or algorithm skill. The policy skill is inserted before navigation and receives the target floor plus the original command:
+Rescue commands can include a named policy or algorithm skill. The policy
+skill is inserted before navigation and receives the target point plus the
+original command:
 
 ```bash
-.venv/bin/python -m fireclaw_core "去二楼救人 使用 echo_policy"
-.venv/bin/python -m fireclaw_core "去二楼救人 导航策略用 echo_policy"
+.venv/bin/python -m fireclaw_core "去坐标 (2.0, 1.5) 救人 使用 echo_policy"
+.venv/bin/python -m fireclaw_core "去坐标 (2.0, 1.5) 救人 导航策略用 echo_policy"
 ```
 
 The named policy must be registered. If it is missing, the safety gate blocks the plan before any robot action runs.
@@ -1514,7 +1659,7 @@ The named policy must be registered. If it is missing, the safety gate blocks th
 Built-in robot skills depend on the `RobotAdapter` protocol, not on a concrete robot implementation. Current adapters:
 
 - `DryRunRobotAdapter`: default adapter used by the CLI and tests.
-- `SimulatorRobotAdapter`: deterministic simulator that tracks current floor, reachable floors, victims by floor, sensors, online state, and battery level.
+- `SimulatorRobotAdapter`: deterministic single-floor simulator that tracks the current map pose, sensors, online state, and battery level; legacy floor fields remain readable.
 - `MockRos1RobotAdapter`: ROS1-shaped test double that records `Ros1CommandSpec` values without importing `rospy`.
 - `MockRos2RobotAdapter`: legacy ROS2-shaped test double kept for direct compatibility tests.
 
@@ -1522,7 +1667,8 @@ Built-in robot skills depend on the `RobotAdapter` protocol, not on a concrete r
 optional ROS1 transport. Future robot SDK adapters should implement the same
 action methods:
 
-- `navigate_to_floor`
+- `navigate_to_point`
+- `navigate_to_floor` (legacy multi-floor extension)
 - `search_for_victims`
 - `assess_victim`
 - `report_status`
@@ -1535,9 +1681,13 @@ They should also expose state snapshots:
 
 Future real adapters should also implement `emergency_stop(reason=None)`. This method is part of the safety-critical control boundary and should fail safe: stop motion or escalate to the lowest-risk state available for that robot stack.
 
-Robot state includes fields such as `robot_id`, `mode`, `dry_run`, `online`, `battery_percent`, `current_floor`, `available_sensors`, and `supports_real_execution`.
+Robot state includes fields such as `robot_id`, `mode`, `dry_run`, `online`,
+`battery_percent`, `available_sensors`, and `supports_real_execution`.
+`current_floor` is currently a compatibility field, not an active planning
+dimension.
 
-Environment state includes `reachable_floors`, `hazards`, and `victims_by_floor`.
+Environment state includes `hazards`; `reachable_floors` and
+`victims_by_floor` remain compatibility fields for older records.
 
 Adapter action results are structured with fields such as `robot_id`, `mode`, `action`, `status`, `dry_run`, `data`, `timestamp`, and `error`. Planner, safety, executor, and memory should not need to change when a real adapter replaces the simulator or dry-run adapter.
 
@@ -1550,7 +1700,7 @@ Task results and memory records include `robot_state` and `environment_state` sn
 Simulator demo:
 
 ```bash
-.venv/bin/python -m fireclaw_core "去二楼救人" \
+.venv/bin/python -m fireclaw_core "去坐标 (2.0, 1.5) 救人" \
   --adapter simulator \
   --session-id sim-demo \
   --memory-path /tmp/fireclaw-sim-memory.jsonl
@@ -1589,7 +1739,8 @@ The safety gate now inspects skill metadata before execution:
 - blocks retryable skills when `max_attempts > 1` but `idempotent=false`;
 - blocks execution when the robot state reports `online=false`;
 - blocks execution when the robot battery is below 10%;
-- blocks rescue plans whose target floor is not in `environment_state.reachable_floors`;
+- requires a point target for current single-floor rescue plans; legacy floor
+  plans retain their old reachability check;
 - in dry-run mode, blocks skills with `dry_run_only=false`;
 - in non-dry-run mode, blocks every skill unless `allow_real_robot=true` and `dry_run_only=false`;
 - requires operator confirmation for non-dry-run execution after hard checks pass;

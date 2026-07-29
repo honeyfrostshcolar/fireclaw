@@ -185,7 +185,7 @@ def test_load_gazebo_turtlebot3_move_base_config():
     assert config.transport.wait_for_server_seconds == 10.0
     assert config.transport.wait_for_result_seconds == 120.0
 
-    nav = config.endpoints["navigate_to_floor"]
+    nav = config.endpoints["navigate_to_point"]
     assert nav.profile == "move_base"
     assert nav.interface == "action"
     assert nav.name == "/move_base"
@@ -210,9 +210,5 @@ def test_load_gazebo_turtlebot3_move_base_config():
     assert config.emergency_stop.name == "/fireclaw/emergency_stop"
     assert config.emergency_stop.type == "std_srvs/Trigger"
 
-    assert "floor_1" in config.targets
-    assert "floor_2" in config.targets
     assert "safe_zone" in config.targets
-    assert config.targets["floor_1"]["position"]["x"] == 0.0
-    assert config.targets["floor_2"]["position"]["x"] == 2.0
     assert config.targets["safe_zone"]["orientation"]["w"] == 1.0

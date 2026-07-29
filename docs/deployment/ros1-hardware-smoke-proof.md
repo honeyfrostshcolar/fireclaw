@@ -52,7 +52,7 @@ Built-in action names (must be present in config for a complete deployment):
 
 | Logical Name | Typical Interface | Typical ROS Type |
 |-------------|-------------------|------------------|
-| `navigate_to_floor` | action | `move_base_msgs/MoveBaseAction` |
+| `navigate_to_point` | action | `move_base_msgs/MoveBaseAction` |
 | `search_for_victims` | action | custom action type |
 | `assess_victim` | action | custom action type |
 | `report_status` | topic or service | `std_msgs/String` or `std_srvs/Trigger` |

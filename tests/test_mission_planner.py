@@ -45,7 +45,27 @@ def test_mission_planner_clarifies_when_no_floor_specified():
     result = planner.plan("搜索整栋楼", context=robots)
 
     assert result.status == "clarify"
-    assert "楼层" in result.message
+    assert "目标点" in result.message
+
+
+def test_mission_planner_uses_single_floor_pose_target():
+    planner = MissionPlanner()
+    robots = _robots([
+        RobotRegistryEntry(
+            robot_id="r1",
+            base_url="http://r1:8765",
+            capabilities=("search_for_victims",),
+        ),
+    ])
+
+    result = planner.plan("去坐标 (2.0, 1.5) 搜索受困人员", context=robots)
+
+    assert result.status == "planned"
+    assert result.plan.subtasks[0].floor is None
+    assert result.plan.subtasks[0].target == {
+        "frame_id": "map",
+        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+    }
 
 
 def test_mission_planner_parses_patrol_command():

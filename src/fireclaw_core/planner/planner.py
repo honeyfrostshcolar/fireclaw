@@ -6,7 +6,7 @@ from typing import Any
 
 
 RESCUE_SKILL_SEQUENCE = (
-    "navigate_to_floor",
+    "navigate_to_point",
     "search_for_victims",
     "assess_victim",
     "report_status",
@@ -45,6 +45,7 @@ class PlanningResult:
     message: str
     intent: str | None = None
     target_floor: int | None = None
+    target_pose: dict[str, Any] | None = None
     plan: Plan | None = None
 
 
@@ -64,11 +65,29 @@ class RuleBasedPlanner:
         if direct_skill_result is not None:
             return direct_skill_result
 
+        point = self._extract_point(command)
+        if point is not None and "救人" in command:
+            return PlanningResult(
+                status="planned",
+                message="已生成单楼层目标点救援 dry-run 计划。",
+                intent="rescue_victim",
+                target_pose=point,
+                plan=Plan(
+                    intent="rescue_victim",
+                    steps=self._build_point_rescue_steps(point, command),
+                ),
+            )
+
+        # Compatibility path for persisted multi-floor examples. Current
+        # deployments should use an explicit point in the active map.
         floor = self._extract_floor(command)
         if floor is None or "救人" not in command:
             return PlanningResult(
                 status="clarify",
-                message="请明确要前往的楼层和救援目标，例如：去二楼救人。",
+                message=(
+                    "请明确当前地图中的目标点和救援目标，"
+                    "例如：去坐标 (2.0, 1.5) 救人。"
+                ),
             )
 
         policy_skill = self._extract_policy_skill(command)
@@ -89,6 +108,22 @@ class RuleBasedPlanner:
         if token.isdigit():
             return int(token)
         return CHINESE_DIGITS.get(token)
+
+    def _extract_point(self, command: str) -> dict[str, Any] | None:
+        match = re.search(
+            r"(?:坐标|目标点|点)\s*[（(]?\s*"
+            r"(-?\d+(?:\.\d+)?)\s*[,，]\s*"
+            r"(-?\d+(?:\.\d+)?)\s*[)）]?",
+            command,
+        )
+        if not match:
+            return None
+        return {
+            "x": float(match.group(1)),
+            "y": float(match.group(2)),
+            "yaw": 0.0,
+            "frame_id": "map",
+        }
 
     def _plan_direct_skill_invocation(self, command: str) -> PlanningResult | None:
         match = re.match(
@@ -146,4 +181,27 @@ class RuleBasedPlanner:
                 PlanStep("return_to_safe_zone", {}),
             ]
         )
+        return steps
+
+    def _build_point_rescue_steps(
+        self,
+        point: dict[str, Any],
+        command: str,
+    ) -> list[PlanStep]:
+        policy_skill = self._extract_policy_skill(command)
+        steps: list[PlanStep] = []
+        if policy_skill:
+            steps.append(
+                PlanStep(
+                    policy_skill,
+                    {"target": dict(point), "command": command},
+                )
+            )
+        steps.extend([
+            PlanStep("navigate_to_point", dict(point)),
+            PlanStep("search_for_victims", {}),
+            PlanStep("assess_victim", {}),
+            PlanStep("report_status", {}),
+            PlanStep("return_to_safe_zone", {}),
+        ])
         return steps

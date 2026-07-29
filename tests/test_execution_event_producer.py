@@ -16,8 +16,8 @@ from fireclaw_core.task.task_contract import StructuredRobotTask
 
 def _failed_execution(
     *,
-    skill_name: str = "navigate_to_floor",
-    action: str = "navigate_to_floor",
+    skill_name: str = "navigate_to_point",
+    action: str = "navigate_to_point",
     failure_category: str | FailureCategory | None = None,
     error: str = "No path to target",
     attempt_count: int = 3,
@@ -36,7 +36,7 @@ def _failed_execution(
         steps=[
             StepExecutionResult(
                 skill_name=skill_name,
-                inputs={"floor": 2},
+                inputs={"x": 2.0, "y": 1.5, "frame_id": "map"},
                 status="failed",
                 output=output,
                 error=error,
@@ -121,16 +121,26 @@ def test_non_failure_and_unprojectable_failure_do_not_emit_event() -> None:
 
 
 class _BlockedRobot(DryRunRobotAdapter):
-    def navigate_to_floor(self, floor: int) -> RobotActionResult:
+    def navigate_to_point(
+        self,
+        x: float,
+        y: float,
+        *,
+        yaw: float = 0.0,
+        frame_id: str = "map",
+    ) -> RobotActionResult:
         return RobotActionResult(
             ok=False,
             status="failed",
             robot_id=self.robot_id,
             mode=self.mode,
-            action="navigate_to_floor",
+            action="navigate_to_point",
             dry_run=self.dry_run,
             data={
-                "floor": floor,
+                "x": x,
+                "y": y,
+                "yaw": yaw,
+                "frame_id": frame_id,
                 "failure_category": "target_unreachable",
             },
             timestamp="2026-07-28T10:00:00+00:00",
@@ -142,11 +152,11 @@ def _structured_task() -> StructuredRobotTask:
     return StructuredRobotTask(
         task_id="task-1",
         task_type="search",
-        target={"floor": 2},
-        required_skills=["navigate_to_floor"],
+        target={"pose": {"x": 2.0, "y": 1.5, "frame_id": "map"}},
+        required_skills=["navigate_to_point"],
         mission_id="mission-1",
         robot_id="robot-a",
-        command="去二楼搜索受困人员",
+        command="去坐标 (2.0, 1.5) 搜索受困人员",
     )
 
 
@@ -191,7 +201,7 @@ def test_gateway_task_trace_exposes_produced_invalidation_event(
     gateway.robot = _BlockedRobot(robot_id="robot-a")
 
     accepted = gateway.submit_agent(
-        "去二楼搜索受困人员",
+        "去坐标 (2.0, 1.5) 搜索受困人员",
         session_id="mission-1",
         structured_task=_structured_task().to_dict(),
     )

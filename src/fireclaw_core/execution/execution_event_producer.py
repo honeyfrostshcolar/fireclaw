@@ -15,6 +15,7 @@ from fireclaw_core.safety.local_failure import (
 
 
 _NAVIGATION_ACTIONS = frozenset({
+    "navigate_to_point",
     "navigate_to_floor",
     "navigate_to_pose",
     "navigate",

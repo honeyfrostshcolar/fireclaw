@@ -51,6 +51,17 @@ def planner_response_schema() -> dict[str, Any]:
             "message": {"type": "string"},
             "intent": {"type": ["string", "null"]},
             "target_floor": {"type": ["integer", "null"]},
+            "target_pose": {
+                "type": ["object", "null"],
+                "properties": {
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "yaw": {"type": "number"},
+                    "frame_id": {"type": "string"},
+                },
+                "required": ["x", "y"],
+                "additionalProperties": False,
+            },
             "steps": {
                 "type": "array",
                 "items": {

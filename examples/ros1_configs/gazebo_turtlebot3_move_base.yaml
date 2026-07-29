@@ -6,28 +6,31 @@ transport:
   wait_for_server_seconds: 10.0
   wait_for_result_seconds: 120.0
 endpoints:
-  navigate_to_floor:
+  navigate_to_point:
     profile: move_base
     name: "/move_base"
     goal_template:
       target_pose:
         header:
-          frame_id: "map"
+          frame_id: "${frame_id}"
         pose:
-          position: "${targets.floor_${floor}.position}"
-          orientation: "${targets.floor_${floor}.orientation}"
+          position:
+            x: "${x}"
+            y: "${y}"
+            z: 0.0
+          orientation: "${orientation}"
   search_for_victims:
     interface: topic
     name: "/fireclaw/search_request"
     type: "std_msgs/String"
     request_template:
-      data: "search_floor_${floor}"
+      data: "search_current_area"
   report_status:
     interface: topic
     name: "/fireclaw/operator_report"
     type: "std_msgs/String"
     request_template:
-      data: "status_report_floor_${floor}"
+      data: "status_report_current_area"
   return_to_safe_zone:
     profile: move_base
     name: "/move_base"
@@ -43,26 +46,6 @@ emergency_stop:
   name: "/fireclaw/emergency_stop"
   type: "std_srvs/Trigger"
 targets:
-  floor_1:
-    position:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-    orientation:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      w: 1.0
-  floor_2:
-    position:
-      x: 2.0
-      y: 0.0
-      z: 0.0
-    orientation:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      w: 1.0
   safe_zone:
     position:
       x: 0.0
