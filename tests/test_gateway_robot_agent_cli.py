@@ -19,6 +19,8 @@ def test_gateway_cli_exposes_robot_agent_flags():
     assert "--robot-agent-provider-base-url" in completed.stdout
     assert "--robot-agent-provider-api-key" in completed.stdout
     assert "--robot-agent-model" in completed.stdout
+    assert "--catalog" in completed.stdout
+    assert "--robot-agent-catalog" in completed.stdout
 
 
 def test_robot_gateway_cli_exposes_config_flag():
@@ -32,6 +34,7 @@ def test_robot_gateway_cli_exposes_config_flag():
     assert "--config" in completed.stdout
     assert "--robot-agent" in completed.stdout
     assert "--robot-agent-planner" in completed.stdout
+    assert "--robot-agent-catalog" in completed.stdout
 
 
 def test_gateway_package_module_cli_exposes_config_flag():
@@ -54,6 +57,7 @@ def test_config_loads_robot_gateway_settings_and_reuses_provider(tmp_path):
 base_url = "https://example.invalid/v1"
 api_key = "secret"
 model = "mimo-v2.5"
+catalog = "models.json"
 
 [robot_gateway]
 host = "127.0.0.1"
@@ -89,6 +93,27 @@ planner = "llm"
     assert cfg["robot_agent_provider_base_url"] == "https://example.invalid/v1"
     assert cfg["robot_agent_provider_api_key"] == "secret"
     assert cfg["robot_agent_model"] == "mimo-v2.5"
+    assert cfg["model_catalog_path"] == "models.json"
+    assert cfg["robot_agent_model_catalog_path"] == "models.json"
+
+
+def test_config_allows_robot_agent_catalog_override(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[provider]
+catalog = "central-models.json"
+
+[robot_agent.provider]
+catalog = "robot-models.json"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["model_catalog_path"] == "central-models.json"
+    assert cfg["robot_agent_model_catalog_path"] == "robot-models.json"
 
 
 def test_config_loads_robot_gateway_profile_path(tmp_path):

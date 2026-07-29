@@ -948,6 +948,124 @@ failure categories and add live event delivery.
 No commit was requested or made. The unrelated
 `memory/2026-07-28/codex-usage-reset-skill-check.md` was not modified.
 
+## 2026-07-28 23:55 +0800 - Central mission-planning context management
+
+### Task goal
+
+Implement the first concrete context-engineering layer for FireClaw's central
+mission planner: deterministic context assembly, bounded advisory retrieval,
+authority separation, exact per-turn provenance, and fail-closed handling of
+safety-critical context.
+
+### OpenClaw analogues inspected
+
+- `openclaw/packages/agent-core/src/agent-loop.ts`
+  (`transformContext` before each model call and tool-result continuation);
+- `openclaw/src/agents/embedded-agent-runner/tool-result-context-guard.ts`
+  (context budget and tool-result truncation);
+- `openclaw/src/agents/context-window-guard.ts` (context-window guard);
+- `openclaw/packages/agent-core/src/harness/compaction/compaction.ts`
+  (history compaction).
+
+FireClaw reuses the host-owned pre-model context transform and budget-guard
+shape. It does not copy transcript-first lossy compaction for current robot
+state: authoritative snapshot observations and validator feedback must remain
+complete or planning is blocked.
+
+### Files added
+
+- `src/fireclaw_core/mission/planning_context.py`
+- `tests/test_mission_planning_context.py`
+
+### Files modified
+
+- `src/fireclaw_core/mission/mission_deliberation.py`
+- `src/fireclaw_core/mission/mission_planner.py`
+- `src/fireclaw_core/planner/llm_planner.py`
+- `tests/test_llm_deliberation_policy.py`
+- `README.md`
+
+### Implemented behavior
+
+- `MissionPlanningContextAssembler` creates one stable context envelope before
+  every policy call.
+- The envelope separates authoritative mission state and observations, plan
+  continuity, and advisory operator corrections/memory/RAG.
+- Safety-critical context is never truncated. Budget or serialization failure
+  returns `blocked/context_budget_exceeded` before the policy or LLM is called.
+- Advisory items are admitted whole, in the priority order correction,
+  mission memory, external knowledge; duplicate, invalid, oversized,
+  over-limit, and over-budget items are recorded as omitted.
+- Each attempt persists `context_id` and a manifest with trust, source,
+  character usage, included references, omitted references, and reasons.
+- LLM prompts receive only the envelope. Static instructions no longer repeat
+  dynamic robot, memory, and RAG payloads in the system message.
+- The complete snapshot remains available to host-side planners, compilers,
+  and validators. `tool_exposed_belief_ids` independently restricts the graph
+  tool schema to beliefs actually returned by snapshot inspection.
+- With no inspected beliefs, the graph schema sets `belief_assumptions`
+  `maxItems: 0`; it does not emit an invalid empty JSON Schema `enum`.
+
+### Verification so far
+
+Focused context, deliberation, mission-state, planner-memory, deterministic
+planner, and LLM planner tests:
+
+```text
+156 passed in 10.19s
+```
+
+Earlier broader planning regression before the final compatibility correction:
+
+```text
+258 passed in 10.70s
+```
+
+Final complete suite outside the localhost-socket-restricted sandbox:
+
+```text
+1747 passed, 6 skipped in 124.83s
+```
+
+Also passed:
+
+```text
+python -m compileall -q src tests
+git diff --check
+```
+
+### Engineering conclusion
+
+The central planner now has an explicit, testable answer to "what exactly did
+the model know on this turn?" and "what was omitted because of budget?".
+Current physical state is protected from silent information loss, while
+advisory memory and RAG cannot silently become authoritative facts.
+
+### Research conclusion
+
+This is important infrastructure for reproducibility, safety auditing, and
+context-ablation experiments, but it is not yet a novel context-management
+method. Publication-level claims would require model-aware token allocation,
+learned or uncertainty-aware retrieval/reranking, task-success and safety
+evaluations under context pressure, and comparisons against transcript
+truncation, unbounded retrieval, and no-provenance baselines.
+
+### Remaining gaps and next recommended step
+
+- Budgeting counts canonical serialized characters, not provider tokenizer
+  tokens or tool-schema/static-prompt overhead.
+- There is no semantic compaction of long operator/planner history.
+- Robot-local planner context is not yet governed by the same envelope.
+- Successful reconnaissance still needs a general asynchronous observation
+  request, fresh-snapshot publication, and bounded plan-continuation protocol.
+
+After full regression, the recommended next planning feature remains the
+asynchronous observation-continuation protocol rather than adding more prompt
+text.
+
+No commit was requested or made. The unrelated
+`memory/2026-07-28/codex-usage-reset-skill-check.md` was not modified.
+
 ## 2026-07-28 23:16 +08 - RAG-assisted task-assumption compiler
 
 ### Task goal

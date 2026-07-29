@@ -13,6 +13,7 @@ operator command
 -> frozen mission-state snapshot
 -> multi-source world-state belief projection
 -> advisory RAG context + approved task-assumption rules
+-> deterministic context assembly, budgeting, and provenance manifest
 -> bounded LLM or deterministic planner
 -> semantic task graph
 -> deterministic graph compiler and validators
@@ -27,6 +28,7 @@ operator command
 | Area | Current behavior |
 |---|---|
 | Mission planning | Bounded multi-round planner with read-only snapshot queries, structured graph proposals, clarification, and escalation |
+| Planning context | Central and robot-local LLM planners share model-aware token budgeting, provenance-preserving semantic compaction, trust-tiered context envelopes, and persisted inclusion/omission manifests |
 | Task graph | Typed targets, dependencies, completion goals, robot capabilities, resources, timeouts, risks, and recovery policies |
 | Graph compilation | The LLM describes task semantics; deterministic code allocates robots and injects completion, safety, and approved task-assumption constraints |
 | Task common sense | RAG may suggest and cite dependencies, while a versioned approved rule registry supplies enforceable requirements and fills omissions for covered task types |
@@ -55,7 +57,14 @@ Known planning gaps:
 - successful reconnaissance does not yet provide a general push-based
   observation-refresh and plan-continuation protocol;
 - multi-source evidence has structural provenance but not cryptographic
-  attestation or learned correlation handling.
+  attestation or learned correlation handling;
+- exact token accounting requires a locally available Hugging Face tokenizer;
+  models without one use the conservative CJK-aware fallback and record
+  `exact_model_tokenizer: false`;
+- structured semantic compaction preserves selected task facts and source
+  references, but it is not yet an adaptive learned or LLM-generated summary;
+- fallback model chains do not yet negotiate a common minimum context window
+  across every candidate before the first provider attempt.
 
 ## OpenClaw Reference
 
@@ -649,6 +658,28 @@ environment observations, and resource reservations. The planner can perform
 bounded read-only queries against this frozen snapshot. It cannot query a live
 robot or execute a skill during mission deliberation.
 
+Before every planner decision, `MissionPlanningContextAssembler` builds the
+exact dynamic context envelope for that turn. The envelope separates:
+
+- authoritative mission state, inspected observations, validator feedback, and
+  invalidation evidence;
+- plan continuity, including the previous rejected proposal and superseded
+  plan;
+- advisory operator corrections, retrieved mission memories, and external RAG
+  knowledge.
+
+Authoritative content is never silently truncated. If it does not fit the
+configured planning budget, the runtime blocks before calling the policy.
+Advisory items are admitted whole in priority order, deduplicated, and limited
+by per-section and total budgets. Every turn receives a stable `context_id`;
+the persisted manifest records sources, trust levels, included and omitted
+references, omission reasons, and budget usage.
+
+The host retains the complete snapshot for deterministic compilation and
+validation. The LLM tool schema receives a separate
+`tool_exposed_belief_ids` allowlist, so a graph proposal can cite only beliefs
+that the planner actually inspected during that deliberation.
+
 Raw `environment_facts` remain available for audit. Planner-facing
 `environment_beliefs` fuse observations by `(subject_id, kind)` and expose
 source provenance, confidence, freshness, conflicts, and superseded reports.
@@ -716,6 +747,7 @@ python -m fireclaw_core.mission.mission_cli plan-mission \
   --provider-base-url https://api.deepseek.com \
   --provider-api-key sk-xxx \
   --model deepseek-chat \
+  --catalog models.json \
   --robot-registry robots.json \
   --mission-registry missions.jsonl \
   --llm-trace-path logs/llm-traces.jsonl
@@ -734,6 +766,60 @@ python -m fireclaw_core.mission.mission_cli plan-mission \
 - `llm_trace.py` — `LLMTraceStore` for recording full LLM call traces (prompt, response, tokens, latency)
 
 **LLM Trace:** Record every LLM call for debugging and audit. Use `--llm-trace-path` to enable.
+
+### Unified Planner Context Management
+
+The central mission planner and robot-local LLM planner use the same
+`ModelAwareContextManager`. A model catalog supplies the real context window,
+maximum output allowance, and optional tokenizer:
+
+```json
+{
+  "models": [
+    {
+      "id": "local-model",
+      "name": "Local Model",
+      "provider": "local",
+      "context_window": 32768,
+      "max_tokens": 4096,
+      "supports_tools": true,
+      "tokenizer_id": "/srv/fireclaw/models/local-model"
+    }
+  ]
+}
+```
+
+`tokenizer_id` must resolve from local files or the local Hugging Face cache;
+FireClaw never downloads a tokenizer during planning. When it can be loaded,
+the complete messages and tool schemas are counted with that tokenizer.
+Otherwise FireClaw uses a conservative CJK-aware estimate and marks the
+manifest as inexact.
+
+Each request is divided into three trust levels:
+
+- `authoritative`: current mission snapshot, robot state, environment state,
+  sensors, task contract, skill inventory, and safety-critical constraints;
+- `continuity`: active mission/task/plan identifiers needed to continue work;
+- `advisory`: session history, mission memory, entity memory, and RAG
+  knowledge that may help planning but cannot establish current physical fact.
+
+Old advisory records are converted into a deterministic structured summary
+with a content digest and source references, while recent records remain
+verbatim. If the request still exceeds the model input budget, advisory items
+are omitted and recorded in the context manifest. Authoritative content is
+never truncated; if it and the tool schemas do not fit, planning is blocked
+before a provider call.
+
+The input allowance is:
+
+```text
+context_window - output_reserve - safety_margin
+```
+
+Both planners persist the selected model, counter type, exact/fallback flag,
+input allowance, actual token count, compacted source references, and omitted
+items. Robot-local gateways may use a separate catalog with
+`--robot-agent-catalog` or `[robot_agent.provider].catalog`.
 
 ### Mission Authorization v1
 

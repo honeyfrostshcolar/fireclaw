@@ -26,6 +26,7 @@ class ModelDescriptor:
     supports_tools: bool
     cost_input: float | None = None
     cost_output: float | None = None
+    tokenizer_id: str | None = None
 
 
 class ModelCatalog:
@@ -80,4 +81,9 @@ def _descriptor_from_dict(data: dict[str, Any]) -> ModelDescriptor:
         supports_tools=bool(data["supports_tools"]),
         cost_input=float(data["cost_input"]) if "cost_input" in data else None,
         cost_output=float(data["cost_output"]) if "cost_output" in data else None,
+        tokenizer_id=(
+            str(data["tokenizer_id"])
+            if data.get("tokenizer_id")
+            else None
+        ),
     )

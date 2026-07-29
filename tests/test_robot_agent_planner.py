@@ -307,8 +307,14 @@ def test_llm_robot_agent_plans_navigation_with_primitives():
 
     # Verify the prompt included skill_inventory
     user_payload = json.loads(runtime.calls[0]["messages"][1]["content"])
-    assert "navigate_to_floor" in json.dumps(user_payload["skill_inventory"])
-    assert "primitive" in json.dumps(user_payload["skill_inventory"])
+    skill_inventory = user_payload["planning_context"][
+        "authoritative"
+    ]["skill_inventory"]
+    assert "navigate_to_floor" in json.dumps(skill_inventory)
+    assert "primitive" in json.dumps(skill_inventory)
+    assert plan.context_manifest is not None
+    assert plan.context_manifest["scope"] == "robot_local_planner"
+    assert runtime.calls[0]["max_tokens"] == 2048
 
     # Verify plan passes policy
     decision = RobotAgentPolicy().validate(envelope, plan)

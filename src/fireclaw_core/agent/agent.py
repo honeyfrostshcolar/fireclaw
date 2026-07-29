@@ -27,6 +27,7 @@ from fireclaw_core.safety.safety import SafetyDecision, SafetyGate
 from fireclaw_core.execution.skills import create_default_skill_registry
 from fireclaw_core.task.task_contract import StructuredRobotTask, planning_result_from_structured_task
 from fireclaw_core.infra.workspace_skills import WorkspaceSkillLoadError, load_workspace_skills
+from fireclaw_core.context.manager import StructuredSemanticCompactor
 
 
 class MemoryStore(Protocol):
@@ -355,11 +356,46 @@ class FireClawAgent:
         return records[-1]
 
     def _build_planner_context(self, turn_index: int) -> PlannerContext:
+        records = self._recent_session_records(limit=50)
+        compaction_manifest = None
+        if len(records) > 5:
+            summary, compaction = StructuredSemanticCompactor().compact(
+                "session_history",
+                records[:-5],
+            )
+            records = [summary, *records[-5:]]
+            compaction_manifest = compaction.to_dict()
+        context_id = (
+            f"{self.session_id}:robot-interactive-context:{turn_index}"
+        )
+        context_manifest = {
+            "context_id": context_id,
+            "scope": "robot_interactive_planner",
+            "semantic_compaction": compaction_manifest,
+        }
+        context_envelope = {
+            "context_id": context_id,
+            "authoritative": {
+                "session_id": self.session_id,
+                "turn_index": turn_index,
+                "skills": self.registry.list_metadata(),
+            },
+            "continuity": {},
+            "advisory": {"session_history": records},
+            "context_policy": {
+                "safety_critical_context_preserved": True,
+                "semantic_compaction": (
+                    compaction_manifest is not None
+                ),
+            },
+        }
         return PlannerContext(
             session_id=self.session_id,
             turn_index=turn_index,
-            recent_records=self._recent_session_records(limit=5),
+            recent_records=records,
             skills=self.registry.list_metadata(),
+            context_envelope=context_envelope,
+            context_manifest=context_manifest,
         )
 
     def _recent_session_records(self, limit: int) -> list[dict[str, Any]]:

@@ -141,12 +141,14 @@ def main() -> int:
     serve.add_argument("--provider-base-url", default=None, help="LLM provider base URL.")
     serve.add_argument("--provider-api-key", default=None, help="LLM provider API key.")
     serve.add_argument("--model", default=None, help="LLM model id.")
+    serve.add_argument("--catalog", default=None, help="Path to model catalog JSON file.")
     serve.add_argument("--llm-trace-path", default=None, help="Path to LLM trace JSONL file.")
     serve.add_argument("--robot-agent", action="store_true", default=None, help="Enable robot-local agent planning.")
     serve.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default=None, help="Robot-local agent planner backend.")
     serve.add_argument("--robot-agent-provider-base-url", default=None, help="Robot-local agent LLM provider base URL.")
     serve.add_argument("--robot-agent-provider-api-key", default=None, help="Robot-local agent LLM provider API key.")
     serve.add_argument("--robot-agent-model", default=None, help="Robot-local agent LLM model id.")
+    serve.add_argument("--robot-agent-catalog", default=None, help="Path to robot-local model catalog JSON file.")
     serve.add_argument(
         "--robot-profile",
         action="append",
@@ -263,12 +265,14 @@ def main() -> int:
             "provider_base_url": args.provider_base_url,
             "provider_api_key": args.provider_api_key,
             "model": args.model,
+            "model_catalog_path": args.catalog,
             "llm_trace_path": args.llm_trace_path,
             "robot_agent_enabled": args.robot_agent if args.robot_agent else None,
             "robot_agent_planner": args.robot_agent_planner,
             "robot_agent_provider_base_url": args.robot_agent_provider_base_url,
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
             "robot_agent_model": args.robot_agent_model,
+            "robot_agent_model_catalog_path": args.robot_agent_catalog,
             "mission_robot_profiles": args.robot_profile,
             "embodied_runtime_mode": args.embodied_runtime_mode,
             "memory_rag_backend": args.memory_rag_backend,
@@ -339,6 +343,7 @@ def main() -> int:
             provider_base_url=merged.get("provider_base_url"),
             provider_api_key=merged.get("provider_api_key"),
             model=merged.get("model"),
+            model_catalog_path=merged.get("model_catalog_path"),
             llm_trace_path=merged.get("llm_trace_path"),
             data_dir=Path(str(merged.get("data_dir", "data"))),
             robot_agent_enabled=bool(merged.get("robot_agent_enabled", False)),
@@ -346,6 +351,7 @@ def main() -> int:
             robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
             robot_agent_model=merged.get("robot_agent_model"),
+            robot_agent_model_catalog_path=merged.get("robot_agent_model_catalog_path"),
             robot_profiles=tuple(merged["mission_robot_profiles"]) if merged.get("mission_robot_profiles") else None,
             embodied_runtime_mode=(
                 str(merged["embodied_runtime_mode"])
@@ -904,6 +910,7 @@ def _build_planner(args: argparse.Namespace) -> Any:
             provider_api_key=args.provider_api_key,
             model=args.model,
             llm_trace_path=args.llm_trace_path,
+            model_catalog_path=getattr(args, "catalog", None),
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

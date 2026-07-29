@@ -65,6 +65,7 @@ class GatewayConfig:
     robot_agent_provider_base_url: str | None = None
     robot_agent_provider_api_key: str | None = None
     robot_agent_model: str | None = None
+    robot_agent_model_catalog_path: str | None = None
     robot_profile_path: str | None = None
     embodied_memory_path: str | None = None
     embodied_memory_index_path: str | None = None
@@ -642,6 +643,7 @@ class FireClawGateway:
                 provider_base_url=self.config.robot_agent_provider_base_url,
                 provider_api_key=self.config.robot_agent_provider_api_key,
                 model=self.config.robot_agent_model,
+                model_catalog_path=self.config.robot_agent_model_catalog_path,
             )
             return RobotAgentRuntime(
                 planner=LLMRobotAgentPlanner(
@@ -712,6 +714,7 @@ class FireClawGateway:
                 composite_chains=self.robot_profile.capability_skill_chains if self.robot_profile else {},
                 verified_sensors=set(runtime_sensors if runtime_sensors is not None else agent.available_sensors),
             ),
+            "session_history": agent._recent_session_records(limit=50),
         }
         if self.entity_memory_tools is not None and task_object.mission_id:
             context["memory_tools"] = self.entity_memory_tools.tool_schemas()
@@ -1737,6 +1740,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--robot-agent-provider-base-url", default=None)
     parser.add_argument("--robot-agent-provider-api-key", default=None)
     parser.add_argument("--robot-agent-model", default=None)
+    parser.add_argument("--robot-agent-catalog", default=None)
     parser.add_argument("--robot-profile", default=None, help="Path to robot capability profile TOML.")
     parser.add_argument("--embodied-memory-path", default=None)
     parser.add_argument("--embodied-memory-index", default=None)
@@ -1774,6 +1778,7 @@ def main(argv: list[str] | None = None) -> int:
             "robot_agent_provider_base_url": args.robot_agent_provider_base_url,
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
             "robot_agent_model": args.robot_agent_model,
+            "robot_agent_model_catalog_path": args.robot_agent_catalog,
             "robot_gateway_profile_path": args.robot_profile,
             "robot_gateway_embodied_memory_path": args.embodied_memory_path,
             "robot_gateway_embodied_memory_index": args.embodied_memory_index,
@@ -1807,6 +1812,7 @@ def main(argv: list[str] | None = None) -> int:
             robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
             robot_agent_model=merged.get("robot_agent_model"),
+            robot_agent_model_catalog_path=merged.get("robot_agent_model_catalog_path"),
             robot_profile_path=merged.get("robot_gateway_profile_path"),
             embodied_memory_path=merged.get("robot_gateway_embodied_memory_path"),
             embodied_memory_index_path=merged.get("robot_gateway_embodied_memory_index"),

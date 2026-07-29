@@ -8,6 +8,7 @@ from fireclaw_core.planner.llm_trace import LLMTraceStore
 from fireclaw_core.mission.mission_planner import MissionPlanner
 from fireclaw_core.provider.provider import OpenAICompatProvider
 from fireclaw_core.provider.provider_runtime import ProviderRuntime, SimpleProviderRuntime
+from fireclaw_core.provider.model_catalog import ModelCatalog
 
 
 def build_planner(
@@ -17,6 +18,7 @@ def build_planner(
     provider_api_key: str | None = None,
     model: str | None = None,
     llm_trace_path: str | None = None,
+    model_catalog_path: str | None = None,
 ) -> Any:
     if planner_type == "llm":
         if not provider_base_url:
@@ -26,7 +28,16 @@ def build_planner(
         if not model:
             raise ValueError("model is required when planner_type='llm'")
         provider = OpenAICompatProvider(base_url=provider_base_url, api_key=provider_api_key)
-        runtime = SimpleProviderRuntime(provider=provider, model_id=model)
+        catalog = (
+            ModelCatalog(model_catalog_path)
+            if model_catalog_path
+            else None
+        )
+        runtime = SimpleProviderRuntime(
+            provider=provider,
+            model_id=model,
+            catalog=catalog,
+        )
         trace_store = LLMTraceStore(llm_trace_path) if llm_trace_path else None
         return LLMMissionPlanner(provider_runtime=runtime, trace_store=trace_store)
     return MissionPlanner()
@@ -37,6 +48,7 @@ def build_provider_runtime(
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
     model: str | None = None,
+    model_catalog_path: str | None = None,
 ) -> ProviderRuntime:
     if not provider_base_url:
         raise ValueError("provider_base_url is required")
@@ -45,4 +57,13 @@ def build_provider_runtime(
     if not model:
         raise ValueError("model is required")
     provider = OpenAICompatProvider(base_url=provider_base_url, api_key=provider_api_key)
-    return SimpleProviderRuntime(provider=provider, model_id=model)
+    catalog = (
+        ModelCatalog(model_catalog_path)
+        if model_catalog_path
+        else None
+    )
+    return SimpleProviderRuntime(
+        provider=provider,
+        model_id=model,
+        catalog=catalog,
+    )

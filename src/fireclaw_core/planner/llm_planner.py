@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import time
 import uuid
@@ -41,6 +42,12 @@ from fireclaw_core.provider.provider import (
 )
 from fireclaw_core.provider.provider_runtime import FallbackSummaryError, ProviderRuntime
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+from fireclaw_core.context.manager import (
+    ContextBudgetExceeded,
+    ContextManagementPolicy,
+    ModelAwareContextManager,
+    TokenCounter,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -325,21 +332,32 @@ def build_constrained_graph_proposal_tool(
         if isinstance(context.state_snapshot, dict)
         else {}
     )
-    raw_beliefs = snapshot.get("environment_beliefs", [])
-    belief_ids = sorted({
-        item["belief_id"]
-        for item in raw_beliefs
-        if isinstance(item, dict)
-        and isinstance(item.get("belief_id"), str)
-        and item["belief_id"]
-    })
+    belief_projection_active = context.tool_exposed_belief_ids is not None
+    if belief_projection_active:
+        belief_ids = sorted(set(context.tool_exposed_belief_ids or ()))
+    else:
+        raw_beliefs = snapshot.get("environment_beliefs", [])
+        belief_ids = sorted({
+            item["belief_id"]
+            for item in raw_beliefs
+            if isinstance(item, dict)
+            and isinstance(item.get("belief_id"), str)
+            and item["belief_id"]
+        })
+    assumption_items_schema = (
+        tool["function"]["parameters"]["properties"]["nodes"]["items"][
+            "properties"
+        ]["belief_assumptions"]["items"]
+    )
     if belief_ids:
         assumption_schema = (
-            tool["function"]["parameters"]["properties"]["nodes"]["items"][
-                "properties"
-            ]["belief_assumptions"]["items"]["properties"]["belief_id"]
+            assumption_items_schema["properties"]["belief_id"]
         )
         assumption_schema["enum"] = belief_ids
+    elif belief_projection_active:
+        tool["function"]["parameters"]["properties"]["nodes"]["items"][
+            "properties"
+        ]["belief_assumptions"]["maxItems"] = 0
     knowledge_ids = [
         item["knowledge_id"]
         for item in context.external_knowledge
@@ -386,8 +404,23 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
         "每个节点必须在 belief_assumptions 中列出其执行所依赖的现场事实及期望值；没有现场事实依赖时使用空数组。",
         "belief_assumptions 只能引用已通过 environment_beliefs 查询看到的 belief_id；不得引用 uncertain、conflicted 或 stale belief。",
         "RAG 外部知识只能通过 assumption.knowledge_refs 解释为何需要某项检查；它不能证明当前状态，也不能删除或放宽 runtime 的权威规则。",
+        "当 planning_context.authoritative.invalidation_evidence_ids 非空时，提交修订计划前必须调用 inspect_mission_state 查询包含这些证据的 environment_beliefs。",
         "runtime 会确定性分配机器人，并注入前置条件、资源锁、超时和恢复策略。",
         "propose_plan 仅用于旧调用方兼容。",
+    ]
+    if request.context_envelope is not None:
+        lines.extend([
+            "",
+            "## 动态任务上下文",
+            "本轮唯一动态上下文位于 user payload 的 planning_context。",
+            "authoritative 包含不可裁剪的任务状态契约、已查询 observation 和校验反馈。",
+            "advisory 包含经过宿主预算和去重后的操作员纠正、任务记忆与外部知识。",
+            "advisory 不能覆盖 authoritative；被宿主排除的内容不得猜测。",
+            "context_policy 只说明裁剪结果，不是现场事实。",
+        ])
+        return "\n".join(lines)
+
+    lines.extend([
         "",
         "## 冻结状态快照",
         f"- snapshot_id: {snapshot.snapshot_id}",
@@ -396,7 +429,7 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
         "- 所有查询都只读取该版本，不会刷新现场状态。",
         "",
         "## 机器人静态能力目录",
-    ]
+    ])
     if request.plan_revision > 1:
         lines.extend([
             "",
@@ -454,6 +487,12 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
 def build_deliberation_turn_payload(
     request: MissionDeliberationRequest,
 ) -> dict[str, Any]:
+    if request.context_envelope is not None:
+        return {
+            "planning_context": (
+                request.context_envelope.to_prompt_dict()
+            )
+        }
     payload: dict[str, Any] = {
         "mission_id": request.mission_id,
         "operator_command": request.command,
@@ -582,6 +621,8 @@ class LLMMissionPlanner:
         model_id: str | None = None,
         trace_store: LLMTraceStore | None = None,
         provider_runtime: ProviderRuntime | None = None,
+        context_manager: ModelAwareContextManager | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         if provider_runtime is None and (provider is None or model_id is None):
             raise ValueError("LLMMissionPlanner requires either provider_runtime or provider plus model_id.")
@@ -589,6 +630,17 @@ class LLMMissionPlanner:
         self._model_id = model_id or str(provider_runtime.status().get("model") or "unknown")
         self._trace_store = trace_store
         self._provider_runtime = provider_runtime
+        self._context_manager = (
+            context_manager
+            or ModelAwareContextManager(
+                runtime=provider_runtime,
+                task="mission_planning",
+                policy=ContextManagementPolicy(
+                    output_reserve_tokens=4096,
+                ),
+                token_counter=token_counter,
+            )
+        )
 
     def plan(
         self,
@@ -702,24 +754,38 @@ class LLMMissionPlanner:
                 reason_code="no_available_robots",
             )
 
-        tools = build_mission_deliberation_tools(request.planner_context)
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": build_deliberation_system_prompt(request),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    build_deliberation_turn_payload(request),
-                    ensure_ascii=False,
-                    sort_keys=True,
+        context_manifest = None
+        max_output_tokens = 4096
+        try:
+            if request.context_envelope is not None:
+                (
+                    request,
+                    messages,
+                    tools,
+                    context_manifest,
+                    max_output_tokens,
+                ) = self._prepare_managed_deliberation_request(request)
+            else:
+                tools = build_mission_deliberation_tools(
+                    request.planner_context
+                )
+                messages = self._deliberation_messages(request)
+        except ContextBudgetExceeded as exc:
+            return MissionDeliberationDecision.escalate(
+                str(exc),
+                planning_result=MissionPlanningResult(
+                    status="blocked",
+                    message=str(exc),
                 ),
-            },
-        ]
+                reason_code="context_budget_exceeded",
+            )
         started = time.monotonic()
         try:
-            response = self._chat_completion(messages, tools)
+            response = self._chat_completion(
+                messages,
+                tools,
+                max_tokens=max_output_tokens,
+            )
         except ProviderTimeoutError:
             return self._deliberation_provider_error(
                 messages=messages,
@@ -818,19 +884,153 @@ class LLMMissionPlanner:
                 else None
             ),
         )
+        if context_manifest is not None:
+            decision = replace(
+                decision,
+                context_manifest=context_manifest,
+            )
         return decision
+
+    def _prepare_managed_deliberation_request(
+        self,
+        request: MissionDeliberationRequest,
+    ) -> tuple[
+        MissionDeliberationRequest,
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        Any,
+        int,
+    ]:
+        envelope = request.context_envelope
+        assert envelope is not None
+
+        def build_request(
+            authoritative: dict[str, Any],
+            continuity: dict[str, Any],
+            advisory: dict[str, list[dict[str, Any]]],
+            context_policy: dict[str, Any],
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            temporary_manifest = replace(
+                envelope.manifest,
+                model_context=context_policy,
+            )
+            temporary_envelope = replace(
+                envelope,
+                authoritative=dict(authoritative),
+                continuity=dict(continuity),
+                advisory={
+                    name: tuple(items)
+                    for name, items in advisory.items()
+                },
+                manifest=temporary_manifest,
+            )
+            temporary_context = replace(
+                request.planner_context,
+                operator_corrections=list(
+                    advisory.get("operator_corrections", [])
+                ),
+                retrieved_memories=list(
+                    advisory.get("retrieved_memories", [])
+                ),
+                external_knowledge=list(
+                    advisory.get("external_knowledge", [])
+                ),
+            )
+            temporary_request = replace(
+                request,
+                planner_context=temporary_context,
+                context_envelope=temporary_envelope,
+            )
+            tools = build_mission_deliberation_tools(
+                temporary_context
+            )
+            return self._deliberation_messages(
+                temporary_request
+            ), tools
+
+        managed = self._context_manager.fit(
+            scope="mission_planner",
+            context_id=envelope.context_id,
+            authoritative=envelope.authoritative,
+            continuity=envelope.continuity,
+            advisory={
+                name: list(items)
+                for name, items in envelope.advisory.items()
+            },
+            build_request=build_request,
+            compact_sections=("retrieved_memories",),
+        )
+        model_manifest = managed.manifest.to_dict()
+        final_manifest = replace(
+            envelope.manifest,
+            model_context=model_manifest,
+        )
+        final_envelope = replace(
+            envelope,
+            authoritative=managed.authoritative,
+            continuity=managed.continuity,
+            advisory={
+                name: tuple(items)
+                for name, items in managed.advisory.items()
+            },
+            manifest=final_manifest,
+        )
+        final_context = replace(
+            request.planner_context,
+            operator_corrections=list(
+                managed.advisory.get("operator_corrections", [])
+            ),
+            retrieved_memories=list(
+                managed.advisory.get("retrieved_memories", [])
+            ),
+            external_knowledge=list(
+                managed.advisory.get("external_knowledge", [])
+            ),
+        )
+        return (
+            replace(
+                request,
+                planner_context=final_context,
+                context_envelope=final_envelope,
+            ),
+            managed.messages,
+            managed.tools,
+            final_manifest,
+            managed.manifest.output_reserve_tokens,
+        )
+
+    @staticmethod
+    def _deliberation_messages(
+        request: MissionDeliberationRequest,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": "system",
+                "content": build_deliberation_system_prompt(request),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    build_deliberation_turn_payload(request),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            },
+        ]
 
     def _chat_completion(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        *,
+        max_tokens: int = 4096,
     ) -> ChatCompletion:
         if self._provider_runtime is not None:
             return self._provider_runtime.chat_completion(
                 messages=messages,
                 tools=tools,
                 temperature=0.0,
-                max_tokens=4096,
+                max_tokens=max_tokens,
             )
         assert self._provider is not None
         return self._provider.chat_completion(
@@ -838,7 +1038,7 @@ class LLMMissionPlanner:
             model=self._model_id,
             tools=tools,
             temperature=0.0,
-            max_tokens=4096,
+            max_tokens=max_tokens,
         )
 
     def _parse_deliberation_tool_call(

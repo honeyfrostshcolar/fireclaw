@@ -175,6 +175,14 @@ def test_llm_policy_reads_distinct_snapshot_views_then_proposes() -> None:
         "accepted",
     ]
     assert provider.chat_completion.call_count == 3
+    first_attempt_manifest = result.attempts[0].context_manifest
+    assert first_attempt_manifest is not None
+    assert first_attempt_manifest["model_context"]["scope"] == (
+        "mission_planner"
+    )
+    assert first_attempt_manifest["model_context"][
+        "used_input_tokens"
+    ] > 0
 
     calls = provider.chat_completion.call_args_list
     tool_names = [
@@ -190,21 +198,41 @@ def test_llm_policy_reads_distinct_snapshot_views_then_proposes() -> None:
     ]
     graph_schema = calls[0].kwargs["tools"][1]
     assert "robot_id" not in json.dumps(graph_schema)
+    belief_id_schema = (
+        graph_schema["function"]["parameters"]["properties"]["nodes"][
+            "items"
+        ]["properties"]["belief_assumptions"]["items"]["properties"][
+            "belief_id"
+        ]
+    )
+    assert "enum" not in belief_id_schema
+    assert graph_schema["function"]["parameters"]["properties"]["nodes"][
+        "items"
+    ]["properties"]["belief_assumptions"]["maxItems"] == 0
 
     first_turn = json.loads(calls[0].kwargs["messages"][1]["content"])
     second_turn = json.loads(calls[1].kwargs["messages"][1]["content"])
     third_turn = json.loads(calls[2].kwargs["messages"][1]["content"])
-    assert first_turn["observations"] == []
+    first_context = first_turn["planning_context"]
+    second_context = second_turn["planning_context"]
+    third_context = third_turn["planning_context"]
+    assert first_context["authoritative"]["observations"] == []
     assert "battery_percent" not in calls[0].kwargs["messages"][0]["content"]
-    assert second_turn["observations"][0]["data"]["robot"]["battery_percent"] == 20.0
+    assert second_context["authoritative"]["observations"][0]["data"][
+        "robot"
+    ]["battery_percent"] == 20.0
     assert [
         item["data"]["robot"]["battery_percent"]
-        for item in third_turn["observations"]
+        for item in third_context["authoritative"]["observations"]
     ] == [20.0, 85.0]
     assert all(
-        item["snapshot_id"] == "mission-1:state:1"
-        for item in (first_turn, second_turn, third_turn)
+        item["authoritative"]["snapshot_contract"]["snapshot_id"]
+        == "mission-1:state:1"
+        for item in (first_context, second_context, third_context)
     )
+    assert first_context["context_policy"][
+        "safety_critical_context_preserved"
+    ] is True
 
 
 def test_llm_policy_compiles_semantic_graph_and_allocates_robot() -> None:
@@ -277,8 +305,13 @@ def test_llm_policy_receives_parser_error_and_repairs_plan_next_round() -> None:
     second_turn = json.loads(
         provider.chat_completion.call_args_list[1].kwargs["messages"][1]["content"]
     )
-    assert "无效楼层" in second_turn["validation_errors"][0]
-    assert second_turn["last_plan_proposal"]["status"] == "error"
+    planning_context = second_turn["planning_context"]
+    assert "无效楼层" in planning_context["authoritative"][
+        "validation_errors"
+    ][0]
+    assert planning_context["continuity"]["last_plan_proposal"][
+        "status"
+    ] == "error"
 
 
 def test_llm_policy_reads_invalidation_evidence_before_plan_revision() -> None:
@@ -338,14 +371,30 @@ def test_llm_policy_reads_invalidation_evidence_before_plan_revision() -> None:
         "content"
     ]
     second_turn = json.loads(calls[1].kwargs["messages"][1]["content"])
-    assert second_turn["plan_revision"] == 2
-    assert second_turn["supersedes_plan_id"] == "mission-1:plan:1"
-    assert second_turn["invalidation_evidence_ids"] == [
+    planning_context = second_turn["planning_context"]
+    assert planning_context["authoritative"]["plan_revision"] == 2
+    assert planning_context["continuity"]["supersedes_plan_id"] == (
+        "mission-1:plan:1"
+    )
+    assert planning_context["authoritative"][
+        "invalidation_evidence_ids"
+    ] == [
         "route-blocked-evidence"
     ]
-    assert second_turn["observations"][0]["data"]["environment_beliefs"][0][
-        "evidence_ids"
-    ] == ["route-blocked-evidence"]
+    assert planning_context["authoritative"]["observations"][0]["data"][
+        "environment_beliefs"
+    ][0]["evidence_ids"] == ["route-blocked-evidence"]
+    revision_graph_schema = calls[1].kwargs["tools"][1]
+    revision_belief_schema = (
+        revision_graph_schema["function"]["parameters"]["properties"][
+            "nodes"
+        ]["items"]["properties"]["belief_assumptions"]["items"][
+            "properties"
+        ]["belief_id"]
+    )
+    assert revision_belief_schema["enum"] == [
+        snapshot.environment_beliefs[0].belief_id
+    ]
 
 
 def test_llm_policy_escalates_unknown_or_multiple_tool_calls() -> None:

@@ -96,6 +96,7 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["provider_base_url"] = provider.get("base_url")
     cfg["provider_api_key"] = provider.get("api_key")
     cfg["model"] = provider.get("model")
+    cfg["model_catalog_path"] = provider.get("catalog")
 
     # [robot_agent]
     ra = raw.get("robot_agent", {})
@@ -107,6 +108,9 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_agent_provider_base_url"] = ra_provider.get("base_url") or cfg.get("provider_base_url")
     cfg["robot_agent_provider_api_key"] = ra_provider.get("api_key") or cfg.get("provider_api_key")
     cfg["robot_agent_model"] = ra_provider.get("model") or cfg.get("model")
+    cfg["robot_agent_model_catalog_path"] = (
+        ra_provider.get("catalog") or cfg.get("model_catalog_path")
+    )
 
     # [robot_gateway]
     rg = raw.get("robot_gateway", {})

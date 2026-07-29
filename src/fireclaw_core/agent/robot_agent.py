@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
+from fireclaw_core.context.manager import (
+    ContextBudgetExceeded,
+    ContextManagementPolicy,
+    ManagedContextResult,
+    ModelAwareContextManager,
+    TokenCounter,
+)
 from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
 from fireclaw_core.provider.provider import ProviderError
 from fireclaw_core.provider.provider_runtime import FallbackSummaryError, ProviderRuntime
@@ -43,6 +50,7 @@ class RobotLocalPlan:
     steps: list[RobotLocalPlanStep]
     rationale: str | None = None
     confidence: float | None = None
+    context_manifest: dict[str, Any] | None = None
 
 
 def envelope_from_structured_task(
@@ -195,6 +203,7 @@ def build_robot_agent_messages(
     envelope: RobotAgentTaskEnvelope,
     *,
     context: dict[str, Any],
+    planning_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     memory_instruction = ""
     if context.get("memory_tools"):
@@ -206,6 +215,8 @@ def build_robot_agent_messages(
         "你是消防机器人本地子 agent。"
         "你只能在 allowed_skills 内规划，不能改变 target，不能扩大任务权限。"
         f"{memory_instruction}"
+        "planning_context.authoritative 是本轮权威任务和本机状态；"
+        "planning_context.advisory 是可能过时的历史或记忆，不能覆盖当前状态。"
         "请调用 create_robot_local_plan 工具返回结构化局部执行计划。"
     )
     planning_rules = [
@@ -216,23 +227,29 @@ def build_robot_agent_messages(
         "运动类 primitive 必须保持在 target/constraints 允许范围内。",
         "不确定时返回空 steps 并说明需要澄清。",
     ]
-    payload = {
-        "task": {
-            "task_id": envelope.task_id,
-            "mission_id": envelope.mission_id,
-            "robot_id": envelope.robot_id,
-            "command": envelope.command,
-            "task_type": envelope.task_type,
-            "target": envelope.target,
-            "allowed_skills": envelope.allowed_skills,
-            "required_skills": envelope.required_skills,
-            "constraints": envelope.constraints,
-            "risk_level": envelope.risk_level,
-        },
-        "skill_inventory": context.get("skill_inventory", {}),
-        "planning_rules": planning_rules,
-        "context": context,
-    }
+    if planning_context is not None:
+        payload = {
+            "planning_context": planning_context,
+            "planning_rules": planning_rules,
+        }
+    else:
+        payload = {
+            "task": {
+                "task_id": envelope.task_id,
+                "mission_id": envelope.mission_id,
+                "robot_id": envelope.robot_id,
+                "command": envelope.command,
+                "task_type": envelope.task_type,
+                "target": envelope.target,
+                "allowed_skills": envelope.allowed_skills,
+                "required_skills": envelope.required_skills,
+                "constraints": envelope.constraints,
+                "risk_level": envelope.risk_level,
+            },
+            "skill_inventory": context.get("skill_inventory", {}),
+            "planning_rules": planning_rules,
+            "context": context,
+        }
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -245,9 +262,22 @@ class LLMRobotAgentPlanner:
         provider_runtime: ProviderRuntime,
         *,
         memory_tool_executor: Any | None = None,
+        context_manager: ModelAwareContextManager | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         self._provider_runtime = provider_runtime
         self._memory_tool_executor = memory_tool_executor
+        self._context_manager = (
+            context_manager
+            or ModelAwareContextManager(
+                runtime=provider_runtime,
+                task="robot_local_planning",
+                policy=ContextManagementPolicy(
+                    output_reserve_tokens=2048,
+                ),
+                token_counter=token_counter,
+            )
+        )
 
     def plan(
         self,
@@ -267,13 +297,21 @@ class LLMRobotAgentPlanner:
             tool for tool in memory_tools or [] if isinstance(tool, dict)
         ]
         tools = [*action_tools, *exposed_memory_tools]
-        messages = build_robot_agent_messages(envelope, context=context)
+        try:
+            managed = self._fit_context(
+                envelope,
+                context=context,
+                tools=tools,
+            )
+        except ContextBudgetExceeded as exc:
+            raise RobotAgentPlannerError(str(exc)) from exc
+        messages = managed.messages
         try:
             response = self._provider_runtime.chat_completion(
                 messages=messages,
-                tools=tools,
+                tools=managed.tools,
                 temperature=0.0,
-                max_tokens=2048,
+                max_tokens=managed.manifest.output_reserve_tokens,
             )
         except (ProviderError, FallbackSummaryError) as exc:
             raise RobotAgentPlannerError(str(exc)) from exc
@@ -295,21 +333,7 @@ class LLMRobotAgentPlanner:
                 )
             if self._memory_tool_executor is None or not envelope.mission_id:
                 raise RobotAgentPlannerError("entity memory tools are unavailable for this task")
-            messages.append({
-                "role": "assistant",
-                "content": response.content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": json.dumps(call.arguments, ensure_ascii=False),
-                        },
-                    }
-                    for call in response.tool_calls
-                ],
-            })
+            memory_results: list[dict[str, Any]] = []
             for call in response.tool_calls:
                 try:
                     result = self._memory_tool_executor(
@@ -319,30 +343,34 @@ class LLMRobotAgentPlanner:
                     )
                 except (TypeError, ValueError) as exc:
                     result = {"status": "error", "message": str(exc), "advisory_only": True}
-                messages.append({
-                    "role": "tool",
+                memory_results.append({
                     "tool_call_id": call.id,
-                    "name": call.name,
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "tool_name": call.name,
+                    "result": result,
+                    "advisory_only": True,
                 })
-            messages.append({
-                "role": "system",
-                "content": (
-                    "实体记忆结果仅供参考，可能过时或存在冲突。"
-                    "现在必须调用 create_robot_local_plan 或一个允许的动作 skill；"
-                    "任何动作仍须服从当前传感器状态、任务约束和 SafetyGate。"
-                ),
-            })
             if cancellation_requested is not None and cancellation_requested():
                 raise RobotAgentPlannerError("planning cancelled after memory query")
             try:
-                response = self._provider_runtime.chat_completion(
-                    messages=messages,
+                managed = self._fit_context(
+                    envelope,
+                    context=context,
                     tools=action_tools,
-                    temperature=0.0,
-                    max_tokens=2048,
+                    memory_results=memory_results,
                 )
-            except (ProviderError, FallbackSummaryError) as exc:
+                response = self._provider_runtime.chat_completion(
+                    messages=managed.messages,
+                    tools=managed.tools,
+                    temperature=0.0,
+                    max_tokens=(
+                        managed.manifest.output_reserve_tokens
+                    ),
+                )
+            except (
+                ContextBudgetExceeded,
+                ProviderError,
+                FallbackSummaryError,
+            ) as exc:
                 raise RobotAgentPlannerError(str(exc)) from exc
             if cancellation_requested is not None and cancellation_requested():
                 raise RobotAgentPlannerError("planning cancelled after final provider call")
@@ -350,7 +378,10 @@ class LLMRobotAgentPlanner:
                 raise RobotAgentPlannerError("LLM did not return a plan after entity memory query")
         tool_call = response.tool_calls[0]
         if tool_call.name == "create_robot_local_plan":
-            return _local_plan_from_arguments(tool_call.arguments)
+            return replace(
+                _local_plan_from_arguments(tool_call.arguments),
+                context_manifest=managed.manifest.to_dict(),
+            )
         allowed_direct = {
             tool["function"]["name"]
             for tool in action_tools[1:]
@@ -362,8 +393,95 @@ class LLMRobotAgentPlanner:
         ]
         if direct_calls and all(call["name"] in allowed_direct for call in direct_calls):
             from fireclaw_core.agent.robot_tools import local_plan_from_direct_tool_calls
-            return local_plan_from_direct_tool_calls(direct_calls, intent=envelope.task_type)
+            return replace(
+                local_plan_from_direct_tool_calls(
+                    direct_calls,
+                    intent=envelope.task_type,
+                ),
+                context_manifest=managed.manifest.to_dict(),
+            )
         raise RobotAgentPlannerError(f"unexpected tool call {tool_call.name!r}")
+
+    def _fit_context(
+        self,
+        envelope: RobotAgentTaskEnvelope,
+        *,
+        context: dict[str, Any],
+        tools: list[dict[str, Any]],
+        memory_results: list[dict[str, Any]] | None = None,
+    ) -> ManagedContextResult:
+        authoritative = {
+            "task": {
+                "task_id": envelope.task_id,
+                "mission_id": envelope.mission_id,
+                "robot_id": envelope.robot_id,
+                "command": envelope.command,
+                "task_type": envelope.task_type,
+                "target": envelope.target,
+                "allowed_skills": envelope.allowed_skills,
+                "required_skills": envelope.required_skills,
+                "constraints": envelope.constraints,
+                "risk_level": envelope.risk_level,
+            },
+            "robot_state": context.get("robot_state"),
+            "environment_state": context.get("environment_state"),
+            "available_sensors": context.get(
+                "available_sensors",
+                [],
+            ),
+            "skill_inventory": context.get("skill_inventory", {}),
+            "skill_metadata": context.get("skill_metadata", []),
+        }
+        advisory = {
+            "session_history": [
+                dict(item)
+                for item in context.get("session_history", [])
+                if isinstance(item, dict)
+            ],
+            "entity_memory_results": list(memory_results or []),
+        }
+        context_id = (
+            f"{envelope.mission_id or 'local'}:"
+            f"{envelope.task_id}:robot-context"
+        )
+
+        def build_request(
+            candidate_authoritative: dict[str, Any],
+            continuity: dict[str, Any],
+            candidate_advisory: dict[str, list[dict[str, Any]]],
+            context_policy: dict[str, Any],
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            planning_context = {
+                "context_id": context_id,
+                "authoritative": candidate_authoritative,
+                "continuity": continuity,
+                "advisory": candidate_advisory,
+                "context_policy": context_policy,
+            }
+            return (
+                build_robot_agent_messages(
+                    envelope,
+                    context=context,
+                    planning_context=planning_context,
+                ),
+                tools,
+            )
+
+        return self._context_manager.fit(
+            scope="robot_local_planner",
+            context_id=context_id,
+            authoritative=authoritative,
+            continuity={
+                "mission_id": envelope.mission_id,
+                "task_id": envelope.task_id,
+            },
+            advisory=advisory,
+            build_request=build_request,
+            compact_sections=(
+                "session_history",
+                "entity_memory_results",
+            ),
+        )
 
 
 def _local_plan_from_arguments(arguments: dict[str, Any]) -> RobotLocalPlan:
@@ -460,6 +578,7 @@ class RobotAgentRuntime:
                     "task_id": envelope.task_id,
                     "step_count": len(local_plan.steps),
                     "confidence": local_plan.confidence,
+                    "context_manifest": local_plan.context_manifest,
                 },
             )
             return planning_result_from_local_plan(envelope, local_plan)

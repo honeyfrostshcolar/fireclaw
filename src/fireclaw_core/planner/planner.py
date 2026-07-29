@@ -54,6 +54,8 @@ class PlannerContext:
     turn_index: int
     recent_records: list[dict[str, Any]]
     skills: list[dict[str, Any]]
+    context_envelope: dict[str, Any] | None = None
+    context_manifest: dict[str, Any] | None = None
 
 
 class RuleBasedPlanner:

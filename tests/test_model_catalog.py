@@ -24,6 +24,7 @@ def _write_config(path, models=None, default_model=None):
                 "context_window": 128000,
                 "max_tokens": 4096,
                 "supports_tools": True,
+                "tokenizer_id": "deepseek-ai/DeepSeek-V3",
                 "cost_input": 0.5,
                 "cost_output": 1.5,
             },
@@ -65,6 +66,7 @@ def test_model_descriptor_fields():
     assert desc.context_window == 128000
     assert desc.max_tokens == 4096
     assert desc.supports_tools is True
+    assert desc.tokenizer_id is None
     assert desc.cost_input == 0.5
     assert desc.cost_output == 1.5
 
@@ -94,6 +96,15 @@ def test_model_catalog_resolve_by_id(tmp_path):
     assert desc.name == "Qwen Turbo"
     assert desc.context_window == 32000
     assert desc.supports_tools is False
+
+
+def test_model_catalog_loads_optional_tokenizer_id(tmp_path):
+    config = tmp_path / "models.json"
+    _write_config(config)
+
+    desc = ModelCatalog(config).resolve("deepseek-chat")
+
+    assert desc.tokenizer_id == "deepseek-ai/DeepSeek-V3"
 
 
 def test_model_catalog_resolve_raises_on_missing(tmp_path):

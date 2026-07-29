@@ -15,6 +15,7 @@ type = "deterministic"         # deterministic | llm
 base_url = ""
 api_key = ""
 model = ""
+# catalog = "models.json"  # context_window, max_tokens, optional tokenizer_id
 
 [mission]
 robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
@@ -53,3 +54,4 @@ planner = "llm"                # deterministic | llm
 # base_url = "https://api.deepseek.com/v1"
 # api_key = "sk-your-key-here"
 # model = "deepseek-chat"
+# catalog = "robot-models.json"  # defaults to [provider].catalog

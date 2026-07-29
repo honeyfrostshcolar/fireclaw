@@ -96,6 +96,7 @@ class MissionPlannerContext:
     retrieved_memories: list[dict[str, Any]] = field(default_factory=list)
     operator_corrections: list[dict[str, Any]] = field(default_factory=list)
     external_knowledge: list[dict[str, Any]] = field(default_factory=list)
+    tool_exposed_belief_ids: tuple[str, ...] | None = None
 
 
 # --- Protocol ---

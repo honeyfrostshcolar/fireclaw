@@ -17,6 +17,12 @@ from fireclaw_core.mission.mission_planner import (
     MissionPlannerContext,
     MissionPlanningResult,
 )
+from fireclaw_core.mission.planning_context import (
+    MissionPlanningContextAssembler,
+    MissionPlanningContextAssemblyError,
+    MissionPlanningContextEnvelope,
+    MissionPlanningContextManifest,
+)
 from fireclaw_core.mission.mission_state import (
     MissionStateSnapshot,
     MissionStateSnapshotValidator,
@@ -104,6 +110,7 @@ class MissionDeliberationRequest:
     plan_revision: int = 1
     supersedes_plan_id: str | None = None
     invalidation_evidence_ids: tuple[str, ...] = ()
+    context_envelope: MissionPlanningContextEnvelope | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,7 @@ class MissionDeliberationDecision:
     planning_result: MissionPlanningResult | None = None
     read_request: MissionStateReadRequest | None = None
     reason_code: str | None = None
+    context_manifest: MissionPlanningContextManifest | None = None
 
     @classmethod
     def inspect(
@@ -340,6 +348,8 @@ class MissionDeliberationAttempt:
     reason_code: str | None = None
     read_request: MissionStateReadRequest | None = None
     validation_errors: tuple[str, ...] = ()
+    context_id: str | None = None
+    context_manifest: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -355,6 +365,10 @@ class MissionDeliberationAttempt:
             result["reason_code"] = self.reason_code
         if self.read_request is not None:
             result["read_request"] = self.read_request.to_dict()
+        if self.context_id is not None:
+            result["context_id"] = self.context_id
+        if self.context_manifest is not None:
+            result["context_manifest"] = dict(self.context_manifest)
         return result
 
 
@@ -414,6 +428,7 @@ class MissionDeliberationRuntime:
         limits: MissionDeliberationLimits | None = None,
         snapshot_reader: MissionSnapshotReader | None = None,
         graph_compiler: MissionGraphCompiler | None = None,
+        context_assembler: MissionPlanningContextAssembler | None = None,
         cancellation_requested: Callable[[], bool] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] | None = None,
@@ -423,6 +438,9 @@ class MissionDeliberationRuntime:
         self.limits = limits or MissionDeliberationLimits()
         self.snapshot_reader = snapshot_reader or MissionSnapshotReader()
         self.graph_compiler = graph_compiler or MissionGraphCompiler(registry)
+        self.context_assembler = (
+            context_assembler or MissionPlanningContextAssembler()
+        )
         self.cancellation_requested = cancellation_requested
         self._monotonic = monotonic
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -490,11 +508,63 @@ class MissionDeliberationRuntime:
                 return terminal
             attempt_started = self._monotonic()
             attempt_started_at = self._timestamp()
+            try:
+                context_assembly = self.context_assembler.assemble(
+                    mission_id=mission_id,
+                    command=command,
+                    state_snapshot=state_snapshot,
+                    planner_context=planner_context,
+                    iteration=iteration,
+                    observations=observations,
+                    validation_errors=validation_errors,
+                    last_planning_result=last_planning_result,
+                    plan_revision=plan_revision,
+                    supersedes_plan_id=supersedes_plan_id,
+                    invalidation_evidence_ids=(
+                        invalidation_evidence_ids
+                    ),
+                )
+            except MissionPlanningContextAssemblyError as exc:
+                context_errors = (str(exc),)
+                attempts.append(
+                    self._attempt(
+                        iteration=iteration,
+                        operation="assemble_context",
+                        outcome="rejected",
+                        started_at=attempt_started_at,
+                        started=attempt_started,
+                        reason_code="context_budget_exceeded",
+                        validation_errors=context_errors,
+                    )
+                )
+                return self._result(
+                    run_id=run_id,
+                    mission_id=mission_id,
+                    snapshot_id=state_snapshot.snapshot_id,
+                    status="blocked",
+                    message=(
+                        "Mission planning context failed deterministic "
+                        "assembly."
+                    ),
+                    started_at=started_at,
+                    attempts=attempts,
+                    observations=observations,
+                    reason_code="context_budget_exceeded",
+                    validation_errors=context_errors,
+                    planning_result=MissionPlanningResult(
+                        status="blocked",
+                        message=(
+                            "Mission planning context failed "
+                            "deterministic assembly."
+                        ),
+                    ),
+                )
+            context_manifest = context_assembly.envelope.manifest
             request = MissionDeliberationRequest(
                 mission_id=mission_id,
                 command=command,
                 state_snapshot=state_snapshot,
-                planner_context=planner_context,
+                planner_context=context_assembly.planner_context,
                 iteration=iteration,
                 observations=tuple(observations),
                 validation_errors=validation_errors,
@@ -502,6 +572,7 @@ class MissionDeliberationRuntime:
                 plan_revision=plan_revision,
                 supersedes_plan_id=supersedes_plan_id,
                 invalidation_evidence_ids=invalidation_evidence_ids,
+                context_envelope=context_assembly.envelope,
             )
             try:
                 decision = self.policy.decide(request)
@@ -515,6 +586,7 @@ class MissionDeliberationRuntime:
                         started_at=attempt_started_at,
                         started=attempt_started,
                         reason_code="policy_error",
+                        context_manifest=context_manifest,
                     )
                 )
                 return self._result(
@@ -546,9 +618,13 @@ class MissionDeliberationRuntime:
                         started=attempt_started,
                         reason_code="invalid_runtime_decision",
                         validation_errors=validation_errors,
+                        context_manifest=context_manifest,
                     )
                 )
                 continue
+
+            if decision.context_manifest is not None:
+                context_manifest = decision.context_manifest
 
             if self.cancellation_requested is not None and self.cancellation_requested():
                 attempts.append(
@@ -559,6 +635,7 @@ class MissionDeliberationRuntime:
                         started_at=attempt_started_at,
                         started=attempt_started,
                         reason_code="cancelled",
+                        context_manifest=context_manifest,
                     )
                 )
                 return self._result(
@@ -586,6 +663,7 @@ class MissionDeliberationRuntime:
                         started_at=attempt_started_at,
                         started=attempt_started,
                         reason_code="deliberation_timeout",
+                        context_manifest=context_manifest,
                     )
                 )
                 return self._result(
@@ -617,6 +695,7 @@ class MissionDeliberationRuntime:
                         started=attempt_started,
                         reason_code="invalid_runtime_decision",
                         validation_errors=tuple(decision_errors),
+                        context_manifest=context_manifest,
                     )
                 )
                 validation_errors = tuple(decision_errors)
@@ -633,6 +712,7 @@ class MissionDeliberationRuntime:
                             started=attempt_started,
                             reason_code="observation_limit",
                             read_request=decision.read_request,
+                            context_manifest=context_manifest,
                         )
                     )
                     return self._result(
@@ -665,6 +745,7 @@ class MissionDeliberationRuntime:
                             started=attempt_started,
                             reason_code="repeated_state_read",
                             read_request=decision.read_request,
+                            context_manifest=context_manifest,
                         )
                     )
                     return self._result(
@@ -699,6 +780,7 @@ class MissionDeliberationRuntime:
                             reason_code="invalid_state_read",
                             read_request=decision.read_request,
                             validation_errors=(str(exc),),
+                            context_manifest=context_manifest,
                         )
                     )
                     validation_errors = (str(exc),)
@@ -713,6 +795,7 @@ class MissionDeliberationRuntime:
                         started_at=attempt_started_at,
                         started=attempt_started,
                         read_request=decision.read_request,
+                        context_manifest=context_manifest,
                     )
                 )
                 validation_errors = ()
@@ -848,6 +931,7 @@ class MissionDeliberationRuntime:
                             None if not proposal_errors else "invalid_plan_proposal"
                         ),
                         validation_errors=tuple(proposal_errors),
+                        context_manifest=context_manifest,
                     )
                 )
                 if proposal_errors:
@@ -877,6 +961,7 @@ class MissionDeliberationRuntime:
                     started_at=attempt_started_at,
                     started=attempt_started,
                     reason_code=decision.reason_code,
+                    context_manifest=context_manifest,
                 )
             )
             if decision.operation == "request_clarification":
@@ -1048,6 +1133,7 @@ class MissionDeliberationRuntime:
         reason_code: str | None = None,
         read_request: MissionStateReadRequest | None = None,
         validation_errors: tuple[str, ...] = (),
+        context_manifest: MissionPlanningContextManifest | None = None,
     ) -> MissionDeliberationAttempt:
         return MissionDeliberationAttempt(
             iteration=iteration,
@@ -1059,6 +1145,16 @@ class MissionDeliberationRuntime:
             reason_code=reason_code,
             read_request=read_request,
             validation_errors=validation_errors,
+            context_id=(
+                context_manifest.context_id
+                if context_manifest is not None
+                else None
+            ),
+            context_manifest=(
+                context_manifest.to_dict()
+                if context_manifest is not None
+                else None
+            ),
         )
 
     def _result(
