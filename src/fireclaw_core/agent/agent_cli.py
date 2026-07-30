@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from fireclaw_core.agent.agent import FireClawAgent
+from fireclaw_core.agent.computer_tools import ComputerSandbox
 from fireclaw_core.devtools.demo import run_rescue_demo
 from fireclaw_core.memory.memory import JsonlMemoryStore
 from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot_adapter
+from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
 
 def main() -> int:
@@ -45,6 +48,27 @@ def main() -> int:
         "--no-workspace-skills",
         action="store_true",
         help="Disable loading workspace skills from --skills-dir.",
+    )
+    parser.add_argument(
+        "--legacy-skill-sandbox-image",
+        default=None,
+        help=(
+            "Docker image used for simulation-only legacy *.skill.json "
+            "process Tools. Without this option they fail closed."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-skill-sandbox-image-digest",
+        default=None,
+        help=(
+            "Immutable Docker image ID (sha256:...) that must match "
+            "--legacy-skill-sandbox-image before execution."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-skill-sandbox-root",
+        default="data/fireclaw-sandbox/legacy-agent-cli",
+        help="Host workspace mounted into the legacy process sandbox.",
     )
     parser.add_argument(
         "--robot-id",
@@ -99,6 +123,28 @@ def main() -> int:
     available_sensors = set(args.available_sensor) if args.available_sensor else None
     if args.adapter == "ros1" and available_sensors is None:
         available_sensors = set()
+    deployment_profile = None
+    workspace_skill_executor = None
+    if args.legacy_skill_sandbox_image:
+        if not args.legacy_skill_sandbox_image_digest:
+            parser.error(
+                "--legacy-skill-sandbox-image requires "
+                "--legacy-skill-sandbox-image-digest"
+            )
+        deployment_profile = DeploymentProfile(
+            mode="real" if args.real_run else "simulation",
+            role="robot_agent",
+            sandbox=SandboxProfile(
+                enabled=True,
+                image=args.legacy_skill_sandbox_image,
+                image_digest=args.legacy_skill_sandbox_image_digest,
+                network="none",
+                workspace_root=Path(args.legacy_skill_sandbox_root),
+            ),
+        )
+        workspace_skill_executor = ComputerSandbox(
+            deployment_profile.sandbox
+        )
 
     agent = FireClawAgent(
         robot=robot,
@@ -107,6 +153,8 @@ def main() -> int:
         dry_run=not args.real_run,
         available_sensors=available_sensors,
         session_id=args.session_id,
+        deployment_profile=deployment_profile,
+        workspace_skill_executor=workspace_skill_executor,
     )
     result = agent.run(args.command)
     print(json.dumps(result, ensure_ascii=False, indent=2))

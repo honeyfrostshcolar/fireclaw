@@ -28,6 +28,13 @@ are executable subprocess **Tool manifests**, even though their legacy suffix
 and loader call them skills. They remain here so the current
 `workspace_skills_dir` compatibility loader and tests continue to work.
 
+These legacy manifests are simulation-only process Tools. Loading them for
+execution requires an explicit `simulation` deployment profile and a
+configured Docker `ComputerSandbox`. Their files are staged below the sandbox
+workspace, `{python}` means container `python3`, and the loader rejects
+symlinks, real-robot authority, missing sandbox configuration, and deployment
+policy denial. `real` deployment never registers them.
+
 Do not use `.skill.json` as the design model for new OpenClaw-style Skills.
 The naming migration for `Skill`, `SkillRegistry`, `.skill.json`, and
 `workspace_skills_dir` requires a separate compatibility change.

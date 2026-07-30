@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 from pathlib import Path
-from queue import Empty as QueueEmpty, Queue
+from queue import Empty as QueueEmpty, Full as QueueFull, Queue
 import threading
 import time
 from typing import Any
@@ -19,6 +19,7 @@ from fireclaw_core.gateway.method_scopes import authorize_method
 from fireclaw_core.approval.execution_authorization import (
     ExecutionAuthorization,
     HmacExecutionAuthorizationAuthority,
+    VerifiedExecutionAuthorization,
     authorized_action,
     execution_scope_hash,
 )
@@ -37,7 +38,28 @@ from fireclaw_core.agent.computer_tools import (
     ComputerSandbox,
     register_computer_tool_plugin,
 )
+from fireclaw_core.agent.ros_diagnostic_tools import (
+    register_ros1_diagnostic_tool_plugin,
+)
 from fireclaw_core.agent.tool_runtime import AgentToolRuntime
+from fireclaw_core.gateway.auth import (
+    AuthenticatedGatewayPrincipal,
+    authenticate_gateway_request,
+    resolve_gateway_api_token,
+    validate_gateway_bind,
+)
+from fireclaw_core.gateway.network_security import (
+    GatewayNetworkPolicy,
+    GatewayRequestBodyError,
+    GatewayRequestGuard,
+    gateway_network_policy_from_config,
+    read_json_object_body,
+)
+from fireclaw_core.gateway.transport import (
+    GatewayTlsServerConfig,
+    create_gateway_http_server,
+    gateway_scheme,
+)
 from fireclaw_core.gateway.control import AuthorizationRequest, ControlPolicy, OperatorContext, operator_from_payload
 from fireclaw_core.memory.memory import JsonlMemoryStore
 from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer, EmbodiedMemoryStore
@@ -60,6 +82,7 @@ from fireclaw_core.agent.robot_deliberation import (
 from fireclaw_core.agent.skill_inventory import build_robot_skill_inventory
 from fireclaw_core.agent.robot_tools import build_robot_skill_tools
 from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot_adapter
+from fireclaw_core.execution.runtime import SandboxedSkillExecutor
 from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.task.task_state import project_task_state
 from fireclaw_core.policy.deployment import (
@@ -68,14 +91,18 @@ from fireclaw_core.policy.deployment import (
     deployment_profile_from_config,
     validate_robot_deployment_binding,
 )
+from fireclaw_core.ros.ros1_config import Ros1DiagnosticsConfig
+from fireclaw_core.ros.ros1_diagnostics import Ros1DiagnosticsBackend
 
 
 def _default_robot_deployment_profile() -> DeploymentProfile:
+    workspace_root = Path("data/fireclaw-sandbox/robot-agent")
     return DeploymentProfile(
         mode="real",
         role="robot_agent",
         sandbox=SandboxProfile(
-            workspace_root=Path("data/fireclaw-sandbox/robot-agent"),
+            workspace_root=workspace_root,
+            allowed_workspace_roots=(workspace_root,),
         ),
     )
 
@@ -99,6 +126,8 @@ class GatewayConfig:
     max_active_execution_tasks: int = 1
     authorization_expiry_seconds: int = 300
     api_token: str | None = None
+    tls: GatewayTlsServerConfig = field(default_factory=GatewayTlsServerConfig)
+    network: GatewayNetworkPolicy = field(default_factory=GatewayNetworkPolicy)
     robot_agent_enabled: bool = False
     robot_agent_planner: str = "deterministic"
     robot_agent_provider_base_url: str | None = None
@@ -207,20 +236,61 @@ def attach_profile_sensor_discovery(robot: Any, profile: Any) -> None:
 
 
 class FireClawGateway:
-    def __init__(self, config: GatewayConfig, *, replication_security: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: GatewayConfig,
+        *,
+        replication_security: Any | None = None,
+        ros_diagnostics_backend: Ros1DiagnosticsBackend | None = None,
+        computer_sandbox: ComputerSandbox | None = None,
+        workspace_skill_executor: SandboxedSkillExecutor | None = None,
+    ) -> None:
+        self._process_working_directory = Path.cwd().resolve(strict=False)
         self.replication_security = replication_security
         self.robot_profile = load_gateway_robot_profile(config)
         resolved_config = resolve_gateway_config_with_profile(config, self.robot_profile)
         resolved_config = resolve_gateway_storage_namespace(resolved_config)
         self.config = resolved_config
+        self._network_guard = GatewayRequestGuard(
+            resolved_config.network,
+            configured_host=resolved_config.host,
+            tls_enabled=resolved_config.tls.enabled,
+        )
         validate_robot_deployment_binding(
             resolved_config.deployment_profile,
             dry_run=resolved_config.dry_run,
             embodied_runtime_mode=resolved_config.embodied_runtime_mode,
         )
+        self.computer_sandbox = computer_sandbox
+        if (
+            self.computer_sandbox is None
+            and resolved_config.deployment_profile.sandbox.enabled
+        ):
+            self.computer_sandbox = ComputerSandbox(
+                resolved_config.deployment_profile.sandbox
+            )
+        self.workspace_skill_executor = (
+            workspace_skill_executor or self.computer_sandbox
+        )
         self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
         apply_gateway_dry_run_to_robot(self.robot, resolved_config.dry_run)
         attach_profile_sensor_discovery(self.robot, self.robot_profile)
+        self.ros_diagnostics_backend = ros_diagnostics_backend
+        if (
+            self.ros_diagnostics_backend is None
+            and resolved_config.adapter == "ros1"
+        ):
+            diagnostics_config = getattr(
+                getattr(self.robot, "config", None),
+                "diagnostics",
+                Ros1DiagnosticsConfig(),
+            )
+            self.ros_diagnostics_backend = (
+                Ros1DiagnosticsBackend.from_config(
+                    diagnostics_config,
+                    robot_id=resolved_config.robot_id,
+                )
+            )
         self._validate_robot_profile()
         self.memory = JsonlMemoryStore(resolved_config.memory_path)
         self.embodied_memory: EmbodiedMemoryStore | None = None
@@ -385,22 +455,35 @@ class FireClawGateway:
 
     @property
     def base_url(self) -> str:
+        scheme = gateway_scheme(self.config.tls)
         if self._server is None:
-            return f"http://{self.config.host}:{self.config.port}"
+            return f"{scheme}://{self.config.host}:{self.config.port}"
         host, port = self._server.server_address
-        return f"http://{host}:{port}"
+        return f"{scheme}://{host}:{port}"
 
     def start(self) -> None:
         if self._server is not None:
             return
+        validate_gateway_bind(self.config.host, self.config.api_token)
         handler_class = self._handler_class()
-        self._server = ThreadingHTTPServer((self.config.host, self.config.port), handler_class)
+        self._server = create_gateway_http_server(
+            (self.config.host, self.config.port),
+            handler_class,
+            tls=self.config.tls,
+            network_policy=self.config.network,
+        )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
     def serve_forever(self) -> None:
+        validate_gateway_bind(self.config.host, self.config.api_token)
         handler_class = self._handler_class()
-        self._server = ThreadingHTTPServer((self.config.host, self.config.port), handler_class)
+        self._server = create_gateway_http_server(
+            (self.config.host, self.config.port),
+            handler_class,
+            tls=self.config.tls,
+            network_policy=self.config.network,
+        )
         self._server.serve_forever()
 
     def stop(self) -> None:
@@ -848,6 +931,7 @@ class FireClawGateway:
         session_id: str,
         task_id: str,
         cancellation_requested=None,
+        execution_authorization: ExecutionAuthorization | None = None,
     ) -> dict[str, Any]:
         assert self.robot_agent_runtime is not None
 
@@ -860,18 +944,35 @@ class FireClawGateway:
             )
 
         agent_tool_runtime: AgentToolRuntime | None = None
+        has_agent_tools = False
         deployment_profile = self.config.deployment_profile
-        if deployment_profile.sandbox.enabled:
+        verified_agent_tool_authorization = (
+            self._verify_embedded_execution_authorization(
+                execution_authorization
+            )
+        )
+        if self.ros_diagnostics_backend is not None:
+            register_ros1_diagnostic_tool_plugin(
+                agent.plugin_host,
+                self.ros_diagnostics_backend,
+            )
+            has_agent_tools = True
+        if self.computer_sandbox is not None:
             register_computer_tool_plugin(
                 agent.plugin_host,
-                ComputerSandbox(deployment_profile.sandbox),
+                self.computer_sandbox,
             )
+            has_agent_tools = True
+        if has_agent_tools:
             agent_tool_runtime = AgentToolRuntime(
                 plugin_host=agent.plugin_host,
                 profile=deployment_profile,
                 event_sink=lambda event: emit(
                     str(event["type"]),
                     dict(event["payload"]),
+                ),
+                authorization_use_recorder=(
+                    self.runtime_state.record_authorization_use
                 ),
             )
 
@@ -1096,6 +1197,7 @@ class FireClawGateway:
                 return agent_tool_runtime.execute(
                     tool_name,
                     arguments,
+                    authorization=verified_agent_tool_authorization,
                     context={
                         "mission_id": task_object.mission_id,
                         "task_id": task_object.task_id,
@@ -1170,6 +1272,7 @@ class FireClawGateway:
                     session_id=session_id,
                     task_id=task_id,
                     cancellation_requested=cancellation_requested,
+                    execution_authorization=execution_authorization,
                 )
             else:
                 result = agent.run_structured_task(task_object)
@@ -1186,6 +1289,35 @@ class FireClawGateway:
         self._record_result_events(task_id, session_id, result)
         return result
 
+    def _verify_embedded_execution_authorization(
+        self,
+        authorization: ExecutionAuthorization | None,
+    ) -> VerifiedExecutionAuthorization | None:
+        """Verify a signed grant before the Agent Tool runtime binds it.
+
+        The authority proves issuer, signature, expiry, robot, and the signed
+        hashes. AgentToolRuntime then independently binds those hashes to the
+        current plugin contract, final hook-adjusted arguments, and task
+        context before consuming the grant.
+        """
+
+        if authorization is None:
+            return None
+        action_hashes = {
+            str(action.get("action_hash") or "")
+            for action in authorization.authorized_actions
+            if isinstance(action, dict) and action.get("action_hash")
+        }
+        if not action_hashes:
+            return None
+        verification = self.execution_authorization_authority.verify(
+            authorization,
+            robot_id=self.config.robot_id,
+            scope_hash=authorization.scope_hash,
+            action_hashes=action_hashes,
+        )
+        return verification.grant if verification.verified else None
+
     def _record_authorization_request_if_needed(
         self,
         *,
@@ -1197,27 +1329,38 @@ class FireClawGateway:
     ) -> None:
         if result.get("status") != "awaiting_confirmation":
             return
-        risk_level = _risk_level_from_confirmation(result.get("confirmation"))
+        agent_tool_approval = _agent_tool_approval_from_result(result)
+        risk_level = (
+            "medium"
+            if agent_tool_approval is not None
+            else _risk_level_from_confirmation(result.get("confirmation"))
+        )
         decision = ControlPolicy().evaluate_risk(operator, action="task.confirm", risk_level=risk_level)
         if decision.status not in {"allow", "approval_required"}:
             return
-        planning = result.get("planning")
-        plan = (
-            planning.get("plan")
-            if isinstance(planning, dict)
-            else None
-        )
-        steps = plan.get("steps") if isinstance(plan, dict) else None
-        actions = [
-            authorized_action(
-                str(step.get("skill_name") or ""),
-                dict(step.get("inputs") or {}),
+        if agent_tool_approval is not None:
+            actions = [dict(agent_tool_approval["authorized_action"])]
+            scope_hash = str(agent_tool_approval["scope_hash"])
+            authorization_kind = "agent_tool"
+        else:
+            planning = result.get("planning")
+            plan = (
+                planning.get("plan")
+                if isinstance(planning, dict)
+                else None
             )
-            for step in (steps if isinstance(steps, list) else [])
-            if isinstance(step, dict)
-            and isinstance(step.get("skill_name"), str)
-            and isinstance(step.get("inputs"), dict)
-        ]
+            steps = plan.get("steps") if isinstance(plan, dict) else None
+            actions = [
+                authorized_action(
+                    str(step.get("skill_name") or ""),
+                    dict(step.get("inputs") or {}),
+                )
+                for step in (steps if isinstance(steps, list) else [])
+                if isinstance(step, dict)
+                and isinstance(step.get("skill_name"), str)
+                and isinstance(step.get("inputs"), dict)
+            ]
+            authorization_kind = "physical"
         if not actions:
             return
         structured_task = (
@@ -1225,11 +1368,12 @@ class FireClawGateway:
             if isinstance(result.get("structured_task"), dict)
             else None
         )
-        scope_hash = execution_scope_hash(
-            command=command,
-            structured_task=structured_task,
-            actions=actions,
-        )
+        if agent_tool_approval is None:
+            scope_hash = execution_scope_hash(
+                command=command,
+                structured_task=structured_task,
+                actions=actions,
+            )
         requested_at_dt = datetime.now(timezone.utc)
         expires_at_dt = requested_at_dt + timedelta(seconds=max(0, self.config.authorization_expiry_seconds))
         request = AuthorizationRequest(
@@ -1238,7 +1382,11 @@ class FireClawGateway:
             session_id=session_id,
             command=command,
             requested_by=operator,
-            required_scope="safety.override",
+            required_scope=(
+                "task.confirm"
+                if authorization_kind == "agent_tool"
+                else "safety.override"
+            ),
             risk_level=risk_level,
             requested_at=requested_at_dt.isoformat(),
             expires_at=expires_at_dt.isoformat(),
@@ -1246,6 +1394,7 @@ class FireClawGateway:
             scope_hash=scope_hash,
             authorized_actions=tuple(actions),
             robot_id=self.config.robot_id,
+            authorization_kind=authorization_kind,
         )
         self.runtime_state.create_authorization_request(
             request.to_dict()
@@ -1506,6 +1655,22 @@ class FireClawGateway:
             "active_tasks": self.active_tasks(),
             "task_queue": self.task_queue.summary(),
             "emergency_stop": asdict(self._emergency_stop),
+            "network_admission": self._network_guard.snapshot(),
+            "runtime_paths": {
+                "process_working_directory": str(
+                    self._process_working_directory
+                ),
+                "agent_workspace": str(
+                    self.config.deployment_profile.sandbox.workspace_root
+                ),
+                "allowed_workspace_roots": [
+                    str(path)
+                    for path in (
+                        self.config.deployment_profile.sandbox
+                        .allowed_workspace_roots
+                    )
+                ],
+            },
         }
 
     def health(self) -> dict[str, Any]:
@@ -1687,6 +1852,8 @@ class FireClawGateway:
                 operator or operator_from_payload(None)
             ),
             robot_profile=self.robot_profile,
+            deployment_profile=self.config.deployment_profile,
+            workspace_skill_executor=self.workspace_skill_executor,
         )
 
     def _task_status(
@@ -1891,118 +2058,206 @@ class FireClawGateway:
 
         class GatewayRequestHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                if not gateway._check_auth(self):
-                    return
                 parsed = urlparse(self.path)
-                # Health check bypasses scope enforcement
-                if parsed.path == "/health":
-                    gateway._handle_get(self)
+                if not gateway._admit_request(self, method="GET"):
                     return
-                scopes = _extract_scopes_from_header(self)
-                result = authorize_method(f"GET {parsed.path}", scopes)
+                principal = gateway._authenticate_request(
+                    self,
+                    allow_public_health=parsed.path == "/health",
+                )
+                if principal is None:
+                    return
+                result = authorize_method(
+                    f"GET {parsed.path}",
+                    set(principal.gateway_scopes),
+                )
                 if not result.allowed:
                     gateway._write_error(
                         self, HTTPStatus.FORBIDDEN,
                         f"Missing required scope: {result.missing_scope}",
                     )
                     return
-                # SSE long-lived response — handle before normal dispatch
                 if parsed.path == "/events/stream":
-                    self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Connection", "keep-alive")
-                    self.end_headers()
-                    # Cursor replay: parse Last-Event-ID header or after_sequence query param
-                    after_seq: int | None = None
-                    last_event_id = self.headers.get("Last-Event-ID")
-                    if last_event_id is not None:
-                        try:
-                            after_seq = int(last_event_id)
-                        except ValueError:
-                            after_seq = None
-                    else:
-                        qs = parse_qs(parsed.query)
-                        raw = qs.get("after_sequence", [None])[0]
-                        if raw is not None:
-                            try:
-                                after_seq = int(raw)
-                            except ValueError:
-                                after_seq = None
-                    # Replay recent events after cursor
-                    if after_seq is not None:
-                        for evt in gateway._event_bus.get_recent_events(after_sequence=after_seq):
-                            try:
-                                self.wfile.write(evt.to_sse_format().encode("utf-8"))
-                                self.wfile.flush()
-                            except Exception:
-                                return
-                    # Track sequences already sent to avoid duplicates
-                    sent_sequences: set[int] = set()
-                    if after_seq is not None:
-                        sent_sequences = {e.sequence for e in gateway._event_bus.get_recent_events(after_sequence=after_seq)}
-                    event_queue: Queue[StreamEvent | None] = Queue()
-                    def _on_event(event: StreamEvent) -> None:
-                        event_queue.put(event)
-                    token = gateway._event_bus.subscribe(_on_event)
-                    try:
-                        while True:
-                            try:
-                                event = event_queue.get(timeout=15.0)
-                                if event is None:
-                                    break
-                                if event.sequence in sent_sequences:
-                                    continue
-                                self.wfile.write(event.to_sse_format().encode("utf-8"))
-                                self.wfile.flush()
-                            except QueueEmpty:
-                                try:
-                                    self.wfile.write(b": heartbeat\n\n")
-                                    self.wfile.flush()
-                                except Exception:
-                                    break
-                            except Exception:
-                                break
-                    finally:
-                        gateway._event_bus.unsubscribe(token)
+                    gateway._stream_events(self, parsed)
                     return
                 gateway._handle_get(self)
 
             def do_POST(self) -> None:
-                if not gateway._check_auth(self):
+                if not gateway._admit_request(self, method="POST"):
+                    return
+                principal = gateway._authenticate_request(self)
+                if principal is None:
                     return
                 parsed = urlparse(self.path)
-                scopes = _extract_scopes_from_header(self)
-                result = authorize_method(f"POST {parsed.path}", scopes)
+                result = authorize_method(
+                    f"POST {parsed.path}",
+                    set(principal.gateway_scopes),
+                )
                 if not result.allowed:
                     gateway._write_error(
                         self, HTTPStatus.FORBIDDEN,
                         f"Missing required scope: {result.missing_scope}",
                     )
                     return
-                gateway._handle_post(self)
+                gateway._handle_post(self, principal=principal)
 
             def log_message(self, format: str, *args: object) -> None:
                 return
 
         return GatewayRequestHandler
 
-    def _check_auth(self, handler: BaseHTTPRequestHandler) -> bool:
-        if self.config.api_token is None:
+    def _admit_request(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        method: str,
+    ) -> bool:
+        server_host, server_port = handler.server.server_address
+        decision = self._network_guard.admit(
+            method=method,
+            headers=handler.headers,
+            server_host=str(server_host),
+            server_port=int(server_port),
+        )
+        if decision.allowed:
             return True
-        parsed = urlparse(handler.path)
-        if parsed.path == "/health":
-            return True
-        auth_header = handler.headers.get("Authorization", "")
-        if auth_header == f"Bearer {self.config.api_token}":
-            return True
+        handler.close_connection = True
+        self._write_error(handler, decision.status, decision.message)
+        return False
+
+    def _authenticate_request(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        allow_public_health: bool = False,
+    ) -> AuthenticatedGatewayPrincipal | None:
+        client_host = str(handler.client_address[0])
+        if not allow_public_health:
+            rate_limit = self._network_guard.check_auth(client_host)
+            if not rate_limit.allowed:
+                body = json.dumps(
+                    {"error": "Too many authentication failures."},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                handler.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+                handler.send_header(
+                    "Retry-After",
+                    str(rate_limit.retry_after_seconds),
+                )
+                handler.send_header(
+                    "Content-Type",
+                    "application/json; charset=utf-8",
+                )
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+                return None
+        result = authenticate_gateway_request(
+            authorization_header=handler.headers.get("Authorization"),
+            client_host=client_host,
+            api_token=self.config.api_token,
+            allow_public_health=allow_public_health,
+        )
+        if result.allowed and result.principal is not None:
+            if not allow_public_health:
+                self._network_guard.reset_auth_failures(client_host)
+            return result.principal
+        self._network_guard.record_auth_failure(client_host)
         body = json.dumps({"error": "Unauthorized"}, ensure_ascii=False).encode("utf-8")
         handler.send_response(HTTPStatus.UNAUTHORIZED)
+        handler.send_header("WWW-Authenticate", "Bearer")
         handler.send_header("Content-Type", "application/json; charset=utf-8")
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)
-        return False
+        return None
+
+    def _stream_events(
+        self,
+        handler: BaseHTTPRequestHandler,
+        parsed: Any,
+    ) -> None:
+        client_host = str(handler.client_address[0])
+        if not self._network_guard.acquire_sse(client_host):
+            handler.close_connection = True
+            self._write_error(
+                handler,
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "SSE connection limit exceeded.",
+            )
+            return
+
+        connection = getattr(handler, "connection", None)
+        previous_timeout: float | None = None
+        if connection is not None and hasattr(connection, "settimeout"):
+            try:
+                previous_timeout = connection.gettimeout()
+            except (AttributeError, OSError):
+                previous_timeout = None
+            connection.settimeout(
+                self.config.network.sse_write_timeout_seconds
+            )
+
+        event_queue: Queue[StreamEvent] = Queue(
+            maxsize=self.config.network.sse_queue_size
+        )
+        overflowed = threading.Event()
+
+        def _on_event(event: StreamEvent) -> None:
+            try:
+                event_queue.put_nowait(event)
+            except QueueFull:
+                overflowed.set()
+
+        token = self._event_bus.subscribe(_on_event)
+        try:
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header(
+                "Content-Type",
+                "text/event-stream; charset=utf-8",
+            )
+            handler.send_header("Cache-Control", "no-cache")
+            handler.send_header("Connection", "keep-alive")
+            handler.end_headers()
+
+            after_seq = _sse_after_sequence(handler, parsed)
+            sent_sequences: set[int] = set()
+            if after_seq is not None:
+                for event in self._event_bus.get_recent_events(
+                    after_sequence=after_seq
+                ):
+                    handler.wfile.write(
+                        event.to_sse_format().encode("utf-8")
+                    )
+                    handler.wfile.flush()
+                    sent_sequences.add(event.sequence)
+
+            last_write = time.monotonic()
+            while not overflowed.is_set():
+                timeout = max(0.1, 15.0 - (time.monotonic() - last_write))
+                try:
+                    event = event_queue.get(timeout=timeout)
+                except QueueEmpty:
+                    handler.wfile.write(b": heartbeat\n\n")
+                    handler.wfile.flush()
+                    last_write = time.monotonic()
+                    continue
+                if event.sequence in sent_sequences:
+                    continue
+                handler.wfile.write(event.to_sse_format().encode("utf-8"))
+                handler.wfile.flush()
+                sent_sequences.add(event.sequence)
+                last_write = time.monotonic()
+        except Exception:
+            return
+        finally:
+            self._event_bus.unsubscribe(token)
+            self._network_guard.release_sse(client_host)
+            if connection is not None and hasattr(connection, "settimeout"):
+                try:
+                    connection.settimeout(previous_timeout)
+                except OSError:
+                    pass
 
     def _handle_get(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlparse(handler.path)
@@ -2099,13 +2354,19 @@ class FireClawGateway:
             return
         self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {parsed.path}")
 
-    def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
+    def _handle_post(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        principal: AuthenticatedGatewayPrincipal,
+    ) -> None:
         parsed = urlparse(handler.path)
+        operator = principal.operator
         try:
             payload = self._read_json(handler)
             task_cancel_id = _task_cancel_path(parsed.path)
             if task_cancel_id is not None:
-                result = self.cancel_task(task_cancel_id, operator=operator_from_payload(payload.get("operator")))
+                result = self.cancel_task(task_cancel_id, operator=operator)
                 if result["status"] == "not_found":
                     status = HTTPStatus.NOT_FOUND
                 elif result["status"] == "denied":
@@ -2144,7 +2405,7 @@ class FireClawGateway:
                 result = self.submit_agent(
                     command,
                     session_id=_payload_session(payload, self.config.default_session_id),
-                    operator=operator_from_payload(payload.get("operator")),
+                    operator=operator,
                     dedupe_key=_optional_payload_string(payload, "dedupe_key"),
                     structured_task=structured_task,
                 )
@@ -2181,7 +2442,7 @@ class FireClawGateway:
             if parsed.path == "/emergency-stop":
                 result = self.emergency_stop(
                     session_id=_payload_session(payload, self.config.default_session_id),
-                    operator=operator_from_payload(payload.get("operator")),
+                    operator=operator,
                     reason=_optional_payload_string(payload, "reason"),
                 )
                 status = HTTPStatus.FORBIDDEN if result["status"] == "denied" else HTTPStatus.OK
@@ -2189,7 +2450,6 @@ class FireClawGateway:
                 return
             if parsed.path == "/confirm":
                 session_id = _payload_session(payload, self.config.default_session_id)
-                operator = operator_from_payload(payload.get("operator"))
                 authorized, authorization_payload = self._authorize_confirmation(
                     session_id=session_id,
                     operator=operator,
@@ -2260,7 +2520,7 @@ class FireClawGateway:
                 result = self.submit_agent(
                     "取消",
                     session_id=_payload_session(payload, self.config.default_session_id),
-                    operator=operator_from_payload(payload.get("operator")),
+                    operator=operator,
                 )
                 self._write_json(
                     handler,
@@ -2269,18 +2529,11 @@ class FireClawGateway:
                 )
                 return
             self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {parsed.path}")
-        except json.JSONDecodeError:
-            self._write_error(handler, HTTPStatus.BAD_REQUEST, "Request body must be valid JSON.")
+        except GatewayRequestBodyError as exc:
+            self._write_error(handler, exc.status, str(exc))
 
     def _read_json(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-        length = int(handler.headers.get("Content-Length", "0"))
-        if length <= 0:
-            return {}
-        raw = handler.rfile.read(length)
-        value = json.loads(raw.decode("utf-8"))
-        if not isinstance(value, dict):
-            raise json.JSONDecodeError("JSON body must be an object.", raw.decode("utf-8"), 0)
-        return value
+        return read_json_object_body(handler, self.config.network)
 
     def _write_json(
         self,
@@ -2304,6 +2557,21 @@ def _first(query: dict[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     return values[0]
+
+
+def _sse_after_sequence(
+    handler: BaseHTTPRequestHandler,
+    parsed: Any,
+) -> int | None:
+    raw = handler.headers.get("Last-Event-ID")
+    if raw is None:
+        raw = parse_qs(parsed.query).get("after_sequence", [None])[0]
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _int_query(query: dict[str, list[str]], key: str, default: int) -> int:
@@ -2352,6 +2620,50 @@ def _risk_level_from_confirmation(confirmation: Any) -> str:
     return "low"
 
 
+def _agent_tool_approval_from_result(
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    deliberation = result.get("robot_agent_deliberation")
+    observations = (
+        deliberation.get("observations")
+        if isinstance(deliberation, dict)
+        else None
+    )
+    if not isinstance(observations, list):
+        return None
+    for observation in reversed(observations):
+        if (
+            not isinstance(observation, dict)
+            or observation.get("operation") != "execute_agent_tool"
+            or observation.get("status") != "approval_required"
+        ):
+            continue
+        output = observation.get("output")
+        approval = (
+            output.get("approval_request")
+            if isinstance(output, dict)
+            else None
+        )
+        if not isinstance(approval, dict):
+            return None
+        scope_hash = approval.get("scope_hash")
+        action = approval.get("authorized_action")
+        if (
+            not isinstance(scope_hash, str)
+            or not scope_hash
+            or not isinstance(action, dict)
+            or not isinstance(action.get("skill_name"), str)
+            or not isinstance(action.get("inputs_hash"), str)
+            or not isinstance(action.get("action_hash"), str)
+        ):
+            return None
+        return {
+            "scope_hash": scope_hash,
+            "authorized_action": dict(action),
+        }
+    return None
+
+
 def _task_events_path(path: str) -> str | None:
     parts = [part for part in path.split("/") if part]
     if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "events":
@@ -2374,16 +2686,17 @@ def _task_cancel_path(path: str) -> str | None:
 
 
 
-def _extract_scopes_from_header(handler: BaseHTTPRequestHandler) -> set[str]:
-    """Extract operator scopes from X-Operator-Scopes header or default to read-only."""
-    scopes_header = handler.headers.get("X-Operator-Scopes", "")
-    if scopes_header:
-        return {s.strip() for s in scopes_header.split(",") if s.strip()}
-    return {"state.read"}
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw local HTTP gateway.")
     parser.add_argument("--config", type=Path, default=None, help="Path to fireclaw.toml config file.")
+    parser.add_argument(
+        "--runtime-root",
+        default=None,
+        help=(
+            "Stable process working directory. Defaults to the config "
+            "directory, FIRECLAW_HOME, or ~/.fireclaw."
+        ),
+    )
     parser.add_argument("--host", default=None, help="HTTP bind host.")
     parser.add_argument("--port", type=int, default=None, help="HTTP bind port.")
     parser.add_argument("--adapter", choices=ADAPTER_CHOICES, default=None)
@@ -2402,6 +2715,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session-id", default=None)
     parser.add_argument("--max-active-execution-tasks", type=int, default=None)
     parser.add_argument("--available-sensor", action="append", default=None)
+    parser.add_argument(
+        "--api-token",
+        default=None,
+        help=(
+            "Gateway bearer token. Prefer [robot_gateway].api_token or "
+            "FIRECLAW_GATEWAY_TOKEN so the secret is not exposed in process args."
+        ),
+    )
+    parser.add_argument(
+        "--tls",
+        action="store_true",
+        default=None,
+        help="Enable TLS for the Robot Gateway listener.",
+    )
+    parser.add_argument("--tls-cert-file", default=None)
+    parser.add_argument("--tls-key-file", default=None)
+    parser.add_argument("--tls-ca-file", default=None)
+    parser.add_argument(
+        "--tls-require-client-cert",
+        action="store_true",
+        default=None,
+        help="Require a client certificate signed by --tls-ca-file.",
+    )
     parser.add_argument("--real-run", action="store_true", default=None)
     parser.add_argument("--robot-agent", action="store_true", default=None, help="Enable robot-local agent planning for structured tasks.")
     parser.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default=None)
@@ -2428,6 +2764,7 @@ def main(argv: list[str] | None = None) -> int:
     merged = merge_config(
         cfg,
         {
+            "runtime_root": args.runtime_root,
             "robot_gateway_host": args.host,
             "robot_gateway_port": args.port,
             "robot_gateway_adapter": args.adapter,
@@ -2442,6 +2779,16 @@ def main(argv: list[str] | None = None) -> int:
             "robot_gateway_available_sensors": args.available_sensor,
             "robot_gateway_default_session_id": args.session_id,
             "robot_gateway_max_active_execution_tasks": args.max_active_execution_tasks,
+            "robot_gateway_api_token": args.api_token,
+            "robot_gateway_tls_enabled": args.tls if args.tls else None,
+            "robot_gateway_tls_cert_file": args.tls_cert_file,
+            "robot_gateway_tls_key_file": args.tls_key_file,
+            "robot_gateway_tls_ca_file": args.tls_ca_file,
+            "robot_gateway_tls_require_client_cert": (
+                args.tls_require_client_cert
+                if args.tls_require_client_cert
+                else None
+            ),
             "robot_agent_enabled": args.robot_agent if args.robot_agent else None,
             "robot_agent_planner": args.robot_agent_planner,
             "robot_agent_provider_base_url": args.robot_agent_provider_base_url,
@@ -2455,6 +2802,26 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
 
+    from fireclaw_core.infra.runtime_paths import (
+        fireclaw_runtime_directory,
+        resolve_fireclaw_runtime_root,
+    )
+
+    runtime_root = resolve_fireclaw_runtime_root(
+        configured=merged.get("runtime_root"),
+        config_path=config_path,
+    )
+    with fireclaw_runtime_directory(runtime_root):
+        return _run_robot_gateway(merged, args)
+
+
+def _run_robot_gateway(
+    merged: dict[str, Any],
+    args: argparse.Namespace,
+) -> int:
+    robot_workspace_root = (
+        Path("data") / "robot" / "agent-workspace"
+    ).resolve(strict=False)
     workspace_skills_dir = merged.get("robot_gateway_workspace_skills_dir", "skills")
     if args.no_workspace_skills:
         workspace_skills_dir = None
@@ -2478,7 +2845,24 @@ def main(argv: list[str] | None = None) -> int:
             available_sensors=tuple(str(sensor) for sensor in sensors),
             default_session_id=str(merged.get("robot_gateway_default_session_id", "default")),
             max_active_execution_tasks=max(1, int(merged.get("robot_gateway_max_active_execution_tasks", 1))),
-            api_token=merged.get("robot_gateway_api_token"),
+            api_token=resolve_gateway_api_token(
+                merged.get("robot_gateway_api_token"),
+            ),
+            tls=GatewayTlsServerConfig(
+                enabled=bool(merged.get("robot_gateway_tls_enabled", False)),
+                cert_file=merged.get("robot_gateway_tls_cert_file"),
+                key_file=merged.get("robot_gateway_tls_key_file"),
+                ca_file=merged.get("robot_gateway_tls_ca_file"),
+                require_client_cert=bool(
+                    merged.get(
+                        "robot_gateway_tls_require_client_cert",
+                        False,
+                    )
+                ),
+            ),
+            network=gateway_network_policy_from_config(
+                merged.get("network")
+            ),
             robot_agent_enabled=bool(merged.get("robot_agent_enabled", False)),
             robot_agent_planner=str(merged.get("robot_agent_planner", "deterministic")),
             robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
@@ -2492,17 +2876,9 @@ def main(argv: list[str] | None = None) -> int:
             deployment_profile=deployment_profile_from_config(
                 merged.get("deployment"),
                 role="robot_agent",
-                default_workspace_root=(
-                    Path(
-                        str(
-                            merged.get(
-                                "robot_gateway_memory_path",
-                                "memory/fireclaw-gateway.jsonl",
-                            )
-                        )
-                    ).parent
-                    / "robot-agent-workspace"
-                ),
+                default_workspace_root=robot_workspace_root,
+                allowed_workspace_roots=(robot_workspace_root,),
+                path_base=Path.cwd(),
             ),
         )
     )
@@ -2510,9 +2886,10 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "status": "starting",
-                "base_url": f"http://{gateway.config.host}:{gateway.config.port}",
+                "base_url": gateway.base_url,
                 "adapter": gateway.config.adapter,
                 "robot_id": gateway.config.robot_id,
+                "runtime_root": str(Path.cwd().resolve(strict=False)),
             },
             ensure_ascii=False,
         ),

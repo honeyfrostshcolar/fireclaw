@@ -1,6 +1,65 @@
 import json
+import os
 import subprocess
 import sys
+
+_TEST_IMAGE_ID = "sha256:" + ("a" * 64)
+
+
+def _legacy_sandbox_args(tmp_path):
+    return [
+        "--legacy-skill-sandbox-image",
+        "fireclaw-test-sandbox:latest",
+        "--legacy-skill-sandbox-image-digest",
+        _TEST_IMAGE_ID,
+        "--legacy-skill-sandbox-root",
+        str(tmp_path / "legacy-sandbox"),
+    ]
+
+
+def _fake_docker_env(tmp_path):
+    bin_dir = tmp_path / "fake-docker-bin"
+    bin_dir.mkdir(exist_ok=True)
+    state_dir = tmp_path / "fake-docker-state"
+    state_dir.mkdir(exist_ok=True)
+    executable = bin_dir / "docker"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        f"state_root = pathlib.Path({str(state_dir)!r})\n"
+        f"image_id = {_TEST_IMAGE_ID!r}\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['image', 'inspect']:\n"
+        "    print(json.dumps(image_id) + '\\t' + json.dumps([]))\n"
+        "elif args[0] == 'create':\n"
+        "    name = args[args.index('--name') + 1]\n"
+        "    (state_root / name).write_text(json.dumps(args), encoding='utf-8')\n"
+        "    print(name)\n"
+        "elif args[0] == 'start':\n"
+        "    name = args[-1]\n"
+        "    created = json.loads((state_root / name).read_text(encoding='utf-8'))\n"
+        "    mount = created[created.index('--mount') + 1]\n"
+        "    source = next(part[4:] for part in mount.split(',') if part.startswith('src='))\n"
+        "    workdir_index = created.index('--workdir')\n"
+        "    container_cwd = pathlib.PurePosixPath(created[workdir_index + 1])\n"
+        "    command = created[workdir_index + 3:]\n"
+        "    relative = container_cwd.relative_to('/workspace')\n"
+        "    os.chdir(pathlib.Path(source) / pathlib.Path(*relative.parts))\n"
+        "    os.execvpe(command[0], command, os.environ)\n"
+        "elif args[0] == 'rm':\n"
+        "    name = args[-1]\n"
+        "    path = state_root / name\n"
+        "    if path.exists():\n"
+        "        path.unlink()\n"
+        "    print(name)\n"
+        "else:\n"
+        "    raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    return env
 
 
 def test_module_cli_runs_rescue_command_and_writes_memory(tmp_path):
@@ -340,6 +399,7 @@ def test_module_cli_confirmation_words_do_not_authorize_across_processes(tmp_pat
             str(memory_path),
             "--skills-dir",
             str(skills_dir),
+            *_legacy_sandbox_args(tmp_path),
         ],
         check=True,
         cwd=".",
@@ -363,6 +423,7 @@ def test_module_cli_confirmation_words_do_not_authorize_across_processes(tmp_pat
             str(memory_path),
             "--skills-dir",
             str(skills_dir),
+            *_legacy_sandbox_args(tmp_path),
         ],
         check=True,
         cwd=".",
@@ -402,7 +463,7 @@ def test_module_cli_treats_skill_listing_as_successful_command(tmp_path):
     assert not memory_path.exists()
 
 
-def test_module_cli_loads_workspace_skills_by_default(tmp_path):
+def test_module_cli_loads_workspace_skills_with_explicit_sandbox(tmp_path):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     (skills_dir / "workspace.skill.json").write_text(
@@ -429,6 +490,7 @@ def test_module_cli_loads_workspace_skills_by_default(tmp_path):
             str(tmp_path / "memory.jsonl"),
             "--skills-dir",
             str(skills_dir),
+            *_legacy_sandbox_args(tmp_path),
         ],
         check=True,
         cwd=".",
@@ -439,6 +501,46 @@ def test_module_cli_loads_workspace_skills_by_default(tmp_path):
     result = json.loads(completed.stdout)
     assert "workspace_cli_policy" in [skill["name"] for skill in result["skills"]]
     assert result["skill_load_errors"] == []
+
+
+def test_module_cli_workspace_manifest_fails_closed_without_sandbox(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "workspace.skill.json").write_text(
+        json.dumps(
+            {
+                "name": "workspace_cli_policy",
+                "description": "Workspace CLI policy.",
+                "runtime": "subprocess",
+                "command": ["python3", "-c", "print('unsafe')"],
+                "dry_run_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "fireclaw_core",
+            "你有哪些技能",
+            "--skills-dir",
+            str(skills_dir),
+        ],
+        check=True,
+        cwd=".",
+        text=True,
+        capture_output=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert "workspace_cli_policy" not in [
+        skill["name"] for skill in result["skills"]
+    ]
+    assert "explicit deployment profile" in (
+        result["skill_load_errors"][0]["message"]
+    )
 
 
 def test_module_cli_blocks_workspace_skill_when_available_sensor_is_missing(tmp_path):
@@ -468,6 +570,7 @@ def test_module_cli_blocks_workspace_skill_when_available_sensor_is_missing(tmp_
             str(tmp_path / "memory.jsonl"),
             "--skills-dir",
             str(skills_dir),
+            *_legacy_sandbox_args(tmp_path),
         ],
         check=False,
         cwd=".",
@@ -514,11 +617,13 @@ def test_module_cli_accepts_available_sensor_for_workspace_skill(tmp_path):
             str(skills_dir),
             "--available-sensor",
             "thermal_camera",
+            *_legacy_sandbox_args(tmp_path),
         ],
         check=True,
         cwd=".",
         text=True,
         capture_output=True,
+        env=_fake_docker_env(tmp_path),
     )
 
     result = json.loads(completed.stdout)
@@ -574,11 +679,13 @@ def test_module_cli_directly_invokes_workspace_skill(tmp_path):
             "运行 echo_policy 处理 二楼",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
+            *_legacy_sandbox_args(tmp_path),
         ],
         check=True,
         cwd=".",
         text=True,
         capture_output=True,
+        env=_fake_docker_env(tmp_path),
     )
 
     result = json.loads(completed.stdout)
@@ -618,11 +725,13 @@ def test_module_cli_rescue_plan_runs_workspace_policy_first(tmp_path):
             "去坐标 (2.0, 1.5) 救人 使用 echo_policy",
             "--memory-path",
             str(tmp_path / "memory.jsonl"),
+            *_legacy_sandbox_args(tmp_path),
         ],
         check=True,
         cwd=".",
         text=True,
         capture_output=True,
+        env=_fake_docker_env(tmp_path),
     )
 
     result = json.loads(completed.stdout)

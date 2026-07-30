@@ -40,7 +40,7 @@ LLM emits structured Tool Call
 | 读 workspace | 允许 | 仅在显式启用沙箱时允许 |
 | 写 workspace | 允许，限定路径 | 需要精确后端授权 |
 | 启动进程 | 仅 Docker 沙箱 | 硬拒绝 |
-| 网络 | 默认 `none`，可显式改为 `bridge` | 通用进程工具不开放 |
+| 网络 | 固定为 `none`；通用容器禁止 bridge | 通用进程工具不开放 |
 | 宿主管理 | 硬拒绝 | 硬拒绝 |
 | 凭据访问 | 硬拒绝 | 硬拒绝 |
 | 直接硬件类 Agent Tool | 硬拒绝 | 硬拒绝 |
@@ -60,12 +60,21 @@ LLM emits structured Tool Call
 
 Docker 启动边界包含：
 
-- role-specific workspace 是唯一读写 bind mount；
+- role-specific workspace 以只读 bind mount 进入容器；
+- 持久化修改只能通过 `computer_write_file`，并受单文件大小、总字节数、文件数
+  和乐观并发哈希约束；
 - root filesystem 只读；
 - `--cap-drop ALL` 和 `no-new-privileges`；
 - 非 root UID/GID；
 - memory、CPU、PID、超时和输出大小限制；
-- 默认 `--network none`；
+- 同一角色的容器调用受 `max_concurrent_processes` 限制；
+- 每次调用使用唯一命名容器，并在成功、失败、超时、取消和异常后执行
+  `docker rm --force`；
+- stdout/stderr 在读取管道时就按字节上限保存，超出部分继续排空但不进入宿主
+  内存缓冲；
+- 配置的镜像名称必须绑定 `image_digest`，执行前通过 `docker image inspect`
+  复验，创建容器时使用不可变 image ID；
+- 固定 `--network none`；需要联网时必须新增独立、可审计的 typed network Tool；
 - 不挂载 Docker socket、用户 home、凭据目录或真实设备；
 - Docker 不可用时失败，不回退到宿主进程。
 
@@ -76,7 +85,12 @@ docker build \
   -t fireclaw-agent-sim:local \
   -f containers/agent-sandbox/Dockerfile \
   .
+
+docker image inspect --format '{{.Id}}' fireclaw-agent-sim:local
 ```
+
+把第二条命令得到的 `sha256:...` 写入对应 profile 的 `image_digest`。如果标签
+后来被重新指向另一个镜像，FireClaw 会在创建容器前阻断。
 
 ## 真实模式授权
 
@@ -152,6 +166,7 @@ image = "fireclaw-agent-sim:local"
 ## 当前边界
 
 - 只提供 workspace 文件与容器进程工具，没有声称支持任意宿主操作。
-- 尚未注册 typed ROS topic/TF/navigation diagnostic Tool。
+- 已注册结构化、只读、有限采样的 ROS topic/TF/navigation diagnostic Tool；
+  不开放任意宿主 `rostopic` shell。
 - 沙箱镜像的依赖和版本需要在仿真实验环境中固定并生成 SBOM。
-- 真实模式的通用 Tool 审批恢复还未接入 Gateway API。
+- 真实模式的通用 Tool 使用精确参数授权和一次性消费账本恢复执行。

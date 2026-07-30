@@ -459,7 +459,11 @@ def test_agent_lists_available_skills_without_executing_or_writing_memory(tmp_pa
     assert JsonlMemoryStore(memory_path).list_records() == []
 
 
-def test_agent_lists_workspace_skills_with_builtins(tmp_path):
+def test_agent_lists_workspace_skills_with_builtins(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     (skills_dir / "workspace.skill.json").write_text(
@@ -479,6 +483,8 @@ def test_agent_lists_workspace_skills_with_builtins(tmp_path):
         robot=DryRunRobotAdapter(robot_id="robot-1"),
         memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
         workspace_skills_dir=skills_dir,
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     result = agent.run("你有哪些技能")
@@ -489,17 +495,23 @@ def test_agent_lists_workspace_skills_with_builtins(tmp_path):
     assert result["skill_load_errors"] == []
 
 
-def test_agent_lists_workspace_skill_execution_and_safety_metadata(tmp_path):
+def test_agent_lists_workspace_skill_execution_and_safety_metadata(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     agent = FireClawAgent(
         robot=DryRunRobotAdapter(robot_id="robot-1"),
         memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
         workspace_skills_dir="skills",
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     result = agent.run("你有哪些技能")
 
     echo_policy = next(skill for skill in result["skills"] if skill["name"] == "echo_policy")
-    assert echo_policy["runtime"] == "subprocess"
+    assert echo_policy["runtime"] == "sandboxed_subprocess"
     assert echo_policy["dry_run_only"] is True
     assert echo_policy["max_attempts"] == 1
     assert echo_policy["idempotent"] is True
@@ -509,7 +521,11 @@ def test_agent_lists_workspace_skill_execution_and_safety_metadata(tmp_path):
     assert echo_policy["timeout_seconds"] == 5.0
 
 
-def test_agent_blocks_workspace_skill_when_required_sensor_is_unavailable(tmp_path):
+def test_agent_blocks_workspace_skill_when_required_sensor_is_unavailable(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     (skills_dir / "thermal_policy.skill.json").write_text(
@@ -531,6 +547,8 @@ def test_agent_blocks_workspace_skill_when_required_sensor_is_unavailable(tmp_pa
         memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
         workspace_skills_dir=skills_dir,
         available_sensors={"rgb_camera"},
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     result = agent.run("运行 thermal_policy")
@@ -568,12 +586,18 @@ def test_agent_reports_workspace_skill_load_errors_in_skill_listing(tmp_path):
     assert result["skill_load_errors"][0]["path"].endswith("bad.skill.json")
 
 
-def test_agent_directly_invokes_loaded_workspace_skill_and_writes_memory(tmp_path):
+def test_agent_directly_invokes_loaded_workspace_skill_and_writes_memory(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     memory_path = tmp_path / "memory.jsonl"
     agent = FireClawAgent(
         robot=DryRunRobotAdapter(robot_id="robot-1"),
         memory=JsonlMemoryStore(memory_path),
         workspace_skills_dir="skills",
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     result = agent.run("运行 echo_policy 处理 二楼")
@@ -603,7 +627,11 @@ def test_agent_blocks_missing_direct_skill_before_execution_and_writes_memory(tm
     assert records[-1]["status"] == "block"
 
 
-def test_agent_requires_confirmation_for_high_risk_skill_and_writes_pending_memory(tmp_path):
+def test_agent_requires_confirmation_for_high_risk_skill_and_writes_pending_memory(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     memory_path = tmp_path / "memory.jsonl"
     skills_dir = tmp_path / "skills"
     _write_high_risk_workspace_skill(skills_dir)
@@ -612,6 +640,8 @@ def test_agent_requires_confirmation_for_high_risk_skill_and_writes_pending_memo
         memory=JsonlMemoryStore(memory_path),
         workspace_skills_dir=skills_dir,
         session_id="session-a",
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     result = agent.run("运行 smoke_entry")
@@ -627,7 +657,11 @@ def test_agent_requires_confirmation_for_high_risk_skill_and_writes_pending_memo
     assert records[-1]["planning"]["plan"]["steps"][0]["skill_name"] == "smoke_entry"
 
 
-def test_agent_confirmation_words_do_not_create_execution_authority(tmp_path):
+def test_agent_confirmation_words_do_not_create_execution_authority(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     memory_path = tmp_path / "memory.jsonl"
     skills_dir = tmp_path / "skills"
     _write_high_risk_workspace_skill(skills_dir)
@@ -636,6 +670,8 @@ def test_agent_confirmation_words_do_not_create_execution_authority(tmp_path):
         memory=JsonlMemoryStore(memory_path),
         workspace_skills_dir=skills_dir,
         session_id="session-a",
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     pending = agent.run("运行 smoke_entry")
@@ -654,7 +690,11 @@ def test_agent_confirmation_words_do_not_create_execution_authority(tmp_path):
     ]
 
 
-def test_agent_cancels_latest_pending_plan_without_execution(tmp_path):
+def test_agent_cancels_latest_pending_plan_without_execution(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     memory_path = tmp_path / "memory.jsonl"
     skills_dir = tmp_path / "skills"
     _write_high_risk_workspace_skill(skills_dir)
@@ -663,6 +703,8 @@ def test_agent_cancels_latest_pending_plan_without_execution(tmp_path):
         memory=JsonlMemoryStore(memory_path),
         workspace_skills_dir=skills_dir,
         session_id="session-a",
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     agent.run("运行 smoke_entry")
@@ -693,12 +735,18 @@ def test_agent_confirm_without_pending_plan_requests_clarification(tmp_path):
     assert "没有待确认" in result["message"]
 
 
-def test_agent_rescue_plan_runs_workspace_policy_before_rescue_steps(tmp_path):
+def test_agent_rescue_plan_runs_workspace_policy_before_rescue_steps(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     memory_path = tmp_path / "memory.jsonl"
     agent = FireClawAgent(
         robot=DryRunRobotAdapter(robot_id="robot-1"),
         memory=JsonlMemoryStore(memory_path),
         workspace_skills_dir="skills",
+        deployment_profile=legacy_skill_profile,
+        workspace_skill_executor=legacy_skill_executor,
     )
 
     result = agent.run("去坐标 (2.0, 1.5) 救人 使用 echo_policy")

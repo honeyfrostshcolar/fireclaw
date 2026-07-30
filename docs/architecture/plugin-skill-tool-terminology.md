@@ -158,6 +158,10 @@ skills/
 版本升级逐步修正，不能直接全局重命名并破坏已有 checkpoint、任务合同、配置
 和审计日志。
 
+`*.skill.json` 的兼容不包含宿主命令执行权。该格式只能声明仿真模式下、
+必须进入 `ComputerSandbox` 的 process Tool；真实机器人 Tool 必须由 Plugin
+注册，并通过受信任 Adapter 连接算法或 ROS Runtime。
+
 在迁移完成前：
 
 - 代码引用 legacy identifier 时保留原拼写；

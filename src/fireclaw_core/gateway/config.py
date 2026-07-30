@@ -9,8 +9,16 @@ Config file structure::
     host = "0.0.0.0"
     port = 8766
     data_dir = "./data"
+    api_token = "replace-with-a-random-secret"
     adapter = "simulator"
     ros1_config = "ros1.yaml"
+
+    [server.tls]
+    enabled = true
+    cert_file = "certs/mission-gateway.crt"
+    key_file = "certs/mission-gateway.key"
+    ca_file = "certs/fireclaw-ca.crt"
+    require_client_cert = true
 
     [planner]
     type = "deterministic"           # or "llm"
@@ -80,6 +88,12 @@ def load_config(path: Path) -> dict[str, Any]:
 
     cfg: dict[str, Any] = {}
 
+    # [runtime]
+    runtime = raw.get("runtime", {})
+    if not isinstance(runtime, dict):
+        raise ValueError("[runtime] must be a TOML table")
+    cfg["runtime_root"] = runtime.get("root_dir")
+
     # [server]
     server = raw.get("server", {})
     cfg["host"] = server.get("host")
@@ -87,6 +101,21 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["data_dir"] = server.get("data_dir")
     cfg["adapter"] = server.get("adapter")
     cfg["ros1_config"] = server.get("ros1_config")
+    cfg["api_token"] = server.get("api_token")
+    server_tls = server.get("tls", {})
+    if not isinstance(server_tls, dict):
+        raise ValueError("[server.tls] must be a TOML table")
+    cfg["tls_enabled"] = server_tls.get("enabled")
+    cfg["tls_cert_file"] = server_tls.get("cert_file")
+    cfg["tls_key_file"] = server_tls.get("key_file")
+    cfg["tls_ca_file"] = server_tls.get("ca_file")
+    cfg["tls_require_client_cert"] = server_tls.get("require_client_cert")
+
+    # [network] is shared by Mission and Robot Gateway listeners.
+    network = raw.get("network", {})
+    if not isinstance(network, dict):
+        raise ValueError("[network] must be a TOML table")
+    cfg["network"] = network
 
     # [planner]
     planner = raw.get("planner", {})
@@ -141,11 +170,37 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_gateway_embodied_memory_path"] = rg.get("embodied_memory_path")
     cfg["robot_gateway_embodied_memory_index"] = rg.get("embodied_memory_index")
     cfg["robot_gateway_embodied_runtime_mode"] = rg.get("embodied_runtime_mode")
+    robot_gateway_tls = rg.get("tls", {})
+    if not isinstance(robot_gateway_tls, dict):
+        raise ValueError("[robot_gateway.tls] must be a TOML table")
+    cfg["robot_gateway_tls_enabled"] = robot_gateway_tls.get("enabled")
+    cfg["robot_gateway_tls_cert_file"] = robot_gateway_tls.get("cert_file")
+    cfg["robot_gateway_tls_key_file"] = robot_gateway_tls.get("key_file")
+    cfg["robot_gateway_tls_ca_file"] = robot_gateway_tls.get("ca_file")
+    cfg["robot_gateway_tls_require_client_cert"] = robot_gateway_tls.get(
+        "require_client_cert"
+    )
 
     # [mission]
     mission = raw.get("mission", {})
     cfg["mission_robot_profiles"] = mission.get("robot_profiles")
     cfg["embodied_runtime_mode"] = mission.get("embodied_runtime_mode")
+    cfg["robot_gateway_client_api_token"] = (
+        mission.get("robot_gateway_api_token")
+        or cfg.get("robot_gateway_api_token")
+    )
+    robot_gateway_client_tls = mission.get("robot_gateway_tls", {})
+    if not isinstance(robot_gateway_client_tls, dict):
+        raise ValueError("[mission.robot_gateway_tls] must be a TOML table")
+    cfg["robot_gateway_client_tls_ca_file"] = robot_gateway_client_tls.get(
+        "ca_file"
+    )
+    cfg["robot_gateway_client_tls_cert_file"] = robot_gateway_client_tls.get(
+        "cert_file"
+    )
+    cfg["robot_gateway_client_tls_key_file"] = robot_gateway_client_tls.get(
+        "key_file"
+    )
 
     rag_fields = (
         "backend",

@@ -102,6 +102,7 @@ class AuthorizationRequest:
     scope_hash: str | None = None
     authorized_actions: tuple[dict[str, Any], ...] = ()
     robot_id: str | None = None
+    authorization_kind: str = "physical"
 
     def is_expired(self, now: str) -> bool:
         return datetime.fromisoformat(now) >= datetime.fromisoformat(self.expires_at)
@@ -128,6 +129,7 @@ class AuthorizationRequest:
                 dict(action) for action in self.authorized_actions
             ],
             "robot_id": self.robot_id,
+            "authorization_kind": self.authorization_kind,
         }
 
     @classmethod
@@ -166,6 +168,9 @@ class AuthorizationRequest:
                 payload["robot_id"]
                 if isinstance(payload.get("robot_id"), str)
                 else None
+            ),
+            authorization_kind=str(
+                payload.get("authorization_kind") or "physical"
             ),
         )
 

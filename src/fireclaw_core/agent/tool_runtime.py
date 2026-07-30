@@ -14,6 +14,11 @@ from fireclaw_core.approval.execution_authorization import (
 )
 from fireclaw_core.execution.skill_plugin import validate_object_schema
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.plugin.trusted_callback import (
+    TrustedCallbackTimeout,
+    invoke_trusted_callback,
+    validate_json_result_size,
+)
 from fireclaw_core.policy.deployment import (
     DEPLOYMENT_POLICY_ID,
     AgentRole,
@@ -25,6 +30,7 @@ from fireclaw_core.policy.deployment import (
 
 
 AgentToolHandler = Callable[[dict[str, Any]], Any]
+AuthorizationUseRecorder = Callable[..., bool]
 AgentToolExecutionStatus = Literal[
     "executed",
     "blocked",
@@ -42,6 +48,10 @@ _AUTHORIZATION_CONTEXT_KEYS = (
     "snapshot_id",
     "session_id",
 )
+_MAX_AGENT_TOOL_TIMEOUT_SECONDS = 300.0
+_MAX_AGENT_TOOL_RESULT_BYTES = 1024 * 1024
+_BEFORE_TOOL_HOOK_TIMEOUT_SECONDS = 2.0
+_BEFORE_TOOL_HOOK_RESULT_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -57,6 +67,8 @@ class AgentTool:
     modes: tuple[DeploymentMode, ...] = ("simulation", "real")
     requires_sandbox: bool = False
     result_authority: AgentToolAuthority = "advisory"
+    max_execution_seconds: float = 30.0
+    max_result_bytes: int = 256 * 1024
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -80,6 +92,23 @@ class AgentTool:
         if not self.roles or not self.modes:
             raise ValueError(
                 f"Agent Tool {self.name!r} must declare roles and modes."
+            )
+        if (
+            self.max_execution_seconds <= 0
+            or self.max_execution_seconds
+            > _MAX_AGENT_TOOL_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                f"Agent Tool {self.name!r} max_execution_seconds is outside "
+                "the hard safety range."
+            )
+        if (
+            self.max_result_bytes <= 0
+            or self.max_result_bytes > _MAX_AGENT_TOOL_RESULT_BYTES
+        ):
+            raise ValueError(
+                f"Agent Tool {self.name!r} max_result_bytes is outside the "
+                "hard safety range."
             )
 
     def validate_arguments(self, arguments: Any) -> list[str]:
@@ -131,6 +160,7 @@ class AgentToolExecution:
     approval_request: dict[str, Any] | None = None
     authorization_id: str | None = None
     authorization_scope_hash: str | None = None
+    authorization_operation_id: str | None = None
     result_authority: AgentToolAuthority = "advisory"
 
     def to_dict(self) -> dict[str, Any]:
@@ -148,6 +178,7 @@ class AgentToolExecution:
             "approval_request": deepcopy(self.approval_request),
             "authorization_id": self.authorization_id,
             "authorization_scope_hash": self.authorization_scope_hash,
+            "authorization_operation_id": self.authorization_operation_id,
             "result_authority": self.result_authority,
         }
 
@@ -166,10 +197,12 @@ class AgentToolRuntime:
         plugin_host: FireClawPluginHost,
         profile: DeploymentProfile,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        authorization_use_recorder: AuthorizationUseRecorder | None = None,
     ) -> None:
         self.plugin_host = plugin_host
         self.profile = profile
         self._event_sink = event_sink
+        self._authorization_use_recorder = authorization_use_recorder
 
     def projections(self, *, include_blocked: bool = False) -> tuple[AgentToolProjection, ...]:
         values: list[AgentToolProjection] = []
@@ -407,8 +440,140 @@ class AgentToolRuntime:
                 )
             )
 
+        authorization_operation_id: str | None = None
+        if approval_required:
+            assert authorization is not None
+            authorization_operation_id = (
+                "agent-tool:"
+                f"{authorization.authorization_id}:"
+                f"{arguments_hash}"
+            )
+            if self._authorization_use_recorder is None:
+                return self._finish(
+                    AgentToolExecution(
+                        invocation_id=invocation_id,
+                        tool_name=name,
+                        status="blocked",
+                        arguments_hash=arguments_hash,
+                        decision=final_decision,
+                        error_code=(
+                            "agent_tool_authorization_consumption_unavailable"
+                        ),
+                        message=(
+                            "Approved Agent Tool execution requires a "
+                            "persistent one-time authorization consumer."
+                        ),
+                        authorization_id=authorization.authorization_id,
+                        authorization_scope_hash=authorization_scope_hash,
+                        authorization_operation_id=(
+                            authorization_operation_id
+                        ),
+                    )
+                )
+            try:
+                consumed = bool(
+                    self._authorization_use_recorder(
+                        authorization_id=authorization.authorization_id,
+                        operation_id=authorization_operation_id,
+                        action_hash=arguments_hash,
+                        used_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                )
+            except Exception as exc:
+                return self._finish(
+                    AgentToolExecution(
+                        invocation_id=invocation_id,
+                        tool_name=name,
+                        status="blocked",
+                        arguments_hash=arguments_hash,
+                        decision=final_decision,
+                        error_code=(
+                            "agent_tool_authorization_consumption_failed"
+                        ),
+                        message=(
+                            "The authorization use ledger failed closed with "
+                            f"{type(exc).__name__}."
+                        ),
+                        authorization_id=authorization.authorization_id,
+                        authorization_scope_hash=authorization_scope_hash,
+                        authorization_operation_id=(
+                            authorization_operation_id
+                        ),
+                    )
+                )
+            if not consumed:
+                return self._finish(
+                    AgentToolExecution(
+                        invocation_id=invocation_id,
+                        tool_name=name,
+                        status="blocked",
+                        arguments_hash=arguments_hash,
+                        decision=final_decision,
+                        error_code="agent_tool_authorization_already_used",
+                        message=(
+                            "This exact Agent Tool authorization was already "
+                            "consumed or is no longer active."
+                        ),
+                        authorization_id=authorization.authorization_id,
+                        authorization_scope_hash=authorization_scope_hash,
+                        authorization_operation_id=(
+                            authorization_operation_id
+                        ),
+                    )
+                )
+
         try:
-            output = tool.handler(deepcopy(final_arguments))
+            output = invoke_trusted_callback(
+                tool.handler,
+                deepcopy(final_arguments),
+                timeout_seconds=tool.max_execution_seconds,
+            )
+            validate_json_result_size(
+                output,
+                max_bytes=tool.max_result_bytes,
+                description=f"Agent Tool {tool.name!r} result",
+            )
+        except TrustedCallbackTimeout:
+            return self._finish(
+                AgentToolExecution(
+                    invocation_id=invocation_id,
+                    tool_name=name,
+                    status="error",
+                    arguments_hash=arguments_hash,
+                    decision=final_decision,
+                    error_code="agent_tool_handler_timed_out",
+                    message=(
+                        f"Agent Tool exceeded {tool.max_execution_seconds} "
+                        "seconds."
+                    ),
+                    authorization_id=(
+                        authorization.authorization_id
+                        if authorization is not None
+                        else None
+                    ),
+                    authorization_scope_hash=authorization_scope_hash,
+                    authorization_operation_id=authorization_operation_id,
+                )
+            )
+        except ValueError as exc:
+            return self._finish(
+                AgentToolExecution(
+                    invocation_id=invocation_id,
+                    tool_name=name,
+                    status="error",
+                    arguments_hash=arguments_hash,
+                    decision=final_decision,
+                    error_code="agent_tool_result_invalid",
+                    message=str(exc)[:500],
+                    authorization_id=(
+                        authorization.authorization_id
+                        if authorization is not None
+                        else None
+                    ),
+                    authorization_scope_hash=authorization_scope_hash,
+                    authorization_operation_id=authorization_operation_id,
+                )
+            )
         except Exception as exc:
             return self._finish(
                 AgentToolExecution(
@@ -428,6 +593,7 @@ class AgentToolRuntime:
                         else None
                     ),
                     authorization_scope_hash=authorization_scope_hash,
+                    authorization_operation_id=authorization_operation_id,
                 )
             )
         return self._finish(
@@ -444,6 +610,7 @@ class AgentToolRuntime:
                     else None
                 ),
                 authorization_scope_hash=authorization_scope_hash,
+                authorization_operation_id=authorization_operation_id,
             )
         )
 
@@ -500,7 +667,28 @@ class AgentToolRuntime:
                 "context": deepcopy(context),
             }
             try:
-                effect = contribution.value(payload)
+                effect = invoke_trusted_callback(
+                    contribution.value,
+                    payload,
+                    timeout_seconds=_BEFORE_TOOL_HOOK_TIMEOUT_SECONDS,
+                )
+                validate_json_result_size(
+                    effect,
+                    max_bytes=_BEFORE_TOOL_HOOK_RESULT_BYTES,
+                    description=(
+                        f"Hook {contribution.contribution_id!r} result"
+                    ),
+                )
+            except TrustedCallbackTimeout:
+                return {
+                    "blocked": True,
+                    "error_code": "before_tool_call_hook_timed_out",
+                    "message": (
+                        f"Hook {contribution.contribution_id!r} timed out."
+                    ),
+                    "arguments": current_arguments,
+                    "require_approval": require_approval,
+                }
             except Exception as exc:
                 return {
                     "blocked": True,
@@ -592,6 +780,7 @@ def register_agent_tool(
         name=tool.name,
         description=tool.description,
         source=source,
+        trust_level="trusted",
     )
 
 

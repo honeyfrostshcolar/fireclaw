@@ -405,4 +405,5 @@ def register_agent_harness(
         lambda api: api.register_agent_harness(harness),
         name=harness.label,
         source="agent_harness",
+        trust_level="trusted",
     )

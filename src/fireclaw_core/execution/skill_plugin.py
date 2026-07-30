@@ -240,6 +240,7 @@ class PhysicalSkillCatalog:
             name=plugin.label,
             description=plugin.description,
             source="builtin_physical_skill",
+            trust_level="trusted",
         )
 
     def get(self, name: str) -> PhysicalSkillPlugin | None:

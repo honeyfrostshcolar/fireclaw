@@ -27,7 +27,7 @@ from fireclaw_core.task.task_queue import JsonlTaskQueue
 
 def _json_request_with_headers(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> tuple[int, dict]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req_headers = {"Content-Type": "application/json", "X-Operator-Scopes": "admin"}
+    req_headers = {"Content-Type": "application/json"}
     if headers:
         req_headers.update(headers)
     req = request.Request(
@@ -45,7 +45,7 @@ def _json_request_with_headers(base_url: str, method: str, path: str, payload: d
 
 def _json_request(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req_headers = {"Content-Type": "application/json", "X-Operator-Scopes": "admin"}
+    req_headers = {"Content-Type": "application/json"}
     if headers:
         req_headers.update(headers)
     req = request.Request(
@@ -158,6 +158,13 @@ def test_gateway_returns_health_and_state(tmp_path):
     assert health["adapter"] == "simulator"
     assert state["robot_state"]["mode"] == "simulator"
     assert state["environment_state"]["reachable_floors"] == [1]
+    assert state["runtime_paths"]["process_working_directory"] == str(
+        Path.cwd().resolve()
+    )
+    assert state["runtime_paths"]["agent_workspace"] == str(
+        gateway.config.deployment_profile.sandbox.workspace_root
+    )
+    assert state["runtime_paths"]["allowed_workspace_roots"]
 
 
 def test_gateway_accepts_ros1_config_path_for_real_adapter_skeleton(tmp_path):
@@ -310,7 +317,11 @@ def test_gateway_persists_task_queue_lifecycle(tmp_path):
     assert trace["queue_record"]["status"] == "completed"
 
 
-def test_gateway_returns_existing_task_for_duplicate_dedupe_key(tmp_path):
+def test_gateway_returns_existing_task_for_duplicate_dedupe_key(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -323,7 +334,9 @@ def test_gateway_returns_existing_task_for_duplicate_dedupe_key(tmp_path):
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -349,7 +362,11 @@ def test_gateway_returns_existing_task_for_duplicate_dedupe_key(tmp_path):
     assert [record.task_id for record in gateway.task_queue.list_records()] == [first["task_id"]]
 
 
-def test_gateway_cancel_updates_task_queue_state(tmp_path):
+def test_gateway_cancel_updates_task_queue_state(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -362,7 +379,9 @@ def test_gateway_cancel_updates_task_queue_state(tmp_path):
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -739,8 +758,9 @@ def test_gateway_records_operator_and_control_decision_for_task_submission(tmp_p
     assert event_types[:3] == ["task.received", "operator.identified", "control.decision"]
     operator_event = events["events"][1]
     decision_event = events["events"][2]
-    assert operator_event["payload"]["operator_id"] == "op-1"
-    assert operator_event["payload"]["role"] == "operator"
+    assert operator_event["payload"]["operator_id"] == "local-loopback-operator"
+    assert operator_event["payload"]["role"] == "admin"
+    assert operator_event["payload"]["source"] == "gateway_auth:loopback"
     assert decision_event["payload"]["status"] == "allow"
     assert decision_event["payload"]["action"] == "task.submit"
 
@@ -768,7 +788,11 @@ def test_gateway_sync_run_agent_still_returns_completed_result(tmp_path):
     assert gateway.task_trace(result["task_id"])["result"]["status"] == "succeeded"
 
 
-def test_gateway_confirms_pending_high_risk_skill(tmp_path):
+def test_gateway_confirms_pending_high_risk_skill(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_high_risk_skill(skills_dir)
     gateway = FireClawGateway(
@@ -780,7 +804,9 @@ def test_gateway_confirms_pending_high_risk_skill(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -822,7 +848,11 @@ def test_gateway_confirms_pending_high_risk_skill(tmp_path):
     assert "authorization.approved" in [event["type"] for event in confirmed_events["events"]]
 
 
-def test_gateway_denies_high_risk_confirmation_from_operator_without_override(tmp_path):
+def test_gateway_ignores_payload_operator_role_during_confirmation(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_high_risk_skill(skills_dir)
     gateway = FireClawGateway(
@@ -834,7 +864,9 @@ def test_gateway_denies_high_risk_confirmation_from_operator_without_override(tm
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -845,24 +877,34 @@ def test_gateway_denies_high_risk_confirmation_from_operator_without_override(tm
             {"command": "运行 smoke_entry", "session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}},
         )
         pending_result = _wait_for_task_result(gateway, pending["task_id"])
-        status_code, denied = _json_error_request(
+        status_code, confirmed = _json_error_request(
             gateway.base_url,
             "POST",
             "/confirm",
             {"session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}},
         )
-        pending_events = _json_request(gateway.base_url, "GET", f"/tasks/{pending['task_id']}/events")
+        confirmed_result = _wait_for_task_result(gateway, confirmed["task_id"])
+        confirmed_events = _json_request(
+            gateway.base_url,
+            "GET",
+            f"/tasks/{confirmed['task_id']}/events",
+        )
     finally:
         gateway.stop()
 
     assert pending_result["status"] == "awaiting_confirmation"
-    assert status_code == 403
-    assert denied["status"] == "denied"
-    assert denied["control"]["status"] == "approval_required"
-    assert "authorization.denied" in [event["type"] for event in pending_events["events"]]
+    assert status_code == 200
+    assert confirmed_result["status"] == "succeeded"
+    assert "authorization.approved" in [
+        event["type"] for event in confirmed_events["events"]
+    ]
 
 
-def test_gateway_expires_pending_high_risk_authorization_before_confirm(tmp_path):
+def test_gateway_expires_pending_high_risk_authorization_before_confirm(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_high_risk_skill(skills_dir)
     gateway = FireClawGateway(
@@ -875,7 +917,9 @@ def test_gateway_expires_pending_high_risk_authorization_before_confirm(tmp_path
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
             authorization_expiry_seconds=0,
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -901,7 +945,11 @@ def test_gateway_expires_pending_high_risk_authorization_before_confirm(tmp_path
     assert "authorization.expired" in [event["type"] for event in pending_events["events"]]
 
 
-def test_gateway_cancels_active_task_between_skills(tmp_path):
+def test_gateway_cancels_active_task_between_skills(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -913,7 +961,9 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -948,7 +998,11 @@ def test_gateway_cancels_active_task_between_skills(tmp_path):
     assert skill_names == ["slow_policy"]
 
 
-def test_gateway_observer_cannot_cancel_active_task(tmp_path):
+def test_gateway_ignores_payload_observer_role_when_cancelling(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -960,7 +1014,9 @@ def test_gateway_observer_cannot_cancel_active_task(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -974,27 +1030,28 @@ def test_gateway_observer_cannot_cancel_active_task(tmp_path):
             },
         )
         _wait_for_event_type(gateway, accepted["task_id"], "skill.started")
-        status_code, denied = _json_error_request(
+        status_code, cancelled = _json_error_request(
             gateway.base_url,
             "POST",
             f"/tasks/{accepted['task_id']}/cancel",
             {"operator": {"operator_id": "observer-1", "role": "observer"}},
         )
-        running_trace = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}")
+        result = _wait_for_task_result(gateway, accepted["task_id"])
         events = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}/events")
-        gateway.cancel_task(accepted["task_id"])
-        _wait_for_task_result(gateway, accepted["task_id"])
     finally:
         gateway.stop()
 
-    assert status_code == 403
-    assert denied["status"] == "denied"
-    assert denied["control"]["status"] == "deny"
-    assert running_trace["status"] == "running"
-    assert "task.cancel_denied" in [event["type"] for event in events["events"]]
+    assert status_code == 200
+    assert cancelled["status"] == "cancel_requested"
+    assert result["status"] == "cancelled"
+    assert "task.cancel_requested" in [event["type"] for event in events["events"]]
 
 
-def test_gateway_rejects_second_execution_task_when_robot_is_busy(tmp_path):
+def test_gateway_rejects_second_execution_task_when_robot_is_busy(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -1006,7 +1063,9 @@ def test_gateway_rejects_second_execution_task_when_robot_is_busy(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -1041,7 +1100,11 @@ def test_gateway_rejects_second_execution_task_when_robot_is_busy(tmp_path):
     assert state["active_tasks"][0]["task_id"] == first["task_id"]
 
 
-def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_events(tmp_path):
+def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_events(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -1053,7 +1116,9 @@ def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_even
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -1100,7 +1165,11 @@ def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_even
     assert "task.cancelled" in task_types
 
 
-def test_gateway_operator_emergency_stop_is_denied_without_cancelling_task(tmp_path):
+def test_gateway_ignores_payload_operator_role_for_emergency_stop(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -1112,7 +1181,9 @@ def test_gateway_operator_emergency_stop_is_denied_without_cancelling_task(tmp_p
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -1126,7 +1197,7 @@ def test_gateway_operator_emergency_stop_is_denied_without_cancelling_task(tmp_p
             },
         )
         _wait_for_event_type(gateway, active["task_id"], "skill.started")
-        status_code, denied = _json_error_request(
+        status_code, stopped = _json_error_request(
             gateway.base_url,
             "POST",
             "/emergency-stop",
@@ -1136,21 +1207,19 @@ def test_gateway_operator_emergency_stop_is_denied_without_cancelling_task(tmp_p
                 "operator": {"operator_id": "op-1", "role": "operator"},
             },
         )
-        running_trace = _json_request(gateway.base_url, "GET", f"/tasks/{active['task_id']}")
+        result = _wait_for_task_result(gateway, active["task_id"])
         state = _json_request(gateway.base_url, "GET", "/state")
         recent_events = _json_request(gateway.base_url, "GET", "/events/recent?session_id=operator-a&limit=20")
-        gateway.cancel_task(active["task_id"])
-        _wait_for_task_result(gateway, active["task_id"])
     finally:
         gateway.stop()
 
-    assert status_code == 403
-    assert denied["status"] == "denied"
-    assert denied["control"]["status"] == "deny"
-    assert running_trace["status"] == "running"
-    assert state["emergency_stop"]["active"] is False
-    assert state["robot_state"]["online"] is True
-    assert "emergency_stop.denied" in [event["type"] for event in recent_events["events"]]
+    assert status_code == 200
+    assert stopped["status"] == "emergency_stopped"
+    assert result["status"] == "cancelled"
+    assert state["emergency_stop"]["active"] is True
+    assert "emergency_stop.activated" in [
+        event["type"] for event in recent_events["events"]
+    ]
 
 
 def test_gateway_events_endpoint_returns_recent_events(tmp_path):
@@ -1274,12 +1343,25 @@ def test_gateway_returns_401_without_token_when_api_token_set(tmp_path):
     )
     gateway.start()
     try:
-        status_code, body = _json_request_with_headers(gateway.base_url, "GET", "/state")
+        forged_headers = {
+            "X-Operator-Id": "attacker",
+            "X-Operator-Scopes": "admin",
+        }
+        status_code, body = _json_request_with_headers(
+            gateway.base_url,
+            "GET",
+            "/state",
+            headers=forged_headers,
+        )
         post_status, post_body = _json_request_with_headers(
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "去坐标 (2.0, 1.5) 救人"},
+            {
+                "command": "去坐标 (2.0, 1.5) 救人",
+                "operator": {"operator_id": "attacker", "role": "admin"},
+            },
+            headers=forged_headers,
         )
     finally:
         gateway.stop()
@@ -1312,6 +1394,54 @@ def test_gateway_returns_200_with_correct_token(tmp_path):
 
     assert status_code == 200
     assert body["robot_state"]["robot_id"] == "robot-gateway"
+
+
+def test_gateway_shared_token_uses_server_owned_principal(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="simulator",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            workspace_skills_dir=None,
+            api_token="secret-token",
+        )
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {
+                "command": "去坐标 (2.0, 1.5) 救人",
+                "session_id": "operator-a",
+                "operator": {"operator_id": "attacker", "role": "admin"},
+            },
+            headers={
+                "Authorization": "Bearer secret-token",
+                "X-Operator-Id": "attacker",
+                "X-Operator-Scopes": "admin",
+            },
+        )
+        _wait_for_task_result(gateway, accepted["task_id"])
+        events = _json_request(
+            gateway.base_url,
+            "GET",
+            f"/tasks/{accepted['task_id']}/events",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    finally:
+        gateway.stop()
+
+    operator_event = next(
+        event for event in events["events"] if event["type"] == "operator.identified"
+    )
+    assert operator_event["payload"]["operator_id"] == "gateway-shared-token"
+    assert operator_event["payload"]["role"] == "admin"
+    assert operator_event["payload"]["source"] == "gateway_auth:shared_token"
 
 
 def test_gateway_health_endpoint_bypasses_auth(tmp_path):
@@ -1377,7 +1507,7 @@ class TestGatewaySSEStream:
         finally:
             gateway.stop()
 
-    def test_sse_endpoint_requires_read_scope(self, tmp_path):
+    def test_sse_endpoint_rejects_forged_scope_without_authentication(self, tmp_path):
         gateway = FireClawGateway(
             GatewayConfig(
                 host="127.0.0.1",
@@ -1386,6 +1516,7 @@ class TestGatewaySSEStream:
                 robot_id="robot-gateway",
                 memory_path=str(tmp_path / "memory.jsonl"),
                 workspace_skills_dir=None,
+                api_token="gateway-secret",
             )
         )
         gateway.start()
@@ -1398,11 +1529,11 @@ class TestGatewaySSEStream:
             try:
                 with request.urlopen(req, timeout=2):
                     pass
-                assert False, "Expected HTTPError 403"
+                assert False, "Expected HTTPError 401"
             except HTTPError as exc:
-                assert exc.code == 403
+                assert exc.code == 401
                 body = json.loads(exc.read().decode("utf-8"))
-                assert "Missing required scope" in body["message"]
+                assert body["error"] == "Unauthorized"
         finally:
             gateway.stop()
 

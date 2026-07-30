@@ -7,6 +7,7 @@ from fireclaw_core.plugin.plugin_host import (
     PluginDiagnostic,
     PluginRecord,
     PluginRegistrationError,
+    PluginTrustLevel,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "PluginDiagnostic",
     "PluginRecord",
     "PluginRegistrationError",
+    "PluginTrustLevel",
 ]

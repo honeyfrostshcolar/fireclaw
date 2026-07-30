@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
+import re
 from typing import Any, Literal, Mapping
 
 
@@ -26,6 +27,17 @@ DeploymentToolStageStatus = Literal[
 ]
 
 DEPLOYMENT_POLICY_ID = "fireclaw.deployment-tool-policy:v1"
+_SHA256_IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MAX_SANDBOX_OUTPUT_BYTES = 16 * 1024 * 1024
+_MAX_SANDBOX_OUTPUT_CHARS = 1_000_000
+_MAX_SANDBOX_TIMEOUT_SECONDS = 300.0
+_MAX_SANDBOX_MEMORY_MB = 4_096
+_MAX_SANDBOX_CPUS = 8.0
+_MAX_SANDBOX_PIDS = 1_024
+_MAX_SANDBOX_FILE_BYTES = 16 * 1024 * 1024
+_MAX_SANDBOX_WORKSPACE_BYTES = 1024 * 1024 * 1024
+_MAX_SANDBOX_WORKSPACE_FILES = 100_000
+_MAX_SANDBOX_CONCURRENT_PROCESSES = 8
 _VALID_MODES = frozenset({"simulation", "real"})
 _VALID_ROLES = frozenset({"mission_agent", "robot_agent"})
 _VALID_EFFECTS = frozenset({
@@ -131,45 +143,135 @@ class SandboxProfile:
     backend: str = "docker"
     workspace_root: Path = Path("data/fireclaw-sandbox")
     image: str | None = None
+    image_digest: str | None = None
     network: str = "none"
     max_timeout_seconds: float = 30.0
     max_output_chars: int = 20_000
+    max_output_bytes: int = 64_000
     memory_mb: int = 512
     cpus: float = 1.0
     pids_limit: int = 128
+    max_file_bytes: int = 2 * 1024 * 1024
+    max_workspace_bytes: int = 64 * 1024 * 1024
+    max_workspace_files: int = 4_096
+    max_concurrent_processes: int = 1
+    allowed_workspace_roots: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
-        root = self.workspace_root.expanduser().resolve()
+        from fireclaw_core.infra.path_security import (
+            validate_sandbox_workspace_root,
+        )
+
+        allowed_roots = tuple(
+            path.expanduser().resolve(strict=False)
+            for path in self.allowed_workspace_roots
+        )
+        root = validate_sandbox_workspace_root(
+            self.workspace_root,
+            allowed_roots=allowed_roots,
+        )
         object.__setattr__(self, "workspace_root", root)
+        object.__setattr__(
+            self,
+            "allowed_workspace_roots",
+            allowed_roots,
+        )
+        image = self.image.strip() if self.image else None
+        image_digest = (
+            self.image_digest.strip().lower()
+            if self.image_digest
+            else None
+        )
+        object.__setattr__(self, "image", image)
+        object.__setattr__(self, "image_digest", image_digest)
+        if image_digest is not None and not _SHA256_IMAGE_ID_PATTERN.fullmatch(
+            image_digest
+        ):
+            raise ValueError(
+                "Sandbox image_digest must be a Docker sha256 image ID."
+            )
+        if image_digest is not None and image is None:
+            raise ValueError(
+                "Sandbox image_digest requires a configured image reference."
+            )
+        if self.enabled and image is not None and image_digest is None:
+            raise ValueError(
+                "Enabled Docker process sandboxes require image_digest; "
+                "mutable image tags cannot be executed without an immutable pin."
+            )
         if self.backend != "docker":
             raise ValueError(
                 "FireClaw computer tool sandbox backend must be 'docker'; "
                 "host subprocess fallback is prohibited."
             )
-        if self.network not in {"none", "bridge"}:
+        if self.network != "none":
             raise ValueError(
-                "Sandbox network must be 'none' or 'bridge'; host networking "
-                "is not an admitted default."
-            )
-        if root in {Path("/"), Path.home().resolve()}:
-            raise ValueError(
-                "Sandbox workspace_root must not be the filesystem root or "
-                "the user's home directory."
+                "Sandbox network must be 'none'; generic Docker bridge access "
+                "is prohibited. Expose reviewed network operations as typed Tools."
             )
         if self.max_timeout_seconds <= 0:
             raise ValueError("Sandbox max_timeout_seconds must be positive.")
+        if self.max_timeout_seconds > _MAX_SANDBOX_TIMEOUT_SECONDS:
+            raise ValueError(
+                "Sandbox max_timeout_seconds exceeds the hard safety limit."
+            )
         if self.max_output_chars <= 0:
             raise ValueError("Sandbox max_output_chars must be positive.")
+        if self.max_output_chars > _MAX_SANDBOX_OUTPUT_CHARS:
+            raise ValueError(
+                "Sandbox max_output_chars exceeds the hard safety limit."
+            )
+        if self.max_output_bytes <= 0:
+            raise ValueError("Sandbox max_output_bytes must be positive.")
+        if self.max_output_bytes > _MAX_SANDBOX_OUTPUT_BYTES:
+            raise ValueError(
+                "Sandbox max_output_bytes exceeds the hard safety limit."
+            )
         if self.memory_mb < 64:
             raise ValueError("Sandbox memory_mb must be at least 64.")
+        if self.memory_mb > _MAX_SANDBOX_MEMORY_MB:
+            raise ValueError("Sandbox memory_mb exceeds the hard safety limit.")
         if self.cpus <= 0:
             raise ValueError("Sandbox cpus must be positive.")
+        if self.cpus > _MAX_SANDBOX_CPUS:
+            raise ValueError("Sandbox cpus exceeds the hard safety limit.")
         if self.pids_limit < 16:
             raise ValueError("Sandbox pids_limit must be at least 16.")
+        if self.pids_limit > _MAX_SANDBOX_PIDS:
+            raise ValueError("Sandbox pids_limit exceeds the hard safety limit.")
+        if self.max_file_bytes <= 0:
+            raise ValueError("Sandbox max_file_bytes must be positive.")
+        if self.max_file_bytes > _MAX_SANDBOX_FILE_BYTES:
+            raise ValueError(
+                "Sandbox max_file_bytes exceeds the hard safety limit."
+            )
+        if self.max_workspace_bytes <= 0:
+            raise ValueError("Sandbox max_workspace_bytes must be positive.")
+        if self.max_workspace_bytes > _MAX_SANDBOX_WORKSPACE_BYTES:
+            raise ValueError(
+                "Sandbox max_workspace_bytes exceeds the hard safety limit."
+            )
+        if self.max_workspace_files <= 0:
+            raise ValueError("Sandbox max_workspace_files must be positive.")
+        if self.max_workspace_files > _MAX_SANDBOX_WORKSPACE_FILES:
+            raise ValueError(
+                "Sandbox max_workspace_files exceeds the hard safety limit."
+            )
+        if self.max_concurrent_processes <= 0:
+            raise ValueError(
+                "Sandbox max_concurrent_processes must be positive."
+            )
+        if (
+            self.max_concurrent_processes
+            > _MAX_SANDBOX_CONCURRENT_PROCESSES
+        ):
+            raise ValueError(
+                "Sandbox max_concurrent_processes exceeds the hard safety limit."
+            )
 
     @property
     def process_ready(self) -> bool:
-        return self.enabled and bool(self.image and self.image.strip())
+        return bool(self.enabled and self.image and self.image_digest)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,12 +279,22 @@ class SandboxProfile:
             "backend": self.backend,
             "workspace_root": str(self.workspace_root),
             "image": self.image,
+            "image_digest": self.image_digest,
+            "image_pinned": bool(self.image and self.image_digest),
             "network": self.network,
             "max_timeout_seconds": self.max_timeout_seconds,
             "max_output_chars": self.max_output_chars,
+            "max_output_bytes": self.max_output_bytes,
             "memory_mb": self.memory_mb,
             "cpus": self.cpus,
             "pids_limit": self.pids_limit,
+            "max_file_bytes": self.max_file_bytes,
+            "max_workspace_bytes": self.max_workspace_bytes,
+            "max_workspace_files": self.max_workspace_files,
+            "max_concurrent_processes": self.max_concurrent_processes,
+            "allowed_workspace_roots": [
+                str(path) for path in self.allowed_workspace_roots
+            ],
             "process_ready": self.process_ready,
         }
 
@@ -406,6 +518,8 @@ def deployment_profile_from_config(
     *,
     role: AgentRole,
     default_workspace_root: str | Path,
+    allowed_workspace_roots: tuple[str | Path, ...] = (),
+    path_base: str | Path | None = None,
 ) -> DeploymentProfile:
     raw = dict(value or {})
     mode_value = raw.get("mode", "real")
@@ -429,11 +543,15 @@ def deployment_profile_from_config(
         raise ValueError(
             f"deployment.sandbox.{role}.workspace_root must be a path string"
         )
+    workspace_path = Path(workspace_value).expanduser()
+    if not workspace_path.is_absolute() and path_base is not None:
+        workspace_path = Path(path_base).expanduser() / workspace_path
     sandbox = SandboxProfile(
         enabled=_boolean(role_sandbox, "enabled", False),
         backend=_string(role_sandbox, "backend", "docker"),
-        workspace_root=Path(workspace_value),
+        workspace_root=workspace_path,
         image=_optional_string(role_sandbox, "image"),
+        image_digest=_optional_string(role_sandbox, "image_digest"),
         network=_string(role_sandbox, "network", "none"),
         max_timeout_seconds=_positive_number(
             role_sandbox,
@@ -445,9 +563,37 @@ def deployment_profile_from_config(
             "max_output_chars",
             20_000,
         ),
+        max_output_bytes=_positive_int(
+            role_sandbox,
+            "max_output_bytes",
+            64_000,
+        ),
         memory_mb=_positive_int(role_sandbox, "memory_mb", 512),
         cpus=_positive_number(role_sandbox, "cpus", 1.0),
         pids_limit=_positive_int(role_sandbox, "pids_limit", 128),
+        max_file_bytes=_positive_int(
+            role_sandbox,
+            "max_file_bytes",
+            2 * 1024 * 1024,
+        ),
+        max_workspace_bytes=_positive_int(
+            role_sandbox,
+            "max_workspace_bytes",
+            64 * 1024 * 1024,
+        ),
+        max_workspace_files=_positive_int(
+            role_sandbox,
+            "max_workspace_files",
+            4_096,
+        ),
+        max_concurrent_processes=_positive_int(
+            role_sandbox,
+            "max_concurrent_processes",
+            1,
+        ),
+        allowed_workspace_roots=tuple(
+            Path(path) for path in allowed_workspace_roots
+        ),
     )
     return DeploymentProfile(
         mode=mode,

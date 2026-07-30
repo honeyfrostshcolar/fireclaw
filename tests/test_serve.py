@@ -63,6 +63,23 @@ def test_start_server_with_deterministic_planner(tmp_path: Path, monkeypatch):
         gw.stop()
 
 
+def test_start_server_wires_inbound_and_outbound_gateway_tokens(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    gw = start_server(
+        data_dir=data_dir,
+        port=0,
+        planner_type="deterministic",
+        api_token="mission-secret",
+        robot_gateway_api_token="robot-secret",
+    )
+    try:
+        assert gw.config.api_token == "mission-secret"
+        assert gw.subagent_client.api_token == "robot-secret"
+        assert gw.mission_agent.subagent_client is gw.subagent_client
+    finally:
+        gw.stop()
+
+
 def test_start_server_submit_and_trace(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(RobotSubagentClient, "check_presence", _fake_check_presence)
     monkeypatch.setattr(RobotSubagentClient, "submit_task", _fake_submit_task)
@@ -81,7 +98,7 @@ def test_start_server_submit_and_trace(tmp_path: Path, monkeypatch):
             f"{url}/missions",
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json", "X-Operator-Scopes": "admin"},
+            headers={"Content-Type": "application/json"},
         )
         resp = request.urlopen(req, timeout=5)
         result = json.loads(resp.read())

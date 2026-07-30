@@ -304,15 +304,24 @@ class MissionAgent:
         )
         return self.mission_memory_tools.execute(name, arguments, access=access)
 
-    def _authorize(self, action: str) -> dict[str, Any] | None:
+    def _authorize(
+        self,
+        action: str,
+        *,
+        operator: OperatorContext | None = None,
+    ) -> dict[str, Any] | None:
         """Check mission-level authorization. Returns deny dict if denied, None if allowed."""
-        if self.control_policy is None or self.operator is None:
+        resolved_operator = operator or self.operator
+        if self.control_policy is None or resolved_operator is None:
             return None
-        decision = self.control_policy.evaluate(self.operator, action)
+        decision = self.control_policy.evaluate(resolved_operator, action)
         if decision.status == "deny":
             return {
                 "status": "denied",
-                "message": f"Operator {self.operator.operator_id} lacks required scope: {action}",
+                "message": (
+                    f"Operator {resolved_operator.operator_id} lacks required scope: "
+                    f"{action}"
+                ),
                 "decision": decision.to_dict(),
             }
         return None
@@ -2306,11 +2315,15 @@ class MissionAgent:
         action: str,
         risk_level: str,
         command: str,
+        operator: OperatorContext | None = None,
     ) -> dict[str, Any]:
         """Create an approval request for a high-risk mission action."""
         if self.approval_store is None:
             return {"status": "not_configured"}
-        operator_id = self.operator.operator_id if self.operator else "unknown"
+        resolved_operator = operator or self.operator
+        operator_id = (
+            resolved_operator.operator_id if resolved_operator is not None else "unknown"
+        )
         request = self.approval_store.create(
             mission_id=mission_id,
             action=action,
@@ -2351,14 +2364,18 @@ class MissionAgent:
         *,
         decision: str,
         reason: str | None = None,
+        operator: OperatorContext | None = None,
     ) -> dict[str, Any]:
         """Decide (approve/deny) a pending approval request."""
         if self.approval_store is None:
             return {"status": "not_configured"}
-        deny = self._authorize("mission.approve")
+        deny = self._authorize("mission.approve", operator=operator)
         if deny is not None:
             return {**deny, "status": "denied"}
-        operator_id = self.operator.operator_id if self.operator else "unknown"
+        resolved_operator = operator or self.operator
+        operator_id = (
+            resolved_operator.operator_id if resolved_operator is not None else "unknown"
+        )
         now = datetime.now(timezone.utc).isoformat()
         if decision == "approve":
             result = self.approval_store.approve(request_id, decided_by=operator_id, decided_at=now)

@@ -33,6 +33,8 @@ from fireclaw_core.provider.provider import (
 )
 from fireclaw_core.task.task_contract import StructuredRobotTask
 
+_TEST_IMAGE_ID = "sha256:" + ("a" * 64)
+
 
 class SequencePolicy:
     def __init__(self, decisions):
@@ -79,6 +81,7 @@ def _profile(tmp_path: Path, *, role: str) -> DeploymentProfile:
             enabled=True,
             workspace_root=tmp_path / role,
             image="fireclaw-sim:test",
+            image_digest=_TEST_IMAGE_ID,
         ),
     )
 

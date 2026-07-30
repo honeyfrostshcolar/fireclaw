@@ -89,15 +89,25 @@ hook、审批、安全门、沙箱执行和审计。
 - `simulation`：主控和 Robot Agent 可获得 `computer_list_files`、
   `computer_read_file`、`computer_write_file`、`computer_exec`。文件访问限制在
   角色专属 workspace；进程只在 Docker 内运行，默认无网络、无特权、无宿主
-  shell 回退。
+  shell 回退。每次执行使用命名容器，超时、取消和异常都会强制清理；输出在
+  读取过程中限制字节数，镜像标签必须绑定不可变 Docker image ID。
 - `real`：进程、宿主管理、凭据访问和直接硬件类 Agent Tool 不暴露；受限写入
   需要对最终工具名和参数哈希的精确授权。物理动作不进入通用 Agent Tool
   runtime，仍通过 Physical Skill、capability policy、`SafetyGate` 和执行授权。
 - 通用计算机工具的结果只能作为 advisory 上下文，不能伪装成传感器事实或覆盖
   当前状态快照。
+- 使用 `ros1` adapter 的 Robot Agent 还可获得 `ros_topic_list`、
+  `ros_topic_info`、`ros_topic_sample`、`ros_topic_rate`、`tf_lookup`、
+  `move_base_status` 和 `navigation_diagnostics`。这些工具只读、限时、限样本、
+  限输出字节，并受 topic/frame/action 白名单约束；Mission Agent 不直接获得
+  这些本地 ROS 工具。
 
 配置、威胁边界和调用流程见
-[`docs/architecture/deployment-tool-policy.md`](docs/architecture/deployment-tool-policy.md)。
+[`docs/architecture/deployment-tool-policy.md`](docs/architecture/deployment-tool-policy.md)
+和
+[`docs/architecture/docker-sandbox-lifecycle-security.md`](docs/architecture/docker-sandbox-lifecycle-security.md)
+、
+[`docs/architecture/ros-diagnostic-tools.md`](docs/architecture/ros-diagnostic-tools.md)。
 
 The framework remains research and integration software, not a certified
 firefighting control system. Real ROS1 transport exists as a configuration-driven
@@ -195,6 +205,24 @@ For the real ROS1 adapter skeleton, provide a JSON config:
     "interface": "service",
     "name": "/fireclaw/fireclaw-01/emergency_stop",
     "type": "std_srvs/Trigger"
+  },
+  "diagnostics": {
+    "enabled": true,
+    "topic_allowlist": [
+      "/scan",
+      "/odom",
+      "/tf",
+      "/tf_static",
+      "/cmd_vel",
+      "/move_base",
+      "/move_base/*"
+    ],
+    "frame_allowlist": ["map", "odom", "base_link", "base_footprint"],
+    "action_allowlist": ["/move_base"],
+    "max_topics": 100,
+    "max_samples": 3,
+    "max_timeout_seconds": 3.0,
+    "max_output_bytes": 32768
   }
 }
 ```
@@ -210,6 +238,13 @@ Then run doctor against it:
 ```
 
 The `ros1` adapter loads robot-specific endpoint config without importing ROS at startup. By default, transport is disabled and actions return `not_configured`. Set `transport.enabled: true` only in a reviewed robot-specific config to make the adapter import `rospy`/`actionlib` and call ROS1 topic, service, or action endpoints.
+
+ROS diagnostics are independent of physical transport enablement. When the
+Robot Agent loop is enabled, the robot-local trusted backend may execute only
+the fixed read commands behind the seven diagnostic Tool contracts. The
+Gateway process must run in a sourced ROS1 environment that can reach the
+intended ROS master. Disabling `diagnostics.enabled` removes all seven tools
+from the Robot Agent projection.
 
 The same config can be written as YAML using `remap`. This is the preferred shape for robot teams because it exposes the action-to-ROS1 binding directly:
 
@@ -401,6 +436,18 @@ cp fireclaw.example.toml fireclaw.toml
 .venv/bin/python -m fireclaw_core serve --config fireclaw.toml
 ```
 
+Both long-running Gateways use a fixed canonical runtime root rather than the
+directory from which the shell happened to launch them. Configure
+`[runtime].root_dir`, pass `--runtime-root`, or set an absolute
+`FIRECLAW_HOME`; otherwise a config-backed process uses the config directory
+and a config-less process uses `~/.fireclaw`.
+
+Mission and Robot computer Tools receive separate dedicated writable
+workspaces. Repository roots, source/plugin/Skill directories, Home credential
+directories, system paths, symlink escapes, and paths outside the role's
+allowed workspace root are rejected before Docker receives a bind mount. See
+[`runtime-workspace-path-security.md`](docs/architecture/runtime-workspace-path-security.md).
+
 In profile-driven mode, the profile chooses the adapter and ROS config; `dry_run` chooses whether the adapter may send transport commands. Robot profiles may include sensor discovery rules, but runtime sensor availability comes from verified adapter state. In ROS1/Gazebo, a topic must exist, match a sensor rule, and publish a recent message before the corresponding sensor enters `RobotState.available_sensors`. Use `--real-run` to override the dry-run default when ROS/Gazebo or robot hardware is ready:
 
 ```bash
@@ -586,7 +633,12 @@ curl -X POST http://127.0.0.1:8765/emergency-stop \
 
 Emergency stop is stronger than normal task cancellation. It closes persistent resource admission before requesting cancellation, records dedicated emergency-stop audit events, and calls the robot adapter's `emergency_stop(...)` hook. The closed admission state survives Gateway restart. Mock adapters only update local state; a real ROS1 profile must explicitly map the hook to the reviewed robot emergency-stop topic, service, action, or SDK call.
 
-Cancellation is cooperative at the task/executor boundary. FireClaw records `task.cancel_requested` immediately and stops before starting the next skill. For subprocess-backed skills, the cancellation signal is also passed into `SubprocessSkillRunner`, which terminates the active child process and kills it if it does not exit promptly. In-process skills still return cooperatively, and real ROS1 profiles must map this same request to robot action cancellation where available.
+Cancellation is cooperative at the task/executor boundary. FireClaw records
+`task.cancel_requested` immediately and stops before starting the next Tool.
+Legacy executable manifests run only in the bounded Docker process sandbox;
+their timeout is enforced by that boundary and cancellation prevents further
+Tool dispatch. In-process Tools still return cooperatively, and real ROS1
+profiles must map cancellation to the robot action interface where available.
 
 The robot Gateway uses one SQLite WAL database as the authoritative runtime
 store for task transitions, events, loop checkpoints, approval requests,
@@ -618,9 +670,40 @@ curl 'http://127.0.0.1:8765/memory/recent?session_id=operator-a&limit=5'
 curl 'http://127.0.0.1:8765/events/recent?session_id=operator-a&limit=20'
 ```
 
-Gateway binds to localhost by default and supports an optional bearer API token.
-Do not expose it directly on a public network; production deployment still
-requires reviewed network policy, secret management, and TLS termination.
+Gateway binds to localhost by default. Tokenless access is accepted only from
+the loopback interface and becomes the fixed server-owned
+`local-loopback-operator`; any non-loopback bind fails before listening unless
+a bearer token is configured. A valid shared token becomes the fixed
+`gateway-shared-token` principal. `X-Operator-Id`, `X-Operator-Scopes`, and
+request-body `operator` fields are never authorization inputs.
+
+Remote listeners additionally require TLS; remote clients reject plaintext
+HTTP before sending credentials. HTTPS validates the CA chain and hostname,
+and both Gateways support optional mTLS. TLS initialization failures stop
+startup instead of falling back to HTTP.
+
+Prefer `FIRECLAW_GATEWAY_TOKEN` for the Mission Gateway and
+`FIRECLAW_ROBOT_GATEWAY_TOKEN` for Mission-to-Robot Gateway calls. Even on
+loopback, configure a token for real-robot deployments.
+
+Both Gateways apply the same bounded network-admission pipeline before
+business dispatch: strict Host/Origin validation, request-header and body-read
+timeouts, a pre-thread total/per-IP connection budget, failed-authentication
+rate limiting, and an early 1 MiB request-body limit. SSE streams have separate
+total/per-IP connection budgets, bounded subscriber queues, and write
+timeouts; a slow subscriber is disconnected instead of buffering without
+limit. Configure these values in `[network]`. Authenticated `/state` and
+`/fleet/doctor` responses expose the current admission-policy snapshot and SSE
+usage.
+
+Do not expose either Gateway directly on a public network. Process-local
+limits reset after restart and see the reverse proxy as the client unless that
+proxy enforces its own trusted-client policy, so production still requires
+firewalling, proxy-level connection/rate limits, and secret management. See
+[`gateway-authentication.md`](docs/architecture/gateway-authentication.md) and
+[`gateway-secure-transport.md`](docs/architecture/gateway-secure-transport.md),
+and
+[`gateway-network-abuse-controls.md`](docs/architecture/gateway-network-abuse-controls.md).
 
 ## Mission Coordinator / Robot Agent Contract
 
@@ -630,7 +713,7 @@ long-running Robot Agents and calls their local FireClaw Gateways:
 
 ```text
 FireClaw Mission Coordinator
-  -> Robot Agent A: http://robot-a:8765
+  -> Robot Agent A: https://robot-a:8765
   -> Robot Agent B: http://robot-b:8765
 ```
 
@@ -1528,7 +1611,11 @@ LLM 可见参数应限于任务级变量或经过验证的命名 profile。机�
 两个目录都不是新的 registry。Tool 和其他贡献仍由
 `FireClawPluginHost` 统一拥有和激活。现有 `.skill.json` 和
 `workspace_skills_dir` 是把可执行 Tool 称为 Skill 的 legacy compatibility
-API；新设计不得延续该含义。
+API；新设计不得延续该含义。该兼容加载器只允许在 `simulation` deployment
+profile 中注册，并且必须通过配置了镜像的 `ComputerSandbox`。`real` 模式、
+未启用沙箱、无镜像、Tool allowlist/denylist 拒绝时都不会注册该 Tool。
+详细边界见
+[`docs/architecture/legacy-executable-tool-sandbox.md`](docs/architecture/legacy-executable-tool-sandbox.md)。
 
 ### Adapter Capabilities v1
 
@@ -1638,7 +1725,7 @@ FireClaw serializes skill metadata into provider-agnostic tool schemas before se
     }
   },
   "x-fireclaw": {
-    "runtime": "subprocess",
+    "runtime": "sandboxed_subprocess",
     "dry_run_only": true,
     "max_attempts": 1,
     "idempotent": true,
@@ -1700,17 +1787,19 @@ The core package should stay lightweight. It should not directly depend on CUDA,
 
 Future heavy algorithms should be exposed as atomic Tools through explicit
 runtime adapters and grouped by Plugins. Agent workflows that coordinate
-those Tools belong in Skills. Supported runtime patterns include:
+those Tools belong in Skills. Plugin adapters may implement runtime patterns
+such as:
 
 - `in_process` for lightweight Python dry-run skills;
-- `subprocess` for scripts or isolated Python environments;
+- `sandboxed_subprocess` for legacy simulation-only executable manifests;
 - `external_conda` for CUDA/RL/deep-learning algorithms with their own dependencies;
 - `ros2` for robot-side ROS nodes;
 - `http` for local or remote model services.
 
 This keeps the FireClaw agent stable while allowing each robotics algorithm to keep its own dependency stack.
 
-The first external runtime adapter is `SubprocessSkillRunner`. It sends JSON inputs to a command on stdin and expects a JSON object on stdout:
+The compatibility external runtime adapter is `SubprocessSkillRunner`. It
+sends JSON inputs to a command on stdin and expects a JSON object on stdout:
 
 ```json
 {
@@ -1721,7 +1810,9 @@ The first external runtime adapter is `SubprocessSkillRunner`. It sends JSON inp
 }
 ```
 
-This is the intended bridge for early CUDA/RL algorithms that live in separate Python or conda environments.
+Despite its legacy name, it has no host-process implementation. It delegates
+only to `ComputerSandbox`, which starts the fixed Docker command assembled by
+the trusted host.
 
 Legacy subprocess Tools can also be loaded from JSON manifests under
 `skills/**/*.skill.json`:
@@ -1731,7 +1822,7 @@ Legacy subprocess Tools can also be loaded from JSON manifests under
   "name": "rl_navigation",
   "description": "Runs an isolated RL navigation policy.",
   "runtime": "subprocess",
-  "command": ["/path/to/conda/env/bin/python", "run_policy.py"],
+  "command": ["{python}", "run_policy.py"],
   "timeout_seconds": 30,
   "dry_run_only": true,
   "max_attempts": 1,
@@ -1751,7 +1842,9 @@ Legacy subprocess Tools can also be loaded from JSON manifests under
 }
 ```
 
-The `command` field must be a list of strings, not a shell command string. This avoids accidental shell parsing and keeps skill execution explicit.
+The `command` field must be a list of strings, not a shell command string.
+`{python}` resolves to `python3` inside the configured container, not the
+FireClaw host interpreter.
 
 Manifest metadata is part of the executable Tool contract:
 
@@ -1759,20 +1852,26 @@ Manifest metadata is part of the executable Tool contract:
 - `idempotent` must be `true` when `max_attempts > 1`.
 - `required_sensors` lists sensor assumptions the planner or safety gate can later inspect.
 - `failure_categories` documents expected failure modes.
-- `allow_real_robot=true` is only valid when `dry_run_only=false`.
+- `dry_run_only` must be `true`.
+- `allow_real_robot` must be `false`; real capabilities require a Plugin Tool
+  backed by a trusted robot Adapter.
 - `risk_level` must be one of `low`, `medium`, `high`, or `critical`.
 - `input_schema` declares the JSON object inputs a planner should provide.
 
 These fields are exposed by skill listing commands and recorded in agent-visible metadata.
 
-Commands run with the manifest directory as the working directory. For example, `skills/examples/echo_policy.skill.json` launches:
+Before registration, regular files in the manifest directory are copied into
+a content-addressed directory below the sandbox workspace. Symlinks, special
+files, oversized files, and oversized directories are rejected. The command
+runs with that staged directory as its container working directory. For
+example, `skills/examples/echo_policy.skill.json` declares:
 
 ```json
 {
   "name": "echo_policy",
   "description": "Example external subprocess skill for algorithm wrappers.",
   "runtime": "subprocess",
-  "command": ["../../.venv/bin/python", "echo_policy.py"],
+  "command": ["{python}", "echo_policy.py"],
   "timeout_seconds": 5,
   "dry_run_only": true,
   "max_attempts": 1,
@@ -1788,12 +1887,24 @@ Commands run with the manifest directory as the working directory. For example, 
 }
 ```
 
-The wrapper script reads JSON from stdin and writes JSON to stdout. This pattern lets CUDA/RL skills point to a specific interpreter, such as `/path/to/conda/env/bin/python`, without importing those heavy dependencies into `fireclaw_core`.
+The wrapper script reads JSON from stdin and writes JSON to stdout. It can use
+only dependencies present in the configured sandbox image. The container gets
+no FireClaw environment variables, ROS socket, host filesystem, devices, or
+network unless a reviewed sandbox profile explicitly adds a supported
+capability. Current profiles support only `none` or `bridge` networking and
+default to `none`.
 
-Workspace skill loading is enabled by default in the CLI:
+The compatibility CLI still discovers workspace manifests by default, but
+without an explicit simulation deployment profile and process sandbox they
+fail closed and appear in `skill_load_errors`. `fireclaw doctor` uses
+inspection-only loading and never stages or runs them:
 
 ```bash
-.venv/bin/python -m fireclaw_core "你有哪些技能" --skills-dir skills
+.venv/bin/python -m fireclaw_core "你有哪些技能" \
+  --skills-dir skills \
+  --legacy-skill-sandbox-image fireclaw-agent-sandbox:local \
+  --legacy-skill-sandbox-image-digest sha256:<docker-image-id> \
+  --legacy-skill-sandbox-root data/fireclaw-sandbox/legacy-agent-cli
 ```
 
 Use `--no-workspace-skills` to run with built-in skills only.
@@ -1801,7 +1912,8 @@ Use `--no-workspace-skills` to run with built-in skills only.
 ## Direct Executable Tool Invocation (Legacy Skill Command)
 
 Registered executable Tools can be invoked directly from natural-language
-commands. The CLI still uses legacy `skill` wording:
+commands after the simulation sandbox options above have been configured. The
+CLI still uses legacy `skill` wording:
 
 ```bash
 .venv/bin/python -m fireclaw_core "运行 echo_policy"
@@ -2033,3 +2145,12 @@ FireClaw can claim **simulator-level embodied-agent experiment readiness** when 
 FireClaw cannot claim real firefighting robot validation until a ROS1 high-fidelity or hardware proof run produces the required deployment artifacts.
 
 The simulator eval emits a `doctor-report.json` describing the eval run's health, making the proof bundle acceptance chain self-contained without requiring a separate doctor invocation. Real firefighting robot validation still requires a ROS1 hardware or high-fidelity simulation doctor report — the simulator doctor report documents eval-level health only.
+部署前可以运行只读安全审计：
+
+```bash
+fireclaw security-audit --config fireclaw.toml
+```
+
+审计会检查 Gateway 暴露与认证、TLS、运行目录和文件权限、sandbox/Tool
+策略、旧版可执行清单以及插件来源。详细说明见
+[`docs/architecture/security-audit.md`](docs/architecture/security-audit.md)。

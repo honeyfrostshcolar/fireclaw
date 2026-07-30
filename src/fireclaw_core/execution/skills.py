@@ -25,7 +25,10 @@ from fireclaw_core.execution.builtin_physical_skills import (
     SEARCH_OUTPUT_SCHEMA,
     iter_builtin_physical_skills,
 )
-from fireclaw_core.execution.runtime import SubprocessSkillRunner
+from fireclaw_core.execution.runtime import (
+    SandboxedSkillExecutor,
+    SubprocessSkillRunner,
+)
 from fireclaw_core.execution.skill_plugin import (
     PhysicalSkillPlugin,
     validate_object_schema,
@@ -169,6 +172,7 @@ class SkillRegistry:
                 if skill.physical_plugin is not None
                 else str(skill.metadata.get("source") or "skill")
             ),
+            trust_level="trusted",
         )
 
     def register_plugin(
@@ -191,6 +195,7 @@ class SkillRegistry:
                 name=plugin.label,
                 description=plugin.description,
                 source="physical_skill",
+                trust_level="trusted",
             )
         self.register(skill, replace=replace)
         return skill
@@ -335,9 +340,9 @@ def create_subprocess_skill(
     name: str,
     description: str,
     command: list[str],
+    executor: SandboxedSkillExecutor,
     timeout_seconds: float = 30.0,
-    cwd: str | Path | None = None,
-    env: dict[str, str] | None = None,
+    cwd: str = ".",
     dry_run_only: bool = True,
     max_attempts: int = 1,
     idempotent: bool = False,
@@ -353,15 +358,15 @@ def create_subprocess_skill(
 ) -> Skill:
     runner = SubprocessSkillRunner(
         command=command,
+        executor=executor,
         timeout_seconds=timeout_seconds,
         cwd=cwd,
-        env=env or {},
     )
     return Skill(
         name=name,
         description=description,
         handler=runner.run,
-        runtime="subprocess",
+        runtime="sandboxed_subprocess",
         dry_run_only=dry_run_only,
         max_attempts=max_attempts,
         idempotent=idempotent,

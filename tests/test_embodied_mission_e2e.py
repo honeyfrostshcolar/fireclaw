@@ -134,7 +134,7 @@ def _json_request(
         f"{base_url}{path}",
         data=data,
         method=method,
-        headers={"Content-Type": "application/json", "X-Operator-Scopes": "admin"},
+        headers={"Content-Type": "application/json"},
     )
     with request.urlopen(req, timeout=10) as response:
         return response.status, json.loads(response.read().decode("utf-8"))

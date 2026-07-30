@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 from urllib import request
@@ -9,7 +8,13 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
-from fireclaw_core.gateway.method_scopes import MEMORY_REPLICATION_SCOPE
+from fireclaw_core.gateway.transport import (
+    DEFAULT_GATEWAY_RESPONSE_BYTES,
+    GatewayHttpTransport,
+    GatewayTlsClientConfig,
+    read_bounded_gateway_response,
+    validate_gateway_response_limit,
+)
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry, TERMINAL_SUBAGENT_STATUSES
 
 
@@ -29,12 +34,22 @@ class RobotSubagentClient:
         registry: JsonlSubagentRegistry | None = None,
         replication_identity: Any | None = None,
         replication_key_provider: Any | None = None,
+        tls: GatewayTlsClientConfig | None = None,
+        allow_plaintext_loopback: bool = True,
+        max_response_bytes: int = DEFAULT_GATEWAY_RESPONSE_BYTES,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.api_token = api_token
         self.registry = registry
         self.replication_identity = replication_identity
         self.replication_key_provider = replication_key_provider
+        self.max_response_bytes = validate_gateway_response_limit(
+            max_response_bytes
+        )
+        self._transport = GatewayHttpTransport(
+            tls,
+            allow_plaintext_loopback=allow_plaintext_loopback,
+        )
 
     def get_state(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         return self._request_json("GET", entry.base_url, "/state")
@@ -55,8 +70,9 @@ class RobotSubagentClient:
             payload["session_id"] = session_id
         if dedupe_key is not None:
             payload["dedupe_key"] = dedupe_key
-        if operator is not None:
-            payload["operator"] = operator
+        # Retain the argument for source compatibility, but never transmit a
+        # caller-declared operator identity across the Gateway trust boundary.
+        _ = operator
         if mission is not None:
             payload["mission"] = mission
         if structured_task is not None:
@@ -111,8 +127,7 @@ class RobotSubagentClient:
         operator: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        if operator is not None:
-            payload["operator"] = operator
+        _ = operator
         result = self._request_json("POST", entry.base_url, f"/tasks/{task_id}/cancel", payload)
         result.setdefault("robot_id", entry.robot_id)
 
@@ -156,10 +171,23 @@ class RobotSubagentClient:
             runtime_mode=runtime_mode,
         )
         try:
-            with request.urlopen(request_value, timeout=self.timeout_seconds) as response:
-                return _decode_json_response(response.read())
+            with self._transport.open(
+                request_value,
+                timeout=self.timeout_seconds,
+            ) as response:
+                return _decode_json_response(
+                    read_bounded_gateway_response(
+                        response,
+                        max_bytes=self.max_response_bytes,
+                    )
+                )
         except HTTPError as exc:
-            body = _decode_json_response(exc.read())
+            body = _decode_json_response(
+                read_bounded_gateway_response(
+                    exc,
+                    max_bytes=self.max_response_bytes,
+                )
+            )
             body.setdefault("status", "error")
             body.setdefault("http_status", exc.code)
             return body
@@ -205,7 +233,6 @@ class RobotSubagentClient:
         )
         headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "X-Operator-Scopes": MEMORY_REPLICATION_SCOPE,
             REPLICATION_AUTH_HEADER: encode_auth_header(auth),
         }
         if self.api_token is not None:
@@ -236,14 +263,10 @@ class RobotSubagentClient:
         base_url: str,
         path: str,
         payload: dict[str, Any] | None = None,
-        *,
-        scopes: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
-        request_scopes = {"admin"} if scopes is None else {str(scope) for scope in scopes}
         headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "X-Operator-Scopes": ",".join(sorted(request_scopes)),
         }
         if self.api_token is not None:
             headers["Authorization"] = f"Bearer {self.api_token}"
@@ -254,10 +277,23 @@ class RobotSubagentClient:
             headers=headers,
         )
         try:
-            with request.urlopen(req, timeout=self.timeout_seconds) as response:
-                return _decode_json_response(response.read())
+            with self._transport.open(
+                req,
+                timeout=self.timeout_seconds,
+            ) as response:
+                return _decode_json_response(
+                    read_bounded_gateway_response(
+                        response,
+                        max_bytes=self.max_response_bytes,
+                    )
+                )
         except HTTPError as exc:
-            body = _decode_json_response(exc.read())
+            body = _decode_json_response(
+                read_bounded_gateway_response(
+                    exc,
+                    max_bytes=self.max_response_bytes,
+                )
+            )
             body.setdefault("status", "error")
             body.setdefault("http_status", exc.code)
             return body

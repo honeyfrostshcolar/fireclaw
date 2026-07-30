@@ -59,12 +59,27 @@ diagnostic and publishes none of the staged contributions. Disposal removes
 only contributions still owned by that plugin and invokes its cleanup
 callbacks in reverse order.
 
+Each record carries an explicit execution trust class:
+
+- `builtin`: executable contribution shipped with FireClaw;
+- `trusted`: in-process callable explicitly admitted by host code;
+- `sandboxed`: typed Tool wrapper that executes across the Docker boundary;
+- `descriptor_only`: non-callable metadata only.
+
+`descriptor_only` plugins cannot register Tools, Hooks, Harnesses, context
+engines, physical capabilities, or dispose callbacks. `sandboxed` plugins can
+register only Tool wrappers marked with the Docker execution boundary.
+Trusted in-process Tool handlers and Hooks have deadlines and JSON result byte
+limits; these are operational bounds, not a substitute for sandboxing.
+
 The old APIs are compatibility projections:
 
 - `PluginRuntime` projects descriptors and callable hooks;
 - `PhysicalSkillCatalog` projects unbound physical capabilities;
 - `SkillRegistry` projects executable tools bound to the current Adapter;
-- `load_workspace_skills(..., plugin_host=...)` contributes subprocess tools.
+- `load_workspace_skills(..., plugin_host=...)` contributes legacy process
+  Tools only after deployment policy allows `effect=process` with
+  `requires_sandbox=true`; execution uses the shared `ComputerSandbox`.
 
 Passing the same host makes these views share one ownership and conflict
 table. Existing callers can migrate incrementally without maintaining a
@@ -117,11 +132,13 @@ model-call behavior.
 
 ## Current Boundaries
 
-- Plugin discovery, package signatures, sandboxing, and isolated third-party
-  loading are not implemented.
+- Third-party package signatures and a general isolated plugin process are not
+  implemented. Untrusted executable contributions therefore fail closed;
+  legacy executable manifests are admitted only through Docker-backed Tool
+  wrappers.
 - Harness selection is explicit injection; provider/model compatibility
   probing is not yet a fleet-wide policy.
-- Tool permission provenance still needs the planned unified capability
-  policy pipeline.
+- Tool permission provenance is enforced through the unified capability
+  policy and exact execution-authorization pipeline.
 - Plugin Host and Agent Harness are engineering foundations, not standalone
   research contributions.

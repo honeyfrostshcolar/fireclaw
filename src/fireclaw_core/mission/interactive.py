@@ -4,6 +4,8 @@ import sys
 import time
 from typing import Any
 
+from fireclaw_core.gateway.auth import resolve_gateway_api_token
+from fireclaw_core.gateway.transport import GatewayTlsClientConfig
 from fireclaw_core.mission.mission_gateway_client import MissionGatewayClient
 
 TERMINAL_MISSION_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
@@ -32,8 +34,18 @@ def display_event(event: dict[str, Any]) -> None:
         print(f"[events] {robot_id}: {status}")
 
 
-def run_interactive(server_url: str = "http://127.0.0.1:8766", timeout: float = 30.0) -> None:
-    client = MissionGatewayClient(server_url, timeout=timeout)
+def run_interactive(
+    server_url: str = "http://127.0.0.1:8766",
+    timeout: float = 30.0,
+    api_token: str | None = None,
+    tls: GatewayTlsClientConfig | None = None,
+) -> None:
+    client = MissionGatewayClient(
+        server_url,
+        timeout=timeout,
+        api_token=resolve_gateway_api_token(api_token),
+        tls=tls,
+    )
     print("FireClaw Mission Console")
     print(f"Connected to {server_url}")
     print("Type 'help' for commands, 'quit' to exit.")

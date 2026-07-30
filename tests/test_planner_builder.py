@@ -7,6 +7,8 @@ import pytest
 from fireclaw_core.planner.planner_builder import build_planner
 from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
+_TEST_IMAGE_ID = "sha256:" + ("a" * 64)
+
 
 def test_build_planner_deterministic():
     planner = build_planner(planner_type="deterministic")
@@ -44,6 +46,7 @@ def test_build_planner_projects_simulation_computer_tools(tmp_path):
                 enabled=True,
                 workspace_root=tmp_path / "workspace",
                 image="fireclaw-agent-sim:test",
+                image_digest=_TEST_IMAGE_ID,
             ),
         ),
     )

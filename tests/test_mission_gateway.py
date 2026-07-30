@@ -8,6 +8,7 @@ from fireclaw_core.monitoring.stream_events import StreamEvent
 
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway.control import OperatorContext
+from fireclaw_core.gateway.network_security import GatewayNetworkPolicy
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
 from fireclaw_core.approval.approval_runtime import ApprovalRuntime
@@ -146,8 +147,13 @@ def _make_gateway(
     registry: RobotRegistry | None = None,
     subagent_client: FakeSubagentClient | None = None,
     api_token: str | None = None,
+    network: GatewayNetworkPolicy | None = None,
 ) -> MissionGateway:
-    config = MissionGatewayConfig(port=0, api_token=api_token)
+    config = MissionGatewayConfig(
+        port=0,
+        api_token=api_token,
+        network=network or GatewayNetworkPolicy(),
+    )
     return MissionGateway(
         config,
         mission_agent=mission_agent,
@@ -164,7 +170,7 @@ def _json_request(
     headers: dict | None = None,
 ) -> tuple[int, dict]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req_headers: dict[str, str] = {"Content-Type": "application/json", "X-Operator-Scopes": "admin"}
+    req_headers: dict[str, str] = {"Content-Type": "application/json"}
     if headers:
         req_headers.update(headers)
     req = request.Request(
@@ -538,6 +544,7 @@ def test_request_approval(tmp_path):
         assert status == 200
         assert body["status"] == "pending"
         assert "request" in body
+        assert body["request"]["requested_by"] == "local-loopback-operator"
         # Semantic action should be derived from command, not the dispatch "request"
         assert body["request"]["action"] == "enter burning building"
     finally:
@@ -664,6 +671,7 @@ def test_decide_approval(tmp_path):
         assert status == 200
         assert body["status"] == "decided"
         assert body["request"]["status"] == "approved"
+        assert body["request"]["decided_by"] == "local-loopback-operator"
     finally:
         gw.stop()
 
@@ -880,17 +888,40 @@ def test_auth_required_when_token_set():
     gw = _make_gateway(agent, api_token="secret-token")
     base = _start_gateway(gw)
     try:
-        # No auth header -> 401
-        status, body = _json_request(base, "GET", "/fleet/state")
+        # Self-declared identity and scopes cannot replace authentication.
+        status, body = _json_request(
+            base,
+            "GET",
+            "/fleet/state",
+            headers={
+                "X-Operator-Id": "attacker",
+                "X-Operator-Scopes": "admin",
+            },
+        )
         assert status == 401
         assert body["error"] == "Unauthorized"
+
+        status, body = _json_request(
+            base,
+            "GET",
+            "/fleet/state",
+            headers={
+                "Authorization": "Bearer wrong-token",
+                "X-Operator-Scopes": "admin",
+            },
+        )
+        assert status == 401
 
         # Correct token -> 200
         status, body = _json_request(
             base,
             "GET",
             "/fleet/state",
-            headers={"Authorization": "Bearer secret-token"},
+            headers={
+                "Authorization": "Bearer secret-token",
+                "X-Operator-Id": "attacker",
+                "X-Operator-Scopes": "state.read",
+            },
         )
         assert status == 200
     finally:
@@ -904,6 +935,37 @@ def test_auth_no_token_required():
     try:
         status, body = _json_request(base, "GET", "/fleet/state")
         assert status == 200
+    finally:
+        gw.stop()
+
+
+def test_auth_failures_are_rate_limited():
+    agent = _make_agent()
+    gw = _make_gateway(
+        agent,
+        api_token="secret-token",
+        network=GatewayNetworkPolicy(
+            auth_max_failures=2,
+            auth_exempt_loopback=False,
+        ),
+    )
+    base = _start_gateway(gw)
+    try:
+        headers = {"Authorization": "Bearer wrong-token"}
+        assert _json_request(
+            base, "GET", "/fleet/state", headers=headers
+        )[0] == 401
+        assert _json_request(
+            base, "GET", "/fleet/state", headers=headers
+        )[0] == 401
+        status, body = _json_request(
+            base,
+            "GET",
+            "/fleet/state",
+            headers=headers,
+        )
+        assert status == 429
+        assert body["error"] == "Too many authentication failures."
     finally:
         gw.stop()
 
@@ -949,7 +1011,7 @@ def test_post_invalid_json():
             f"{base}/missions",
             data=b"not-json",
             method="POST",
-            headers={"Content-Type": "application/json", "X-Operator-Scopes": "admin"},
+            headers={"Content-Type": "application/json"},
         )
         try:
             with request.urlopen(req, timeout=5):
@@ -967,23 +1029,20 @@ def test_post_body_too_large():
     gw = _make_gateway(agent)
     base = _start_gateway(gw)
     try:
-        from urllib.request import Request
+        from http.client import HTTPConnection
+        from urllib.parse import urlparse
 
-        # Body just over 1MB
-        big_body = json.dumps({"command": "x" * (1024 * 1024 + 1)}).encode("utf-8")
-        req = Request(
-            f"{base}/missions",
-            data=big_body,
-            method="POST",
-            headers={"Content-Type": "application/json", "X-Operator-Scopes": "admin"},
-        )
-        try:
-            with request.urlopen(req, timeout=5):
-                pass
-        except HTTPError as exc:
-            body = json.loads(exc.read().decode("utf-8"))
-            assert exc.code == 400
-            assert "too large" in body["message"].lower()
+        parsed = urlparse(base)
+        connection = HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+        connection.putrequest("POST", "/missions")
+        connection.putheader("Content-Length", str(1024 * 1024 + 1))
+        connection.endheaders()
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        connection.close()
+
+        assert response.status == 413
+        assert "too large" in body["message"].lower()
     finally:
         gw.stop()
 
@@ -1029,9 +1088,9 @@ def test_gateway_serve_forever_does_not_block_in_background():
 # ---------------------------------------------------------------------------
 
 
-def test_mission_sse_endpoint_requires_read_scope():
+def test_mission_sse_endpoint_rejects_forged_scope_without_authentication():
     agent = _make_agent()
-    gw = _make_gateway(agent)
+    gw = _make_gateway(agent, api_token="gateway-secret")
     base = _start_gateway(gw)
     try:
         req = request.Request(
@@ -1042,11 +1101,11 @@ def test_mission_sse_endpoint_requires_read_scope():
         try:
             with request.urlopen(req, timeout=2):
                 pass
-            assert False, "Expected HTTPError 403"
+            assert False, "Expected HTTPError 401"
         except HTTPError as exc:
-            assert exc.code == 403
+            assert exc.code == 401
             body = json.loads(exc.read().decode("utf-8"))
-            assert "Missing required scope" in body["message"]
+            assert body["error"] == "Unauthorized"
     finally:
         gw.stop()
 

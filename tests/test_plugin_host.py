@@ -33,6 +33,7 @@ def test_plugin_host_commits_owned_contributions_atomically() -> None:
         ),
         version="1.2.0",
         source="test",
+        trust_level="trusted",
     )
 
     assert host.get("tool", "inspect_state").owner_plugin_id == "plugin.alpha"
@@ -51,6 +52,7 @@ def test_plugin_host_rolls_back_whole_activation_on_conflict() -> None:
     host.activate(
         "plugin.owner",
         lambda api: api.register_tool(_Tool("shared_tool")),
+        trust_level="trusted",
     )
 
     def conflicting_registration(api) -> None:
@@ -58,7 +60,11 @@ def test_plugin_host_rolls_back_whole_activation_on_conflict() -> None:
         api.register_tool(_Tool("shared_tool"))
 
     with pytest.raises(PluginRegistrationError) as error:
-        host.activate("plugin.conflict", conflicting_registration)
+        host.activate(
+            "plugin.conflict",
+            conflicting_registration,
+            trust_level="trusted",
+        )
 
     assert host.get("service", "temporary-service") is None
     assert host.get("tool", "shared_tool").owner_plugin_id == "plugin.owner"
@@ -78,10 +84,12 @@ def test_plugin_host_dispose_removes_only_owned_contributions() -> None:
             api.register_tool(_Tool("alpha")),
             api.register_dispose(lambda: disposed.append("alpha")),
         ),
+        trust_level="trusted",
     )
     host.activate(
         "plugin.beta",
         lambda api: api.register_tool(_Tool("beta")),
+        trust_level="trusted",
     )
 
     host.dispose_plugin("plugin.alpha")
@@ -100,6 +108,7 @@ def test_plugin_host_rejects_unsupported_api_without_partial_state() -> None:
             "plugin.future",
             lambda api: api.register_tool(_Tool("future")),
             api_version="99",
+            trust_level="trusted",
         )
 
     assert host.get("tool", "future") is None
@@ -140,3 +149,33 @@ def test_legacy_registries_project_into_one_shared_host() -> None:
     ) is not None
     hooks = host.contributions("hook")
     assert hooks[0].owner_plugin_id == "fireclaw.test.context"
+
+
+def test_descriptor_only_plugin_cannot_register_executable_contributions() -> None:
+    host = FireClawPluginHost()
+
+    with pytest.raises(ValueError, match="register_data_service"):
+        host.activate(
+            "plugin.untrusted",
+            lambda api: api.register_tool(_Tool("unsafe")),
+            trust_level="descriptor_only",
+        )
+
+    assert host.get("tool", "unsafe") is None
+
+
+def test_descriptor_data_registration_never_accepts_a_plugin_callback() -> None:
+    host = FireClawPluginHost()
+    descriptor = {"plugin_id": "plugin.data", "capabilities": ["inspect"]}
+
+    record = host.register_data_service(
+        plugin_id="plugin.data",
+        service_id="plugin.data:descriptor",
+        value=descriptor,
+    )
+
+    assert record.trust_level == "descriptor_only"
+    assert (
+        host.get("service", "plugin.data:descriptor").value
+        is descriptor
+    )

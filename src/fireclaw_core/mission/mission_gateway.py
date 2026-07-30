@@ -2,21 +2,39 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import re
-from queue import Empty as QueueEmpty, Queue
+from queue import Empty as QueueEmpty, Full as QueueFull, Queue
 import threading
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from fireclaw_core.approval.approval_relay import ApprovalRelay
 from fireclaw_core.approval.approval_runtime import ApprovalRuntime
+from fireclaw_core.gateway.auth import (
+    AuthenticatedGatewayPrincipal,
+    authenticate_gateway_request,
+    validate_gateway_bind,
+)
 from fireclaw_core.gateway.method_scopes import authorize_method
+from fireclaw_core.gateway.network_security import (
+    GatewayNetworkPolicy,
+    GatewayRequestBodyError,
+    GatewayRequestGuard,
+    read_json_object_body,
+)
+from fireclaw_core.gateway.transport import (
+    GatewayTlsServerConfig,
+    create_gateway_http_server,
+    gateway_scheme,
+)
 
 from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent, TelemetryTracker
 
-from fireclaw_core.gateway.control import OperatorContext, operator_from_payload
+from fireclaw_core.gateway.control import OperatorContext
 from fireclaw_core.devtools.fleet_doctor import FleetDoctor
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.agent.robot_registry import RobotRegistry
@@ -31,9 +49,6 @@ from fireclaw_core.memory.reconciliation import (
 
 logger = logging.getLogger(__name__)
 
-
-class _BadRequestError(Exception):
-    """Raised when the request is malformed before JSON parsing."""
 
 MISSION_TRACE_RE = re.compile(r"^/missions/([^/]+)/trace$")
 MISSION_EVENTS_RE = re.compile(r"^/missions/([^/]+)/events$")
@@ -55,6 +70,8 @@ class MissionGatewayConfig:
     host: str = "127.0.0.1"
     port: int = 8766
     api_token: str | None = None
+    tls: GatewayTlsServerConfig = field(default_factory=GatewayTlsServerConfig)
+    network: GatewayNetworkPolicy = field(default_factory=GatewayNetworkPolicy)
 
 
 class MissionGateway:
@@ -74,7 +91,13 @@ class MissionGateway:
         memory_reconciler: EmbodiedMemoryReconciler | None = None,
         replication_security: Any | None = None,
     ) -> None:
+        self.process_working_directory = Path.cwd().resolve(strict=False)
         self.config = config
+        self._network_guard = GatewayRequestGuard(
+            config.network,
+            configured_host=config.host,
+            tls_enabled=config.tls.enabled,
+        )
         self.mission_agent = mission_agent
         self.registry = registry
         self.subagent_client = subagent_client or RobotSubagentClient()
@@ -94,14 +117,16 @@ class MissionGateway:
 
     @property
     def base_url(self) -> str:
+        scheme = gateway_scheme(self.config.tls)
         if self._server is not None:
             host, port = self._server.server_address
-            return f"http://{host}:{port}"
-        return f"http://{self.config.host}:{self.config.port}"
+            return f"{scheme}://{host}:{port}"
+        return f"{scheme}://{self.config.host}:{self.config.port}"
 
     def start(self) -> None:
         if self._server is not None:
             return
+        validate_gateway_bind(self.config.host, self.config.api_token)
         # Recover and start consolidation coordinator before accepting requests
         coordinator = self.mission_agent.consolidation_coordinator
         if coordinator is not None:
@@ -111,11 +136,17 @@ class MissionGateway:
             except Exception:
                 logger.warning("Failed to start consolidation coordinator", exc_info=True)
         handler_class = self._handler_class()
-        self._server = ThreadingHTTPServer((self.config.host, self.config.port), handler_class)
+        self._server = create_gateway_http_server(
+            (self.config.host, self.config.port),
+            handler_class,
+            tls=self.config.tls,
+            network_policy=self.config.network,
+        )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
     def serve_forever(self) -> None:
+        validate_gateway_bind(self.config.host, self.config.api_token)
         coordinator = self.mission_agent.consolidation_coordinator
         if coordinator is not None:
             try:
@@ -124,7 +155,12 @@ class MissionGateway:
             except Exception:
                 logger.warning("Failed to start consolidation coordinator", exc_info=True)
         handler_class = self._handler_class()
-        self._server = ThreadingHTTPServer((self.config.host, self.config.port), handler_class)
+        self._server = create_gateway_http_server(
+            (self.config.host, self.config.port),
+            handler_class,
+            tls=self.config.tls,
+            network_policy=self.config.network,
+        )
         self._server.serve_forever()
 
     def stop(self) -> None:
@@ -565,6 +601,8 @@ class MissionGateway:
         self,
         mission_id: str,
         payload: dict[str, Any],
+        *,
+        operator: OperatorContext | None = None,
     ) -> dict[str, Any]:
         action = payload.get("action")
         if action == "request":
@@ -576,6 +614,7 @@ class MissionGateway:
                 action=semantic_action,
                 risk_level=payload.get("risk_level", "low"),
                 command=payload.get("command", ""),
+                operator=operator,
             )
             if result.get("status") == "pending":
                 self.publish_event(
@@ -667,6 +706,7 @@ class MissionGateway:
                 request_id,
                 decision=payload.get("decision", ""),
                 reason=payload.get("reason"),
+                operator=operator,
             )
             if result.get("status") == "decided":
                 self.publish_event(
@@ -718,6 +758,7 @@ class MissionGateway:
             ),
             "results": recovery,
         }
+        summary["network_admission"] = self._network_guard.snapshot()
         return summary
 
     def publish_event(
@@ -749,135 +790,226 @@ class MissionGateway:
 
         class MissionRequestHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                if not gateway._check_auth(self):
+                if not gateway._admit_request(self, method="GET"):
+                    return
+                principal = gateway._authenticate_request(self)
+                if principal is None:
                     return
                 parsed = urlparse(self.path)
-                scopes = _extract_scopes_from_header(self)
-                result = authorize_method(f"GET {parsed.path}", scopes)
+                result = authorize_method(
+                    f"GET {parsed.path}",
+                    set(principal.gateway_scopes),
+                )
                 if not result.allowed:
                     gateway._write_error(
                         self, HTTPStatus.FORBIDDEN,
                         f"Missing required scope: {result.missing_scope}",
                     )
                     return
-                # SSE long-lived response — handle before normal dispatch
                 stream_match = MISSION_EVENTS_STREAM_RE.match(parsed.path)
                 if stream_match:
-                    mission_id = stream_match.group(1)
-                    self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Connection", "keep-alive")
-                    self.end_headers()
-                    # Cursor replay: parse Last-Event-ID header or after_sequence query param
-                    after_seq: int | None = None
-                    last_event_id = self.headers.get("Last-Event-ID")
-                    if last_event_id is not None:
-                        try:
-                            after_seq = int(last_event_id)
-                        except ValueError:
-                            after_seq = None
-                    else:
-                        qs = parse_qs(parsed.query)
-                        raw = qs.get("after_sequence", [None])[0]
-                        if raw is not None:
-                            try:
-                                after_seq = int(raw)
-                            except ValueError:
-                                after_seq = None
-                    # Track sequences already sent to avoid duplicates
-                    sent_sequences: set[int] = set()
-                    if after_seq is not None:
-                        # Replay recent mission-filtered events from EventBus
-                        for evt in gateway._event_bus.get_recent_events(after_sequence=after_seq):
-                            if evt.mission_id == mission_id or evt.mission_id is None:
-                                try:
-                                    self.wfile.write(evt.to_sse_format().encode("utf-8"))
-                                    self.wfile.flush()
-                                    sent_sequences.add(evt.sequence)
-                                except Exception:
-                                    return
-                    else:
-                        # Send historical mission events as initial batch (no cursor)
-                        try:
-                            history = gateway.get_mission_events(mission_id, limit=200)
-                            for evt in history.get("events", []):
-                                se = StreamEvent(
-                                    event_type=evt.get("type", "unknown"),
-                                    source="mission-history",
-                                    mission_id=mission_id,
-                                    payload=evt.get("payload", evt),
-                                )
-                                self.wfile.write(se.to_sse_format().encode("utf-8"))
-                            self.wfile.flush()
-                        except Exception:
-                            logging.getLogger(__name__).debug(
-                                "Failed to send historical events for mission %s",
-                                mission_id, exc_info=True,
-                            )
-                    # Stream live events (filtered by mission_id)
-                    event_queue: Queue[StreamEvent | None] = Queue()
-                    def _on_event(event: StreamEvent) -> None:
-                        if event.mission_id == mission_id or event.mission_id is None:
-                            event_queue.put(event)
-                    token = gateway._event_bus.subscribe(_on_event)
-                    try:
-                        while True:
-                            try:
-                                event = event_queue.get(timeout=15.0)
-                                if event is None:
-                                    break
-                                if event.sequence in sent_sequences:
-                                    continue
-                                self.wfile.write(event.to_sse_format().encode("utf-8"))
-                                self.wfile.flush()
-                            except QueueEmpty:
-                                try:
-                                    self.wfile.write(b": heartbeat\n\n")
-                                    self.wfile.flush()
-                                except Exception:
-                                    break
-                            except Exception:
-                                break
-                    finally:
-                        gateway._event_bus.unsubscribe(token)
+                    gateway._stream_mission_events(
+                        self,
+                        parsed,
+                        mission_id=stream_match.group(1),
+                    )
                     return
-                gateway._handle_get(self)
+                gateway._handle_get(self, principal=principal)
 
             def do_POST(self) -> None:
-                if not gateway._check_auth(self):
+                if not gateway._admit_request(self, method="POST"):
+                    return
+                principal = gateway._authenticate_request(self)
+                if principal is None:
                     return
                 parsed = urlparse(self.path)
-                scopes = _extract_scopes_from_header(self)
-                result = authorize_method(f"POST {parsed.path}", scopes)
+                result = authorize_method(
+                    f"POST {parsed.path}",
+                    set(principal.gateway_scopes),
+                )
                 if not result.allowed:
                     gateway._write_error(
                         self, HTTPStatus.FORBIDDEN,
                         f"Missing required scope: {result.missing_scope}",
                     )
                     return
-                gateway._handle_post(self)
+                gateway._handle_post(self, principal=principal)
 
             def log_message(self, format: str, *args: object) -> None:
                 return
 
         return MissionRequestHandler
 
-    def _check_auth(self, handler: BaseHTTPRequestHandler) -> bool:
-        if self.config.api_token is None:
+    def _admit_request(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        method: str,
+    ) -> bool:
+        server_host, server_port = handler.server.server_address
+        decision = self._network_guard.admit(
+            method=method,
+            headers=handler.headers,
+            server_host=str(server_host),
+            server_port=int(server_port),
+        )
+        if decision.allowed:
             return True
-        auth_header = handler.headers.get("Authorization", "")
-        if auth_header == f"Bearer {self.config.api_token}":
-            return True
+        handler.close_connection = True
+        self._write_error(handler, decision.status, decision.message)
+        return False
+
+    def _authenticate_request(
+        self,
+        handler: BaseHTTPRequestHandler,
+    ) -> AuthenticatedGatewayPrincipal | None:
+        client_host = str(handler.client_address[0])
+        rate_limit = self._network_guard.check_auth(client_host)
+        if not rate_limit.allowed:
+            body = json.dumps(
+                {"error": "Too many authentication failures."},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            handler.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+            handler.send_header(
+                "Retry-After",
+                str(rate_limit.retry_after_seconds),
+            )
+            handler.send_header("Content-Type", "application/json; charset=utf-8")
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+            return None
+        result = authenticate_gateway_request(
+            authorization_header=handler.headers.get("Authorization"),
+            client_host=client_host,
+            api_token=self.config.api_token,
+        )
+        if result.allowed and result.principal is not None:
+            self._network_guard.reset_auth_failures(client_host)
+            return result.principal
+        self._network_guard.record_auth_failure(client_host)
         body = json.dumps({"error": "Unauthorized"}, ensure_ascii=False).encode("utf-8")
         handler.send_response(HTTPStatus.UNAUTHORIZED)
+        handler.send_header("WWW-Authenticate", "Bearer")
         handler.send_header("Content-Type", "application/json; charset=utf-8")
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)
-        return False
+        return None
 
-    def _handle_get(self, handler: BaseHTTPRequestHandler) -> None:
+    def _stream_mission_events(
+        self,
+        handler: BaseHTTPRequestHandler,
+        parsed: Any,
+        *,
+        mission_id: str,
+    ) -> None:
+        client_host = str(handler.client_address[0])
+        if not self._network_guard.acquire_sse(client_host):
+            handler.close_connection = True
+            self._write_error(
+                handler,
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "SSE connection limit exceeded.",
+            )
+            return
+
+        connection = getattr(handler, "connection", None)
+        previous_timeout: float | None = None
+        if connection is not None and hasattr(connection, "settimeout"):
+            try:
+                previous_timeout = connection.gettimeout()
+            except (AttributeError, OSError):
+                previous_timeout = None
+            connection.settimeout(
+                self.config.network.sse_write_timeout_seconds
+            )
+
+        event_queue: Queue[StreamEvent] = Queue(
+            maxsize=self.config.network.sse_queue_size
+        )
+        overflowed = threading.Event()
+
+        def _on_event(event: StreamEvent) -> None:
+            if event.mission_id not in {mission_id, None}:
+                return
+            try:
+                event_queue.put_nowait(event)
+            except QueueFull:
+                overflowed.set()
+
+        token = self._event_bus.subscribe(_on_event)
+        try:
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header(
+                "Content-Type",
+                "text/event-stream; charset=utf-8",
+            )
+            handler.send_header("Cache-Control", "no-cache")
+            handler.send_header("Connection", "keep-alive")
+            handler.end_headers()
+
+            after_seq = _sse_after_sequence(handler, parsed)
+            sent_sequences: set[int] = set()
+            if after_seq is not None:
+                for event in self._event_bus.get_recent_events(
+                    after_sequence=after_seq
+                ):
+                    if event.mission_id not in {mission_id, None}:
+                        continue
+                    handler.wfile.write(
+                        event.to_sse_format().encode("utf-8")
+                    )
+                    handler.wfile.flush()
+                    sent_sequences.add(event.sequence)
+            else:
+                history = self.get_mission_events(mission_id, limit=200)
+                for value in history.get("events", []):
+                    event = StreamEvent(
+                        event_type=value.get("type", "unknown"),
+                        source="mission-history",
+                        mission_id=mission_id,
+                        payload=value.get("payload", value),
+                    )
+                    handler.wfile.write(
+                        event.to_sse_format().encode("utf-8")
+                    )
+                handler.wfile.flush()
+
+            last_write = time.monotonic()
+            while not overflowed.is_set():
+                timeout = max(0.1, 15.0 - (time.monotonic() - last_write))
+                try:
+                    event = event_queue.get(timeout=timeout)
+                except QueueEmpty:
+                    handler.wfile.write(b": heartbeat\n\n")
+                    handler.wfile.flush()
+                    last_write = time.monotonic()
+                    continue
+                if event.sequence in sent_sequences:
+                    continue
+                handler.wfile.write(event.to_sse_format().encode("utf-8"))
+                handler.wfile.flush()
+                sent_sequences.add(event.sequence)
+                last_write = time.monotonic()
+        except Exception:
+            return
+        finally:
+            self._event_bus.unsubscribe(token)
+            self._network_guard.release_sse(client_host)
+            if connection is not None and hasattr(connection, "settimeout"):
+                try:
+                    connection.settimeout(previous_timeout)
+                except OSError:
+                    pass
+
+    def _handle_get(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        principal: AuthenticatedGatewayPrincipal,
+    ) -> None:
         parsed = urlparse(handler.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -945,7 +1077,7 @@ class MissionGateway:
         audit_match = MISSION_MEMORY_AUDIT_RE.match(path)
         if audit_match:
             mission_id = audit_match.group(1)
-            scopes = _extract_scopes_from_header(handler)
+            scopes = principal.gateway_scopes
             try:
                 result = self.get_memory_audit(
                     mission_id,
@@ -962,9 +1094,15 @@ class MissionGateway:
 
         self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {path}")
 
-    def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
+    def _handle_post(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        principal: AuthenticatedGatewayPrincipal,
+    ) -> None:
         parsed = urlparse(handler.path)
         path = parsed.path
+        operator = principal.operator
         try:
             payload = self._read_json(handler)
 
@@ -976,7 +1114,7 @@ class MissionGateway:
                 result = self.submit_mission(
                     command,
                     session_id=_optional_string(payload, "session_id"),
-                    operator=operator_from_payload(payload.get("operator")),
+                    operator=operator,
                     use_scheduler=payload.get("use_scheduler", True),
                 )
                 status = _mission_submit_status(result)
@@ -987,7 +1125,7 @@ class MissionGateway:
                 try:
                     result = self.approve_reusable_knowledge(
                         payload,
-                        actor_id=_requester_id_from_header(handler),
+                        actor_id=principal.principal_id,
                     )
                 except ValueError as exc:
                     self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
@@ -1000,7 +1138,7 @@ class MissionGateway:
                 try:
                     result = self.revoke_reusable_knowledge(
                         knowledge_revoke_match.group(1),
-                        actor_id=_requester_id_from_header(handler),
+                        actor_id=principal.principal_id,
                         reason=str(payload.get("reason") or ""),
                     )
                 except KeyError as exc:
@@ -1018,7 +1156,7 @@ class MissionGateway:
                 try:
                     result = self.archive_memory(
                         mission_id,
-                        actor_id=_requester_id_from_header(handler),
+                        actor_id=principal.principal_id,
                         reason=str(payload.get("reason") or ""),
                     )
                 except (ValueError, RuntimeError) as exc:
@@ -1034,7 +1172,7 @@ class MissionGateway:
                 try:
                     result = self.delete_memory_audit(
                         mission_id,
-                        actor_id=_requester_id_from_header(handler),
+                        actor_id=principal.principal_id,
                         reason=str(payload.get("reason") or ""),
                         confirmation=str(payload.get("confirmation") or ""),
                     )
@@ -1083,8 +1221,8 @@ class MissionGateway:
                         mission_id,
                         name=name.strip(),
                         arguments=arguments,
-                        requester_id=_requester_id_from_header(handler),
-                        scopes=frozenset(_extract_scopes_from_header(handler)),
+                        requester_id=principal.principal_id,
+                        scopes=principal.gateway_scopes,
                     )
                 except (ValueError, RuntimeError) as exc:
                     self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
@@ -1102,7 +1240,7 @@ class MissionGateway:
                 mission_id = cancel_match.group(1)
                 result = self.cancel_mission(
                     mission_id,
-                    operator=payload.get("operator"),
+                    operator=operator.to_dict(),
                 )
                 status = HTTPStatus.NOT_FOUND if result.get("status") == "not_found" else HTTPStatus.OK
                 self._write_json(handler, status, result)
@@ -1111,40 +1249,25 @@ class MissionGateway:
             approvals_match = MISSION_APPROVALS_RE.match(path)
             if approvals_match:
                 mission_id = approvals_match.group(1)
-                result = self.handle_approval(mission_id, payload)
+                result = self.handle_approval(
+                    mission_id,
+                    payload,
+                    operator=principal.operator,
+                )
                 is_error = result.get("status") == "error"
                 status = HTTPStatus.BAD_REQUEST if is_error else HTTPStatus.OK
                 self._write_json(handler, status, result)
                 return
 
             self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {path}")
-        except _BadRequestError as exc:
-            self._write_error(handler, HTTPStatus.BAD_REQUEST, str(exc))
-        except json.JSONDecodeError:
-            self._write_error(handler, HTTPStatus.BAD_REQUEST, "Request body must be valid JSON.")
+        except GatewayRequestBodyError as exc:
+            self._write_error(handler, exc.status, str(exc))
         except Exception:
             logger.exception("Unhandled error in POST %s", path)
             self._write_error(handler, HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error.")
 
-    _MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MB
-
     def _read_json(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-        try:
-            length = int(handler.headers.get("Content-Length", "0"))
-        except (ValueError, TypeError):
-            raise _BadRequestError("Invalid Content-Length header.")
-        if length <= 0:
-            return {}
-        if length > self._MAX_BODY_BYTES:
-            handler.rfile.read(length)
-            raise _BadRequestError(
-                f"Request body too large ({length} bytes, max {self._MAX_BODY_BYTES})."
-            )
-        raw = handler.rfile.read(length)
-        value = json.loads(raw.decode("utf-8"))
-        if not isinstance(value, dict):
-            raise json.JSONDecodeError("JSON body must be an object.", raw.decode("utf-8"), 0)
-        return value
+        return read_json_object_body(handler, self.config.network)
 
     def _write_json(
         self,
@@ -1224,14 +1347,16 @@ def _mission_submit_status(result: dict[str, Any]) -> HTTPStatus:
     return HTTPStatus.ACCEPTED if result.get("mission_id") else HTTPStatus.BAD_REQUEST
 
 
-def _extract_scopes_from_header(handler: BaseHTTPRequestHandler) -> set[str]:
-    """Extract operator scopes from X-Operator-Scopes header or default to read-only."""
-    scopes_header = handler.headers.get("X-Operator-Scopes", "")
-    if scopes_header:
-        return {s.strip() for s in scopes_header.split(",") if s.strip()}
-    return {"state.read"}
-
-
-def _requester_id_from_header(handler: BaseHTTPRequestHandler) -> str:
-    value = handler.headers.get("X-Operator-Id", "").strip()
-    return value or "mission-gateway-reader"
+def _sse_after_sequence(
+    handler: BaseHTTPRequestHandler,
+    parsed: Any,
+) -> int | None:
+    raw = handler.headers.get("Last-Event-ID")
+    if raw is None:
+        raw = parse_qs(parsed.query).get("after_sequence", [None])[0]
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None

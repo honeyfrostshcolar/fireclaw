@@ -1,14 +1,35 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from fireclaw_core.execution.runtime import SandboxedSkillExecutor
 from fireclaw_core.execution.skills import RISK_LEVELS, Skill, create_subprocess_skill
 
 
-def load_subprocess_skill_from_manifest(path: str | Path) -> Skill:
+class _InspectionOnlyExecutor:
+    def stage_skill(self, source_dir: str | Path, *, skill_name: str) -> str:
+        raise RuntimeError("Inspection-only legacy skill cannot be staged.")
+
+    def execute_process(
+        self,
+        *,
+        argv: list[str],
+        cwd: str,
+        stdin_text: str | None,
+        timeout_seconds: float,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        raise RuntimeError("Inspection-only legacy skill cannot be executed.")
+
+
+def load_subprocess_skill_from_manifest(
+    path: str | Path,
+    *,
+    sandbox_executor: SandboxedSkillExecutor | None = None,
+    inspect_only: bool = False,
+) -> Skill:
     manifest_path = Path(path)
     with manifest_path.open("r", encoding="utf-8") as handle:
         manifest = json.load(handle)
@@ -25,7 +46,7 @@ def load_subprocess_skill_from_manifest(path: str | Path) -> Skill:
     command = manifest.get("command")
     if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
         raise ValueError("Skill manifest field 'command' must be a non-empty list of strings.")
-    command = [sys.executable if item == "{python}" else item for item in command]
+    command = ["python3" if item == "{python}" else item for item in command]
 
     timeout_seconds = manifest.get("timeout_seconds", 30.0)
     if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
@@ -34,6 +55,11 @@ def load_subprocess_skill_from_manifest(path: str | Path) -> Skill:
     dry_run_only = manifest.get("dry_run_only", True)
     if not isinstance(dry_run_only, bool):
         raise ValueError("Skill manifest field 'dry_run_only' must be a boolean.")
+    if not dry_run_only:
+        raise ValueError(
+            "Legacy executable Skill manifests must set dry_run_only=true. "
+            "Real robot capabilities must use a Plugin Tool and trusted adapter."
+        )
 
     max_attempts = manifest.get("max_attempts", 1)
     if not isinstance(max_attempts, int) or max_attempts < 1:
@@ -51,18 +77,35 @@ def load_subprocess_skill_from_manifest(path: str | Path) -> Skill:
     allow_real_robot = manifest.get("allow_real_robot", False)
     if not isinstance(allow_real_robot, bool):
         raise ValueError("Skill manifest field 'allow_real_robot' must be a boolean.")
-    if allow_real_robot and dry_run_only:
-        raise ValueError("Skill manifest field 'allow_real_robot' conflicts with dry_run_only=true.")
+    if allow_real_robot:
+        raise ValueError(
+            "Legacy executable Skill manifests cannot set allow_real_robot=true."
+        )
 
     input_schema = _optional_input_schema(manifest)
     risk_level = _optional_risk_level(manifest)
+    if inspect_only:
+        executor: SandboxedSkillExecutor = _InspectionOnlyExecutor()
+        sandbox_cwd = "."
+    else:
+        if sandbox_executor is None:
+            raise ValueError(
+                "Legacy executable Skill manifests require a configured "
+                "sandbox executor."
+            )
+        executor = sandbox_executor
+        sandbox_cwd = executor.stage_skill(
+            manifest_path.parent,
+            skill_name=name,
+        )
 
     return create_subprocess_skill(
         name=name,
         description=description,
         command=command,
+        executor=executor,
         timeout_seconds=float(timeout_seconds),
-        cwd=manifest_path.parent,
+        cwd=sandbox_cwd,
         dry_run_only=dry_run_only,
         max_attempts=max_attempts,
         idempotent=idempotent,

@@ -8,6 +8,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from fireclaw_core.gateway.auth import resolve_gateway_api_token
+from fireclaw_core.gateway.network_security import GatewayNetworkPolicy
+from fireclaw_core.gateway.transport import (
+    GatewayTlsClientConfig,
+    GatewayTlsServerConfig,
+)
 from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
 from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
 from fireclaw_core.planner.planner_builder import build_planner
@@ -54,6 +60,11 @@ def start_server(
     ros1_config: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8766,
+    api_token: str | None = None,
+    robot_gateway_api_token: str | None = None,
+    tls: GatewayTlsServerConfig | None = None,
+    robot_gateway_tls: GatewayTlsClientConfig | None = None,
+    network_policy: GatewayNetworkPolicy | None = None,
     planner_type: str = "deterministic",
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
@@ -91,12 +102,16 @@ def start_server(
     # MissionGateway dispatches to robot gateways; adapter selection happens
     # at the robot-local gateway level, not here.
 
+    data_dir = Path(data_dir).expanduser().resolve(strict=False)
     _ensure_data_dir(data_dir, create_robot_template=not bool(robot_profiles))
 
+    mission_workspace_root = data_dir / "agent-workspace"
     deployment_profile = deployment_profile_from_config(
         deployment_config,
         role="mission_agent",
-        default_workspace_root=data_dir / "mission-agent-workspace",
+        default_workspace_root=mission_workspace_root,
+        allowed_workspace_roots=(mission_workspace_root,),
+        path_base=Path.cwd(),
     )
     planner = build_planner(
         planner_type=planner_type,
@@ -128,11 +143,19 @@ def start_server(
         external_knowledge_rag=external_knowledge_rag,
     )
 
+    robot_client = RobotSubagentClient(
+        api_token=resolve_gateway_api_token(
+            robot_gateway_api_token,
+            env_var="FIRECLAW_ROBOT_GATEWAY_TOKEN",
+        ),
+        tls=robot_gateway_tls,
+    )
     agent = build_mission_agent_from_paths(
         paths,
         operator_id="mission-gateway",
         role="operator",
         planner=planner,
+        subagent_client=robot_client,
         source="serve",
     )
 
@@ -142,7 +165,13 @@ def start_server(
         registry = agent.registry
     else:
         registry = load_robot_registry(paths.robot_registry)
-    config = MissionGatewayConfig(host=host, port=port)
+    config = MissionGatewayConfig(
+        host=host,
+        port=port,
+        api_token=resolve_gateway_api_token(api_token),
+        tls=tls or GatewayTlsServerConfig(),
+        network=network_policy or GatewayNetworkPolicy(),
+    )
     memory_reconciler = None
     if embodied_runtime_mode is not None and agent.embodied_memory_store is not None:
         memory_reconciler = EmbodiedMemoryReconciler(
@@ -154,7 +183,7 @@ def start_server(
         config,
         mission_agent=agent,
         registry=registry,
-        subagent_client=RobotSubagentClient(),
+        subagent_client=robot_client,
         task_registry=agent.task_registry,
         subagent_registry=agent.subagent_registry,
         session_lineage_store=agent.session_lineage_store,
@@ -171,6 +200,11 @@ def run_server_blocking(
     ros1_config: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8766,
+    api_token: str | None = None,
+    robot_gateway_api_token: str | None = None,
+    tls: GatewayTlsServerConfig | None = None,
+    robot_gateway_tls: GatewayTlsClientConfig | None = None,
+    network_policy: GatewayNetworkPolicy | None = None,
     planner_type: str = "deterministic",
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
@@ -196,6 +230,11 @@ def run_server_blocking(
         ros1_config=ros1_config,
         host=host,
         port=port,
+        api_token=api_token,
+        robot_gateway_api_token=robot_gateway_api_token,
+        tls=tls,
+        robot_gateway_tls=robot_gateway_tls,
+        network_policy=network_policy,
         planner_type=planner_type,
         provider_base_url=provider_base_url,
         provider_api_key=provider_api_key,
@@ -229,6 +268,7 @@ def run_server_blocking(
     signal.signal(signal.SIGTERM, _handle_signal)
 
     print(f"FireClaw MissionGateway running at {gw.base_url}")
+    print(f"   Runtime root: {gw.process_working_directory}")
     print(f"   Data directory: {data_dir}")
     print(f"   Planner: {planner_type}")
     print("   Press Ctrl+C to stop.\n")

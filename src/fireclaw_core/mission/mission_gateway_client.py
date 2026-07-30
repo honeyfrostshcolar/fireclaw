@@ -1,7 +1,8 @@
 """Typed HTTP client for MissionGateway.
 
 Provides a synchronous client for all MissionGateway endpoints using
-urllib.request (stdlib). Supports Bearer token auth and X-Operator-Scopes header.
+urllib.request (stdlib). Caller identity and scopes are derived by the server
+from the authenticated connection, never from client-provided headers.
 """
 from __future__ import annotations
 
@@ -10,6 +11,15 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 from urllib import request
 from urllib.error import HTTPError
+
+from fireclaw_core.gateway.transport import (
+    DEFAULT_GATEWAY_RESPONSE_BYTES,
+    GatewayHttpTransport,
+    GatewayTlsClientConfig,
+    read_bounded_gateway_response,
+    validate_gateway_response_limit,
+    validate_gateway_url,
+)
 
 
 class MissionGatewayClient:
@@ -23,16 +33,34 @@ class MissionGatewayClient:
         timeout: float = 10.0,
         operator_id: str = "mission-gateway-client",
         scopes: Iterable[str] | None = None,
+        tls: GatewayTlsClientConfig | None = None,
+        allow_plaintext_loopback: bool = True,
+        max_response_bytes: int = DEFAULT_GATEWAY_RESPONSE_BYTES,
+        max_sse_event_bytes: int = 256 * 1024,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        validate_gateway_url(
+            self._base_url,
+            allow_plaintext_loopback=allow_plaintext_loopback,
+        )
         self._api_token = api_token
         self._timeout = timeout
-        self._operator_id = operator_id
-        self._scopes = frozenset(
-            scopes
-            if scopes is not None
-            else {"state.read", "task.submit", "mission.approve"}
+        self._max_response_bytes = validate_gateway_response_limit(
+            max_response_bytes
         )
+        if max_sse_event_bytes <= 0 or max_sse_event_bytes > 1024 * 1024:
+            raise ValueError(
+                "max_sse_event_bytes must be between 1 and 1048576."
+            )
+        self._max_sse_event_bytes = max_sse_event_bytes
+        self._transport = GatewayHttpTransport(
+            tls,
+            allow_plaintext_loopback=allow_plaintext_loopback,
+        )
+        # Retained as source-compatible constructor parameters. Sending these
+        # values as authorization headers would reintroduce caller-controlled
+        # identity, so the server-authenticated principal always wins.
+        _ = operator_id, scopes
 
     # ------------------------------------------------------------------
     # Public API
@@ -201,8 +229,11 @@ class MissionGatewayClient:
 
         count = 0
         try:
-            with request.urlopen(req, timeout=effective_timeout) as resp:
-                for event in _iter_sse_events(resp):
+            with self._transport.open(req, timeout=effective_timeout) as resp:
+                for event in _iter_sse_events(
+                    resp,
+                    max_event_bytes=self._max_sse_event_bytes,
+                ):
                     yield event
                     count += 1
                     if max_events is not None and count >= max_events:
@@ -226,10 +257,16 @@ class MissionGatewayClient:
         """
         events: list[dict[str, Any]] = []
         last_seq = after_sequence
+        bounded_max_events = min(
+            max_events if max_events is not None else 1_000,
+            10_000,
+        )
+        if bounded_max_events <= 0:
+            raise ValueError("max_events must be positive.")
         for event in self.stream_mission_events(
             mission_id,
             after_sequence=after_sequence,
-            max_events=max_events,
+            max_events=bounded_max_events,
             timeout=timeout,
         ):
             events.append(event)
@@ -263,8 +300,6 @@ class MissionGatewayClient:
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "X-Operator-Id": self._operator_id,
-            "X-Operator-Scopes": ",".join(sorted(self._scopes)),
         }
         if self._api_token is not None:
             headers["Authorization"] = f"Bearer {self._api_token}"
@@ -272,8 +307,17 @@ class MissionGatewayClient:
 
     def _do_request(self, req: request.Request) -> dict[str, Any]:
         try:
-            with request.urlopen(req, timeout=self._timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            with self._transport.open(req, timeout=self._timeout) as resp:
+                raw = read_bounded_gateway_response(
+                    resp,
+                    max_bytes=self._max_response_bytes,
+                )
+                value = json.loads(raw.decode("utf-8"))
+                if not isinstance(value, dict):
+                    raise ValueError(
+                        "Mission Gateway response must be a JSON object."
+                    )
+                return value
         except HTTPError:
             raise
 
@@ -283,7 +327,11 @@ class MissionGatewayClient:
 # ---------------------------------------------------------------------------
 
 
-def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
+def _iter_sse_events(
+    response: Any,
+    *,
+    max_event_bytes: int = 256 * 1024,
+) -> Iterator[dict[str, Any]]:
     """Parse SSE event blocks from an HTTP response.
 
     Yields parsed data dicts for each complete event block.
@@ -292,7 +340,14 @@ def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
     current_event: dict[str, str] = {}
     data_lines: list[str] = []
 
-    for raw_line in response:
+    observed_event_bytes = 0
+    while True:
+        raw_line = response.readline(max_event_bytes + 1)
+        if not raw_line:
+            break
+        observed_event_bytes += len(raw_line)
+        if observed_event_bytes > max_event_bytes:
+            raise ValueError("Mission Gateway SSE event exceeds size limit.")
         line = raw_line.decode("utf-8").rstrip("\r\n")
 
         if line == "":
@@ -302,6 +357,7 @@ def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
                 yield parsed
             current_event = {}
             data_lines = []
+            observed_event_bytes = 0
             continue
 
         if line.startswith(":"):

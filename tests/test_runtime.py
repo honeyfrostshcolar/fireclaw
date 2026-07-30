@@ -6,8 +6,11 @@ from fireclaw_core.execution.runtime import SubprocessSkillRunner
 from fireclaw_core.execution.skills import create_subprocess_skill
 
 
-def test_subprocess_skill_runner_passes_json_inputs_and_reads_json_result():
+def test_subprocess_skill_runner_passes_json_inputs_and_reads_json_result(
+    legacy_skill_executor,
+):
     runner = SubprocessSkillRunner(
+        executor=legacy_skill_executor,
         command=[
             sys.executable,
             "-c",
@@ -26,8 +29,9 @@ def test_subprocess_skill_runner_passes_json_inputs_and_reads_json_result():
     assert result.error is None
 
 
-def test_subprocess_skill_runner_reports_nonzero_exit():
+def test_subprocess_skill_runner_reports_nonzero_exit(legacy_skill_executor):
     runner = SubprocessSkillRunner(
+        executor=legacy_skill_executor,
         command=[
             sys.executable,
             "-c",
@@ -43,8 +47,11 @@ def test_subprocess_skill_runner_reports_nonzero_exit():
     assert "boom" in result.error
 
 
-def test_subprocess_skill_runner_reports_invalid_json():
-    runner = SubprocessSkillRunner(command=[sys.executable, "-c", "print('not-json')"])
+def test_subprocess_skill_runner_reports_invalid_json(legacy_skill_executor):
+    runner = SubprocessSkillRunner(
+        command=[sys.executable, "-c", "print('not-json')"],
+        executor=legacy_skill_executor,
+    )
 
     result = runner.run({})
 
@@ -52,8 +59,9 @@ def test_subprocess_skill_runner_reports_invalid_json():
     assert "invalid JSON" in result.error
 
 
-def test_subprocess_skill_runner_reports_timeout():
+def test_subprocess_skill_runner_reports_timeout(legacy_skill_executor):
     runner = SubprocessSkillRunner(
+        executor=legacy_skill_executor,
         command=[sys.executable, "-c", "import time; time.sleep(2)"],
         timeout_seconds=0.05,
     )
@@ -64,7 +72,9 @@ def test_subprocess_skill_runner_reports_timeout():
     assert "timed out" in result.error
 
 
-def test_subprocess_skill_runner_terminates_process_when_cancelled():
+def test_subprocess_skill_runner_terminates_process_when_cancelled(
+    legacy_skill_executor,
+):
     requested = {"cancel": False}
     runner = SubprocessSkillRunner(
         command=[
@@ -72,6 +82,7 @@ def test_subprocess_skill_runner_terminates_process_when_cancelled():
             "-c",
             "import time; time.sleep(1); print('should-not-finish')",
         ],
+        executor=legacy_skill_executor,
         timeout_seconds=5,
     )
     started = time.monotonic()
@@ -85,18 +96,19 @@ def test_subprocess_skill_runner_terminates_process_when_cancelled():
 
     assert result.ok is False
     assert result.status == "cancelled"
-    assert result.mode == "subprocess"
+    assert result.mode == "sandboxed_subprocess"
     assert "cancelled" in result.error
     assert time.monotonic() - started < 0.8
 
 
-def test_create_subprocess_skill_sets_runtime_metadata():
+def test_create_subprocess_skill_sets_runtime_metadata(legacy_skill_executor):
     skill = create_subprocess_skill(
         name="rl_navigation",
         description="Runs an isolated RL navigation skill.",
         command=[sys.executable, "-c", "print(%r)" % json.dumps({"ok": True, "data": {}})],
+        executor=legacy_skill_executor,
     )
 
-    assert skill.runtime == "subprocess"
+    assert skill.runtime == "sandboxed_subprocess"
     assert skill.dry_run_only is True
     assert skill.run({}).ok is True

@@ -3,10 +3,17 @@ from pathlib import Path
 from fireclaw_core.infra.workspace_skills import load_workspace_skills
 
 
-def test_example_echo_policy_loads_and_runs_from_workspace_manifest():
+def test_example_echo_policy_loads_and_runs_from_workspace_manifest(
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = Path("skills")
 
-    result = load_workspace_skills(skills_dir)
+    result = load_workspace_skills(
+        skills_dir,
+        deployment_profile=legacy_skill_profile,
+        sandbox_executor=legacy_skill_executor,
+    )
     skill_by_name = {skill.name: skill for skill in result.skills}
 
     assert "echo_policy" in skill_by_name

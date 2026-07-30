@@ -13,6 +13,37 @@ ROS1_ACTION_NAMES = tuple(
     plugin.action for plugin in iter_builtin_physical_skills()
 )
 ROS1_INTERFACES = ("topic", "service", "action")
+DEFAULT_ROS1_DIAGNOSTIC_TOPIC_ALLOWLIST = (
+    "/scan",
+    "/scan_filtered",
+    "/odom",
+    "/tf",
+    "/tf_static",
+    "/cmd_vel",
+    "/amcl_pose",
+    "/map",
+    "/map_metadata",
+    "/diagnostics",
+    "/diagnostics_agg",
+    "/joint_states",
+    "/move_base",
+    "/move_base/*",
+    "/camera/*",
+    "/camera_*",
+    "/camera_*/*",
+    "/thermal/*",
+)
+DEFAULT_ROS1_DIAGNOSTIC_FRAME_ALLOWLIST = (
+    "map",
+    "odom",
+    "base_link",
+    "base_footprint",
+    "laser",
+    "base_scan",
+    "*_link",
+    "camera_*",
+)
+DEFAULT_ROS1_DIAGNOSTIC_ACTION_ALLOWLIST = ("/move_base",)
 ROS1_ENDPOINT_PROFILES: dict[str, dict[str, Any]] = {
     "move_base": {
         "interface": "action",
@@ -67,6 +98,24 @@ class Ros1TransportConfig:
 
 
 @dataclass(frozen=True)
+class Ros1DiagnosticsConfig:
+    enabled: bool = True
+    topic_allowlist: tuple[str, ...] = (
+        DEFAULT_ROS1_DIAGNOSTIC_TOPIC_ALLOWLIST
+    )
+    frame_allowlist: tuple[str, ...] = (
+        DEFAULT_ROS1_DIAGNOSTIC_FRAME_ALLOWLIST
+    )
+    action_allowlist: tuple[str, ...] = (
+        DEFAULT_ROS1_DIAGNOSTIC_ACTION_ALLOWLIST
+    )
+    max_topics: int = 100
+    max_samples: int = 3
+    max_timeout_seconds: float = 3.0
+    max_output_bytes: int = 32_768
+
+
+@dataclass(frozen=True)
 class Ros1AdapterConfig:
     robot_id: str
     namespace: str | None = None
@@ -75,6 +124,9 @@ class Ros1AdapterConfig:
     timeouts: Ros1TimeoutConfig = field(default_factory=Ros1TimeoutConfig)
     targets: dict[str, Any] = field(default_factory=dict)
     transport: Ros1TransportConfig = field(default_factory=Ros1TransportConfig)
+    diagnostics: Ros1DiagnosticsConfig = field(
+        default_factory=Ros1DiagnosticsConfig
+    )
 
 
 def load_ros1_adapter_config(path: str | Path) -> Ros1AdapterConfig:
@@ -123,6 +175,7 @@ def parse_ros1_adapter_config(raw: dict[str, Any]) -> Ros1AdapterConfig:
     if not isinstance(targets, dict):
         raise ValueError("targets must be an object.")
     transport = _parse_transport_config(raw.get("transport", {}))
+    diagnostics = _parse_diagnostics_config(raw.get("diagnostics", {}))
 
     return Ros1AdapterConfig(
         robot_id=robot_id,
@@ -132,6 +185,7 @@ def parse_ros1_adapter_config(raw: dict[str, Any]) -> Ros1AdapterConfig:
         timeouts=timeouts,
         targets=targets,
         transport=transport,
+        diagnostics=diagnostics,
     )
 
 
@@ -182,6 +236,70 @@ def _parse_transport_config(raw: Any) -> Ros1TransportConfig:
         wait_for_server_seconds=wait_for_server_seconds,
         wait_for_result_seconds=wait_for_result_seconds,
     )
+
+
+def _parse_diagnostics_config(raw: Any) -> Ros1DiagnosticsConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("diagnostics must be an object.")
+    max_topics = int(raw.get("max_topics", 100))
+    max_samples = int(raw.get("max_samples", 3))
+    max_timeout_seconds = float(
+        raw.get("max_timeout_seconds", 3.0)
+    )
+    max_output_bytes = int(raw.get("max_output_bytes", 32_768))
+    if not 1 <= max_topics <= 1_000:
+        raise ValueError("diagnostics.max_topics must be between 1 and 1000.")
+    if not 1 <= max_samples <= 10:
+        raise ValueError("diagnostics.max_samples must be between 1 and 10.")
+    if not 0.1 <= max_timeout_seconds <= 30.0:
+        raise ValueError(
+            "diagnostics.max_timeout_seconds must be between 0.1 and 30."
+        )
+    if not 1_024 <= max_output_bytes <= 1_000_000:
+        raise ValueError(
+            "diagnostics.max_output_bytes must be between 1024 and 1000000."
+        )
+    return Ros1DiagnosticsConfig(
+        enabled=bool(raw.get("enabled", True)),
+        topic_allowlist=_diagnostic_string_tuple(
+            raw,
+            "topic_allowlist",
+            DEFAULT_ROS1_DIAGNOSTIC_TOPIC_ALLOWLIST,
+        ),
+        frame_allowlist=_diagnostic_string_tuple(
+            raw,
+            "frame_allowlist",
+            DEFAULT_ROS1_DIAGNOSTIC_FRAME_ALLOWLIST,
+        ),
+        action_allowlist=_diagnostic_string_tuple(
+            raw,
+            "action_allowlist",
+            DEFAULT_ROS1_DIAGNOSTIC_ACTION_ALLOWLIST,
+        ),
+        max_topics=max_topics,
+        max_samples=max_samples,
+        max_timeout_seconds=max_timeout_seconds,
+        max_output_bytes=max_output_bytes,
+    )
+
+
+def _diagnostic_string_tuple(
+    raw: dict[str, Any],
+    key: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    value = raw.get(key, default)
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",")]
+    if (
+        not isinstance(value, (list, tuple))
+        or not value
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise ValueError(
+            f"diagnostics.{key} must contain non-empty strings."
+        )
+    return tuple(item.strip() for item in value)
 
 
 def _expand_endpoint_profile(action_name: str, raw: dict[str, Any]) -> dict[str, Any]:

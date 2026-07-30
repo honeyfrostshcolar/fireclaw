@@ -21,6 +21,9 @@ def test_gateway_cli_exposes_robot_agent_flags():
     assert "--robot-agent-model" in completed.stdout
     assert "--catalog" in completed.stdout
     assert "--robot-agent-catalog" in completed.stdout
+    assert "--api-token" in completed.stdout
+    assert "--robot-gateway-api-token" in completed.stdout
+    assert "--runtime-root" in completed.stdout
 
 
 def test_robot_gateway_cli_exposes_config_flag():
@@ -35,6 +38,8 @@ def test_robot_gateway_cli_exposes_config_flag():
     assert "--robot-agent" in completed.stdout
     assert "--robot-agent-planner" in completed.stdout
     assert "--robot-agent-catalog" in completed.stdout
+    assert "--api-token" in completed.stdout
+    assert "--runtime-root" in completed.stdout
 
 
 def test_gateway_package_module_cli_exposes_config_flag():
@@ -119,6 +124,87 @@ catalog = "robot-models.json"
 
     assert cfg["model_catalog_path"] == "central-models.json"
     assert cfg["robot_agent_model_catalog_path"] == "robot-models.json"
+
+
+def test_config_loads_gateway_server_and_outbound_robot_tokens(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[server]
+api_token = "mission-secret"
+
+[mission]
+robot_gateway_api_token = "outbound-robot-secret"
+
+[robot_gateway]
+api_token = "robot-listener-secret"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["api_token"] == "mission-secret"
+    assert cfg["robot_gateway_api_token"] == "robot-listener-secret"
+    assert cfg["robot_gateway_client_api_token"] == "outbound-robot-secret"
+
+
+def test_config_reuses_robot_listener_token_for_outbound_client(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[robot_gateway]
+api_token = "shared-robot-secret"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["robot_gateway_client_api_token"] == "shared-robot-secret"
+
+
+def test_config_loads_gateway_tls_and_outbound_robot_trust(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[server.tls]
+enabled = true
+cert_file = "mission.crt"
+key_file = "mission.key"
+ca_file = "ca.crt"
+require_client_cert = true
+
+[mission.robot_gateway_tls]
+ca_file = "robot-ca.crt"
+cert_file = "mission-client.crt"
+key_file = "mission-client.key"
+
+[robot_gateway.tls]
+enabled = true
+cert_file = "robot.crt"
+key_file = "robot.key"
+ca_file = "ca.crt"
+require_client_cert = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["tls_enabled"] is True
+    assert cfg["tls_cert_file"] == "mission.crt"
+    assert cfg["tls_key_file"] == "mission.key"
+    assert cfg["tls_ca_file"] == "ca.crt"
+    assert cfg["tls_require_client_cert"] is True
+    assert cfg["robot_gateway_client_tls_ca_file"] == "robot-ca.crt"
+    assert cfg["robot_gateway_client_tls_cert_file"] == "mission-client.crt"
+    assert cfg["robot_gateway_client_tls_key_file"] == "mission-client.key"
+    assert cfg["robot_gateway_tls_enabled"] is True
+    assert cfg["robot_gateway_tls_cert_file"] == "robot.crt"
+    assert cfg["robot_gateway_tls_key_file"] == "robot.key"
+    assert cfg["robot_gateway_tls_ca_file"] == "ca.crt"
+    assert cfg["robot_gateway_tls_require_client_cert"] is True
 
 
 def test_config_preserves_structured_deployment_policy(tmp_path):

@@ -6,7 +6,7 @@ import pytest
 from fireclaw_core.infra.skill_manifest import load_subprocess_skill_from_manifest
 
 
-def test_load_subprocess_skill_from_manifest(tmp_path):
+def test_load_subprocess_skill_from_manifest(tmp_path, legacy_skill_executor):
     manifest_path = tmp_path / "rl_navigation.skill.json"
     manifest_path.write_text(
         json.dumps(
@@ -26,15 +26,21 @@ def test_load_subprocess_skill_from_manifest(tmp_path):
         encoding="utf-8",
     )
 
-    skill = load_subprocess_skill_from_manifest(manifest_path)
+    skill = load_subprocess_skill_from_manifest(
+        manifest_path,
+        sandbox_executor=legacy_skill_executor,
+    )
 
     assert skill.name == "rl_navigation"
-    assert skill.runtime == "subprocess"
+    assert skill.runtime == "sandboxed_subprocess"
     assert skill.dry_run_only is True
     assert skill.run({}).data == {"action": "move"}
 
 
-def test_load_subprocess_skill_manifest_with_execution_and_safety_metadata(tmp_path):
+def test_load_subprocess_skill_manifest_with_execution_and_safety_metadata(
+    tmp_path,
+    legacy_skill_executor,
+):
     manifest_path = tmp_path / "rl_navigation.skill.json"
     manifest_path.write_text(
         json.dumps(
@@ -59,7 +65,10 @@ def test_load_subprocess_skill_manifest_with_execution_and_safety_metadata(tmp_p
         encoding="utf-8",
     )
 
-    skill = load_subprocess_skill_from_manifest(manifest_path)
+    skill = load_subprocess_skill_from_manifest(
+        manifest_path,
+        sandbox_executor=legacy_skill_executor,
+    )
 
     assert skill.max_attempts == 2
     assert skill.idempotent is True
@@ -69,7 +78,10 @@ def test_load_subprocess_skill_manifest_with_execution_and_safety_metadata(tmp_p
     assert skill.timeout_seconds == 2.5
 
 
-def test_load_subprocess_skill_manifest_with_input_schema(tmp_path):
+def test_load_subprocess_skill_manifest_with_input_schema(
+    tmp_path,
+    legacy_skill_executor,
+):
     manifest_path = tmp_path / "echo.skill.json"
     input_schema = {
         "type": "object",
@@ -94,12 +106,18 @@ def test_load_subprocess_skill_manifest_with_input_schema(tmp_path):
         encoding="utf-8",
     )
 
-    skill = load_subprocess_skill_from_manifest(manifest_path)
+    skill = load_subprocess_skill_from_manifest(
+        manifest_path,
+        sandbox_executor=legacy_skill_executor,
+    )
 
     assert skill.input_schema == input_schema
 
 
-def test_load_subprocess_skill_manifest_with_risk_level(tmp_path):
+def test_load_subprocess_skill_manifest_with_risk_level(
+    tmp_path,
+    legacy_skill_executor,
+):
     manifest_path = tmp_path / "entry.skill.json"
     manifest_path.write_text(
         json.dumps(
@@ -118,7 +136,10 @@ def test_load_subprocess_skill_manifest_with_risk_level(tmp_path):
         encoding="utf-8",
     )
 
-    skill = load_subprocess_skill_from_manifest(manifest_path)
+    skill = load_subprocess_skill_from_manifest(
+        manifest_path,
+        sandbox_executor=legacy_skill_executor,
+    )
 
     assert skill.risk_level == "high"
 
@@ -177,6 +198,37 @@ def test_manifest_rejects_retry_without_idempotency(tmp_path):
 
     with pytest.raises(ValueError, match="idempotent"):
         load_subprocess_skill_from_manifest(manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("dry_run_only", False, "dry_run_only=true"),
+        ("allow_real_robot", True, "allow_real_robot=true"),
+    ],
+)
+def test_manifest_cannot_claim_real_robot_execution(
+    tmp_path,
+    field,
+    value,
+    message,
+):
+    manifest_path = tmp_path / "unsafe.skill.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "name": "unsafe",
+                "description": "Unsafe legacy process.",
+                "runtime": "subprocess",
+                "command": ["python3", "-c", "print('x')"],
+                field: value,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_subprocess_skill_from_manifest(manifest_path, inspect_only=True)
 
 
 def test_manifest_rejects_malformed_required_sensors(tmp_path):

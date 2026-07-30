@@ -209,7 +209,7 @@ class TestGatewayScopeEnforcement:
         gateway.start()
         return gateway
 
-    def test_read_scope_allows_get_state(self, tmp_path):
+    def test_caller_scope_header_does_not_affect_get_state(self, tmp_path):
         import urllib.request
         gateway = self._make_gateway(tmp_path)
         try:
@@ -222,7 +222,7 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_read_scope_denies_post_tasks(self, tmp_path):
+    def test_caller_scope_header_cannot_narrow_loopback_principal(self, tmp_path):
         import urllib.request
         import json
         gateway = self._make_gateway(tmp_path)
@@ -237,17 +237,12 @@ class TestGatewayScopeEnforcement:
                 },
                 method="POST",
             )
-            try:
-                urllib.request.urlopen(req)
-                assert False, "Should have returned 403"
-            except urllib.error.HTTPError as e:
-                assert e.code == 403
-                body = json.loads(e.read())
-                assert "task.submit" in body["message"]
+            resp = urllib.request.urlopen(req)
+            assert resp.status == 202
         finally:
             gateway.stop()
 
-    def test_write_scope_allows_post_tasks(self, tmp_path):
+    def test_loopback_principal_allows_post_tasks(self, tmp_path):
         import urllib.request
         import json
         gateway = self._make_gateway(tmp_path)
@@ -267,17 +262,18 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_no_scope_header_defaults_to_read_only(self, tmp_path):
+    def test_no_scope_header_uses_server_owned_loopback_scopes(self, tmp_path):
         import urllib.request
         import json
         gateway = self._make_gateway(tmp_path)
         try:
-            # GET /state should work with no scope header (default read)
+            # The local OS boundary authenticates this request.
             req = urllib.request.Request(f"{gateway.base_url}/state")
             resp = urllib.request.urlopen(req)
             assert resp.status == 200
 
-            # POST /tasks should fail with no scope header (default read)
+            # Endpoint scopes come from the trusted loopback principal, not a
+            # caller-provided scope header.
             data = json.dumps({"command": "test"}).encode()
             req = urllib.request.Request(
                 f"{gateway.base_url}/tasks",
@@ -285,11 +281,8 @@ class TestGatewayScopeEnforcement:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            try:
-                urllib.request.urlopen(req)
-                assert False, "Should have returned 403"
-            except urllib.error.HTTPError as e:
-                assert e.code == 403
+            resp = urllib.request.urlopen(req)
+            assert resp.status == 202
         finally:
             gateway.stop()
 
@@ -307,12 +300,12 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_emergency_scope_required_for_emergency_stop(self, tmp_path):
+    def test_caller_scope_header_cannot_narrow_emergency_privilege(self, tmp_path):
         import urllib.request
         import json
         gateway = self._make_gateway(tmp_path)
         try:
-            # Write scope should NOT allow emergency stop
+            # The declared task.submit scope is untrusted and ignored.
             data = json.dumps({}).encode()
             req = urllib.request.Request(
                 f"{gateway.base_url}/emergency-stop",
@@ -323,12 +316,7 @@ class TestGatewayScopeEnforcement:
                 },
                 method="POST",
             )
-            try:
-                urllib.request.urlopen(req)
-                assert False, "Should have returned 403"
-            except urllib.error.HTTPError as e:
-                assert e.code == 403
-                body = json.loads(e.read())
-                assert "emergency.stop" in body["message"]
+            resp = urllib.request.urlopen(req)
+            assert resp.status == 200
         finally:
             gateway.stop()

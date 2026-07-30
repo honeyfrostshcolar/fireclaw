@@ -19,7 +19,10 @@ from urllib.error import HTTPError
 
 import pytest
 
-from fireclaw_core.mission.mission_gateway_client import MissionGatewayClient
+from fireclaw_core.mission.mission_gateway_client import (
+    MissionGatewayClient,
+    _iter_sse_events,
+)
 from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent
 
 
@@ -105,6 +108,16 @@ class TestSSEEventId:
         )
         sse = event.to_sse_format()
         assert "id: 0\n" in sse
+
+    def test_sse_parser_rejects_oversized_single_event(self) -> None:
+        import io
+
+        response = io.BytesIO(
+            b"data: {\"value\":\"" + (b"x" * 64) + b"\"}\n\n"
+        )
+
+        with pytest.raises(ValueError, match="exceeds size limit"):
+            list(_iter_sse_events(response, max_event_bytes=32))
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +299,7 @@ class TestMissionGatewayClient:
             server.shutdown()
 
     def test_sends_auth_headers(self) -> None:
-        """Verify Bearer token and X-Operator-Scopes header are sent."""
+        """Verify only the authenticated Bearer credential is sent."""
         responses = {
             "GET /fleet/state": {
                 "status": 200,
@@ -299,9 +312,8 @@ class TestMissionGatewayClient:
             client.get_fleet_state()
             req = captured[-1]
             assert req["headers"].get("Authorization") == "Bearer test-token-123"
-            assert req["headers"].get("X-Operator-Scopes") == (
-                "mission.approve,state.read,task.submit"
-            )
+            assert "X-Operator-Scopes" not in req["headers"]
+            assert "X-Operator-Id" not in req["headers"]
         finally:
             server.shutdown()
 
@@ -319,9 +331,8 @@ class TestMissionGatewayClient:
             client.get_fleet_state()
             req = captured[-1]
             assert "Authorization" not in req["headers"]
-            assert req["headers"].get("X-Operator-Scopes") == (
-                "mission.approve,state.read,task.submit"
-            )
+            assert "X-Operator-Scopes" not in req["headers"]
+            assert "X-Operator-Id" not in req["headers"]
         finally:
             server.shutdown()
 
@@ -401,7 +412,7 @@ class TestSSECursorReplayGateway:
             # Connect with after_sequence=0 to trigger replay of all buffered events
             host, port = gw._server.server_address
             conn = HTTPConnection(host, port, timeout=3)
-            conn.request("GET", "/events/stream?after_sequence=0", headers={"X-Operator-Scopes": "admin"})
+            conn.request("GET", "/events/stream?after_sequence=0")
             resp = conn.getresponse()
             assert resp.status == 200
             # Read line-by-line to handle chunked SSE
@@ -453,7 +464,7 @@ class TestSSECursorReplayGateway:
 
             host, port = gw._server.server_address
             conn = HTTPConnection(host, port, timeout=3)
-            conn.request("GET", "/events/stream?after_sequence=2", headers={"X-Operator-Scopes": "admin"})
+            conn.request("GET", "/events/stream?after_sequence=2")
             resp = conn.getresponse()
             assert resp.status == 200
             # Read line-by-line: expect 3 replayed events (seq 3,4,5)
@@ -513,7 +524,7 @@ class TestSSECursorReplayGateway:
             def read_sse():
                 conn = HTTPConnection(host, port, timeout=4)
                 try:
-                    conn.request("GET", "/events/stream?after_sequence=1", headers={"X-Operator-Scopes": "admin"})
+                    conn.request("GET", "/events/stream?after_sequence=1")
                     resp = conn.getresponse()
                     raw = b""
                     while True:

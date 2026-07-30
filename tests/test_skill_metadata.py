@@ -113,11 +113,12 @@ def test_list_metadata_includes_new_fields() -> None:
     assert nav_meta["domain"] == "navigation"
 
 
-def test_create_subprocess_skill_with_new_fields() -> None:
+def test_create_subprocess_skill_with_new_fields(legacy_skill_executor) -> None:
     skill = create_subprocess_skill(
         name="ext_scan",
         description="External scan",
         command=["echo", "ok"],
+        executor=legacy_skill_executor,
         output_schema=SEARCH_OUTPUT_SCHEMA,
         domain="perception",
         preconditions=["robot_online"],

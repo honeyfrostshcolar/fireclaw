@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from pathlib import Path
+import time
 
 from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
 from fireclaw_core.plugin.plugin_runtime import PluginRuntime
@@ -378,6 +379,40 @@ class TestPluginRuntimeCallableHooks:
         assert len(effects) == 1
         assert effects[0]["plugin_id"] == "fire.working"
         assert effects[0]["effect"] == {"source": "working"}
+
+    def test_hook_runtime_bounds_timeout_and_result_size(self) -> None:
+        runtime = PluginRuntime(
+            hook_timeout_seconds=0.01,
+            hook_result_bytes=32,
+        )
+
+        def slow(payload):
+            time.sleep(0.05)
+            return {"ok": True}
+
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id="fire.slow",
+            callback=slow,
+        )
+        runtime.register_callable(
+            hook_type="memory",
+            hook_name="filter",
+            plugin_id="fire.large",
+            callback=lambda payload: {"value": "x" * 128},
+        )
+
+        report = runtime.run_memory_hooks_with_diagnostics(
+            "filter",
+            {"memories": []},
+        )
+
+        assert report.effects == ()
+        assert {item.exception_class for item in report.failures} == {
+            "TrustedCallbackTimeout",
+            "ValueError",
+        }
 
     def test_unknown_hook_type_raises(self) -> None:
         runtime = PluginRuntime()

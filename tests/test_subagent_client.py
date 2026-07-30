@@ -89,7 +89,11 @@ def test_robot_subagent_client_submits_task_and_reads_trace(tmp_path):
     assert trace["queue_record"]["status"] == "completed"
 
 
-def test_robot_subagent_client_cancels_task(tmp_path):
+def test_robot_subagent_client_cancels_task(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     release_path = tmp_path / "release-slow-policy"
     _write_slow_policy_skill(skills_dir, release_path)
@@ -103,7 +107,9 @@ def test_robot_subagent_client_cancels_task(tmp_path):
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:

@@ -43,6 +43,7 @@ def run_doctor(
     memory_eval_threshold: float = 0.5,
     memory_eval_mission_id: str = "doctor-default",
     plugin_dir: str | None = None,
+    security_config_path: str | None = None,
     fix: bool = False,
 ) -> dict[str, Any]:
     checks: list[DoctorCheck] = []
@@ -63,7 +64,11 @@ def run_doctor(
 
     checks.append(_path_check("memory_path", memory_path))
     checks.append(_path_check("event_path", event_path))
-    workspace_result = load_workspace_skills(skills_dir) if skills_dir is not None else WorkspaceSkillLoadResult(skills=[], errors=[])
+    workspace_result = (
+        load_workspace_skills(skills_dir, inspect_only=True)
+        if skills_dir is not None
+        else WorkspaceSkillLoadResult(skills=[], errors=[])
+    )
     checks.append(_workspace_skills_check(skills_dir, workspace_result))
     if adapter == "ros1":
         checks.append(_ros1_config_check(ros1_config_path, workspace_skill_names=[skill.name for skill in workspace_result.skills]))
@@ -95,6 +100,13 @@ def run_doctor(
         mission_id=memory_eval_mission_id,
     ))
     checks.append(_plugin_descriptor_check(plugin_dir))
+    checks.append(
+        _security_audit_check(
+            security_config_path,
+            plugin_dir=plugin_dir,
+            skills_dir=skills_dir,
+        )
+    )
 
     # --- repair actions (only when fix=True) ---
     if fix:
@@ -226,7 +238,7 @@ def _workspace_skills_check(skills_dir: str | None, result: WorkspaceSkillLoadRe
             message="Workspace skills disabled.",
             details={"skills_dir": None, "skill_count": 0, "error_count": 0, "errors": []},
         )
-    result = result or load_workspace_skills(skills_dir)
+    result = result or load_workspace_skills(skills_dir, inspect_only=True)
     errors = [{"path": error.path, "message": error.message} for error in result.errors]
     details = {
         "skills_dir": skills_dir,
@@ -526,6 +538,54 @@ def _plugin_descriptor_check(plugin_dir: str | None) -> DoctorCheck:
     )
 
 
+def _security_audit_check(
+    config_path: str | None,
+    *,
+    plugin_dir: str | None,
+    skills_dir: str | None,
+) -> DoctorCheck:
+    if config_path is None:
+        return DoctorCheck(
+            name="security_audit",
+            status="pass",
+            message=(
+                "Deployment security audit skipped because no config path "
+                "was supplied."
+            ),
+            details={
+                "config_path": None,
+                "summary": {
+                    "critical": 0,
+                    "warn": 0,
+                    "info": 0,
+                    "status": "not_run",
+                },
+            },
+        )
+    from fireclaw_core.security.audit import run_security_audit
+
+    report = run_security_audit(
+        config_path=config_path,
+        plugin_dirs=(plugin_dir,) if plugin_dir is not None else (),
+        skills_dir=skills_dir,
+    )
+    status = {
+        "critical": "fail",
+        "warn": "warn",
+        "ok": "pass",
+    }[report.summary.status]
+    return DoctorCheck(
+        name="security_audit",
+        status=status,
+        message=(
+            "Deployment security audit completed with "
+            f"{report.summary.critical} critical and "
+            f"{report.summary.warn} warning finding(s)."
+        ),
+        details=report.to_dict(),
+    )
+
+
 def _repair_stale_task_queue(task_queue_path: str | None) -> list[dict[str, Any]]:
     if task_queue_path is None:
         return []
@@ -562,6 +622,11 @@ def main() -> int:
     parser.add_argument("--task-queue", default=None, help="Path to JSONL task queue file")
     parser.add_argument("--memory-index", default=None, help="Path to memory index SQLite file")
     parser.add_argument("--plugin-dir", default=None, help="Path to plugin descriptor directory")
+    parser.add_argument(
+        "--security-config",
+        default=None,
+        help="Path to fireclaw.toml for the read-only deployment security audit.",
+    )
     parser.add_argument("--memory-eval-fixture", default=None, help="Path to memory retrieval eval fixture JSON")
     parser.add_argument("--memory-eval-threshold", type=float, default=0.5, help="Minimum hit_rate to pass memory eval (default: 0.5)")
     parser.add_argument("--fix", action="store_true", help="Attempt to repair detected issues")
@@ -579,6 +644,7 @@ def main() -> int:
         memory_eval_fixture=args.memory_eval_fixture,
         memory_eval_threshold=args.memory_eval_threshold,
         plugin_dir=args.plugin_dir,
+        security_config_path=args.security_config,
         fix=args.fix,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))

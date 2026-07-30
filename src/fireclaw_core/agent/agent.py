@@ -14,6 +14,7 @@ from fireclaw_core.approval.execution_authorization import (
     execution_scope_hash,
 )
 from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
+from fireclaw_core.execution.runtime import SandboxedSkillExecutor
 from fireclaw_core.execution.execution_event_producer import (
     RobotExecutionEventProducer,
 )
@@ -46,6 +47,7 @@ from fireclaw_core.policy.capability import (
     CapabilityRobotProfile,
     CapabilityRuntimeState,
 )
+from fireclaw_core.policy.deployment import DeploymentProfile
 
 
 class MemoryStore(Protocol):
@@ -105,6 +107,8 @@ class FireClawAgent:
         plugin_host: FireClawPluginHost | None = None,
         capability_actor: CapabilityActor | Any | None = None,
         robot_profile: Any | None = None,
+        deployment_profile: DeploymentProfile | None = None,
+        workspace_skill_executor: SandboxedSkillExecutor | None = None,
     ) -> None:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
@@ -161,6 +165,8 @@ class FireClawAgent:
             workspace_result = load_workspace_skills(
                 workspace_skills_dir,
                 plugin_host=self.plugin_host,
+                deployment_profile=deployment_profile,
+                sandbox_executor=workspace_skill_executor,
             )
             self.skill_load_errors = workspace_result.errors
         self.capability_policy = CapabilityPolicyPipeline(

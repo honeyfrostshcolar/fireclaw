@@ -126,12 +126,83 @@ def main() -> int:
     )
     lifecycle.add_argument("--stale-threshold-seconds", type=float, default=300.0, help="Seconds before a task is considered stale.")
 
+    security_audit = subparsers.add_parser(
+        "security-audit",
+        help="Audit deployment security without starting either Gateway.",
+    )
+    security_audit.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Path to the fireclaw.toml used for deployment.",
+    )
+    security_audit.add_argument("--runtime-root", default=None)
+    security_audit.add_argument(
+        "--plugin-dir",
+        action="append",
+        default=[],
+        help="Plugin descriptor directory to audit. Repeat as needed.",
+    )
+    security_audit.add_argument("--skills-dir", default=None)
+    security_audit.add_argument(
+        "--deep",
+        action="store_true",
+        help="Recursively inspect configured plugin descriptor directories.",
+    )
+    security_audit.add_argument(
+        "--fail-on",
+        choices=("critical", "warn", "never"),
+        default="critical",
+    )
+
     serve = subparsers.add_parser("serve", help="Start a persistent MissionGateway server.")
     serve.add_argument("--config", type=Path, default=None, help="Path to fireclaw.toml config file.")
+    serve.add_argument(
+        "--runtime-root",
+        default=None,
+        help=(
+            "Stable process working directory. Defaults to the config "
+            "directory, FIRECLAW_HOME, or ~/.fireclaw."
+        ),
+    )
     serve.add_argument("--adapter", default=None, help="Robot adapter label for deployment metadata.")
     serve.add_argument("--ros1-config", default=None, help="Path to ROS1 adapter config for robot gateways.")
     serve.add_argument("--host", default=None, help="Host to bind.")
     serve.add_argument("--port", type=int, default=None, help="Port to bind.")
+    serve.add_argument(
+        "--api-token",
+        default=None,
+        help=(
+            "Mission Gateway bearer token. Prefer [server].api_token or "
+            "FIRECLAW_GATEWAY_TOKEN so the secret is not exposed in process args."
+        ),
+    )
+    serve.add_argument(
+        "--robot-gateway-api-token",
+        default=None,
+        help=(
+            "Bearer token used for Robot Gateways. Prefer "
+            "[mission].robot_gateway_api_token or FIRECLAW_ROBOT_GATEWAY_TOKEN."
+        ),
+    )
+    serve.add_argument(
+        "--tls",
+        action="store_true",
+        default=None,
+        help="Enable TLS for the Mission Gateway listener.",
+    )
+    serve.add_argument("--tls-cert-file", default=None)
+    serve.add_argument("--tls-key-file", default=None)
+    serve.add_argument("--tls-ca-file", default=None)
+    serve.add_argument(
+        "--tls-require-client-cert",
+        action="store_true",
+        default=None,
+        help="Require Mission Gateway client certificates.",
+    )
+    serve.add_argument("--robot-gateway-ca-file", default=None)
+    serve.add_argument("--robot-gateway-client-cert-file", default=None)
+    serve.add_argument("--robot-gateway-client-key-file", default=None)
     serve.add_argument("--data-dir", type=Path, default=None, help="Persistent data directory.")
     serve.add_argument(
         "--embodied-runtime-mode",
@@ -163,6 +234,14 @@ def main() -> int:
     mission = subparsers.add_parser("mission", help="Open the interactive mission console.")
     mission.add_argument("--server", default="http://127.0.0.1:8766", help="MissionGateway base URL.")
     mission.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds.")
+    mission.add_argument(
+        "--api-token",
+        default=None,
+        help="Mission Gateway bearer token; FIRECLAW_GATEWAY_TOKEN is the preferred fallback.",
+    )
+    mission.add_argument("--tls-ca-file", default=None)
+    mission.add_argument("--tls-client-cert-file", default=None)
+    mission.add_argument("--tls-client-key-file", default=None)
 
     robot_gateway = subparsers.add_parser("robot-gateway", help="Start a robot-local FireClawGateway.")
     robot_gateway.add_argument("robot_gateway_args", nargs=argparse.REMAINDER)
@@ -252,6 +331,24 @@ def main() -> int:
         ).run(stale_threshold_seconds=args.stale_threshold_seconds)
         _print_json(report)
         return 0 if report["status"] == "ok" else 2
+    if args.command_name == "security-audit":
+        from fireclaw_core.security.audit import run_security_audit
+
+        report = run_security_audit(
+            config_path=args.config,
+            runtime_root=args.runtime_root,
+            plugin_dirs=args.plugin_dir,
+            skills_dir=args.skills_dir,
+            deep=args.deep,
+        )
+        _print_json(report.to_dict())
+        if args.fail_on == "never":
+            return 0
+        if report.summary.critical:
+            return 2
+        if args.fail_on == "warn" and report.summary.warn:
+            return 1
+        return 0
     if args.command_name == "serve":
         from fireclaw_core.gateway.config import find_config, load_config, merge_config
         from fireclaw_core.gateway.serve import run_server_blocking
@@ -261,9 +358,28 @@ def main() -> int:
             cfg = load_config(config_path)
         merged = merge_config(cfg, {
             "adapter": args.adapter,
+            "runtime_root": args.runtime_root,
             "ros1_config": args.ros1_config,
             "host": args.host,
             "port": args.port,
+            "api_token": args.api_token,
+            "robot_gateway_client_api_token": args.robot_gateway_api_token,
+            "tls_enabled": args.tls if args.tls else None,
+            "tls_cert_file": args.tls_cert_file,
+            "tls_key_file": args.tls_key_file,
+            "tls_ca_file": args.tls_ca_file,
+            "tls_require_client_cert": (
+                args.tls_require_client_cert
+                if args.tls_require_client_cert
+                else None
+            ),
+            "robot_gateway_client_tls_ca_file": args.robot_gateway_ca_file,
+            "robot_gateway_client_tls_cert_file": (
+                args.robot_gateway_client_cert_file
+            ),
+            "robot_gateway_client_tls_key_file": (
+                args.robot_gateway_client_key_file
+            ),
             "data_dir": str(args.data_dir) if args.data_dir else None,
             "planner_type": args.planner,
             "provider_base_url": args.provider_base_url,
@@ -339,42 +455,110 @@ def main() -> int:
                 )
             })
         )
-        run_server_blocking(
-            adapter=str(merged.get("adapter", "simulator")),
-            ros1_config=merged.get("ros1_config"),
-            host=str(merged.get("host", "127.0.0.1")),
-            port=int(merged.get("port", 8766)),
-            planner_type=str(merged.get("planner_type", "deterministic")),
-            provider_base_url=merged.get("provider_base_url"),
-            provider_api_key=merged.get("provider_api_key"),
-            model=merged.get("model"),
-            model_catalog_path=merged.get("model_catalog_path"),
-            llm_trace_path=merged.get("llm_trace_path"),
-            data_dir=Path(str(merged.get("data_dir", "data"))),
-            robot_agent_enabled=bool(merged.get("robot_agent_enabled", False)),
-            robot_agent_planner=str(merged.get("robot_agent_planner", "deterministic")),
-            robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
-            robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
-            robot_agent_model=merged.get("robot_agent_model"),
-            robot_agent_model_catalog_path=merged.get("robot_agent_model_catalog_path"),
-            robot_profiles=tuple(merged["mission_robot_profiles"]) if merged.get("mission_robot_profiles") else None,
-            embodied_runtime_mode=(
-                str(merged["embodied_runtime_mode"])
-                if merged.get("embodied_runtime_mode") is not None
-                else None
-            ),
-            memory_rag=memory_rag,
-            external_knowledge_rag=external_knowledge_rag,
-            deployment_config=(
-                dict(merged["deployment"])
-                if isinstance(merged.get("deployment"), dict)
-                else None
-            ),
+        from fireclaw_core.gateway.transport import (
+            GatewayTlsClientConfig,
+            GatewayTlsServerConfig,
         )
+        from fireclaw_core.gateway.network_security import (
+            gateway_network_policy_from_config,
+        )
+        from fireclaw_core.infra.runtime_paths import (
+            fireclaw_runtime_directory,
+            resolve_fireclaw_runtime_root,
+        )
+
+        runtime_root = resolve_fireclaw_runtime_root(
+            configured=merged.get("runtime_root"),
+            config_path=config_path,
+        )
+        with fireclaw_runtime_directory(runtime_root):
+            run_server_blocking(
+                adapter=str(merged.get("adapter", "simulator")),
+                ros1_config=merged.get("ros1_config"),
+                host=str(merged.get("host", "127.0.0.1")),
+                port=int(merged.get("port", 8766)),
+                api_token=merged.get("api_token"),
+                robot_gateway_api_token=merged.get(
+                    "robot_gateway_client_api_token"
+                ),
+                tls=GatewayTlsServerConfig(
+                    enabled=bool(merged.get("tls_enabled", False)),
+                    cert_file=merged.get("tls_cert_file"),
+                    key_file=merged.get("tls_key_file"),
+                    ca_file=merged.get("tls_ca_file"),
+                    require_client_cert=bool(
+                        merged.get("tls_require_client_cert", False)
+                    ),
+                ),
+                robot_gateway_tls=GatewayTlsClientConfig(
+                    ca_file=merged.get("robot_gateway_client_tls_ca_file"),
+                    cert_file=merged.get(
+                        "robot_gateway_client_tls_cert_file"
+                    ),
+                    key_file=merged.get(
+                        "robot_gateway_client_tls_key_file"
+                    ),
+                ),
+                network_policy=gateway_network_policy_from_config(
+                    merged.get("network")
+                ),
+                planner_type=str(
+                    merged.get("planner_type", "deterministic")
+                ),
+                provider_base_url=merged.get("provider_base_url"),
+                provider_api_key=merged.get("provider_api_key"),
+                model=merged.get("model"),
+                model_catalog_path=merged.get("model_catalog_path"),
+                llm_trace_path=merged.get("llm_trace_path"),
+                data_dir=Path(str(merged.get("data_dir", "data"))),
+                robot_agent_enabled=bool(
+                    merged.get("robot_agent_enabled", False)
+                ),
+                robot_agent_planner=str(
+                    merged.get("robot_agent_planner", "deterministic")
+                ),
+                robot_agent_provider_base_url=merged.get(
+                    "robot_agent_provider_base_url"
+                ),
+                robot_agent_provider_api_key=merged.get(
+                    "robot_agent_provider_api_key"
+                ),
+                robot_agent_model=merged.get("robot_agent_model"),
+                robot_agent_model_catalog_path=merged.get(
+                    "robot_agent_model_catalog_path"
+                ),
+                robot_profiles=(
+                    tuple(merged["mission_robot_profiles"])
+                    if merged.get("mission_robot_profiles")
+                    else None
+                ),
+                embodied_runtime_mode=(
+                    str(merged["embodied_runtime_mode"])
+                    if merged.get("embodied_runtime_mode") is not None
+                    else None
+                ),
+                memory_rag=memory_rag,
+                external_knowledge_rag=external_knowledge_rag,
+                deployment_config=(
+                    dict(merged["deployment"])
+                    if isinstance(merged.get("deployment"), dict)
+                    else None
+                ),
+            )
         return 0
     if args.command_name == "mission":
+        from fireclaw_core.gateway.transport import GatewayTlsClientConfig
         from fireclaw_core.mission.interactive import run_interactive
-        run_interactive(server_url=args.server, timeout=args.timeout)
+        run_interactive(
+            server_url=args.server,
+            timeout=args.timeout,
+            api_token=args.api_token,
+            tls=GatewayTlsClientConfig(
+                ca_file=args.tls_ca_file,
+                cert_file=args.tls_client_cert_file,
+                key_file=args.tls_client_key_file,
+            ),
+        )
         return 0
     if args.command_name == "robot-gateway":
         from fireclaw_core.gateway.gateway import main as gateway_main

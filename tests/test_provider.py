@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import MagicMock, patch
-
 import httpx
 import pytest
 
@@ -79,12 +77,40 @@ def test_provider_api_error_fields():
 # --- OpenAICompatProvider tests ---
 
 
-def _make_mock_response(status_code: int, json_body: dict[str, Any]) -> MagicMock:
-    """Create a mock httpx.Response."""
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.json.return_value = json_body
-    return resp
+def _make_provider(
+    *,
+    status_code: int = 200,
+    json_body: dict[str, Any] | None = None,
+    raw_body: bytes | None = None,
+    error: Exception | None = None,
+    trust_env: bool = False,
+    max_response_bytes: int = 4 * 1024 * 1024,
+) -> tuple[OpenAICompatProvider, list[httpx.Request]]:
+    requests: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if error is not None:
+            raise error
+        content = (
+            raw_body
+            if raw_body is not None
+            else json.dumps(json_body or {}).encode("utf-8")
+        )
+        return httpx.Response(
+            status_code,
+            content=content,
+            headers={"Content-Length": str(len(content))},
+        )
+
+    provider = OpenAICompatProvider(
+        base_url="http://localhost:8080",
+        api_key="sk-test",
+        trust_env=trust_env,
+        max_response_bytes=max_response_bytes,
+        transport=httpx.MockTransport(_handler),
+    )
+    return provider, requests
 
 
 def _sample_openai_response(
@@ -115,11 +141,10 @@ def _sample_openai_response(
     }
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_returns_chat_completion(mock_post: MagicMock):
-    mock_post.return_value = _make_mock_response(200, _sample_openai_response())
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+def test_openai_compat_provider_returns_chat_completion():
+    provider, requests = _make_provider(
+        json_body=_sample_openai_response()
+    )
     result = provider.chat_completion(
         messages=[{"role": "user", "content": "Hi"}],
         model="gpt-4",
@@ -133,13 +158,11 @@ def test_openai_compat_provider_returns_chat_completion(mock_post: MagicMock):
     assert result.usage.prompt_tokens == 10
     assert result.usage.completion_tokens == 5
     assert result.usage.total_tokens == 15
-    assert mock_post.call_args.kwargs["trust_env"] is False
+    assert len(requests) == 1
+    assert provider.trust_env is False
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_sends_tools(mock_post: MagicMock):
-    mock_post.return_value = _make_mock_response(200, _sample_openai_response())
-
+def test_openai_compat_provider_sends_tools():
     tools = [
         {
             "type": "function",
@@ -155,26 +178,22 @@ def test_openai_compat_provider_sends_tools(mock_post: MagicMock):
         }
     ]
 
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    provider, requests = _make_provider(
+        json_body=_sample_openai_response()
+    )
     provider.chat_completion(
         messages=[{"role": "user", "content": "search"}],
         model="gpt-4",
         tools=tools,
     )
 
-    call_kwargs = mock_post.call_args
-    body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json") or call_kwargs[0][1]
+    body = json.loads(requests[0].content.decode("utf-8"))
     assert body["tools"] == tools
-    assert call_kwargs.kwargs["trust_env"] is False
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_can_opt_into_environment_proxy(mock_post: MagicMock):
-    mock_post.return_value = _make_mock_response(200, _sample_openai_response())
-
-    provider = OpenAICompatProvider(
-        base_url="http://localhost:8080",
-        api_key="sk-test",
+def test_openai_compat_provider_can_opt_into_environment_proxy():
+    provider, _ = _make_provider(
+        json_body=_sample_openai_response(),
         trust_env=True,
     )
     provider.chat_completion(
@@ -182,14 +201,14 @@ def test_openai_compat_provider_can_opt_into_environment_proxy(mock_post: MagicM
         model="gpt-4",
     )
 
-    assert mock_post.call_args.kwargs["trust_env"] is True
+    assert provider.trust_env is True
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_raises_auth_error(mock_post: MagicMock):
-    mock_post.return_value = _make_mock_response(401, {"error": {"message": "Unauthorized"}})
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-bad")
+def test_openai_compat_provider_raises_auth_error():
+    provider, _ = _make_provider(
+        status_code=401,
+        json_body={"error": {"message": "Unauthorized"}},
+    )
     with pytest.raises(ProviderAuthError) as exc_info:
         provider.chat_completion(
             messages=[{"role": "user", "content": "Hi"}],
@@ -198,11 +217,11 @@ def test_openai_compat_provider_raises_auth_error(mock_post: MagicMock):
     assert exc_info.value.status_code == 401
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_raises_api_error(mock_post: MagicMock):
-    mock_post.return_value = _make_mock_response(500, {"error": {"message": "Internal Server Error"}})
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+def test_openai_compat_provider_raises_api_error():
+    provider, _ = _make_provider(
+        status_code=500,
+        json_body={"error": {"message": "Internal Server Error"}},
+    )
     with pytest.raises(ProviderAPIError) as exc_info:
         provider.chat_completion(
             messages=[{"role": "user", "content": "Hi"}],
@@ -211,11 +230,10 @@ def test_openai_compat_provider_raises_api_error(mock_post: MagicMock):
     assert exc_info.value.status_code == 500
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_raises_timeout_error(mock_post: MagicMock):
-    mock_post.side_effect = httpx.TimeoutException("Connection timed out")
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+def test_openai_compat_provider_raises_timeout_error():
+    provider, _ = _make_provider(
+        error=httpx.ReadTimeout("Connection timed out"),
+    )
     with pytest.raises(ProviderTimeoutError, match="Connection timed out"):
         provider.chat_completion(
             messages=[{"role": "user", "content": "Hi"}],
@@ -223,16 +241,9 @@ def test_openai_compat_provider_raises_timeout_error(mock_post: MagicMock):
         )
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_raises_on_malformed_response(mock_post: MagicMock):
+def test_openai_compat_provider_raises_on_malformed_response():
     """Response with missing 'choices' key should raise ProviderAPIError."""
-    resp = MagicMock()
-    resp.status_code = 200
-    resp.json.return_value = {"model": "gpt-4"}  # no "choices"
-    resp.text = '{"model": "gpt-4"}'
-    mock_post.return_value = resp
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    provider, _ = _make_provider(json_body={"model": "gpt-4"})
     with pytest.raises(ProviderAPIError, match="Malformed response body"):
         provider.chat_completion(
             messages=[{"role": "user", "content": "Hi"}],
@@ -240,16 +251,11 @@ def test_openai_compat_provider_raises_on_malformed_response(mock_post: MagicMoc
         )
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_raises_on_invalid_json_response(mock_post: MagicMock):
+def test_openai_compat_provider_raises_on_invalid_json_response():
     """Response with non-JSON body should raise ProviderAPIError."""
-    resp = MagicMock()
-    resp.status_code = 200
-    resp.json.side_effect = json.JSONDecodeError("Expecting value", "", 0)
-    resp.text = "<html>Gateway Error</html>"
-    mock_post.return_value = resp
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    provider, _ = _make_provider(
+        raw_body=b"<html>Gateway Error</html>"
+    )
     with pytest.raises(ProviderAPIError, match="Invalid JSON"):
         provider.chat_completion(
             messages=[{"role": "user", "content": "Hi"}],
@@ -257,11 +263,10 @@ def test_openai_compat_provider_raises_on_invalid_json_response(mock_post: Magic
         )
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_raises_on_connection_error(mock_post: MagicMock):
-    mock_post.side_effect = httpx.ConnectError("Connection refused")
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+def test_openai_compat_provider_raises_on_connection_error():
+    provider, _ = _make_provider(
+        error=httpx.ConnectError("Connection refused"),
+    )
     with pytest.raises(ProviderError, match="Connection refused"):
         provider.chat_completion(
             messages=[{"role": "user", "content": "Hi"}],
@@ -269,18 +274,35 @@ def test_openai_compat_provider_raises_on_connection_error(mock_post: MagicMock)
         )
 
 
-@patch("fireclaw_core.provider.provider.httpx.post")
-def test_openai_compat_provider_raises_on_invalid_json_error_body(mock_post: MagicMock):
+def test_openai_compat_provider_raises_on_invalid_json_error_body():
     """Error response with non-JSON body should fall back to response.text."""
-    resp = MagicMock()
-    resp.status_code = 502
-    resp.json.side_effect = json.JSONDecodeError("Expecting value", "", 0)
-    resp.text = "<html>Bad Gateway</html>"
-    mock_post.return_value = resp
-
-    provider = OpenAICompatProvider(base_url="http://localhost:8080", api_key="sk-test")
+    provider, _ = _make_provider(
+        status_code=502,
+        raw_body=b"<html>Bad Gateway</html>",
+    )
     with pytest.raises(ProviderAPIError, match="Bad Gateway"):
         provider.chat_completion(
             messages=[{"role": "user", "content": "Hi"}],
             model="gpt-4",
+        )
+
+
+def test_openai_compat_provider_rejects_oversized_streamed_response() -> None:
+    provider, _ = _make_provider(
+        raw_body=b"x" * 65,
+        max_response_bytes=64,
+    )
+
+    with pytest.raises(ProviderError, match="max_response_bytes"):
+        provider.chat_completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="gpt-4",
+        )
+
+
+def test_openai_compat_provider_rejects_remote_plaintext_url() -> None:
+    with pytest.raises(ValueError, match="require HTTPS"):
+        OpenAICompatProvider(
+            base_url="http://provider.example",
+            api_key="sk-test",
         )

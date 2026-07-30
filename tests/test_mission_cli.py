@@ -186,7 +186,11 @@ def test_mission_cli_trace_aggregates_robot_subagent_trace(tmp_path):
     assert trace["subtasks"][0]["robot_trace"]["result"]["status"] == "succeeded"
 
 
-def test_mission_cli_cancel_requests_robot_subagent_cancellation(tmp_path):
+def test_mission_cli_cancel_requests_robot_subagent_cancellation(
+    tmp_path,
+    legacy_skill_profile,
+    legacy_skill_executor,
+):
     skills_dir = tmp_path / "skills"
     _write_slow_policy_skill(skills_dir)
     gateway = FireClawGateway(
@@ -199,7 +203,9 @@ def test_mission_cli_cancel_requests_robot_subagent_cancellation(tmp_path):
             event_path=str(tmp_path / "robot-events.jsonl"),
             task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
             workspace_skills_dir=str(skills_dir),
-        )
+            deployment_profile=legacy_skill_profile,
+        ),
+        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:

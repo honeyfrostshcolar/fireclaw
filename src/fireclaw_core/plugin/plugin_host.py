@@ -16,6 +16,12 @@ from typing import Any, Literal
 
 
 PluginStatus = Literal["registered", "active", "failed", "disposed"]
+PluginTrustLevel = Literal[
+    "builtin",
+    "trusted",
+    "sandboxed",
+    "descriptor_only",
+]
 ContributionKind = Literal[
     "tool",
     "physical_capability",
@@ -67,6 +73,7 @@ class PluginRecord:
     description: str | None = None
     source: str = "runtime"
     api_version: str = "1"
+    trust_level: PluginTrustLevel = "descriptor_only"
     status: PluginStatus = "registered"
     contribution_keys: list[tuple[str, str]] = field(default_factory=list)
     diagnostics: list[PluginDiagnostic] = field(default_factory=list)
@@ -80,6 +87,7 @@ class PluginRecord:
             "description": self.description,
             "source": self.source,
             "api_version": self.api_version,
+            "trust_level": self.trust_level,
             "status": self.status,
             "contributions": [
                 {"kind": kind, "contribution_id": contribution_id}
@@ -107,6 +115,7 @@ class PluginActivationTransaction(AbstractContextManager["FireClawPluginApi"]):
         description: str | None = None,
         source: str = "runtime",
         api_version: str = "1",
+        trust_level: PluginTrustLevel,
     ) -> None:
         self._host = host
         self._record = PluginRecord(
@@ -116,6 +125,7 @@ class PluginActivationTransaction(AbstractContextManager["FireClawPluginApi"]):
             description=description,
             source=source,
             api_version=api_version,
+            trust_level=_trust_level(trust_level),
         )
         self._staged: list[PluginContribution] = []
         self._dispose_callbacks: list[Callable[[], None]] = []
@@ -229,11 +239,18 @@ class FireClawPluginApi:
             metadata={"hook_type": hook_type, "hook_name": hook_name},
         )
 
-    def register_service(self, service_id: str, service: Any) -> None:
+    def register_service(
+        self,
+        service_id: str,
+        service: Any,
+        *,
+        data_only: bool = False,
+    ) -> None:
         self._transaction.stage(
             kind="service",
             contribution_id=service_id,
             value=service,
+            metadata={"data_only": data_only},
         )
 
     def register_context_engine(self, engine_id: str, engine: Any) -> None:
@@ -274,6 +291,7 @@ class FireClawPluginHost:
         description: str | None = None,
         source: str = "runtime",
         api_version: str = "1",
+        trust_level: PluginTrustLevel,
     ) -> PluginActivationTransaction:
         return PluginActivationTransaction(
             self,
@@ -283,21 +301,83 @@ class FireClawPluginHost:
             description=description,
             source=source,
             api_version=api_version,
+            trust_level=trust_level,
         )
 
     def activate(
         self,
         plugin_id: str,
         register: Callable[[FireClawPluginApi], None],
+        *,
+        trust_level: PluginTrustLevel,
         **metadata: Any,
     ) -> PluginRecord:
-        transaction = self.begin_registration(plugin_id, **metadata)
+        if trust_level == "descriptor_only":
+            raise ValueError(
+                "descriptor_only plugins must use register_data_service(); "
+                "the generic activation callback is executable host code."
+            )
+        transaction = self.begin_registration(
+            plugin_id,
+            trust_level=trust_level,
+            **metadata,
+        )
         try:
             register(transaction.api)
             return transaction.commit()
         except Exception as exc:
             transaction.rollback()
-            self._record_activation_failure(plugin_id, exc, metadata)
+            self._record_activation_failure(
+                plugin_id,
+                exc,
+                {"trust_level": trust_level, **metadata},
+            )
+            raise
+
+    def register_data_service(
+        self,
+        *,
+        plugin_id: str,
+        service_id: str,
+        value: Any,
+        name: str | None = None,
+        version: str | None = None,
+        description: str | None = None,
+        source: str = "descriptor",
+        api_version: str = "1",
+    ) -> PluginRecord:
+        """Register inert descriptor data without invoking plugin code."""
+
+        transaction = self.begin_registration(
+            plugin_id,
+            name=name,
+            version=version,
+            description=description,
+            source=source,
+            api_version=api_version,
+            trust_level="descriptor_only",
+        )
+        try:
+            transaction.api.register_service(
+                service_id,
+                value,
+                data_only=True,
+            )
+            return transaction.commit()
+        except Exception as exc:
+            transaction.rollback()
+            self._record_activation_failure(
+                plugin_id,
+                exc,
+                {
+                    "name": name,
+                    "version": version,
+                    "description": description,
+                    "source": source,
+                    "api_version": api_version,
+                    "trust_level": "descriptor_only",
+                },
+            )
             raise
 
     def register_contribution(
@@ -309,6 +389,7 @@ class FireClawPluginHost:
         value: Any,
         metadata: dict[str, Any] | None = None,
         source: str = "compatibility",
+        trust_level: PluginTrustLevel,
     ) -> PluginRecord:
         def register(api: FireClawPluginApi) -> None:
             api._transaction.stage(
@@ -318,7 +399,12 @@ class FireClawPluginHost:
                 metadata=metadata,
             )
 
-        return self.activate(plugin_id, register, source=source)
+        return self.activate(
+            plugin_id,
+            register,
+            source=source,
+            trust_level=trust_level,
+        )
 
     def get(
         self,
@@ -410,6 +496,7 @@ class FireClawPluginHost:
         dispose_callbacks: Iterable[Callable[[], None]],
     ) -> PluginRecord:
         staged_values = list(staged)
+        dispose_values = list(dispose_callbacks)
         keys = [item.key for item in staged_values]
         if len(keys) != len(set(keys)):
             duplicate = next(key for key in keys if keys.count(key) > 1)
@@ -425,6 +512,50 @@ class FireClawPluginHost:
                 "unsupported_api_version",
                 f"Unsupported FireClaw plugin API version: {record.api_version}",
             )
+        if record.trust_level == "descriptor_only":
+            if dispose_values:
+                raise self._registration_error(
+                    record.plugin_id,
+                    "untrusted_plugin_executable_contribution",
+                    "Descriptor-only plugins cannot register dispose callbacks.",
+                )
+            for item in staged_values:
+                if (
+                    item.kind != "service"
+                    or item.metadata.get("data_only") is not True
+                    or callable(item.value)
+                ):
+                    raise self._registration_error(
+                        record.plugin_id,
+                        "untrusted_plugin_executable_contribution",
+                        (
+                            "Descriptor-only plugins may register only "
+                            "non-callable data services."
+                        ),
+                        item.key,
+                    )
+        if record.trust_level == "sandboxed":
+            if dispose_values:
+                raise self._registration_error(
+                    record.plugin_id,
+                    "sandboxed_plugin_host_callback_forbidden",
+                    "Sandboxed plugins cannot register host dispose callbacks.",
+                )
+            for item in staged_values:
+                if (
+                    item.kind != "tool"
+                    or item.metadata.get("execution_boundary")
+                    != "docker_sandbox"
+                ):
+                    raise self._registration_error(
+                        record.plugin_id,
+                        "sandboxed_plugin_boundary_invalid",
+                        (
+                            "Sandboxed plugins may contribute only Tool "
+                            "wrappers bound to the Docker execution boundary."
+                        ),
+                        item.key,
+                    )
         with self._lock:
             current_record = self._records.get(record.plugin_id)
             if current_record is not None and current_record.status not in {
@@ -450,6 +581,10 @@ class FireClawPluginHost:
                     )
             if current_record is not None and current_record.status == "active":
                 current_record.contribution_keys.extend(keys)
+                current_record.trust_level = _stronger_trust_level(
+                    current_record.trust_level,
+                    record.trust_level,
+                )
                 record = current_record
             else:
                 record.status = "active"
@@ -460,7 +595,7 @@ class FireClawPluginHost:
                 self._contributions[item.key] = item
             self._dispose_callbacks[record.plugin_id] = (
                 *self._dispose_callbacks.get(record.plugin_id, ()),
-                *tuple(dispose_callbacks),
+                *dispose_values,
             )
             return deepcopy(record)
 
@@ -492,6 +627,9 @@ class FireClawPluginHost:
                 description=metadata.get("description"),
                 source=str(metadata.get("source") or "runtime"),
                 api_version=str(metadata.get("api_version") or "1"),
+                trust_level=_trust_level(
+                    metadata.get("trust_level", "descriptor_only")
+                ),
                 status="failed",
                 diagnostics=[diagnostic],
             )
@@ -524,3 +662,27 @@ def _required_id(value: str, field_name: str) -> str:
 def _value_id(value: Any, attribute: str) -> str:
     candidate = getattr(value, attribute, None)
     return _required_id(candidate, attribute)
+
+
+def _trust_level(value: Any) -> PluginTrustLevel:
+    if value not in {
+        "builtin",
+        "trusted",
+        "sandboxed",
+        "descriptor_only",
+    }:
+        raise ValueError(f"Unsupported plugin trust level: {value!r}")
+    return value
+
+
+def _stronger_trust_level(
+    current: PluginTrustLevel,
+    incoming: PluginTrustLevel,
+) -> PluginTrustLevel:
+    rank = {
+        "descriptor_only": 0,
+        "sandboxed": 1,
+        "trusted": 2,
+        "builtin": 3,
+    }
+    return current if rank[current] >= rank[incoming] else incoming

@@ -1,22 +1,40 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from fireclaw_core.agent.robot import RobotActionResult
 
 
+class SandboxedSkillExecutor(Protocol):
+    """Trusted boundary used by legacy executable Tool manifests."""
+
+    def stage_skill(self, source_dir: str | Path, *, skill_name: str) -> str:
+        """Materialize a manifest directory and return a sandbox-relative cwd."""
+
+    def execute_process(
+        self,
+        *,
+        argv: list[str],
+        cwd: str,
+        stdin_text: str | None,
+        timeout_seconds: float,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Execute argv inside the configured process sandbox."""
+
+
 @dataclass(frozen=True)
 class SubprocessSkillRunner:
+    """Compatibility runner that can execute only through a trusted sandbox."""
+
     command: list[str]
+    executor: SandboxedSkillExecutor
     timeout_seconds: float = 30.0
-    cwd: str | Path | None = None
-    env: dict[str, str] = field(default_factory=dict)
+    cwd: str = "."
 
     def run(
         self,
@@ -25,87 +43,84 @@ class SubprocessSkillRunner:
     ) -> RobotActionResult:
         timestamp = datetime.now(timezone.utc).isoformat()
         cancellation_requested = cancellation_requested or (lambda: False)
-        serialized_inputs = json.dumps(inputs, ensure_ascii=False)
+        if cancellation_requested():
+            return self._cancelled(timestamp)
+
         try:
-            process = subprocess.Popen(
-                self.command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+            completed = self.executor.execute_process(
+                argv=list(self.command),
                 cwd=self.cwd,
-                env=self.env or None,
+                stdin_text=json.dumps(inputs, ensure_ascii=False),
+                timeout_seconds=self.timeout_seconds,
+                cancellation_requested=cancellation_requested,
             )
-            completed = self._communicate_until_complete(
-                process,
-                serialized_inputs,
-                cancellation_requested,
-            )
-        except _SubprocessCancelled:
-            return RobotActionResult(
-                ok=False,
-                status="cancelled",
-                robot_id="external",
-                mode="subprocess",
-                action="subprocess_skill",
-                dry_run=True,
-                data={},
-                timestamp=timestamp,
-                error="Subprocess skill cancelled by operator request.",
-            )
-        except _SubprocessTimedOut:
+        except Exception as exc:
             return RobotActionResult(
                 ok=False,
                 status="failed",
                 robot_id="external",
-                mode="subprocess",
+                mode="sandboxed_subprocess",
                 action="subprocess_skill",
                 dry_run=True,
                 data={},
                 timestamp=timestamp,
-                error=f"Subprocess skill timed out after {self.timeout_seconds} seconds.",
-            )
-        except OSError as exc:
-            return RobotActionResult(
-                ok=False,
-                status="failed",
-                robot_id="external",
-                mode="subprocess",
-                action="subprocess_skill",
-                dry_run=True,
-                data={},
-                timestamp=timestamp,
-                error=str(exc),
+                error=f"Sandboxed subprocess skill failed: {exc}",
             )
 
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip()
-            detail = f": {stderr}" if stderr else ""
+        if completed.get("cancelled"):
+            return self._cancelled(timestamp)
+        if completed.get("timed_out"):
             return RobotActionResult(
                 ok=False,
                 status="failed",
                 robot_id="external",
-                mode="subprocess",
+                mode="sandboxed_subprocess",
                 action="subprocess_skill",
                 dry_run=True,
-                data={"returncode": completed.returncode},
+                data={},
                 timestamp=timestamp,
-                error=f"Subprocess skill exited with code {completed.returncode}{detail}",
+                error=(
+                    "Sandboxed subprocess skill timed out after "
+                    f"{completed.get('timeout_seconds', self.timeout_seconds)} seconds."
+                ),
+            )
+
+        returncode = completed.get("exit_code")
+        stdout = str(completed.get("stdout") or "")
+        stderr = str(completed.get("stderr") or "")
+        if returncode != 0:
+            detail = f": {stderr.strip()}" if stderr.strip() else ""
+            return RobotActionResult(
+                ok=False,
+                status="failed",
+                robot_id="external",
+                mode="sandboxed_subprocess",
+                action="subprocess_skill",
+                dry_run=True,
+                data={"returncode": returncode},
+                timestamp=timestamp,
+                error=(
+                    "Sandboxed subprocess skill exited with code "
+                    f"{returncode}{detail}"
+                ),
             )
 
         try:
-            payload = json.loads(completed.stdout)
+            payload = json.loads(stdout)
         except json.JSONDecodeError as exc:
             return RobotActionResult(
                 ok=False,
                 status="failed",
                 robot_id="external",
-                mode="subprocess",
+                mode="sandboxed_subprocess",
                 action="subprocess_skill",
                 dry_run=True,
-                data={"stdout": completed.stdout},
+                data={"stdout": stdout},
                 timestamp=timestamp,
-                error=f"Subprocess skill returned invalid JSON: {exc.msg}",
+                error=(
+                    "Sandboxed subprocess skill returned invalid JSON: "
+                    f"{exc.msg}"
+                ),
             )
 
         if not isinstance(payload, dict):
@@ -113,12 +128,12 @@ class SubprocessSkillRunner:
                 ok=False,
                 status="failed",
                 robot_id="external",
-                mode="subprocess",
+                mode="sandboxed_subprocess",
                 action="subprocess_skill",
                 dry_run=True,
-                data={"stdout": completed.stdout},
+                data={"stdout": stdout},
                 timestamp=timestamp,
-                error="Subprocess skill JSON response must be an object.",
+                error="Sandboxed subprocess skill JSON response must be an object.",
             )
 
         data = payload.get("data", {})
@@ -127,12 +142,15 @@ class SubprocessSkillRunner:
                 ok=False,
                 status="failed",
                 robot_id="external",
-                mode="subprocess",
+                mode="sandboxed_subprocess",
                 action="subprocess_skill",
                 dry_run=True,
                 data={},
                 timestamp=timestamp,
-                error="Subprocess skill response field 'data' must be an object.",
+                error=(
+                    "Sandboxed subprocess skill response field 'data' "
+                    "must be an object."
+                ),
             )
 
         error = payload.get("error")
@@ -141,7 +159,7 @@ class SubprocessSkillRunner:
             ok=ok,
             status="succeeded" if ok else "failed",
             robot_id="external",
-            mode="subprocess",
+            mode="sandboxed_subprocess",
             action="subprocess_skill",
             dry_run=True,
             data=data,
@@ -149,60 +167,16 @@ class SubprocessSkillRunner:
             error=str(error) if error else None,
         )
 
-    def _communicate_until_complete(
-        self,
-        process: subprocess.Popen[str],
-        serialized_inputs: str,
-        cancellation_requested: Callable[[], bool],
-    ) -> subprocess.CompletedProcess[str]:
-        deadline = time.monotonic() + self.timeout_seconds
-        input_pending = True
-        while True:
-            if cancellation_requested():
-                self._terminate_cancelled_process(process)
-                raise _SubprocessCancelled
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._kill_process(process)
-                raise _SubprocessTimedOut
-            try:
-                if input_pending:
-                    stdout, stderr = process.communicate(
-                        input=serialized_inputs,
-                        timeout=min(0.02, remaining),
-                    )
-                    input_pending = False
-                else:
-                    stdout, stderr = process.communicate(timeout=min(0.02, remaining))
-                return subprocess.CompletedProcess(
-                    self.command,
-                    process.returncode,
-                    stdout,
-                    stderr,
-                )
-            except subprocess.TimeoutExpired:
-                input_pending = False
-                continue
-
-    def _terminate_cancelled_process(self, process: subprocess.Popen[str]) -> None:
-        if process.poll() is not None:
-            return
-        process.terminate()
-        try:
-            process.communicate(timeout=0.2)
-        except subprocess.TimeoutExpired:
-            self._kill_process(process)
-
-    def _kill_process(self, process: subprocess.Popen[str]) -> None:
-        if process.poll() is not None:
-            return
-        process.kill()
-        process.communicate()
-
-
-class _SubprocessCancelled(Exception):
-    pass
-
-
-class _SubprocessTimedOut(Exception):
-    pass
+    @staticmethod
+    def _cancelled(timestamp: str) -> RobotActionResult:
+        return RobotActionResult(
+            ok=False,
+            status="cancelled",
+            robot_id="external",
+            mode="sandboxed_subprocess",
+            action="subprocess_skill",
+            dry_run=True,
+            data={},
+            timestamp=timestamp,
+            error="Sandboxed subprocess skill cancelled by operator request.",
+        )

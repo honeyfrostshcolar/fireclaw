@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -205,9 +206,11 @@ class _JsonResponse:
 
     def __init__(self, payload: dict[str, Any]) -> None:
         self._raw = json.dumps(payload).encode("utf-8")
+        self._stream = io.BytesIO(self._raw)
+        self.headers = {"Content-Length": str(len(self._raw))}
 
-    def read(self) -> bytes:
-        return self._raw
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
 
     def __enter__(self) -> "_JsonResponse":
         return self
@@ -218,7 +221,12 @@ class _JsonResponse:
 
 def _gateway_urlopen(gateway: Any):
     """Create a urlopen side effect that routes to the gateway's export service."""
-    def open_request(request_value: Any, timeout: float) -> _JsonResponse:
+    def open_request(
+        request_value: Any,
+        timeout: float,
+        context: Any | None = None,
+    ) -> _JsonResponse:
+        _ = context
         parsed = urlparse(request_value.full_url)
         query = parse_qs(parsed.query)
         scope = ReplicationRequestScope(
@@ -393,8 +401,9 @@ def test_real_client_robot_gateway_and_reconciler_round_trip(
     robot_gateway, client, mission_gateway, destination = (
         _build_real_replication_stack(tmp_path)
     )
-    with patch(
-        "fireclaw_core.subagent.subagent_client.request.urlopen",
+    with patch.object(
+        client._transport,
+        "open",
         side_effect=_gateway_urlopen(robot_gateway),
     ):
         result = mission_gateway.sync_robot_memory(
@@ -415,8 +424,9 @@ def test_real_path_omits_restricted_event_and_hidden_relation(
             include_restricted_source=True,
         )
     )
-    with patch(
-        "fireclaw_core.subagent.subagent_client.request.urlopen",
+    with patch.object(
+        client._transport,
+        "open",
         side_effect=_gateway_urlopen(robot_gateway),
     ):
         result = mission_gateway.sync_robot_memory(

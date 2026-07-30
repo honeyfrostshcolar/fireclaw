@@ -285,6 +285,57 @@ def test_ros1_smoke_infrastructure_starts(
 # Topic smoke test – publish Twist to turtlesim via Ros1Transport
 # ---------------------------------------------------------------------------
 
+def test_ros1_diagnostic_tools_read_turtlesim(
+    ros_master,
+    turtlesim_node,
+    smoke_artifact_collector,
+    monkeypatch,
+):
+    """Read a live topic through the bounded diagnostic backend."""
+    from fireclaw_core.ros.ros1_config import Ros1DiagnosticsConfig
+    from fireclaw_core.ros.ros1_diagnostics import Ros1DiagnosticsBackend
+
+    monkeypatch.setenv("ROS_MASTER_URI", "http://localhost:11311")
+    backend = Ros1DiagnosticsBackend.from_config(
+        Ros1DiagnosticsConfig(
+            topic_allowlist=("/turtle1/pose",),
+            frame_allowlist=("world",),
+            action_allowlist=("/move_base",),
+            max_topics=10,
+            max_samples=2,
+            max_timeout_seconds=2.0,
+            max_output_bytes=8_192,
+        ),
+        robot_id="ros1-smoke-turtle",
+    )
+    assert backend is not None
+
+    topics = backend.list_topics(limit=10)
+    sample = backend.sample_topic(
+        "/turtle1/pose",
+        sample_count=1,
+        timeout_seconds=2.0,
+    )
+    rate = backend.topic_rate(
+        "/turtle1/pose",
+        window_seconds=2.0,
+    )
+
+    passed = (
+        topics["status"] == "ok"
+        and any(
+            item["topic"] == "/turtle1/pose"
+            for item in topics["topics"]
+        )
+        and sample["status"] == "ok"
+        and isinstance(sample["samples"][0].get("x"), float)
+        and rate["status"] == "ok"
+        and rate["average_hz"] > 0
+    )
+    smoke_artifact_collector.record("diagnostic_tools", passed)
+    assert passed
+
+
 def test_ros1_topic_publish_to_turtlesim(ros_master, turtlesim_node, smoke_artifact_collector):
     """Publish a Twist to /turtle1/cmd_vel via transport.execute() with a dict payload."""
     from fireclaw_core.ros.ros1_config import Ros1EndpointConfig, Ros1TransportConfig

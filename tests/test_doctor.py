@@ -27,6 +27,37 @@ def test_run_doctor_warns_for_mock_ros1_but_passes_control_boundaries(tmp_path):
     assert _check(report, "workspace_skills")["status"] == "pass"
     assert _check(report, "emergency_stop_hook")["status"] == "pass"
     assert _check(report, "action_feedback_boundary")["status"] == "pass"
+    assert _check(report, "security_audit")["status"] == "pass"
+
+
+def test_doctor_consumes_deployment_security_audit(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[runtime]
+root_dir = "runtime"
+
+[server]
+host = "0.0.0.0"
+
+[network]
+allowed_hosts = ["mission.example"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+
+    report = run_doctor(
+        adapter="dry-run",
+        memory_path=str(tmp_path / "memory.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        skills_dir=None,
+        security_config_path=str(config_path),
+    )
+
+    security = _check(report, "security_audit")
+    assert security["status"] == "fail"
+    assert security["details"]["summary"]["critical"] >= 2
 
 
 def test_run_doctor_ros1_adapter_reports_readiness(tmp_path):

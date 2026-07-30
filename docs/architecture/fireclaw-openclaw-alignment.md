@@ -121,7 +121,8 @@ Current implementation:
 - `RobotRegistry`
 - `RobotRegistryEntry`
 - `RobotSubagentClient`
-- basic HTTP calls for state, submit, trace, cancel, and presence.
+- shared HTTP(S) client calls for state, submit, trace, cancel, and presence;
+- verified TLS 1.3 transport with optional mTLS and loopback-only plaintext.
 
 `RobotSubagentClient` is a legacy-named compatibility identifier. In FireClaw
 it calls registered and online physical or simulated Robot Agents. The Mission
@@ -133,8 +134,7 @@ Missing:
 - fleet config validation/doctor;
 - heartbeat freshness threshold policy;
 - robot pairing or enrollment flow;
-- retry/backoff/circuit-breaker behavior;
-- transport abstraction beyond HTTP.
+- retry/backoff/circuit-breaker transport behavior.
 
 ### 4. Robot Agent Control Plane
 
@@ -180,7 +180,9 @@ Current implementation:
 
 - `FireClawAgent`
 - local planner and safety gate;
-- legacy executable Tool manifest loading (`*.skill.json`);
+- legacy executable Tool manifest loading (`*.skill.json`) as a
+  simulation-only, policy-projected `process` contribution that must execute
+  through `ComputerSandbox`;
 - declarative `PhysicalSkillPlugin` definitions and generic
   `SkillRegistry.register_plugin()` compatibility APIs, following OpenClaw's
   `defineToolPlugin/registerTool` shape for atomic Tools;
@@ -418,6 +420,14 @@ Status: **Partial** (2026-06-09) — 5 of 6 tasks completed
 Implemented:
 
 - Gateway API token authentication (`api_token` in GatewayConfig, Bearer header check);
+- HTTPS with verified hostname/CA, optional mTLS, and remote plaintext rejection;
+- shared Mission/Robot network admission with pre-thread total/per-IP
+  connection budgets, header/body deadlines, early body-size rejection,
+  Host/Origin validation, bounded failed-auth lockout, and bounded SSE
+  connections/subscriber queues;
+- canonical runtime roots and role-specific Docker workspace path validation;
+- named Docker invocation lifecycle, bounded pipe capture, forced cleanup, and
+  immutable image identity verification;
 - Robot enrollment with one-time pairing codes (`JsonlEnrollmentStore`);
 - Heartbeat expiration with stale robot exclusion (`heartbeat_timeout_seconds`, `is_stale()`);
 - Queue compaction (`compact(keep_terminal=N)`);

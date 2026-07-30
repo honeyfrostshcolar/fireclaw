@@ -7,7 +7,7 @@ from fireclaw_core.mission.mission_cli import main as _mission_main
 KNOWN_SUBCOMMANDS = {
     "submit-subtask", "trace", "cancel", "plan-mission", "events",
     "corrections", "memory", "replay", "approval", "lifecycle-check",
-    "serve", "mission", "robot-gateway", "robot-profile",
+    "security-audit", "serve", "mission", "robot-gateway", "robot-profile",
 }
 
 

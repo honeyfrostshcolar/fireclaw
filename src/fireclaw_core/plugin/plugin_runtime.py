@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.plugin.trusted_callback import (
+    invoke_trusted_callback,
+    validate_json_result_size,
+)
 
 # ---------------------------------------------------------------------------
 # Callable hook types
@@ -116,8 +120,24 @@ class PluginRuntime:
         {"provider", "memory", "tool_approval"}
     )
 
-    def __init__(self, host: FireClawPluginHost | None = None) -> None:
+    def __init__(
+        self,
+        host: FireClawPluginHost | None = None,
+        *,
+        hook_timeout_seconds: float = 2.0,
+        hook_result_bytes: int = 64 * 1024,
+    ) -> None:
+        if hook_timeout_seconds <= 0 or hook_timeout_seconds > 30:
+            raise ValueError(
+                "Plugin hook_timeout_seconds must be between 0 and 30."
+            )
+        if hook_result_bytes <= 0 or hook_result_bytes > 1024 * 1024:
+            raise ValueError(
+                "Plugin hook_result_bytes must be between 1 and 1048576."
+            )
         self.host = host or FireClawPluginHost()
+        self.hook_timeout_seconds = hook_timeout_seconds
+        self.hook_result_bytes = hook_result_bytes
         self.plugin_policy: Any = None  # PluginPolicy | None — avoid circular import
 
     # ------------------------------------------------------------------
@@ -159,12 +179,10 @@ class PluginRuntime:
             "tool_approval",
             descriptor.plugin_id,
         )
-        self.host.activate(
-            descriptor.plugin_id,
-            lambda api: api.register_service(
-                f"{descriptor.plugin_id}:descriptor",
-                descriptor,
-            ),
+        self.host.register_data_service(
+            plugin_id=descriptor.plugin_id,
+            service_id=f"{descriptor.plugin_id}:descriptor",
+            value=descriptor,
             name=descriptor.plugin_id,
             source="descriptor",
         )
@@ -265,6 +283,7 @@ class PluginRuntime:
             ),
             name=plugin_id,
             source="callable_hook",
+            trust_level="trusted",
         )
 
     def _find_descriptor(self, plugin_id: str) -> FireClawPluginDescriptor | None:
@@ -375,7 +394,18 @@ class PluginRuntime:
                 ))
                 continue
             try:
-                result = callback(callback_payload)
+                result = invoke_trusted_callback(
+                    callback,
+                    callback_payload,
+                    timeout_seconds=self.hook_timeout_seconds,
+                )
+                validate_json_result_size(
+                    result,
+                    max_bytes=self.hook_result_bytes,
+                    description=(
+                        f"Plugin {plugin_id!r} {hook_type} hook result"
+                    ),
+                )
             except Exception as exc:
                 logger.warning(
                     "Plugin '%s' %s hook '%s' raised %s; skipping.",

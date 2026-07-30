@@ -2,10 +2,50 @@
 # 复制为 fireclaw.toml 并填入你的实际值
 # CLI 参数会覆盖配置文件中的值
 
+# FireClaw changes into this canonical directory before either long-running
+# Gateway is assembled. Relative config paths are resolved from here.
+# When omitted, the directory containing this config file is used.
+[runtime]
+root_dir = "."
+
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8766
 data_dir = "./data/mission"
+# Required before changing host to 0.0.0.0 or another non-loopback address.
+# Prefer FIRECLAW_GATEWAY_TOKEN in deployed environments.
+# api_token = "replace-with-a-random-secret"
+
+# Remote listeners must use TLS. Keep this disabled only while binding to
+# 127.0.0.1/::1 for local development.
+[server.tls]
+enabled = false
+# cert_file = "certs/mission-gateway.crt"
+# key_file = "certs/mission-gateway.key"
+# ca_file = "certs/fireclaw-ca.crt"
+# require_client_cert = true
+
+# Shared admission limits for both Mission and Robot Gateway listeners.
+[network]
+max_body_bytes = 1048576
+request_header_timeout_seconds = 10
+body_read_timeout_seconds = 10
+max_connections = 128
+max_connections_per_ip = 32
+auth_max_failures = 10
+auth_window_seconds = 60
+auth_lockout_seconds = 300
+auth_exempt_loopback = true
+auth_max_tracked_clients = 10000
+max_sse_connections = 16
+max_sse_connections_per_ip = 4
+sse_queue_size = 256
+sse_write_timeout_seconds = 10
+# Required for wildcard listener binds such as 0.0.0.0. List hostnames or IPs,
+# without URL paths; ports are checked against the actual listener port.
+# allowed_hosts = ["mission.example.internal", "robot-1.example.internal"]
+# Browser Origins are denied unless same-origin or explicitly listed here.
+# allowed_origins = ["https://operator-console.example.internal"]
 
 [planner]
 type = "deterministic"         # deterministic | llm
@@ -43,28 +83,54 @@ enabled = false
 backend = "docker"
 workspace_root = "data/mission/agent-workspace"
 image = "fireclaw-agent-sim:local"
+# Required before enabled=true. Obtain with:
+# docker image inspect --format '{{.Id}}' fireclaw-agent-sim:local
+# image_digest = "sha256:replace-with-64-hex-image-id"
 network = "none"
 max_timeout_seconds = 30
 max_output_chars = 20000
+max_output_bytes = 64000
 memory_mb = 512
 cpus = 1.0
 pids_limit = 128
+max_file_bytes = 2097152
+max_workspace_bytes = 67108864
+max_workspace_files = 4096
+max_concurrent_processes = 1
 
 [deployment.sandbox.robot_agent]
 enabled = false
 backend = "docker"
 workspace_root = "data/robot/agent-workspace"
 image = "fireclaw-agent-sim:local"
+# Required before enabled=true. Obtain with:
+# docker image inspect --format '{{.Id}}' fireclaw-agent-sim:local
+# image_digest = "sha256:replace-with-64-hex-image-id"
 network = "none"
 max_timeout_seconds = 30
 max_output_chars = 20000
+max_output_bytes = 64000
 memory_mb = 512
 cpus = 1.0
 pids_limit = 128
+max_file_bytes = 2097152
+max_workspace_bytes = 67108864
+max_workspace_files = 4096
+max_concurrent_processes = 1
 
 [mission]
 robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
+# Token presented by Mission Agent when connecting to Robot Gateways.
+# Prefer FIRECLAW_ROBOT_GATEWAY_TOKEN when all robots share one operator secret.
+# robot_gateway_api_token = "replace-with-the-robot-gateway-secret"
 # embodied_runtime_mode = "simulation"  # real | simulation | replay
+
+# Trust and optional mTLS identity used by Mission Agent when calling Robot
+# Gateways. HTTPS always verifies the certificate hostname.
+[mission.robot_gateway_tls]
+# ca_file = "certs/fireclaw-ca.crt"
+# cert_file = "certs/mission-gateway-client.crt"
+# key_file = "certs/mission-gateway-client.key"
 
 # External firefighting knowledge used to ground the LLM mission planner.
 # Rebuild indexes after running the RAG prepare-index pipeline so records carry
@@ -83,6 +149,8 @@ robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
 [robot_gateway]
 host = "127.0.0.1"
 port = 8765
+# Required before binding the Robot Gateway outside loopback.
+# api_token = "replace-with-a-random-secret"
 profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
 # Legacy external executable Tool-manifest directory. OpenClaw-style SKILL.md
 # workflows and Plugin packages use the documented skills/ and extensions/
@@ -92,6 +160,13 @@ dry_run = true
 default_session_id = "default"
 max_active_execution_tasks = 1
 # runtime_state_path = "data/robot/runtime.sqlite3"
+
+[robot_gateway.tls]
+enabled = false
+# cert_file = "certs/robot-1.crt"
+# key_file = "certs/robot-1.key"
+# ca_file = "certs/fireclaw-ca.crt"
+# require_client_cert = true
 
 # Robot-Local Agent 配置
 [robot_agent]
