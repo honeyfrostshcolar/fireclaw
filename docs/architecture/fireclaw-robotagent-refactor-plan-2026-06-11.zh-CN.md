@@ -3,6 +3,11 @@
 > 术语说明（2026-07-29）：本文是历史重构计划。文中的 `MainAgent` / 主智能体现统一称为 `Mission Coordinator`（任务协调器），机器人侧 `subagent` / 子智能体现统一称为 `Robot Agent`（机器人智能体）。两者是 FireClaw 内两个常驻、职责不同但协同工作的 Agent 角色；`subagent` 仅保留给未来临时派生的认知工作单元。详见 [FireClaw Agent Terminology](./fireclaw-agent-terminology.md)。
 >
 > 空间范围说明（2026-07-29）：本文中的跨楼层示例同样属于历史设计。当前运行合同仅支持单楼层二维地图和 `navigate_to_point`；楼层字段只用于兼容旧记录及未来扩展。详见 [FireClaw Spatial Scope](./fireclaw-spatial-scope.md)。
+>
+> Plugin/Skill/Tool 说明（2026-07-29）：本文中的 `SkillRuntime`、`SkillRegistry`
+> 和 `skill` 多数实际指 legacy 可执行 Tool。后续设计必须以
+> [Plugin, Skill, Tool, Runtime, and Adapter Terminology](./plugin-skill-tool-terminology.md)
+> 为准。
 
 日期：2026-06-11  
 适用项目：FireClaw  

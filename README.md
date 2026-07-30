@@ -1,10 +1,18 @@
 # FireClaw
 
 FireClaw 是一个面向消防机器人的 Python embodied-agent 框架，参考 OpenClaw
-的 agent loop、tool、skill、memory、gateway 和本地持久化边界，并针对真实机器人增加
-物理安全、状态不确定性、多机器人调度、执行证据和可审计恢复机制。
+的 Agent、Plugin、Skill、Tool、Memory、Gateway 和本地持久化边界，并针对
+真实机器人增加物理安全、状态不确定性、多机器人调度、执行证据和可审计恢复
+机制。本文中 Skill 表示可协调多个 Tool 的能力说明/工作流，Tool 表示原子
+可调用操作，Plugin 表示安装与生命周期单元，Runtime/Algorithm 表示实际算法
+实现。完整规范见
+[`docs/architecture/plugin-skill-tool-terminology.md`](docs/architecture/plugin-skill-tool-terminology.md)。
 
-FireClaw 的核心研究对象是机器人本地 `RobotAgent`：每台机器人运行一个常驻 `FireClawGateway + FireClawAgent`，负责本机安全门控、技能执行、ROS/仿真适配、事件流和任务记忆。中央指挥端的 `MissionAgent/MissionGateway` 是 `MissionCoordinator`，负责理解消防员命令、选择在线 Robot Agent 并下发 `StructuredRobotTask`，但不直接控制 ROS topic、service、action 或硬件执行器。
+FireClaw 的核心研究对象是机器人本地 `RobotAgent`：每台机器人运行一个常驻
+`FireClawGateway + FireClawAgent`，负责本机安全门控、Tool 执行、ROS/仿真
+适配、事件流和任务记忆。中央指挥端的 `MissionAgent/MissionGateway` 是
+`MissionCoordinator`，负责理解消防员命令、选择在线 Robot Agent 并下发
+`StructuredRobotTask`，但不直接控制 ROS topic、service、action 或硬件执行器。
 
 本文统一使用三类术语：`Mission Coordinator` 表示中央任务协调器，
 `Robot Agent` 表示常驻机器人智能体，`Delegated Worker Subagent`
@@ -36,7 +44,12 @@ operator command
 |---|---|
 | Mission planning | Shared `BoundedAgentLoop` lifecycle controls drive a mission-specific multi-round planner with frozen-snapshot queries, host-validated active-observation requests, structured graph proposals, clarification, and escalation |
 | Planning context | Central and robot-local LLM planners share model-aware token budgeting, provenance-preserving semantic compaction, trust-tiered context envelopes, persisted inclusion/omission manifests, and deterministic token/retention evaluation |
-| Robot Agent deliberation | Shared `BoundedAgentLoop` lifecycle controls drive a robot-specific one-operation-per-turn loop; every physical skill result is returned to the next model turn |
+| Agent Harness | Every central and robot-local LLM turn crosses one `ProviderAgentHarness` boundary for context fitting, tool projection validation, cancellation, provider errors, tool-call validation, and turn diagnostics |
+| Deployment Tool modes | `simulation` and `real` profiles project different non-physical Agent Tools through one host-enforced policy; simulation process access stays inside a constrained Docker workspace, while real mutations require exact backend authorization and process/host-admin/credential/hardware effects are denied |
+| Robot Agent deliberation | Shared `BoundedAgentLoop` lifecycle controls drive a robot-specific one-operation-per-turn loop; every physical Tool result is returned to the next model turn |
+| Plugin Host | One OpenClaw-shaped `FireClawPluginHost` owns plugin identity, contribution ownership, conflicts, atomic activation/rollback, diagnostics, and disposal; legacy registries are compatibility projections |
+| Capability policy | One ordered, auditable pipeline projects planning tools and rechecks every physical action against actor identity, task delegation, plugin ownership, robot profile, live state, `SafetyGate`, and exact execution authorization |
+| Physical Tool contributions | Legacy `PhysicalSkillPlugin` definitions contribute LLM Tool schemas, task-target bindings, Adapter actions, safety metadata, resources, evidence, and operator projection through the shared host without per-Tool Agent branches |
 | Active observation | After inspecting an unresolved belief, the planner may request evidence; the host selects a safe capable robot, runs a typed observation task, builds `state:N+1`, and resumes planning |
 | Task graph | Typed targets, dependencies, completion goals, robot capabilities, resources, timeouts, risks, and recovery policies |
 | Graph compilation | The LLM describes task semantics; deterministic code allocates robots and injects completion, safety, and approved task-assumption constraints |
@@ -48,7 +61,7 @@ operator command
 | Revision dispatch | Completed nodes are preserved, obsolete work is fenced/cancelled, and replacement nodes are checkpointed and dispatched |
 | Completion contracts | A robot's nominal `succeeded` result is accepted only when compiled evidence requirements are satisfied |
 | Restart recovery | Mission dispatch checkpoints persist node state and recovery intent; restart recovery does not blindly replay completed physical actions |
-| Safety boundary | Planner code cannot directly invoke robot skills; compiled plans still pass deterministic validation and robot-local safety gates |
+| Safety boundary | Planner code cannot directly invoke robot Tools or algorithms; compiled plans still pass deterministic validation and robot-local safety gates |
 | Auditability | Planner turns, observations, validation errors, graph revisions, execution evidence, checkpoints, and outcomes are persisted |
 
 ### Current Spatial Scope
@@ -67,10 +80,29 @@ operator command
 正式契约见
 [`docs/architecture/fireclaw-spatial-scope.md`](docs/architecture/fireclaw-spatial-scope.md)。
 
+## Deployment Tool Modes
+
+两种模式中的 LLM 都不会直接取得 Python、shell、ROS 或机器人进程权限。模型只
+返回结构化 Tool Call，可信宿主再执行工具投影、参数校验、`before_tool_call`
+hook、审批、安全门、沙箱执行和审计。
+
+- `simulation`：主控和 Robot Agent 可获得 `computer_list_files`、
+  `computer_read_file`、`computer_write_file`、`computer_exec`。文件访问限制在
+  角色专属 workspace；进程只在 Docker 内运行，默认无网络、无特权、无宿主
+  shell 回退。
+- `real`：进程、宿主管理、凭据访问和直接硬件类 Agent Tool 不暴露；受限写入
+  需要对最终工具名和参数哈希的精确授权。物理动作不进入通用 Agent Tool
+  runtime，仍通过 Physical Skill、capability policy、`SafetyGate` 和执行授权。
+- 通用计算机工具的结果只能作为 advisory 上下文，不能伪装成传感器事实或覆盖
+  当前状态快照。
+
+配置、威胁边界和调用流程见
+[`docs/architecture/deployment-tool-policy.md`](docs/architecture/deployment-tool-policy.md)。
+
 The framework remains research and integration software, not a certified
 firefighting control system. Real ROS1 transport exists as a configuration-driven
 adapter boundary, but every robot, sensor, emergency-stop path, confidence policy,
-and physical skill still requires site-specific validation.
+and physical Tool/Runtime still requires site-specific validation.
 
 Known planning gaps:
 
@@ -107,7 +139,7 @@ The smallest supported point-target rescue command is:
 去坐标 (2.0, 1.5) 救人
 ```
 
-It produces a five-step dry-run rescue plan:
+It produces a five-Tool dry-run rescue plan:
 
 1. `navigate_to_point`
 2. `search_for_victims`
@@ -290,9 +322,11 @@ Runtime context can be configured from the CLI:
   --memory-path /tmp/fireclaw-demo-memory.jsonl
 ```
 
-`--available-sensor` can be repeated. The values are passed into the safety gate and checked against each skill's `required_sensors`.
+`--available-sensor` can be repeated. The values are passed into the safety
+gate and checked against each legacy executable Tool definition's
+`required_sensors`.
 
-`--adapter` selects the robot adapter used by built-in robot skills:
+`--adapter` selects the robot adapter used by built-in robot Tools:
 
 - `dry-run`: default dependency-free dry-run adapter.
 - `simulator`: deterministic single-floor simulator with pose, victim, sensor, and environment state.
@@ -380,7 +414,8 @@ For one-off runs, CLI flags still override the config file:
 .venv/bin/python -m fireclaw_core robot-gateway \
   --config fireclaw.toml \
   --adapter simulator \
-  --robot-id robot-01
+  --robot-id robot-01 \
+  --runtime-state-path data/robot-01/runtime.sqlite3
 ```
 
 For legacy workflows that need an explicit `robots.json` file, the `robot-profile export` command remains available:
@@ -549,11 +584,23 @@ curl -X POST http://127.0.0.1:8765/emergency-stop \
   -d '{"session_id": "operator-a", "reason": "unsafe heat condition", "operator": {"operator_id": "admin-1", "role": "admin"}}'
 ```
 
-Emergency stop is stronger than normal task cancellation. It records dedicated emergency-stop audit events, requests cancellation for active tasks, and calls the robot adapter's `emergency_stop(...)` hook. Mock adapters only update local state; a real ROS1 profile must explicitly map the hook to the reviewed robot emergency-stop topic, service, action, or SDK call.
+Emergency stop is stronger than normal task cancellation. It closes persistent resource admission before requesting cancellation, records dedicated emergency-stop audit events, and calls the robot adapter's `emergency_stop(...)` hook. The closed admission state survives Gateway restart. Mock adapters only update local state; a real ROS1 profile must explicitly map the hook to the reviewed robot emergency-stop topic, service, action, or SDK call.
 
 Cancellation is cooperative at the task/executor boundary. FireClaw records `task.cancel_requested` immediately and stops before starting the next skill. For subprocess-backed skills, the cancellation signal is also passed into `SubprocessSkillRunner`, which terminates the active child process and kills it if it does not exit promptly. In-process skills still return cooperatively, and real ROS1 profiles must map this same request to robot action cancellation where available.
 
-The durable task queue is append-only JSONL. Gateway records accepted, running, cancel-requested, and terminal task states under `--task-queue-path`. On startup, any previous non-terminal queue record is marked `lost` and a `task.lost` event is written. FireClaw intentionally does not replay physical robot actions after a process restart; an operator should inspect the task trace and robot state before issuing a new command.
+The robot Gateway uses one SQLite WAL database as the authoritative runtime
+store for task transitions, events, loop checkpoints, approval requests,
+execution authorizations, authorization use, emergency flags, and resource
+leases. Configure it with `--runtime-state-path`. When only a custom
+`--memory-path` is supplied, implicit event, task, and runtime paths are placed
+in the same storage namespace. `--task-queue-path` and `--event-path` remain
+append-only, fsync-backed JSONL audit/export mirrors; runtime decisions never
+read them after migration.
+
+Task updates use revisions and reject stale or terminal overwrites. Related
+task and event mutations commit in one SQLite transaction. On startup, a
+previous non-terminal physical operation is reconciled or marked `lost`;
+FireClaw never assumes that a database rollback can undo robot motion.
 
 This rule applies to the robot-local physical-action queue. The central mission
 scheduler has a separate revision-aware checkpoint recovery path: it restores
@@ -797,7 +844,68 @@ continuation, terminal states, and an auditable attempt trace. Both
 through this lifecycle implementation. Their adapters remain different:
 Mission owns immutable snapshots, belief inspection, active-observation
 requests, graph compilation, and plan validation; Robot owns local context,
-task-envelope enforcement, `SafetyGate`, and physical skill execution.
+task-envelope enforcement, `SafetyGate`, and physical Tool execution.
+
+`BoundedAgentLoop` and `ProviderAgentHarness` are separate shared layers.
+The loop owns iteration, timeout, checkpoint, reconciliation, and terminal
+state. The Harness owns one model/tool turn: tokenizer-aware context fitting,
+tool schema normalization, provider invocation, cancellation checks, tool-call
+count/name/argument validation, and error classification. Mission and Robot
+roles build different prompts and parse different domain decisions, but
+neither role calls `chat_completion()` directly.
+
+### Unified Plugin Host
+
+`FireClawPluginHost` follows OpenClaw's injected plugin API and registration
+transaction shape. A plugin contributes tools, physical capabilities, hooks,
+services, context engines, or Agent Harnesses through a plugin-scoped API.
+The host records `owner_plugin_id`, rejects cross-plugin contribution
+conflicts, commits all contributions atomically, rolls back failed activation,
+and removes only owner-scoped state on disposal.
+
+`PluginRuntime`, `PhysicalSkillCatalog`, `SkillRegistry`, and workspace skill
+loading remain available as compatibility APIs, but their registered values
+are projected from the same host when a shared host is supplied. Detailed
+design and OpenClaw analogues are recorded in
+[`docs/architecture/plugin-host-agent-harness.md`](docs/architecture/plugin-host-agent-harness.md).
+
+### Capability Policy Pipeline
+
+Installing a Tool contribution does not automatically make it visible to an LLM or
+executable on a robot. FireClaw applies one ordered capability policy pipeline
+at two boundaries:
+
+```text
+planning projection
+  actor identity and scopes
+  -> delegated task contract
+  -> active Plugin Host ownership
+  -> Robot Capability Profile
+  -> current robot state
+  -> tools exposed to the Robot Agent LLM
+
+physical execution admission
+  the same checks with fresh robot state
+  -> SafetyGate decision
+  -> exact, unexpired execution authorization
+  -> resource lease acquisition
+  -> Tool side effect
+```
+
+The planning projection prevents the model from selecting unavailable or
+unauthorized Tools. The execution check is intentionally repeated because
+the robot may go offline, enter emergency stop, lose a required sensor, or
+receive a different authorization after planning. High-risk authorization is
+bound to the exact Tool input hash; approving one target or parameter set
+does not approve another.
+
+Every stage records its status, reason, and relevant evidence. The planning
+context contains the projection manifest, while execution emits
+`capability.policy_preflight` and `capability.policy_decided` audit events.
+`SafetyGate` remains the authority for physical safety, and the executor still
+acquires resource leases immediately before side effects. Detailed design and
+the OpenClaw analogue are documented in
+[`docs/architecture/capability-policy-pipeline.md`](docs/architecture/capability-policy-pipeline.md).
 
 In robot-local LLM mode, `FireClawGateway` uses
 `RobotAgentDeliberationRuntime`:
@@ -807,13 +915,13 @@ StructuredRobotTask
 -> refresh robot and environment state
 -> LLM proposes exactly one operation
 -> task-envelope policy validation
--> SafetyGate validation for a physical skill
--> execute one skill
+-> SafetyGate validation for a physical Tool
+-> execute one Tool
 -> return the structured result to the next LLM turn
 -> complete / blocked / escalated / cancelled / timed out
 ```
 
-The default robot-local bounds are eight model turns, six physical skill
+The default robot-local bounds are eight model turns, six physical Tool
 executions, two advisory context queries, and 30 seconds. A `complete`
 decision is rejected until every `required_skill` has succeeded. A local
 `SafetyGate` block terminates the loop; the LLM cannot try another action to
@@ -824,7 +932,7 @@ The shared loop also has an append-only durable checkpoint protocol. Mission
 planning checkpoints preserve the frozen-snapshot identity, completed reads,
 validation feedback, attempt trace, and next model turn. Robot Agent
 checkpoints additionally persist a stable `operation_id` before every physical
-skill dispatch. The Gateway writes
+Tool dispatch. The Gateway writes legacy event names
 `robot_agent.skill_dispatch_started` and
 `robot_agent.skill_dispatch_finished` with that same ID.
 
@@ -1338,9 +1446,12 @@ result = replay.replay("mission-1")
 | `correction` | Mission memory correction record |
 | `lesson` | Mission memory lesson record |
 
-### Skill Typed Contracts v1
+### Executable Tool Typed Contracts (Legacy Skill API)
 
-Skills now carry typed `output_schema`, `domain`, `preconditions`, and `degraded_mode_policy` metadata alongside the existing `input_schema`.
+The current Python `Skill` compatibility class models an executable Tool. It
+carries typed `output_schema`, `domain`, `preconditions`, and
+`degraded_mode_policy` metadata alongside the existing `input_schema`. It is
+not an OpenClaw-style `SKILL.md` workflow.
 
 ```python
 from fireclaw_core.execution.skills import (
@@ -1360,6 +1471,64 @@ nav.degraded_mode_policy  # "retry"
 **Domains:** `navigation`, `perception`, `communication`, `safety`, `manipulation`
 
 **Degraded mode policies:** `skip`, `fallback`, `retry`, `abort`, `escalate`
+
+### Physical Tool Runtime (Legacy PhysicalSkillPlugin API)
+
+内置机器人原子物理 Tool 当前通过兼容 API
+`define_physical_skill_plugin()` 声明，再由通用
+`SkillRegistry.register_plugin()` 绑定到当前 Robot Adapter。这个边界参考
+OpenClaw 的 `defineToolPlugin() -> api.registerTool()`：
+
+```text
+LLM-visible tool schema
+-> Robot Agent task-envelope policy
+-> SafetyGate schema/sensor/risk validation
+-> SkillRegistry
+-> RobotActionRuntime
+-> registered Robot Adapter action
+-> ROS / simulator / robot SDK / algorithm
+```
+
+一个物理 Tool contribution 自行声明：
+
+- `name / description / parameters / output_schema`；
+- `action` 和受信任的 action-input builder；
+- 从 `StructuredRobotTask.target` 到工具输入的绑定及防篡改字段；
+- `required_sensors / safety_class / risk_level / preconditions`；
+- `resource_locks / success_evidence / timeout / retry`；
+- Robot Agent 补充工具、默认后续技能和操作员进度消息。
+
+Agent loop、SafetyGate、PlanExecutor 和 Operator projector 不再按
+`navigate_to_point`、`search_for_victims` 等名字分派。新增物理能力需要新增
+Tool 定义和对应 Adapter handler，并由 Plugin 统一注册；只有硬件实现本身
+需要接触 ROS/SDK。
+LLM 可见参数应限于任务级变量或经过验证的命名 profile。机器人 footprint、
+传感器 frame、硬件极限和原始安全参数不应直接开放给模型。
+
+当前代码名 `Skill` 实际是可执行 Tool 定义，LLM-facing schema 由它投影；
+真正的 Skill 是指导 Agent 如何组合多个 Tool 的 `SKILL.md` 工作流。
+`RobotAdapter` 是算法/硬件实现边界。MCP 只是在能力位于独立进程或远端服务
+时可选的传输协议，不是本地物理 Tool 必须经过的层。详细设计见
+[`docs/architecture/physical-skill-plugin-runtime.md`](docs/architecture/physical-skill-plugin-runtime.md)。
+
+### Plugin Extension And Skill Workspaces
+
+仓库根目录 [`extensions/`](extensions/README.md) 保存 Plugin 包、Tool
+实现、算法 Runtime、ROS workspace、配置、launch 文件和测试。导航、扫描、
+覆盖搜索、感知、操作等实现应按一个可部署 Plugin 一个目录组织。
+
+[`skills/`](skills/README.md) 只保存 Agent-facing `SKILL.md` 能力说明和
+工作流。Plugin 可以在自己的 `skills/` 子目录附带 Skill。首个导航 Plugin
+位于
+[`extensions/navigation-move-base/`](extensions/navigation-move-base/README.md)，
+其中附带的
+[`Navigation Skill`](extensions/navigation-move-base/skills/navigation/SKILL.md)
+指导 Agent 使用一个或多个导航 Tool。
+
+两个目录都不是新的 registry。Tool 和其他贡献仍由
+`FireClawPluginHost` 统一拥有和激活。现有 `.skill.json` 和
+`workspace_skills_dir` 是把可执行 Tool 称为 Skill 的 legacy compatibility
+API；新设计不得延续该含义。
 
 ### Adapter Capabilities v1
 
@@ -1525,11 +1694,13 @@ You can inspect the currently registered skills:
 
 Skill listing commands return skill metadata and do not execute skills or append memory entries.
 
-## Skill Runtime Direction
+## External Tool Runtime Direction (Legacy Skill API)
 
 The core package should stay lightweight. It should not directly depend on CUDA, PyTorch, reinforcement-learning environments, ROS middleware, or robot SDKs.
 
-Future heavy algorithms should be exposed as skills through explicit runtime adapters, for example:
+Future heavy algorithms should be exposed as atomic Tools through explicit
+runtime adapters and grouped by Plugins. Agent workflows that coordinate
+those Tools belong in Skills. Supported runtime patterns include:
 
 - `in_process` for lightweight Python dry-run skills;
 - `subprocess` for scripts or isolated Python environments;
@@ -1552,7 +1723,8 @@ The first external runtime adapter is `SubprocessSkillRunner`. It sends JSON inp
 
 This is the intended bridge for early CUDA/RL algorithms that live in separate Python or conda environments.
 
-Subprocess skills can also be loaded from JSON manifests under `skills/**/*.skill.json`:
+Legacy subprocess Tools can also be loaded from JSON manifests under
+`skills/**/*.skill.json`:
 
 ```json
 {
@@ -1581,7 +1753,7 @@ Subprocess skills can also be loaded from JSON manifests under `skills/**/*.skil
 
 The `command` field must be a list of strings, not a shell command string. This avoids accidental shell parsing and keeps skill execution explicit.
 
-Manifest metadata is part of the skill contract:
+Manifest metadata is part of the executable Tool contract:
 
 - `max_attempts` controls opt-in retry behavior.
 - `idempotent` must be `true` when `max_attempts > 1`.
@@ -1626,26 +1798,28 @@ Workspace skill loading is enabled by default in the CLI:
 
 Use `--no-workspace-skills` to run with built-in skills only.
 
-## Direct Skill Invocation
+## Direct Executable Tool Invocation (Legacy Skill Command)
 
-Registered skills can be invoked directly from natural-language commands:
+Registered executable Tools can be invoked directly from natural-language
+commands. The CLI still uses legacy `skill` wording:
 
 ```bash
 .venv/bin/python -m fireclaw_core "运行 echo_policy"
 .venv/bin/python -m fireclaw_core "运行 echo_policy 处理 二楼"
 ```
 
-Direct skill invocation still goes through the planner, safety gate, executor, and memory store. Missing skills are blocked before execution:
+Direct Tool invocation still goes through the planner, safety gate, executor,
+and memory store. Missing Tools are blocked before execution:
 
 ```bash
 .venv/bin/python -m fireclaw_core "运行 missing_skill"
 ```
 
-## Rescue Plans With Policy Skills
+## Rescue Plans With Policy Tools
 
-Rescue commands can include a named policy or algorithm skill. The policy
-skill is inserted before navigation and receives the target point plus the
-original command:
+Rescue commands can include a named policy or algorithm Tool. The Tool is
+inserted before navigation and receives the target point plus the original
+command:
 
 ```bash
 .venv/bin/python -m fireclaw_core "去坐标 (2.0, 1.5) 救人 使用 echo_policy"
@@ -1656,7 +1830,8 @@ The named policy must be registered. If it is missing, the safety gate blocks th
 
 ## Robot Adapter Boundary
 
-Built-in robot skills depend on the `RobotAdapter` protocol, not on a concrete robot implementation. Current adapters:
+Built-in robot Tools depend on the `RobotAdapter` protocol, not on a concrete
+robot implementation. Current adapters:
 
 - `DryRunRobotAdapter`: default adapter used by the CLI and tests.
 - `SimulatorRobotAdapter`: deterministic single-floor simulator that tracks the current map pose, sensors, online state, and battery level; legacy floor fields remain readable.
@@ -1664,15 +1839,13 @@ Built-in robot skills depend on the `RobotAdapter` protocol, not on a concrete r
 - `MockRos2RobotAdapter`: legacy ROS2-shaped test double kept for direct compatibility tests.
 
 `Ros1RobotAdapter` implements this boundary through reviewed configuration and
-optional ROS1 transport. Future robot SDK adapters should implement the same
-action methods:
-
-- `navigate_to_point`
-- `navigate_to_floor` (legacy multi-floor extension)
-- `search_for_victims`
-- `assess_victim`
-- `report_status`
-- `return_to_safe_zone`
+optional ROS1 transport. `RobotAdapter` no longer enumerates every possible
+physical action. An adapter advertises action names through
+`capabilities().supported_actions`; a trusted physical Tool contribution
+(currently named `PhysicalSkillPlugin`) binds its declared `action` to a
+same-named adapter callable. Therefore a new robot SDK capability adds an
+Adapter handler and Plugin-owned Tool definition without changing the Agent
+protocol or action runtime.
 
 They should also expose state snapshots:
 
@@ -1798,25 +1971,24 @@ The result includes:
 }
 ```
 
-Confirm or cancel in the same session:
+Cancel in the same session:
 
 ```bash
-.venv/bin/python -m fireclaw_core "确认执行" \
-  --session-id rescue-shift-a \
-  --skills-dir skills \
-  --memory-path /tmp/fireclaw-demo-memory.jsonl
-
 .venv/bin/python -m fireclaw_core "取消" \
   --session-id rescue-shift-a \
   --skills-dir skills \
   --memory-path /tmp/fireclaw-demo-memory.jsonl
 ```
 
-Confirmation restores the latest unresolved pending plan from JSONL memory and re-runs the safety gate with `operator_confirmed=true`. Cancellation records `status="cancelled"` and does not execute skills.
+Natural-language confirmation such as `确认执行` is not execution authority.
+Without a signed `ExecutionAuthorization`, the local Agent remains in
+`awaiting_confirmation`. Cancellation records `status="cancelled"` and does
+not execute skills.
 
 ## Operator Authorization
 
-Gateway task confirmation adds an authorization layer on top of the local confirmation flow. High and critical risk tasks create a pending authorization request:
+High and critical risk tasks create a server-side authorization request before
+the pending result is returned:
 
 ```text
 authorization.requested -> authorization.approved | authorization.denied | authorization.expired
@@ -1842,6 +2014,13 @@ curl -X POST http://127.0.0.1:8765/confirm \
     }
   }'
 ```
+
+The request binds the original command, structured task, robot identity, exact
+skill names and canonical input hashes. An authorized supervisor receives a
+short-lived, HMAC-signed `ExecutionAuthorization`; the Gateway resubmits the
+original task with that grant and the Robot Agent recomputes the scope before
+execution. Changed parameters, another robot, expiry, signature tampering, or
+reusing an already consumed operation all fail closed.
 
 If an `operator` without `safety.override` tries to approve a high-risk task, Gateway returns HTTP 403 and records `authorization.denied`. If the pending authorization expires, Gateway returns HTTP 403 with `status="expired"` and records `authorization.expired`.
 

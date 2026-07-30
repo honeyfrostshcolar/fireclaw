@@ -21,6 +21,7 @@ class MissionPlanningContextBudget:
     max_operator_corrections: int = 8
     max_memories: int = 8
     max_external_knowledge: int = 8
+    max_agent_tool_observations: int = 6
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -29,6 +30,10 @@ class MissionPlanningContextBudget:
             ("max_operator_corrections", self.max_operator_corrections),
             ("max_memories", self.max_memories),
             ("max_external_knowledge", self.max_external_knowledge),
+            (
+                "max_agent_tool_observations",
+                self.max_agent_tool_observations,
+            ),
         ):
             if value < 1:
                 raise ValueError(
@@ -191,8 +196,20 @@ class MissionPlanningContextAssembler:
         supersedes_plan_id: str | None = None,
         invalidation_evidence_ids: tuple[str, ...] = (),
     ) -> MissionPlanningContextAssembly:
+        serialized_items = [
+            (
+                self._mapping(item.to_dict()),
+                bool(getattr(item, "authoritative", True)),
+            )
+            for item in observations
+        ]
         serialized_observations = [
-            self._mapping(item.to_dict()) for item in observations
+            value for value, authoritative in serialized_items
+            if authoritative
+        ]
+        agent_tool_observations = [
+            value for value, authoritative in serialized_items
+            if not authoritative
         ]
         exposed_belief_ids = self._observed_belief_ids(
             serialized_observations
@@ -229,6 +246,7 @@ class MissionPlanningContextAssembler:
             "operator_corrections": [],
             "retrieved_memories": [],
             "external_knowledge": [],
+            "agent_tool_observations": [],
         }
         critical_payload = {
             "authoritative": authoritative,
@@ -282,6 +300,13 @@ class MissionPlanningContextAssembler:
         ]
 
         section_specs = (
+            (
+                "agent_tool_observations",
+                "agent_tool_runtime",
+                "tool_advisory",
+                agent_tool_observations,
+                self.budget.max_agent_tool_observations,
+            ),
             (
                 "operator_corrections",
                 "operator_memory",

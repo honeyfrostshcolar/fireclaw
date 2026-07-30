@@ -5,22 +5,30 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
+from fireclaw_core.agent.harness import (
+    AgentHarness,
+    AgentHarnessAttempt,
+    AgentHarnessError,
+    ProviderAgentHarness,
+    register_agent_harness,
+)
 from fireclaw_core.context.manager import (
-    ContextBudgetExceeded,
     ContextManagementPolicy,
-    ManagedContextResult,
     ModelAwareContextManager,
     TokenCounter,
 )
+from fireclaw_core.execution.builtin_physical_skills import (
+    get_builtin_physical_skill,
+    supplemental_physical_skill_names,
+)
+from fireclaw_core.execution.skill_plugin import PhysicalSkillPlugin
 from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
-from fireclaw_core.provider.provider import ProviderError
-from fireclaw_core.provider.provider_runtime import FallbackSummaryError, ProviderRuntime
+from fireclaw_core.provider.provider_runtime import ProviderRuntime
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.policy.capability import evaluate_delegation_policy
 from fireclaw_core.task.task_contract import StructuredRobotTask, planning_result_from_structured_task
 
-SAFE_SUPPLEMENTAL_SKILLS = ("report_status", "return_to_safe_zone")
-# Used by RobotAgentPolicy (floor-mutation guard) and DeterministicRobotAgentPlanner.
-FLOOR_SKILLS = {"navigate_to_floor", "search_for_victims", "assess_victim", "report_status"}
-POINT_SKILLS = {"navigate_to_point"}
+SAFE_SUPPLEMENTAL_SKILLS = supplemental_physical_skill_names()
 
 
 @dataclass(frozen=True)
@@ -133,6 +141,9 @@ class RobotAgentPolicy:
     ``approval_required``.  Otherwise the decision is ``allow``.
     """
 
+    def __init__(self, *, skill_catalog: Any | None = None) -> None:
+        self.skill_catalog = skill_catalog
+
     def validate(
         self,
         envelope: RobotAgentTaskEnvelope,
@@ -179,57 +190,53 @@ class RobotAgentPolicy:
             )
         return RobotAgentPolicyDecision(status="allow", reasons=[])
 
-    @staticmethod
     def _step_errors(
+        self,
         envelope: RobotAgentTaskEnvelope,
         steps: list[RobotLocalPlanStep],
     ) -> list[str]:
         reasons: list[str] = []
         allowed = set(envelope.allowed_skills)
-        expected_floor = envelope.target.get("floor")
-        expected_pose = envelope.target.get("pose")
-        expected_frame = envelope.target.get("frame_id", "map")
         for step in steps:
-            if step.skill_name not in allowed:
-                reasons.append(
-                    f"skill {step.skill_name!r} is outside allowed_skills"
-                )
-            if (
-                isinstance(expected_floor, int)
-                and step.skill_name in FLOOR_SKILLS
-                and step.inputs.get("floor") != expected_floor
-            ):
-                reasons.append(
-                    f"skill {step.skill_name!r} uses floor "
-                    f"{step.inputs.get('floor')!r}, expected {expected_floor!r}"
-                )
-            if step.skill_name in POINT_SKILLS:
-                if not isinstance(expected_pose, dict):
+            skill = _physical_plugin(
+                step.skill_name,
+                self.skill_catalog,
+            )
+            decision = evaluate_delegation_policy(
+                skill_name=step.skill_name,
+                inputs=step.inputs,
+                allowed_skills=allowed,
+                target=envelope.target,
+                skill=skill,
+                validate_inputs=True,
+            )
+            if decision.status == "block":
+                details = decision.evidence.get("input_errors")
+                if isinstance(details, list) and details:
+                    reasons.extend(str(item) for item in details)
+                elif decision.reason_code == "skill_outside_task_delegation":
                     reasons.append(
-                        f"skill {step.skill_name!r} requires target.pose"
+                        f"skill {step.skill_name!r} is outside allowed_skills"
                     )
-                    continue
-                for axis in ("x", "y"):
-                    if step.inputs.get(axis) != expected_pose.get(axis):
-                        reasons.append(
-                            f"skill {step.skill_name!r} uses {axis} "
-                            f"{step.inputs.get(axis)!r}, expected "
-                            f"{expected_pose.get(axis)!r}"
-                        )
-                expected_yaw = expected_pose.get("yaw", 0.0)
-                if step.inputs.get("yaw", 0.0) != expected_yaw:
-                    reasons.append(
-                        f"skill {step.skill_name!r} uses yaw "
-                        f"{step.inputs.get('yaw', 0.0)!r}, expected "
-                        f"{expected_yaw!r}"
-                    )
-                if step.inputs.get("frame_id", "map") != expected_frame:
-                    reasons.append(
-                        f"skill {step.skill_name!r} uses frame_id "
-                        f"{step.inputs.get('frame_id', 'map')!r}, expected "
-                        f"{expected_frame!r}"
-                    )
+                else:
+                    reasons.append(decision.message)
         return reasons
+
+
+def _physical_plugin(
+    skill_name: str,
+    skill_catalog: Any | None,
+) -> PhysicalSkillPlugin | None:
+    if skill_catalog is None:
+        return get_builtin_physical_skill(skill_name)
+    getter = getattr(skill_catalog, "get", None)
+    if not callable(getter):
+        return None
+    value = getter(skill_name)
+    if isinstance(value, PhysicalSkillPlugin):
+        return value
+    plugin = getattr(value, "physical_plugin", None)
+    return plugin if isinstance(plugin, PhysicalSkillPlugin) else None
 
 
 class RobotAgentPlannerError(Exception):
@@ -331,6 +338,8 @@ class LLMRobotAgentPlanner:
         memory_tool_executor: Any | None = None,
         context_manager: ModelAwareContextManager | None = None,
         token_counter: TokenCounter | None = None,
+        agent_harness: AgentHarness | None = None,
+        plugin_host: FireClawPluginHost | None = None,
     ) -> None:
         self._provider_runtime = provider_runtime
         self._memory_tool_executor = memory_tool_executor
@@ -344,6 +353,17 @@ class LLMRobotAgentPlanner:
                 ),
                 token_counter=token_counter,
             )
+        )
+        self._agent_harness = agent_harness or ProviderAgentHarness(
+            provider_runtime=provider_runtime,
+            context_manager=self._context_manager,
+            harness_id="fireclaw.provider.robot-planner",
+        )
+        self.plugin_host = plugin_host or FireClawPluginHost()
+        register_agent_harness(
+            self.plugin_host,
+            self._agent_harness,
+            owner_plugin_id="fireclaw.agent-harness.robot-planner",
         )
 
     def plan(
@@ -365,27 +385,17 @@ class LLMRobotAgentPlanner:
         ]
         tools = [*action_tools, *exposed_memory_tools]
         try:
-            managed = self._fit_context(
-                envelope,
-                context=context,
-                tools=tools,
+            harness_result = self._agent_harness.run_attempt(
+                self._build_harness_attempt(
+                    envelope,
+                    context=context,
+                    tools=tools,
+                    cancellation_requested=cancellation_requested,
+                )
             )
-        except ContextBudgetExceeded as exc:
+        except AgentHarnessError as exc:
             raise RobotAgentPlannerError(str(exc)) from exc
-        messages = managed.messages
-        try:
-            response = self._provider_runtime.chat_completion(
-                messages=messages,
-                tools=managed.tools,
-                temperature=0.0,
-                max_tokens=managed.manifest.output_reserve_tokens,
-            )
-        except (ProviderError, FallbackSummaryError) as exc:
-            raise RobotAgentPlannerError(str(exc)) from exc
-        if cancellation_requested is not None and cancellation_requested():
-            raise RobotAgentPlannerError("planning cancelled after provider call")
-        if not response.tool_calls:
-            raise RobotAgentPlannerError("LLM did not return a robot-local plan tool call")
+        response = harness_result.response
         memory_tool_names = {
             tool["function"]["name"]
             for tool in exposed_memory_tools
@@ -419,35 +429,23 @@ class LLMRobotAgentPlanner:
             if cancellation_requested is not None and cancellation_requested():
                 raise RobotAgentPlannerError("planning cancelled after memory query")
             try:
-                managed = self._fit_context(
-                    envelope,
-                    context=context,
-                    tools=action_tools,
-                    memory_results=memory_results,
+                harness_result = self._agent_harness.run_attempt(
+                    self._build_harness_attempt(
+                        envelope,
+                        context=context,
+                        tools=action_tools,
+                        memory_results=memory_results,
+                        cancellation_requested=cancellation_requested,
+                    )
                 )
-                response = self._provider_runtime.chat_completion(
-                    messages=managed.messages,
-                    tools=managed.tools,
-                    temperature=0.0,
-                    max_tokens=(
-                        managed.manifest.output_reserve_tokens
-                    ),
-                )
-            except (
-                ContextBudgetExceeded,
-                ProviderError,
-                FallbackSummaryError,
-            ) as exc:
+                response = harness_result.response
+            except AgentHarnessError as exc:
                 raise RobotAgentPlannerError(str(exc)) from exc
-            if cancellation_requested is not None and cancellation_requested():
-                raise RobotAgentPlannerError("planning cancelled after final provider call")
-            if not response.tool_calls:
-                raise RobotAgentPlannerError("LLM did not return a plan after entity memory query")
         tool_call = response.tool_calls[0]
         if tool_call.name == "create_robot_local_plan":
             return replace(
                 _local_plan_from_arguments(tool_call.arguments),
-                context_manifest=managed.manifest.to_dict(),
+                context_manifest=harness_result.context_manifest,
             )
         allowed_direct = {
             tool["function"]["name"]
@@ -465,18 +463,19 @@ class LLMRobotAgentPlanner:
                     direct_calls,
                     intent=envelope.task_type,
                 ),
-                context_manifest=managed.manifest.to_dict(),
+                context_manifest=harness_result.context_manifest,
             )
         raise RobotAgentPlannerError(f"unexpected tool call {tool_call.name!r}")
 
-    def _fit_context(
+    def _build_harness_attempt(
         self,
         envelope: RobotAgentTaskEnvelope,
         *,
         context: dict[str, Any],
         tools: list[dict[str, Any]],
         memory_results: list[dict[str, Any]] | None = None,
-    ) -> ManagedContextResult:
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> AgentHarnessAttempt:
         authoritative = {
             "task": {
                 "task_id": envelope.task_id,
@@ -534,7 +533,9 @@ class LLMRobotAgentPlanner:
                 tools,
             )
 
-        return self._context_manager.fit(
+        return AgentHarnessAttempt(
+            role="robot_agent",
+            run_id=f"{envelope.mission_id or 'local'}:{envelope.task_id}:plan",
             scope="robot_local_planner",
             context_id=context_id,
             authoritative=authoritative,
@@ -548,6 +549,9 @@ class LLMRobotAgentPlanner:
                 "session_history",
                 "entity_memory_results",
             ),
+            minimum_tool_calls=1,
+            maximum_tool_calls=None,
+            cancellation_requested=cancellation_requested,
         )
 
 
@@ -583,6 +587,9 @@ def _local_plan_from_arguments(arguments: dict[str, Any]) -> RobotLocalPlan:
 
 
 class DeterministicRobotAgentPlanner:
+    def __init__(self, *, skill_catalog: Any | None = None) -> None:
+        self.skill_catalog = skill_catalog
+
     def plan(
         self,
         envelope: RobotAgentTaskEnvelope,
@@ -590,20 +597,14 @@ class DeterministicRobotAgentPlanner:
         context: dict[str, Any],
         cancellation_requested: Callable[[], bool] | None = None,
     ) -> RobotLocalPlan:
-        floor = envelope.target.get("floor")
-        pose = envelope.target.get("pose")
         steps = []
         for skill_name in envelope.required_skills:
-            inputs: dict[str, Any] = {}
-            if skill_name in FLOOR_SKILLS and isinstance(floor, int):
-                inputs["floor"] = floor
-            if skill_name in POINT_SKILLS and isinstance(pose, dict):
-                inputs.update({
-                    "x": pose.get("x"),
-                    "y": pose.get("y"),
-                    "yaw": pose.get("yaw", 0.0),
-                    "frame_id": envelope.target.get("frame_id", "map"),
-                })
+            plugin = _physical_plugin(skill_name, self.skill_catalog)
+            inputs = (
+                plugin.task_inputs(envelope.target)
+                if plugin is not None
+                else {}
+            )
             steps.append(RobotLocalPlanStep(skill_name=skill_name, inputs=inputs))
         return RobotLocalPlan(
             intent=envelope.task_type,
@@ -683,7 +684,10 @@ class RobotAgentRuntime:
         reason: str,
     ) -> PlanningResult:
         self._emit(event_sink, "robot_agent.fallback_used", {"task_id": task.task_id, "reason": reason})
-        return planning_result_from_structured_task(task)
+        return planning_result_from_structured_task(
+            task,
+            skill_catalog=self._policy.skill_catalog,
+        )
 
     @staticmethod
     def _emit(event_sink, event_type: str, payload: dict[str, Any]) -> None:

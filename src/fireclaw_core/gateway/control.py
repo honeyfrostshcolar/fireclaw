@@ -98,6 +98,10 @@ class AuthorizationRequest:
     requested_at: str
     expires_at: str
     status: str = "pending"
+    structured_task: dict[str, Any] | None = None
+    scope_hash: str | None = None
+    authorized_actions: tuple[dict[str, Any], ...] = ()
+    robot_id: str | None = None
 
     def is_expired(self, now: str) -> bool:
         return datetime.fromisoformat(now) >= datetime.fromisoformat(self.expires_at)
@@ -114,7 +118,56 @@ class AuthorizationRequest:
             "requested_at": self.requested_at,
             "expires_at": self.expires_at,
             "status": self.status,
+            "structured_task": (
+                dict(self.structured_task)
+                if self.structured_task is not None
+                else None
+            ),
+            "scope_hash": self.scope_hash,
+            "authorized_actions": [
+                dict(action) for action in self.authorized_actions
+            ],
+            "robot_id": self.robot_id,
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "AuthorizationRequest":
+        requested_by = payload.get("requested_by")
+        actions = payload.get("authorized_actions")
+        return cls(
+            request_id=str(payload.get("request_id") or ""),
+            task_id=str(payload.get("task_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            command=str(payload.get("command") or ""),
+            requested_by=operator_from_payload(requested_by),
+            required_scope=str(payload.get("required_scope") or ""),
+            risk_level=str(payload.get("risk_level") or ""),
+            requested_at=str(payload.get("requested_at") or ""),
+            expires_at=str(payload.get("expires_at") or ""),
+            status=str(payload.get("status") or "pending"),
+            structured_task=(
+                dict(payload["structured_task"])
+                if isinstance(payload.get("structured_task"), dict)
+                else None
+            ),
+            scope_hash=(
+                payload["scope_hash"]
+                if isinstance(payload.get("scope_hash"), str)
+                else None
+            ),
+            authorized_actions=tuple(
+                dict(action)
+                for action in actions
+                if isinstance(action, dict)
+            )
+            if isinstance(actions, list)
+            else (),
+            robot_id=(
+                payload["robot_id"]
+                if isinstance(payload.get("robot_id"), str)
+                else None
+            ),
+        )
 
 
 def scopes_for_role(role: str) -> set[str]:

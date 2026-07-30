@@ -24,6 +24,8 @@ def test_policy_blocks_victim_search_when_rgb_camera_degraded_without_alternativ
         mode="ros1",
         dry_run=False,
         verified_sensors=set(),
+        safety_class="victim_perception",
+        sensor_alternatives={"rgb_camera": ("thermal_camera",)},
     )
 
     assert decision.action == "block"
@@ -39,6 +41,8 @@ def test_policy_escalates_victim_search_when_rgb_camera_degraded_but_thermal_ver
         mode="ros1",
         dry_run=False,
         verified_sensors={"thermal_camera"},
+        safety_class="victim_perception",
+        sensor_alternatives={"rgb_camera": ("thermal_camera",)},
     )
 
     assert decision.action == "escalate"
@@ -54,6 +58,7 @@ def test_policy_blocks_gas_detector_failures_for_real_execution() -> None:
         mode="ros1",
         dry_run=False,
         verified_sensors=set(),
+        safety_class="motion",
     )
 
     assert decision.action == "block"
@@ -69,6 +74,7 @@ def test_policy_blocks_lidar_failures_for_real_navigation() -> None:
         mode="ros1",
         dry_run=False,
         verified_sensors=set(),
+        safety_class="motion",
     )
 
     assert decision.action == "block"

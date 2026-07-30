@@ -243,50 +243,34 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert task["state"]["actions"][0]["action_type"] == "navigate_to_point"
     assert task["state"]["actions"][0]["status"] == "succeeded"
     event_types = [event["type"] for event in events["events"]]
-    assert event_types == [
+    assert event_types[:8] == [
         "task.received",
         "operator.identified",
         "control.decision",
         "task.planned",
         "safety.decided",
+        "capability.policy_preflight",
+        "capability.policy_decided",
         "skill.started",
-        "action.requested",
-        "action.started",
-        "action.succeeded",
-        "skill.attempted",
-        "skill.succeeded",
-        "skill.started",
-        "action.requested",
-        "action.started",
-        "action.succeeded",
-        "skill.attempted",
-        "skill.succeeded",
-        "skill.started",
-        "action.requested",
-        "action.started",
-        "action.succeeded",
-        "skill.attempted",
-        "skill.succeeded",
-        "skill.started",
-        "action.requested",
-        "action.started",
-        "action.succeeded",
-        "skill.attempted",
-        "skill.succeeded",
-        "skill.started",
-        "action.requested",
-        "action.started",
-        "action.succeeded",
-        "skill.attempted",
-        "skill.succeeded",
-        "task.completed",
     ]
+    assert event_types[-1] == "task.completed"
+    assert event_types.count("resource.acquired") == 5
+    assert event_types.count("resource.released") == 5
+    assert event_types.count("action.requested") == 5
+    assert event_types.count("skill.succeeded") == 5
+    assert event_types.count("capability.policy_decided") == 5
     first_action = next(event for event in events["events"] if event["type"] == "action.requested")
     assert first_action["payload"]["task_id"] == accepted["task_id"]
     assert first_action["payload"]["skill_name"] == "navigate_to_point"
     assert recent_events["events"][0]["type"] == "task.completed"
-    assert events["events"][5]["payload"]["skill_name"] == "navigate_to_point"
-    assert events["events"][9]["payload"]["attempt_number"] == 1
+    assert events["events"][6]["payload"]["skill_name"] == "navigate_to_point"
+    assert events["events"][6]["payload"]["status"] == "allow"
+    first_attempt = next(
+        event
+        for event in events["events"]
+        if event["type"] == "skill.attempted"
+    )
+    assert first_attempt["payload"]["attempt_number"] == 1
 
 
 def test_gateway_persists_task_queue_lifecycle(tmp_path):

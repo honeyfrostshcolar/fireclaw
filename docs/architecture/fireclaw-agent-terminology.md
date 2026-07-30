@@ -5,6 +5,12 @@
 本文定义 FireClaw 当前架构的统一术语。README、当前架构文档、用户界面、
 CLI 帮助和后续设计应遵循本文。
 
+本文主要定义 Agent 角色。Plugin、Skill、Tool、Runtime 和 Adapter 的权威
+术语见
+[`plugin-skill-tool-terminology.md`](plugin-skill-tool-terminology.md)。
+其中最重要的约束是：Skill 是可复用的能力说明/工作流，Tool 是原子可调用
+操作；不能继续把每一个 Tool 都称为一个 Skill。
+
 ## Canonical Terms
 
 ### Mission Coordinator
@@ -65,7 +71,7 @@ operator
   -> Mission Coordinator
        -> StructuredRobotTask
             -> registered Robot Agent
-                 -> local planner / SafetyGate / skills / robot adapter
+                 -> local planner / SafetyGate / tools / robot adapter
 ```
 
 Mission Coordinator 和 Robot Agent：
@@ -75,7 +81,7 @@ Mission Coordinator 和 Robot Agent：
   基础设施，并以 `BoundedAgentLoop` 作为统一循环内核；Robot Agent 和
   `MissionDeliberationRuntime` 均已接入；
 - 共享 append-only loop checkpoint；中央规划恢复已完成的只读查询和校验，
-  Robot Agent 还必须按 `operation_id` 对账物理技能，未知结果不得自动重放；
+  Robot Agent 还必须按 `operation_id` 对账物理 Tool，未知结果不得自动重放；
 - 使用不同的工具目录、状态来源、权限、安全策略和运行生命周期；
 - 通过正式任务、状态、事件和证据协议交互，不通过内部 planner 实现互相调用。
 

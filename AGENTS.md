@@ -6,7 +6,7 @@
 
 This repository is for building **FireClaw**: an embodied agent framework for firefighting robots, inspired by OpenClaw's architecture.
 
-The target system installs one agent on each firefighting robot. A human operator can give natural-language tasks such as `去二楼救人`; the agent should understand the request, decompose it into executable subtasks, select and run appropriate skills/tools, coordinate with robot-side algorithms, and remember previous tasks, observations, outcomes, and operator preferences.
+The target system installs one agent on each firefighting robot. A human operator can give natural-language tasks such as `去二楼救人`; the agent should understand the request, decompose it into executable subtasks, apply relevant Skills/workflows, select and call appropriate atomic Tools, coordinate with robot-side Runtime/algorithms, and remember previous tasks, observations, outcomes, and operator preferences.
 
 `openclaw/` is a local reference copy of OpenClaw. Treat it as architectural source material, not as code to blindly copy. Prefer studying OpenClaw's agent/session/tool/skill/memory/gateway patterns, then adapting useful parts to robotics constraints and this repository's codebase.
 If a FireClaw module has a clear OpenClaw analogue, inspect the upstream implementation with CodeGraph first, then mirror the proven structure before adding FireClaw-specific adaptations. Do not invent a fresh design or API when OpenClaw already solves the same problem. Preserve the firefighting domain constraints, and do not wholesale copy OpenClaw UI/channel/transport assumptions when they do not fit rescue robotics.
@@ -24,13 +24,52 @@ Design FireClaw around small, explicit boundaries:
 
 - **Natural-language interface:** accepts operator commands, normalizes intent, asks for clarification when safety-critical details are missing.
 - **Planner/task decomposer:** turns operator intent into a plan with ordered or conditional subtasks.
-- **Skill runtime:** exposes tested algorithms and robot capabilities as callable skills with typed inputs, outputs, preconditions, and failure modes.
+- **Tool runtime:** exposes tested algorithms and robot capabilities as atomic callable Tools with typed inputs, outputs, preconditions, and failure modes. Skills describe how the Agent coordinates those Tools.
 - **Robot adapter layer:** isolates ROS, simulator, robot SDK, perception, navigation, manipulation, communication, and actuation APIs from the agent core.
 - **Memory system:** records tasks, plans, observations, outcomes, operator corrections, environment facts, and reusable lessons.
 - **Safety gate:** blocks or escalates unsafe, ambiguous, or physically impossible actions before execution.
 - **Execution monitor:** tracks skill progress, retries recoverable failures, updates memory, and reports status to the operator.
 
 Keep OpenClaw-like concepts when useful: agents, sessions, tools, skills, gateway/control plane, local-first state, and persistent memory. Adapt them for embodied robotics: physical safety, latency, degraded communication, sensor uncertainty, multi-robot coordination, and auditable execution logs matter more than chat convenience.
+
+## Canonical Plugin, Skill, Tool, and Runtime Terms
+
+Use the same conceptual boundaries as OpenClaw:
+
+- **Plugin:** an installable/deployable extension package and lifecycle owner.
+  A plugin may contribute multiple tools, skills, services, hooks, adapters, or
+  context engines.
+- **Skill:** Agent-facing instructions, operational knowledge, or a reusable
+  workflow for a coherent capability area. A skill may coordinate multiple
+  tools and does not have to be directly executable.
+- **Tool:** one atomic, typed operation the LLM may call, such as
+  `navigate_to_point`, `get_navigation_status`, or `cancel_navigation`.
+- **Runtime/algorithm:** the implementation that performs the work, such as
+  ROS1 `move_base`, Nav2, a perception node, a subprocess, or a robot SDK.
+- **Adapter:** the trusted translation boundary from a FireClaw tool call to a
+  runtime/algorithm API and back.
+
+For navigation, use the wording: a navigation plugin bundles a Navigation
+Skill and registers navigation tools; `move_base` is the runtime behind those
+tools. Do not describe every atomic tool as a separate skill.
+
+Several current Python identifiers predate this terminology and are
+compatibility names: `Skill`, `SkillRegistry`, `PhysicalSkillPlugin`,
+`*.skill.json`, and `workspace_skills_dir` currently model executable tools or
+tool manifests. New documentation and APIs must not copy that semantic
+mistake. When touching those identifiers, describe their canonical role and
+preserve compatibility until a deliberate code/data migration is implemented.
+
+Repository layout follows the same distinction:
+
+- `extensions/` contains plugin packages, algorithm source, ROS workspaces,
+  adapters, configuration, launch files, and plugin-owned tests;
+- `skills/` is reserved for Agent-facing `SKILL.md` instructions and workflows;
+- legacy `*.skill.json` executable tool manifests may remain under `skills/`
+  only for compatibility with the current loader.
+
+The authoritative terminology document is
+`docs/architecture/plugin-skill-tool-terminology.md`.
 
 ## OpenClaw-First Implementation Workflow
 
@@ -75,7 +114,7 @@ Testing conventions should follow the toolchain introduced for FireClaw. Until t
 
 For agent and robotics changes, prefer focused tests for:
 
-- skill schema validation and skill dispatch;
+- Tool schema validation and Tool dispatch;
 - planner outputs and task decomposition contracts;
 - memory read/write behavior and retrieval filters;
 - safety gate allow/block/escalate decisions;
@@ -152,8 +191,8 @@ Firefighting robots operate in dangerous physical environments. Treat robot acti
 
 - Natural-language commands are not enough authority for unsafe or irreversible actions. Add explicit confirmation or safety gate logic where appropriate.
 - Prefer fail-safe behavior: stop, hold position, request clarification, or escalate to the operator when state is uncertain.
-- Skill metadata should document required sensors, robot state assumptions, environment assumptions, timeout behavior, and emergency stop behavior.
-- Log decisions and skill invocations enough to reconstruct what happened after an incident.
+- Physical Tool metadata should document required sensors, robot state assumptions, environment assumptions, timeout behavior, and emergency stop behavior.
+- Log decisions and Tool invocations enough to reconstruct what happened after an incident.
 - Keep simulation-only behavior separate from real-robot behavior. Never let a simulator default silently drive real hardware.
 - Do not hard-code private deployment paths, robot credentials, network addresses, or secrets.
 

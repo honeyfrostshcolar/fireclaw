@@ -17,6 +17,51 @@ api_key = ""
 model = ""
 # catalog = "models.json"  # context_window, max_tokens, optional tokenizer_id
 
+# LLM Tool 权限由可信宿主执行。默认 real 不注册计算机工具。
+# 仿真时将 mode 改为 "simulation"，并把两个 sandbox.enabled 改为 true。
+[deployment]
+mode = "real"                    # real | simulation
+
+[deployment.tools.mission_agent]
+allow = ["group:computer"]
+deny = [
+  "group:host_admin",
+  "group:credential_access",
+  "group:real_hardware",
+]
+
+[deployment.tools.robot_agent]
+allow = ["group:computer"]
+deny = [
+  "group:host_admin",
+  "group:credential_access",
+  "group:real_hardware",
+]
+
+[deployment.sandbox.mission_agent]
+enabled = false
+backend = "docker"
+workspace_root = "data/mission/agent-workspace"
+image = "fireclaw-agent-sim:local"
+network = "none"
+max_timeout_seconds = 30
+max_output_chars = 20000
+memory_mb = 512
+cpus = 1.0
+pids_limit = 128
+
+[deployment.sandbox.robot_agent]
+enabled = false
+backend = "docker"
+workspace_root = "data/robot/agent-workspace"
+image = "fireclaw-agent-sim:local"
+network = "none"
+max_timeout_seconds = 30
+max_output_chars = 20000
+memory_mb = 512
+cpus = 1.0
+pids_limit = 128
+
 [mission]
 robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
 # embodied_runtime_mode = "simulation"  # real | simulation | replay
@@ -39,10 +84,14 @@ robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
 host = "127.0.0.1"
 port = 8765
 profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
+# Legacy external executable Tool-manifest directory. OpenClaw-style SKILL.md
+# workflows and Plugin packages use the documented skills/ and extensions/
+# layout; this compatibility setting currently discovers only *.skill.json.
 workspace_skills_dir = "skills"
 dry_run = true
 default_session_id = "default"
 max_active_execution_tasks = 1
+# runtime_state_path = "data/robot/runtime.sqlite3"
 
 # Robot-Local Agent 配置
 [robot_agent]

@@ -47,10 +47,12 @@ service、action、电机、水炮、机械臂或其他硬件接口。
 | Task registry | `JsonlMissionRegistry` | `JsonlTaskQueue` | 两层 registry/queue 都已有。 |
 | Task runtime progress | mission trace aggregation | event ledger、task trace、action feedback | 机器人 trace 已有；mission trace 聚合已有；mission live stream 缺失。 |
 | Permissions/scopes | mission-level authorization scopes | 机器人本地 operator authorization | 两层都有基础实现。 |
+| Tool policy pipeline | mission 委派和 fleet 约束 | 有序 capability 投影与执行准入 | 已用一条可审计链统一身份、任务授权、插件所有权、机器人 profile、实时状态、安全和具体动作授权。 |
 | Safety/sandbox | mission 调用策略和 Robot Agent 契约 | safety gate、emergency stop、ROS transport gating | 机器人本地安全已有；mission failure policy 还不完整。 |
 | Memory | mission memory 和 fleet lessons | 机器人本地 task/environment memory | 机器人本地 memory 已有；mission memory 还没有完整设计。 |
-| Provider runtime | mission-level model selection | 机器人本地/边缘模型 fallback | 尚未实现。 |
-| Tools/skills/plugins | mission tools: plan、assign、cancel、query、aggregate | robot skills: navigate、search、assess、report、stop | 机器人 skill runtime 已有；mission tools 目前还是 Python/CLI 方法。 |
+| Provider runtime | mission-level model selection | 机器人本地/边缘模型 fallback | 已有共享 `ProviderRuntime` 和 fallback。 |
+| Agent Harness | Mission prompt 和任务图语义解析 | Robot prompt 和单步操作语义解析 | 两种角色统一经过 `ProviderAgentHarness`，不再直接调用模型。 |
+| Plugins/Skills/Tools | Mission Skill 组织规划 Tools | Robot Skill 组织导航、感知、控制等原子 Tools | 统一 `FireClawPluginHost` 管理 Plugin contribution；当前 `SkillRegistry` 是可执行 Tool 的 legacy compatibility projection。 |
 | Config/doctor/onboarding | fleet 和 mission config 检查 | robot ROS/skill/config 检查 | robot doctor 已有；fleet doctor 缺失。 |
 
 ## 分层职责
@@ -162,13 +164,13 @@ service、action、电机、水炮、机械臂或其他硬件接口。
 - 多个可恢复任务超过本机并发容量时的持久化等待队列；
 - 真实部署认证。
 
-### 5. Robot Agent, Planner, and Skill Runtime
+### 5. Robot Agent, Planner, Tool, and Skill Runtime
 
 职责：
 
 - 理解机器人本地命令；
-- 验证 skill schema 和 precondition；
-- 执行 skill 和 robot action；
+- 验证 Tool schema 和 precondition；
+- 执行 Tool 和 robot action；
 - 上报 action feedback 和 terminal outcome；
 - 保持 planner / skill / adapter 分离。
 
@@ -176,17 +178,34 @@ service、action、电机、水炮、机械臂或其他硬件接口。
 
 - `FireClawAgent`
 - 本地 planner 和 safety gate
-- skill manifest loading
-- `RobotActionRuntime`
+- legacy 可执行 Tool manifest (`*.skill.json`) loading；
+- 参考 OpenClaw `defineToolPlugin/registerTool` 的声明式
+  `PhysicalSkillPlugin` 和通用 `SkillRegistry.register_plugin()` legacy
+  compatibility API，用于原子 Tool；
+- 对齐 OpenClaw 的 `SKILL.md` 语义，用于能够组织多个 Tool 的 Agent 工作流；
+- 参考 OpenClaw plugin API/registration transaction 的
+  `FireClawPluginHost`，统一 tool、物理 capability、hook、service、
+  context engine 和 Agent Harness 的所有权及生命周期；
+- Mission 与 Robot LLM 路径共享 `ProviderAgentHarness`，统一上下文预算、
+  tool schema、provider 调用、取消、错误分类和基础 tool-call 校验；
+- 插件驱动的 tool schema、任务目标绑定、防篡改、安全分类、资源、
+  完成证据和操作员投影；
+- 无按技能名分支的 `RobotActionRuntime` / Adapter action registry；
+- SQLite WAL 权威运行时存储、版本化任务写入和事务内 task/event 提交；
+- 绑定具体命令、结构化任务、机器人和 skill 输入哈希的短期签名执行授权；
+- 参考 OpenClaw 有序 tool policy 的统一 capability policy pipeline，同时负责
+  规划期 tool 投影和执行期准入，并记录逐阶段审计证据；
+- 执行器强制获取插件声明的持久化机器人资源租约，急停先关闭资源准入；
 - robot adapter boundary
 - action feedback 和 cancellation event handling
 
 缺失：
 
 - 面向更多消防任务的机器人本地 planner；
-- 更多真实机器人能力的 typed skill contracts；
-- 更强的 failure taxonomy；
-- skill-level degraded-mode policies。
+- 更多真实机器人能力的 typed Tool contracts 和完整 Skills；
+- 生产部署中由外部认证系统签发的 actor identity 和 scope claims；
+- 第三方物理插件的发现、签名、沙箱和独立进程加载；
+- success evidence 元数据到通用完成验证器的完整接线。
 
 ### 6. Robot Adapter and ROS Integration Layer
 

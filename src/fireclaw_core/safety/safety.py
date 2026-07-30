@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 
+from fireclaw_core.approval.execution_authorization import (
+    VerifiedExecutionAuthorization,
+)
 from fireclaw_core.memory.embodied_memory import (
     MEMORY_RUNTIME_MODES,
     EmbodiedMemoryProducer,
@@ -48,7 +51,7 @@ class SafetyGate:
         *,
         dry_run: bool,
         available_sensors: set[str] | None = None,
-        operator_confirmed: bool = False,
+        execution_authorization: VerifiedExecutionAuthorization | None = None,
         robot_state: RobotState | None = None,
         environment_state: EnvironmentState | None = None,
         mission_id: str | None = None,
@@ -60,7 +63,7 @@ class SafetyGate:
             registry,
             dry_run=dry_run,
             available_sensors=available_sensors,
-            operator_confirmed=operator_confirmed,
+            execution_authorization=execution_authorization,
             robot_state=robot_state,
             environment_state=environment_state,
             mission_id=mission_id,
@@ -76,7 +79,7 @@ class SafetyGate:
         *,
         dry_run: bool,
         available_sensors: set[str] | None = None,
-        operator_confirmed: bool = False,
+        execution_authorization: VerifiedExecutionAuthorization | None = None,
         robot_state: RobotState | None = None,
         environment_state: EnvironmentState | None = None,
         mission_id: str | None = None,
@@ -88,7 +91,7 @@ class SafetyGate:
             registry,
             dry_run=dry_run,
             available_sensors=available_sensors,
-            operator_confirmed=operator_confirmed,
+            execution_authorization=execution_authorization,
             robot_state=robot_state,
             environment_state=environment_state,
         )
@@ -96,7 +99,7 @@ class SafetyGate:
             decision,
             planning_result=planning_result,
             dry_run=dry_run,
-            operator_confirmed=operator_confirmed,
+            execution_authorization=execution_authorization,
             robot_state=robot_state,
             environment_state=environment_state,
             mission_id=mission_id,
@@ -112,7 +115,7 @@ class SafetyGate:
         *,
         dry_run: bool,
         available_sensors: set[str] | None = None,
-        operator_confirmed: bool = False,
+        execution_authorization: VerifiedExecutionAuthorization | None = None,
         robot_state: RobotState | None = None,
         environment_state: EnvironmentState | None = None,
     ) -> SafetyDecision:
@@ -176,6 +179,7 @@ class SafetyGate:
                 finding = sensor_findings.get(sensor)
                 health_status = finding.get("health_status") if finding else ("healthy" if sensor in sensors else None)
                 health_reason = finding.get("health_reason") if finding else None
+                physical_plugin = skill.physical_plugin
                 policy_decision = evaluate_sensor_policy(
                     skill_name=step.skill_name,
                     sensor=sensor,
@@ -184,6 +188,16 @@ class SafetyGate:
                     mode=robot_state.mode if robot_state is not None else "unknown",
                     dry_run=dry_run,
                     verified_sensors=set(sensors),
+                    safety_class=(
+                        physical_plugin.safety_class
+                        if physical_plugin is not None
+                        else str(skill.metadata.get("safety_class") or "")
+                    ),
+                    sensor_alternatives=(
+                        physical_plugin.sensor_alternatives
+                        if physical_plugin is not None
+                        else {}
+                    ),
                 )
                 if policy_decision.action == "block":
                     missing_sensors.append(policy_decision.reason or f"Skill {step.skill_name} requires unavailable sensor: {sensor}")
@@ -227,6 +241,18 @@ class SafetyGate:
             if real_robot_blocks:
                 return SafetyDecision(status="block", reasons=real_robot_blocks)
 
+        invalid_inputs: list[str] = []
+        for step in planning_result.plan.steps:
+            skill = registry.get(step.skill_name)
+            if skill is None:
+                continue
+            invalid_inputs.extend(
+                f"Skill {step.skill_name} input contract violation: {error}"
+                for error in skill.validate_inputs(step.inputs)
+            )
+        if invalid_inputs:
+            return SafetyDecision(status="block", reasons=invalid_inputs)
+
         confirmation_reasons: list[str] = list(state_confirmations)
         for step in planning_result.plan.steps:
             skill = registry.get(step.skill_name)
@@ -240,7 +266,7 @@ class SafetyGate:
                 confirmation_reasons.append(
                     f"Skill {step.skill_name} has high risk level: {skill.risk_level}"
                 )
-        if confirmation_reasons and not operator_confirmed:
+        if confirmation_reasons and execution_authorization is None:
             return SafetyDecision(status="require_confirmation", reasons=confirmation_reasons, warnings=state_warnings)
 
         return SafetyDecision(status="allow", reasons=[], warnings=state_warnings)
@@ -251,7 +277,7 @@ class SafetyGate:
         *,
         planning_result: PlanningResult,
         dry_run: bool,
-        operator_confirmed: bool,
+        execution_authorization: VerifiedExecutionAuthorization | None,
         robot_state: RobotState | None,
         environment_state: EnvironmentState | None,
         mission_id: str | None,
@@ -269,7 +295,16 @@ class SafetyGate:
             "reasons": list(decision.reasons),
             "warnings": list(decision.warnings),
             "dry_run": dry_run,
-            "operator_confirmed": operator_confirmed,
+            "execution_authorization_id": (
+                execution_authorization.authorization_id
+                if execution_authorization is not None
+                else None
+            ),
+            "execution_authorization_request_id": (
+                execution_authorization.request_id
+                if execution_authorization is not None
+                else None
+            ),
             "planning_status": planning_result.status,
             "intent": planning_result.intent,
             "target_floor": planning_result.target_floor,

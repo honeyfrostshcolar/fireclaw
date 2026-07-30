@@ -1,0 +1,13 @@
+repositories:
+  turtlebot3:
+    type: git
+    url: https://github.com/ROBOTIS-GIT/turtlebot3.git
+    version: 4ae959ea6a52415c90bf752d2b76e3e28f8a87e2
+  turtlebot3_msgs:
+    type: git
+    url: https://github.com/ROBOTIS-GIT/turtlebot3_msgs.git
+    version: 76e78b0a34e07cf1dd16dafdc54c44f35c5b83eb
+  turtlebot3_simulations:
+    type: git
+    url: https://github.com/ROBOTIS-GIT/turtlebot3_simulations.git
+    version: e9d809ca8e3bf889c0275e4103b15a341ffab888

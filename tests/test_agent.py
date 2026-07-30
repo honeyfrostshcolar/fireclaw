@@ -627,7 +627,7 @@ def test_agent_requires_confirmation_for_high_risk_skill_and_writes_pending_memo
     assert records[-1]["planning"]["plan"]["steps"][0]["skill_name"] == "smoke_entry"
 
 
-def test_agent_confirms_latest_pending_plan_and_executes(tmp_path):
+def test_agent_confirmation_words_do_not_create_execution_authority(tmp_path):
     memory_path = tmp_path / "memory.jsonl"
     skills_dir = tmp_path / "skills"
     _write_high_risk_workspace_skill(skills_dir)
@@ -642,18 +642,16 @@ def test_agent_confirms_latest_pending_plan_and_executes(tmp_path):
     result = agent.run("确认执行")
 
     assert pending["status"] == "awaiting_confirmation"
-    assert result["status"] == "succeeded"
+    assert result["status"] == "awaiting_confirmation"
     assert result["command"] == "确认执行"
     assert result["planning"]["plan"]["steps"][0]["skill_name"] == "smoke_entry"
-    assert result["execution"]["steps"][0]["output"]["confirmed"] is True
-    assert result["confirmation"] == {
-        "status": "confirmed",
-        "pending_turn_index": 1,
-        "pending_command": "运行 smoke_entry",
-    }
+    assert result["execution"] is None
+    assert result["confirmation"]["status"] == "pending"
     records = JsonlMemoryStore(memory_path).list_records()
-    assert [record["status"] for record in records] == ["awaiting_confirmation", "succeeded"]
-    assert records[-1]["confirmation"]["pending_turn_index"] == 1
+    assert [record["status"] for record in records] == [
+        "awaiting_confirmation",
+        "awaiting_confirmation",
+    ]
 
 
 def test_agent_cancels_latest_pending_plan_without_execution(tmp_path):
@@ -771,9 +769,11 @@ def test_agent_forwards_executor_live_events(tmp_path):
     result = agent.run("去坐标 (2.0, 1.5) 救人")
 
     assert result["status"] == "succeeded"
-    assert [event_type for event_type, _payload in events[:8]] == [
+    assert [event_type for event_type, _payload in events[:10]] == [
         "task.planned",
         "safety.decided",
+        "capability.policy_preflight",
+        "capability.policy_decided",
         "skill.started",
         "action.requested",
         "action.started",
@@ -782,8 +782,13 @@ def test_agent_forwards_executor_live_events(tmp_path):
         "skill.succeeded",
     ]
     assert events[0][1]["intent"] == "rescue_victim"
-    assert events[2][1]["skill_name"] == "navigate_to_point"
-    assert events[3][1]["action_type"] == "navigate_to_point"
+    assert events[2][1]["decisions"][0]["policy_id"] == (
+        "fireclaw.capability-policy:v1"
+    )
+    assert events[3][1]["skill_name"] == "navigate_to_point"
+    assert events[3][1]["status"] == "allow"
+    assert events[4][1]["skill_name"] == "navigate_to_point"
+    assert events[5][1]["action_type"] == "navigate_to_point"
     assert [event_type for event_type, _payload in events].count("skill.started") == 5
 
 

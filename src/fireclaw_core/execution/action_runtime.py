@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from inspect import Parameter, signature
 from typing import Any, Callable, Dict, Protocol
 from uuid import uuid4
 
@@ -11,6 +12,33 @@ from fireclaw_core.agent.robot import RobotActionResult, RobotAdapter
 ActionEventSink = Callable[[str, Dict[str, Any]], None]
 ActionFeedbackSink = Callable[[Dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
+RobotActionHandler = Callable[..., RobotActionResult]
+
+
+def accepts_keyword_argument(handler: Callable[..., Any], name: str) -> bool:
+    try:
+        parameters = signature(handler).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        parameter.kind == Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+def invoke_robot_action_handler(
+    handler: RobotActionHandler,
+    inputs: dict[str, Any],
+    *,
+    feedback_sink: ActionFeedbackSink | None = None,
+    cancellation_requested: CancellationCheck | None = None,
+) -> RobotActionResult:
+    kwargs = dict(inputs)
+    if accepts_keyword_argument(handler, "feedback_sink"):
+        kwargs["feedback_sink"] = feedback_sink
+    if accepts_keyword_argument(handler, "cancellation_requested"):
+        kwargs["cancellation_requested"] = cancellation_requested
+    return handler(**kwargs)
 
 
 class RobotActionBackend(Protocol):
@@ -27,6 +55,32 @@ class RobotActionBackend(Protocol):
 @dataclass
 class RobotAdapterActionBackend:
     robot: RobotAdapter
+    handlers: dict[str, RobotActionHandler] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        capabilities_provider = getattr(self.robot, "capabilities", None)
+        if not callable(capabilities_provider):
+            return
+        capabilities = capabilities_provider()
+        for action_name in capabilities.supported_actions:
+            action = getattr(self.robot, action_name, None)
+            if callable(action) and action_name not in self.handlers:
+                self.register_action(action_name, action)
+
+    def register_action(
+        self,
+        action_name: str,
+        handler: RobotActionHandler,
+        *,
+        replace: bool = False,
+    ) -> None:
+        if not action_name.strip():
+            raise ValueError("robot action name must not be empty")
+        if action_name in self.handlers and not replace:
+            raise ValueError(f"Robot action already registered: {action_name}")
+        if not callable(handler):
+            raise TypeError("robot action handler must be callable")
+        self.handlers[action_name] = handler
 
     def execute(
         self,
@@ -36,28 +90,14 @@ class RobotAdapterActionBackend:
         cancellation_requested: CancellationCheck | None = None,
     ) -> RobotActionResult:
         self._emit_robot_feedback(action_type, inputs, feedback_sink)
-        if action_type == "navigate_to_point":
+        handler = self.handlers.get(action_type)
+        if handler is not None:
             return self._call_robot_action(
-                "navigate_to_point",
-                {
-                    "x": float(inputs["x"]),
-                    "y": float(inputs["y"]),
-                    "yaw": float(inputs.get("yaw", 0.0)),
-                    "frame_id": str(inputs.get("frame_id", "map")),
-                },
+                handler,
+                inputs,
                 feedback_sink,
                 cancellation_requested,
             )
-        if action_type == "navigate_to_floor":
-            return self._call_robot_action("navigate_to_floor", {"floor": int(inputs["floor"])}, feedback_sink, cancellation_requested)
-        if action_type == "search_for_victims":
-            return self._call_robot_action("search_for_victims", {"floor": int(inputs["floor"])}, feedback_sink, cancellation_requested)
-        if action_type == "assess_victim":
-            return self._call_robot_action("assess_victim", {"floor": int(inputs["floor"])}, feedback_sink, cancellation_requested)
-        if action_type == "report_status":
-            return self._call_robot_action("report_status", {"floor": int(inputs["floor"])}, feedback_sink, cancellation_requested)
-        if action_type == "return_to_safe_zone":
-            return self._call_robot_action("return_to_safe_zone", {}, feedback_sink, cancellation_requested)
         timestamp = datetime.now(timezone.utc).isoformat()
         return RobotActionResult(
             ok=False,
@@ -73,16 +113,17 @@ class RobotAdapterActionBackend:
 
     def _call_robot_action(
         self,
-        action_type: str,
+        action: RobotActionHandler,
         inputs: dict[str, Any],
         feedback_sink: ActionFeedbackSink | None,
         cancellation_requested: CancellationCheck | None,
     ) -> RobotActionResult:
-        action = getattr(self.robot, action_type)
-        try:
-            return action(**inputs, feedback_sink=feedback_sink, cancellation_requested=cancellation_requested)
-        except TypeError:
-            return action(**inputs)
+        return invoke_robot_action_handler(
+            action,
+            inputs,
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
 
     def _emit_robot_feedback(
         self,
@@ -133,15 +174,15 @@ class RobotActionRuntime:
             return self._cancelled_result(action_id, action_type, payload)
         self._emit("action.started", {**payload, "status": "started"})
         feedback_sink = lambda feedback: self._emit_feedback(payload, feedback)
-        try:
-            result = self.backend.execute(
-                action_type,
-                inputs,
-                feedback_sink=feedback_sink,
-                cancellation_requested=cancellation_requested,
-            )
-        except TypeError:
-            result = self.backend.execute(action_type, inputs, feedback_sink=feedback_sink)
+        execute_kwargs: dict[str, Any] = {}
+        if accepts_keyword_argument(self.backend.execute, "feedback_sink"):
+            execute_kwargs["feedback_sink"] = feedback_sink
+        if accepts_keyword_argument(
+            self.backend.execute,
+            "cancellation_requested",
+        ):
+            execute_kwargs["cancellation_requested"] = cancellation_requested
+        result = self.backend.execute(action_type, inputs, **execute_kwargs)
         result.data.setdefault("action_id", action_id)
         result.data.setdefault("task_id", self.task_id)
         if result.status == "cancelled":

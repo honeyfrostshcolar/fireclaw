@@ -6,6 +6,9 @@ from math import cos, isfinite, sin
 from typing import Any
 from typing import Protocol
 
+from fireclaw_core.execution.builtin_physical_skills import (
+    builtin_physical_action_names,
+)
 from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
 from fireclaw_core.ros.ros1_config import Ros1EndpointConfig
 from fireclaw_core.ros.ros1_template import render_ros1_template
@@ -61,12 +64,7 @@ class AdapterCapabilities:
 
 
 ALL_ROBOT_ACTIONS = {
-    "navigate_to_point",
-    "navigate_to_floor",
-    "search_for_victims",
-    "assess_victim",
-    "report_status",
-    "return_to_safe_zone",
+    *builtin_physical_action_names(),
     "emergency_stop",
 }
 
@@ -117,34 +115,16 @@ def validate_simulator_real_separation(
 
 
 class RobotAdapter(Protocol):
+    """Hardware boundary.
+
+    Physical action methods are intentionally not enumerated here. Trusted
+    skill plugins bind their declared ``action`` to a same-named callable
+    advertised by :meth:`capabilities`.
+    """
+
     robot_id: str
     mode: str
     dry_run: bool
-
-    def navigate_to_point(
-        self,
-        x: float,
-        y: float,
-        yaw: float = 0.0,
-        frame_id: str = "map",
-    ) -> RobotActionResult:
-        ...
-
-    # Legacy compatibility for future multi-floor deployments.
-    def navigate_to_floor(self, floor: int) -> RobotActionResult:
-        ...
-
-    def search_for_victims(self, floor: int) -> RobotActionResult:
-        ...
-
-    def assess_victim(self, floor: int) -> RobotActionResult:
-        ...
-
-    def report_status(self, floor: int) -> RobotActionResult:
-        ...
-
-    def return_to_safe_zone(self) -> RobotActionResult:
-        ...
 
     def emergency_stop(self, reason: str | None = None) -> RobotActionResult:
         ...

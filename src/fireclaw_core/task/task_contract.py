@@ -5,13 +5,21 @@ from dataclasses import asdict, dataclass, field
 from math import isfinite
 from typing import Any
 
+from fireclaw_core.approval.execution_authorization import (
+    ExecutionAuthorization,
+)
+from fireclaw_core.execution.builtin_physical_skills import (
+    auto_skills_for_target,
+    get_builtin_physical_skill,
+    skill_chain_for_capability,
+    task_type_for_capability,
+)
+from fireclaw_core.execution.skill_plugin import PhysicalSkillPlugin
 from fireclaw_core.mission.mission_planner import MissionSubtask
 from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
 
 VALID_PRIORITIES = {"low", "normal", "high", "emergency"}
 VALID_RISK_LEVELS = {"low", "medium", "high", "critical"}
-FLOOR_SKILLS = {"navigate_to_floor", "search_for_victims", "assess_victim", "report_status"}
-POINT_SKILLS = {"navigate_to_point"}
 
 
 @dataclass(frozen=True)
@@ -51,11 +59,14 @@ class StructuredRobotTask:
     robot_id: str | None = None
     command: str | None = None
     memory_lineage: MemoryLineage | None = None
+    execution_authorization: ExecutionAuthorization | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         if self.memory_lineage is None:
             payload.pop("memory_lineage")
+        if self.execution_authorization is None:
+            payload.pop("execution_authorization")
         return payload
 
     @classmethod
@@ -78,6 +89,13 @@ class StructuredRobotTask:
                 if isinstance(payload.get("memory_lineage"), dict)
                 else None
             ),
+            execution_authorization=(
+                ExecutionAuthorization.from_dict(
+                    payload["execution_authorization"]
+                )
+                if isinstance(payload.get("execution_authorization"), dict)
+                else None
+            ),
         )
 
 
@@ -98,11 +116,6 @@ def structured_task_from_mission_subtask(
         subtask.capability_required,
         capability_skill_chains=capability_skill_chains,
     )
-    if (
-        isinstance(subtask.target.get("pose"), dict)
-        and "navigate_to_point" not in required_skills
-    ):
-        required_skills.insert(0, "navigate_to_point")
     target = (
         dict(subtask.target)
         if subtask.target
@@ -112,6 +125,9 @@ def structured_task_from_mission_subtask(
             else {}
         )
     )
+    for skill_name in reversed(auto_skills_for_target(target)):
+        if skill_name not in required_skills:
+            required_skills.insert(0, skill_name)
     return StructuredRobotTask(
         task_id=(
             task_id
@@ -214,7 +230,11 @@ def validate_structured_robot_task(task: StructuredRobotTask) -> list[str]:
     return errors
 
 
-def planning_result_from_structured_task(task: StructuredRobotTask) -> PlanningResult:
+def planning_result_from_structured_task(
+    task: StructuredRobotTask,
+    *,
+    skill_catalog: Any | None = None,
+) -> PlanningResult:
     errors = validate_structured_robot_task(task)
     if errors:
         return PlanningResult(status="clarify", message="; ".join(errors), intent=task.task_type)
@@ -226,20 +246,26 @@ def planning_result_from_structured_task(task: StructuredRobotTask) -> PlanningR
         if isinstance(task.target.get("pose"), dict)
         else None
     )
+    target_frame_id = (
+        task.target.get("frame_id")
+        or (
+            target_pose.get("frame_id")
+            if target_pose is not None
+            else None
+        )
+        or "map"
+    )
     steps: list[PlanStep] = []
     for skill_name in task.required_skills:
-        inputs: dict[str, Any] = {}
-        if skill_name in FLOOR_SKILLS and target_floor is not None:
-            inputs["floor"] = target_floor
-        if skill_name in POINT_SKILLS and target_pose is not None:
-            inputs.update({
-                "x": float(target_pose["x"]),
-                "y": float(target_pose["y"]),
-                "yaw": float(target_pose.get("yaw", 0.0)),
-                "frame_id": str(task.target.get("frame_id") or "map"),
-            })
-        if task.constraints:
-            inputs["constraints"] = dict(task.constraints)
+        plugin = _physical_plugin(skill_name, skill_catalog)
+        try:
+            inputs = plugin.task_inputs(task.target) if plugin is not None else {}
+        except (TypeError, ValueError) as exc:
+            return PlanningResult(
+                status="clarify",
+                message=str(exc),
+                intent=task.task_type,
+            )
         steps.append(PlanStep(skill_name=skill_name, inputs=inputs))
     return PlanningResult(
         status="planned",
@@ -251,7 +277,7 @@ def planning_result_from_structured_task(task: StructuredRobotTask) -> PlanningR
                 "x": float(target_pose["x"]),
                 "y": float(target_pose["y"]),
                 "yaw": float(target_pose.get("yaw", 0.0)),
-                "frame_id": str(task.target.get("frame_id") or "map"),
+                "frame_id": str(target_frame_id),
             }
             if target_pose is not None
             else None
@@ -261,9 +287,7 @@ def planning_result_from_structured_task(task: StructuredRobotTask) -> PlanningR
 
 
 def _task_type_from_capability(capability: str) -> str:
-    if capability == "search_for_victims":
-        return "search"
-    return capability
+    return task_type_for_capability(capability)
 
 
 def skills_from_capability(
@@ -277,9 +301,7 @@ def skills_from_capability(
 
 
 def _skills_from_capability(capability: str) -> list[str]:
-    if capability == "search_for_victims":
-        return ["search_for_victims", "report_status"]
-    return [capability]
+    return skill_chain_for_capability(capability)
 
 
 def _optional_str(value: Any) -> str | None:
@@ -287,3 +309,19 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _physical_plugin(
+    skill_name: str,
+    skill_catalog: Any | None,
+) -> PhysicalSkillPlugin | None:
+    if skill_catalog is None:
+        return get_builtin_physical_skill(skill_name)
+    getter = getattr(skill_catalog, "get", None)
+    if not callable(getter):
+        return None
+    value = getter(skill_name)
+    if isinstance(value, PhysicalSkillPlugin):
+        return value
+    plugin = getattr(value, "physical_plugin", None)
+    return plugin if isinstance(plugin, PhysicalSkillPlugin) else None

@@ -6,6 +6,13 @@ from pathlib import Path
 import re
 from typing import Any, Protocol
 
+from fireclaw_core.approval.execution_authorization import (
+    ExecutionAuthorization,
+    HmacExecutionAuthorizationAuthority,
+    VerifiedExecutionAuthorization,
+    authorized_action,
+    execution_scope_hash,
+)
 from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
 from fireclaw_core.execution.execution_event_producer import (
     RobotExecutionEventProducer,
@@ -28,6 +35,17 @@ from fireclaw_core.execution.skills import create_default_skill_registry
 from fireclaw_core.task.task_contract import StructuredRobotTask, planning_result_from_structured_task
 from fireclaw_core.infra.workspace_skills import WorkspaceSkillLoadError, load_workspace_skills
 from fireclaw_core.context.manager import StructuredSemanticCompactor
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.policy.capability import (
+    CAPABILITY_POLICY_ID,
+    CapabilityActor,
+    CapabilityPolicyContext,
+    CapabilityPolicyDecision,
+    CapabilityPolicyPipeline,
+    CapabilityPolicyProjection,
+    CapabilityRobotProfile,
+    CapabilityRuntimeState,
+)
 
 
 class MemoryStore(Protocol):
@@ -78,6 +96,15 @@ class FireClawAgent:
         embodied_runtime_mode: str | None = None,
         robot_memory_recorder: RobotMemoryRecorder | None = None,
         execution_event_producer: RobotExecutionEventProducer | None = None,
+        execution_authorization_authority: (
+            HmacExecutionAuthorizationAuthority | None
+        ) = None,
+        execution_authorization: ExecutionAuthorization | None = None,
+        resource_lease_manager: Any | None = None,
+        authorization_use_recorder: Any | None = None,
+        plugin_host: FireClawPluginHost | None = None,
+        capability_actor: CapabilityActor | Any | None = None,
+        robot_profile: Any | None = None,
     ) -> None:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
@@ -99,17 +126,47 @@ class FireClawAgent:
         self._execution_event_producer = (
             execution_event_producer or RobotExecutionEventProducer()
         )
+        self._execution_authorization_authority = (
+            execution_authorization_authority
+        )
+        self._execution_authorization = execution_authorization
+        self._last_authorization_error: str | None = None
+        self._resource_lease_manager = resource_lease_manager
+        self.capability_actor = (
+            CapabilityActor.from_value(capability_actor)
+            if capability_actor is not None
+            else CapabilityActor(
+                actor_id="local-operator",
+                role="operator",
+                scopes=frozenset({"task.submit"}),
+                source="local",
+            )
+        )
+        self.capability_robot_profile = CapabilityRobotProfile.from_value(
+            robot_profile
+        )
         action_runtime = RobotActionRuntime(
             backend=RobotAdapterActionBackend(self.robot),
             event_sink=event_sink,
             task_id=task_id,
         )
-        self.registry = create_default_skill_registry(self.robot, action_runtime=action_runtime)
+        self.plugin_host = plugin_host or FireClawPluginHost()
+        self.registry = create_default_skill_registry(
+            self.robot,
+            action_runtime=action_runtime,
+            plugin_host=self.plugin_host,
+        )
         self.skill_load_errors: list[WorkspaceSkillLoadError] = []
         if workspace_skills_dir is not None:
-            workspace_result = load_workspace_skills(workspace_skills_dir)
-            self.registry.extend(workspace_result.skills)
+            workspace_result = load_workspace_skills(
+                workspace_skills_dir,
+                plugin_host=self.plugin_host,
+            )
             self.skill_load_errors = workspace_result.errors
+        self.capability_policy = CapabilityPolicyPipeline(
+            plugin_host=self.plugin_host,
+            registry=self.registry,
+        )
         self.safety = SafetyGate(
             memory_producer=safety_memory_producer,
             runtime_mode=embodied_runtime_mode,
@@ -123,12 +180,268 @@ class FireClawAgent:
             mission_id=session_id,
             robot_id=getattr(self.robot, "robot_id", None),
             subtask_id=task_id,
+            resource_lease_manager=resource_lease_manager,
+            authorization_use_recorder=authorization_use_recorder,
         )
 
     def _safety_available_sensors(self) -> set[str] | None:
         if self._available_sensors_override:
             return self.available_sensors
         return None
+
+    def project_skill_capabilities(
+        self,
+        structured_task: StructuredRobotTask,
+        *,
+        skill_names: set[str] | tuple[str, ...] | list[str],
+        robot_state: Any | None = None,
+    ) -> CapabilityPolicyProjection:
+        context = self._capability_policy_context(
+            phase="planning",
+            structured_task=structured_task,
+            robot_state=(
+                robot_state
+                if robot_state is not None
+                else self._get_robot_state()
+            ),
+        )
+        projection = self.capability_policy.project(
+            skill_names,
+            context=context,
+        )
+        self._emit_event(
+            "capability.policy_projection",
+            projection.to_dict(),
+        )
+        return projection
+
+    def _capability_policy_context(
+        self,
+        *,
+        phase: str,
+        structured_task: StructuredRobotTask | None,
+        robot_state: Any,
+        safety_decision: SafetyDecision | None = None,
+        execution_authorization: (
+            VerifiedExecutionAuthorization | None
+        ) = None,
+    ) -> CapabilityPolicyContext:
+        robot_id = str(
+            (
+                structured_task.robot_id
+                if structured_task is not None
+                else None
+            )
+            or getattr(self.robot, "robot_id", None)
+            or "unknown-robot"
+        )
+        allowed_skills: frozenset[str] | None = None
+        if structured_task is not None:
+            from fireclaw_core.agent.robot_agent import (
+                envelope_from_structured_task,
+            )
+
+            envelope = envelope_from_structured_task(
+                structured_task,
+                fallback_robot_id=robot_id,
+            )
+            allowed_skills = frozenset(envelope.allowed_skills)
+        return CapabilityPolicyContext(
+            phase=phase,  # type: ignore[arg-type]
+            actor=self.capability_actor,
+            robot_id=robot_id,
+            mission_id=(
+                structured_task.mission_id
+                if structured_task is not None
+                and structured_task.mission_id is not None
+                else self.session_id
+            ),
+            task_id=(
+                structured_task.task_id
+                if structured_task is not None
+                else self.task_id
+            ),
+            delegated_operator_id=(
+                structured_task.operator_id
+                if structured_task is not None
+                else None
+            ),
+            allowed_skills=allowed_skills,
+            target=(
+                dict(structured_task.target)
+                if structured_task is not None
+                else {}
+            ),
+            robot_profile=self.capability_robot_profile,
+            runtime_state=CapabilityRuntimeState.from_values(
+                robot_state,
+                emergency_stop_active=self._resource_admission_closed(),
+            ),
+            dry_run=self.dry_run,
+            safety_status=(
+                safety_decision.status
+                if safety_decision is not None
+                else None
+            ),
+            safety_reasons=(
+                tuple(safety_decision.reasons)
+                if safety_decision is not None
+                else ()
+            ),
+            execution_authorization=execution_authorization,
+        )
+
+    def _resource_admission_closed(self) -> bool:
+        admission_state = getattr(
+            self._resource_lease_manager,
+            "admission_state",
+            None,
+        )
+        if not callable(admission_state):
+            return False
+        try:
+            state = admission_state()
+        except Exception:
+            return True
+        return not isinstance(state, dict) or bool(state.get("closed"))
+
+    def _execute_policy_checked_plan(
+        self,
+        *,
+        planning_result: PlanningResult,
+        structured_task: StructuredRobotTask | None,
+        safety_decision: SafetyDecision,
+        safety_event_id: str | None,
+        execution_authorization: (
+            VerifiedExecutionAuthorization | None
+        ),
+        robot_state: Any,
+        operation_id: str | None,
+    ) -> tuple[
+        ExecutionResult | None,
+        dict[str, Any],
+    ]:
+        plan = planning_result.plan
+        preflight: list[CapabilityPolicyDecision] = []
+        execution: list[CapabilityPolicyDecision] = []
+        if plan is not None:
+            context = self._capability_policy_context(
+                phase="execution",
+                structured_task=structured_task,
+                robot_state=robot_state,
+                safety_decision=safety_decision,
+                execution_authorization=execution_authorization,
+            )
+            preflight = [
+                self.capability_policy.evaluate(
+                    step.skill_name,
+                    dict(step.inputs),
+                    context=context,
+                )
+                for step in plan.steps
+            ]
+            self._emit_event(
+                "capability.policy_preflight",
+                {
+                    "policy_id": CAPABILITY_POLICY_ID,
+                    "phase": "execution",
+                    "decisions": [
+                        decision.to_dict() for decision in preflight
+                    ],
+                },
+            )
+
+        execution_result: ExecutionResult | None = None
+        if safety_decision.status == "allow" and plan is not None:
+            def check_capability(
+                skill: Any,
+                inputs: dict[str, Any],
+            ) -> CapabilityPolicyDecision:
+                live_context = self._capability_policy_context(
+                    phase="execution",
+                    structured_task=structured_task,
+                    robot_state=self._get_robot_state(),
+                    safety_decision=safety_decision,
+                    execution_authorization=execution_authorization,
+                )
+                decision = self.capability_policy.evaluate(
+                    skill.name,
+                    inputs,
+                    context=live_context,
+                )
+                execution.append(decision)
+                return decision
+
+            execution_result = self.executor.execute(
+                plan,
+                parent_memory_event_id=safety_event_id,
+                operation_id=operation_id,
+                execution_authorization=execution_authorization,
+                capability_policy_check=check_capability,
+            )
+        return execution_result, {
+            "policy_id": CAPABILITY_POLICY_ID,
+            "preflight": [
+                decision.to_dict() for decision in preflight
+            ],
+            "execution": [
+                decision.to_dict() for decision in execution
+            ],
+        }
+
+    def _authorization_for(
+        self,
+        structured_task: StructuredRobotTask | None,
+    ) -> ExecutionAuthorization | None:
+        if (
+            structured_task is not None
+            and structured_task.execution_authorization is not None
+        ):
+            return structured_task.execution_authorization
+        return self._execution_authorization
+
+    def _verify_execution_authorization(
+        self,
+        *,
+        command: str,
+        planning_result: PlanningResult,
+        structured_task: StructuredRobotTask | None,
+    ) -> VerifiedExecutionAuthorization | None:
+        authorization = self._authorization_for(structured_task)
+        if authorization is None:
+            self._last_authorization_error = "authorization_missing"
+            return None
+        if self._execution_authorization_authority is None:
+            self._last_authorization_error = "authorization_verifier_unavailable"
+            return None
+        if planning_result.plan is None:
+            self._last_authorization_error = "authorization_plan_missing"
+            return None
+        actions = [
+            authorized_action(step.skill_name, step.inputs)
+            for step in planning_result.plan.steps
+        ]
+        scope_hash = execution_scope_hash(
+            command=command,
+            structured_task=(
+                structured_task.to_dict()
+                if structured_task is not None
+                else None
+            ),
+            actions=actions,
+        )
+        verification = self._execution_authorization_authority.verify(
+            authorization,
+            robot_id=str(
+                getattr(self.robot, "robot_id", None) or "unknown-robot"
+            ),
+            scope_hash=scope_hash,
+            action_hashes={
+                str(action["action_hash"]) for action in actions
+            },
+        )
+        self._last_authorization_error = verification.error_code
+        return verification.grant if verification.verified else None
 
     def _record_robot_snapshot(
         self, robot_state: Any, environment_state: Any
@@ -163,11 +476,17 @@ class FireClawAgent:
         memory_snapshot = self._record_robot_snapshot(robot_state_object, environment_state_object)
         robot_state = self._state_snapshot(robot_state_object)
         environment_state = self._state_snapshot(environment_state_object)
+        verified_authorization = self._verify_execution_authorization(
+            command=resolved_command,
+            planning_result=planning_result,
+            structured_task=None,
+        )
         safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
             planning_result,
             self.registry,
             dry_run=self.dry_run,
             available_sensors=self._safety_available_sensors(),
+            execution_authorization=verified_authorization,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
             mission_id=self.session_id,
@@ -177,12 +496,21 @@ class FireClawAgent:
         self._emit_event("task.planned", self._planning_to_dict(planning_result))
         self._emit_event("safety.decided", asdict(safety_decision))
 
-        execution_result: ExecutionResult | None = None
-        if safety_decision.status == "allow" and planning_result.plan is not None:
-            execution_result = self.executor.execute(
-                planning_result.plan,
-                parent_memory_event_id=safety_event_id,
+        execution_result, capability_policy_manifest = (
+            self._execute_policy_checked_plan(
+                planning_result=planning_result,
+                structured_task=None,
+                safety_decision=safety_decision,
+                safety_event_id=safety_event_id,
+                execution_authorization=verified_authorization,
+                robot_state=robot_state_object,
+                operation_id=(
+                    verified_authorization.authorization_id
+                    if verified_authorization is not None
+                    else self.task_id
+                ),
             )
+        )
 
         status = self._resolve_status(safety_decision, execution_result)
         result = {
@@ -200,7 +528,11 @@ class FireClawAgent:
             "planning": self._planning_to_dict(planning_result),
             "safety": asdict(safety_decision),
             "execution": self._execution_to_dict(execution_result),
-            "confirmation": self._confirmation_to_dict(safety_decision),
+            "capability_policy": capability_policy_manifest,
+            "confirmation": self._confirmation_to_dict(
+                safety_decision,
+                verified_authorization,
+            ),
             "robot_state": robot_state,
             "environment_state": environment_state,
             "memory_error": None,
@@ -218,7 +550,10 @@ class FireClawAgent:
         return self.run_planning_result(
             command=task.command or task.task_type,
             structured_task=task,
-            planning_result=planning_result_from_structured_task(task),
+            planning_result=planning_result_from_structured_task(
+                task,
+                skill_catalog=self.registry,
+            ),
         )
 
     def run_planning_result(
@@ -233,12 +568,17 @@ class FireClawAgent:
         memory_snapshot = self._record_robot_snapshot(robot_state_object, environment_state_object)
         robot_state = self._state_snapshot(robot_state_object)
         environment_state = self._state_snapshot(environment_state_object)
+        verified_authorization = self._verify_execution_authorization(
+            command=command,
+            planning_result=planning_result,
+            structured_task=structured_task,
+        )
         safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
             planning_result,
             self.registry,
             dry_run=self.dry_run,
             available_sensors=self._safety_available_sensors(),
-            operator_confirmed=True,
+            execution_authorization=verified_authorization,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
             mission_id=self.session_id,
@@ -250,12 +590,21 @@ class FireClawAgent:
         self._emit_event("task.planned", self._planning_to_dict(planning_result))
         self._emit_event("safety.decided", asdict(safety_decision))
 
-        execution_result: ExecutionResult | None = None
-        if safety_decision.status == "allow" and planning_result.plan is not None:
-            execution_result = self.executor.execute(
-                planning_result.plan,
-                parent_memory_event_id=safety_event_id,
+        execution_result, capability_policy_manifest = (
+            self._execute_policy_checked_plan(
+                planning_result=planning_result,
+                structured_task=structured_task,
+                safety_decision=safety_decision,
+                safety_event_id=safety_event_id,
+                execution_authorization=verified_authorization,
+                robot_state=robot_state_object,
+                operation_id=(
+                    verified_authorization.authorization_id
+                    if verified_authorization is not None
+                    else self.task_id
+                ),
             )
+        )
 
         status = self._resolve_status(safety_decision, execution_result)
         result = {
@@ -267,7 +616,11 @@ class FireClawAgent:
             "planning": self._planning_to_dict(planning_result),
             "safety": asdict(safety_decision),
             "execution": self._execution_to_dict(execution_result),
-            "confirmation": self._confirmation_to_dict(safety_decision),
+            "capability_policy": capability_policy_manifest,
+            "confirmation": self._confirmation_to_dict(
+                safety_decision,
+                verified_authorization,
+            ),
             "robot_state": robot_state,
             "environment_state": environment_state,
             "memory_error": None,
@@ -290,6 +643,7 @@ class FireClawAgent:
         command: str,
         planning_result: PlanningResult,
         structured_task: StructuredRobotTask,
+        operation_id: str | None = None,
     ) -> DeliberatedStepExecution:
         """Safety-check and execute one step without finalizing the task.
 
@@ -308,12 +662,17 @@ class FireClawAgent:
             robot_state_object,
             environment_state_object,
         )
+        verified_authorization = self._verify_execution_authorization(
+            command=command,
+            planning_result=planning_result,
+            structured_task=structured_task,
+        )
         safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
             planning_result,
             self.registry,
             dry_run=self.dry_run,
             available_sensors=self._safety_available_sensors(),
-            operator_confirmed=True,
+            execution_authorization=verified_authorization,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
             mission_id=self.session_id,
@@ -326,12 +685,17 @@ class FireClawAgent:
         )
         self._emit_event("safety.decided", asdict(safety_decision))
 
-        execution_result: ExecutionResult | None = None
-        if safety_decision.status == "allow":
-            execution_result = self.executor.execute(
-                planning_result.plan,
-                parent_memory_event_id=safety_event_id,
+        execution_result, capability_policy_manifest = (
+            self._execute_policy_checked_plan(
+                planning_result=planning_result,
+                structured_task=structured_task,
+                safety_decision=safety_decision,
+                safety_event_id=safety_event_id,
+                execution_authorization=verified_authorization,
+                robot_state=robot_state_object,
+                operation_id=operation_id,
             )
+        )
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "command": command,
@@ -348,7 +712,11 @@ class FireClawAgent:
             "planning": self._planning_to_dict(planning_result),
             "safety": asdict(safety_decision),
             "execution": self._execution_to_dict(execution_result),
-            "confirmation": self._confirmation_to_dict(safety_decision),
+            "capability_policy": capability_policy_manifest,
+            "confirmation": self._confirmation_to_dict(
+                safety_decision,
+                verified_authorization,
+            ),
             "robot_state": self._state_snapshot(self._get_robot_state()),
             "environment_state": self._state_snapshot(
                 self._get_environment_state()
@@ -425,6 +793,11 @@ class FireClawAgent:
                 else None
             ),
             "execution": self._execution_to_dict(aggregate_execution),
+            "capability_policy": (
+                latest_step.get("capability_policy")
+                if isinstance(latest_step, dict)
+                else None
+            ),
             "confirmation": (
                 latest_step.get("confirmation")
                 if isinstance(latest_step, dict)
@@ -620,6 +993,13 @@ class FireClawAgent:
             return "FireClaw dry-run rescue plan completed."
         if execution_result is not None and execution_result.status == "cancelled":
             return "任务已取消。"
+        if (
+            execution_result is not None
+            and execution_result.status == "failed"
+            and execution_result.steps
+            and execution_result.steps[-1].error
+        ):
+            return str(execution_result.steps[-1].error)
         return planning_result.message
 
     def _planning_to_dict(self, planning_result: PlanningResult) -> dict[str, Any]:
@@ -637,7 +1017,24 @@ class FireClawAgent:
             return None
         return asdict(execution_result)
 
-    def _confirmation_to_dict(self, safety_decision: SafetyDecision) -> dict[str, Any] | None:
+    def _confirmation_to_dict(
+        self,
+        safety_decision: SafetyDecision,
+        execution_authorization: (
+            VerifiedExecutionAuthorization | None
+        ) = None,
+    ) -> dict[str, Any] | None:
+        if execution_authorization is not None:
+            return {
+                "status": "confirmed",
+                "authorization_id": (
+                    execution_authorization.authorization_id
+                ),
+                "request_id": execution_authorization.request_id,
+                "operator_id": execution_authorization.operator_id,
+                "scope_hash": execution_authorization.scope_hash,
+                "expires_at": execution_authorization.expires_at,
+            }
         if safety_decision.status != "require_confirmation":
             return None
         return {
@@ -853,6 +1250,16 @@ class FireClawAgent:
 
         turn_index = self._next_turn_index()
         planning_result = self._planning_result_from_record(pending)
+        pending_command = str(
+            pending.get("session", {}).get("resolved_command")
+            or pending.get("command")
+            or ""
+        )
+        execution_authorization = self._verify_execution_authorization(
+            command=pending_command,
+            planning_result=planning_result,
+            structured_task=None,
+        )
         robot_state_object = self._get_robot_state()
         environment_state_object = self._get_environment_state()
         memory_snapshot = self._record_robot_snapshot(robot_state_object, environment_state_object)
@@ -863,7 +1270,7 @@ class FireClawAgent:
             self.registry,
             dry_run=self.dry_run,
             available_sensors=self._safety_available_sensors(),
-            operator_confirmed=True,
+            execution_authorization=execution_authorization,
             robot_state=robot_state_object,
             environment_state=environment_state_object,
             mission_id=self.session_id,
@@ -873,12 +1280,21 @@ class FireClawAgent:
         self._emit_event("task.planned", self._planning_to_dict(planning_result))
         self._emit_event("safety.decided", asdict(safety_decision))
 
-        execution_result: ExecutionResult | None = None
-        if safety_decision.status == "allow" and planning_result.plan is not None:
-            execution_result = self.executor.execute(
-                planning_result.plan,
-                parent_memory_event_id=safety_event_id,
+        execution_result, capability_policy_manifest = (
+            self._execute_policy_checked_plan(
+                planning_result=planning_result,
+                structured_task=None,
+                safety_decision=safety_decision,
+                safety_event_id=safety_event_id,
+                execution_authorization=execution_authorization,
+                robot_state=robot_state_object,
+                operation_id=(
+                    execution_authorization.authorization_id
+                    if execution_authorization is not None
+                    else self.task_id
+                ),
             )
+        )
 
         status = self._resolve_status(safety_decision, execution_result)
         result = {
@@ -899,11 +1315,23 @@ class FireClawAgent:
             "planning": self._planning_to_dict(planning_result),
             "safety": asdict(safety_decision),
             "execution": self._execution_to_dict(execution_result),
-            "confirmation": {
-                "status": "confirmed",
-                "pending_turn_index": pending.get("session", {}).get("turn_index"),
-                "pending_command": pending.get("command"),
-            },
+            "capability_policy": capability_policy_manifest,
+            "confirmation": (
+                {
+                    "status": "confirmed",
+                    "authorization_id": (
+                        execution_authorization.authorization_id
+                        if execution_authorization is not None
+                        else None
+                    ),
+                    "pending_turn_index": pending.get("session", {}).get(
+                        "turn_index"
+                    ),
+                    "pending_command": pending.get("command"),
+                }
+                if safety_decision.status == "allow"
+                else self._confirmation_to_dict(safety_decision)
+            ),
             "robot_state": robot_state,
             "environment_state": environment_state,
             "memory_error": None,

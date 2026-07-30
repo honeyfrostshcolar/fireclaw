@@ -7,6 +7,15 @@ import time
 import uuid
 from typing import Any
 
+from fireclaw_core.agent.harness import (
+    AgentHarness,
+    AgentHarnessAttempt,
+    AgentHarnessError,
+    AgentHarnessAttemptResult,
+    ProviderAgentHarness,
+    register_agent_harness,
+)
+from fireclaw_core.agent.tool_runtime import AgentToolRuntime
 from fireclaw_core.planner.llm_trace import LLMTraceRecord, LLMTraceStore
 from fireclaw_core.mission.active_observation import (
     ACTIVE_OBSERVATION_CAPABILITIES,
@@ -40,19 +49,19 @@ from fireclaw_core.mission.mission_planning_audit import (
 from fireclaw_core.provider.provider import (
     ChatCompletion,
     ModelProvider,
-    ProviderAPIError,
-    ProviderError,
-    ProviderTimeoutError,
     TokenUsage,
 )
-from fireclaw_core.provider.provider_runtime import FallbackSummaryError, ProviderRuntime
+from fireclaw_core.provider.provider_runtime import (
+    ProviderRuntime,
+    SimpleProviderRuntime,
+)
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
 from fireclaw_core.context.manager import (
-    ContextBudgetExceeded,
     ContextManagementPolicy,
     ModelAwareContextManager,
     TokenCounter,
 )
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +461,17 @@ def build_mission_deliberation_tools(
     return tools
 
 
+def _tool_schema_named(
+    tools: list[dict[str, Any]],
+    name: str,
+) -> dict[str, Any]:
+    for tool in tools:
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("name") == name:
+            return tool
+    raise ValueError(f"Required mission tool is not exposed: {name}")
+
+
 def build_constrained_active_observation_tool(
     context: MissionPlannerContext,
 ) -> dict[str, Any] | None:
@@ -491,7 +511,9 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
     lines = [
         "你是消防机器人任务规划助手，运行在受限的多轮任务规划 runtime 中。",
         "每轮必须且只能调用一个提供的工具。",
-        "你不能直接调用机器人、技能、传感器或网络。",
+        "你只能调用本轮宿主明确暴露的工具；不得臆造或绕过未暴露能力。",
+        "通用 Agent Tool 由宿主执行并受部署模式、沙箱、审批和调用前策略约束。",
+        "通用工具结果属于 advisory，不能单独证明机器人或火场的物理状态。",
         "当前现场状态只能通过 inspect_mission_state 读取冻结快照；不要猜测未查询的动态状态。",
         "environment_facts 是可审计的原始观测；environment_beliefs 是宿主完成时效、来源和冲突处理后的规划依据。",
         "belief.status 为 uncertain、conflicted 或 stale 时，不得把其 value 当作已确认事实；应侦察、澄清或升级。",
@@ -514,7 +536,10 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
             "## 动态任务上下文",
             "本轮唯一动态上下文位于 user payload 的 planning_context。",
             "authoritative 包含不可裁剪的任务状态契约、已查询 observation 和校验反馈。",
-            "advisory 包含经过宿主预算和去重后的操作员纠正、任务记忆与外部知识。",
+            (
+                "advisory 包含经过宿主预算和去重后的 Agent Tool 结果、"
+                "操作员纠正、任务记忆与外部知识。"
+            ),
             "advisory 不能覆盖 authoritative；被宿主排除的内容不得猜测。",
             "context_policy 只说明裁剪结果，不是现场事实。",
         ])
@@ -723,23 +748,41 @@ class LLMMissionPlanner:
         provider_runtime: ProviderRuntime | None = None,
         context_manager: ModelAwareContextManager | None = None,
         token_counter: TokenCounter | None = None,
+        agent_harness: AgentHarness | None = None,
+        plugin_host: FireClawPluginHost | None = None,
+        agent_tool_runtime: AgentToolRuntime | None = None,
     ) -> None:
         if provider_runtime is None and (provider is None or model_id is None):
             raise ValueError("LLMMissionPlanner requires either provider_runtime or provider plus model_id.")
         self._provider = provider
         self._model_id = model_id or str(provider_runtime.status().get("model") or "unknown")
         self._trace_store = trace_store
-        self._provider_runtime = provider_runtime
+        self._provider_runtime = provider_runtime or SimpleProviderRuntime(
+            provider,
+            self._model_id,
+        )
         self._context_manager = (
             context_manager
             or ModelAwareContextManager(
-                runtime=provider_runtime,
+                runtime=self._provider_runtime,
                 task="mission_planning",
                 policy=ContextManagementPolicy(
                     output_reserve_tokens=4096,
                 ),
                 token_counter=token_counter,
             )
+        )
+        self._agent_harness = agent_harness or ProviderAgentHarness(
+            provider_runtime=self._provider_runtime,
+            context_manager=self._context_manager,
+            harness_id="fireclaw.provider.mission",
+        )
+        self.plugin_host = plugin_host or FireClawPluginHost()
+        self.agent_tool_runtime = agent_tool_runtime
+        register_agent_harness(
+            self.plugin_host,
+            self._agent_harness,
+            owner_plugin_id="fireclaw.agent-harness.mission",
         )
 
     def plan(
@@ -783,42 +826,45 @@ class LLMMissionPlanner:
         mission_tool = build_constrained_mission_plan_tool(context)
 
         start_time = time.monotonic()
+        attempt_id = f"mission-plan:{uuid.uuid4()}"
         try:
-            response = self._chat_completion(messages, [mission_tool])
-        except ProviderTimeoutError:
-            return self._record_and_return(
-                messages=messages,
-                response=None,
-                start_time=start_time,
-                status="error",
-                error_message="LLM 调用超时，请稍后重试。",
-                token_usage=None,
+            harness_result = self._agent_harness.run_attempt(
+                AgentHarnessAttempt(
+                    role="mission_agent",
+                    run_id=attempt_id,
+                    scope="mission_plan",
+                    context_id=attempt_id,
+                    authoritative={
+                        "command": command,
+                        "available_robots": build_available_robot_snapshot(
+                            context.available_robots
+                        ),
+                    },
+                    continuity={},
+                    advisory={},
+                    build_request=(
+                        lambda _authoritative, _continuity, _advisory, _policy: (
+                            messages,
+                            [mission_tool],
+                        )
+                    ),
+                    minimum_tool_calls=1,
+                    maximum_tool_calls=1,
+                )
             )
-        except ProviderAPIError as exc:
+            response = harness_result.response
+            messages = harness_result.managed_context.messages
+        except AgentHarnessError as exc:
             return self._record_and_return(
-                messages=messages,
-                response=None,
+                messages=(
+                    exc.managed_context.messages
+                    if exc.managed_context is not None
+                    else messages
+                ),
+                response=exc.response,
                 start_time=start_time,
                 status="error",
-                error_message=f"LLM API 错误：{exc}",
-                token_usage=None,
-            )
-        except ProviderError as exc:
-            return self._record_and_return(
-                messages=messages,
-                response=None,
-                start_time=start_time,
-                status="error",
-                error_message=f"LLM 调用错误：{exc}",
-                token_usage=None,
-            )
-        except FallbackSummaryError as exc:
-            return self._record_and_return(
-                messages=messages,
-                response=None,
-                start_time=start_time,
-                status="error",
-                error_message=f"LLM fallback exhausted：{exc}",
+                error_message=self._legacy_harness_error_message(exc),
                 token_usage=None,
             )
 
@@ -854,76 +900,72 @@ class LLMMissionPlanner:
                 reason_code="no_available_robots",
             )
 
-        context_manifest = None
-        max_output_tokens = 4096
-        try:
-            if request.context_envelope is not None:
-                (
-                    request,
-                    messages,
-                    tools,
-                    context_manifest,
-                    max_output_tokens,
-                ) = self._prepare_managed_deliberation_request(request)
-            else:
-                tools = build_mission_deliberation_tools(
-                    request.planner_context
-                )
-                messages = self._deliberation_messages(request)
-        except ContextBudgetExceeded as exc:
-            return MissionDeliberationDecision.escalate(
-                str(exc),
-                planning_result=MissionPlanningResult(
-                    status="blocked",
-                    message=str(exc),
-                ),
-                reason_code="context_budget_exceeded",
-            )
         started = time.monotonic()
+        fallback_messages = self._deliberation_messages(request)
         try:
-            response = self._chat_completion(
-                messages,
-                tools,
-                max_tokens=max_output_tokens,
+            harness_result = self._agent_harness.run_attempt(
+                self._build_deliberation_harness_attempt(request)
             )
-        except ProviderTimeoutError:
-            return self._deliberation_provider_error(
-                messages=messages,
-                started=started,
-                message="LLM 调用超时，请稍后重试。",
-                reason_code="provider_timeout",
+            request = self._managed_deliberation_request(
+                request,
+                harness_result,
             )
-        except ProviderAPIError as exc:
-            return self._deliberation_provider_error(
-                messages=messages,
-                started=started,
-                message=f"LLM API 错误：{exc}",
-                reason_code="provider_api_error",
+            response = harness_result.response
+            messages = harness_result.managed_context.messages
+            tools = harness_result.managed_context.tools
+            context_manifest = (
+                request.context_envelope.manifest
+                if request.context_envelope is not None
+                else harness_result.context_manifest
             )
-        except ProviderError as exc:
-            return self._deliberation_provider_error(
-                messages=messages,
-                started=started,
-                message=f"LLM 调用错误：{exc}",
-                reason_code="provider_error",
+        except AgentHarnessError as exc:
+            messages = (
+                exc.managed_context.messages
+                if exc.managed_context is not None
+                else fallback_messages
             )
-        except FallbackSummaryError as exc:
-            return self._deliberation_provider_error(
-                messages=messages,
-                started=started,
-                message=f"LLM fallback exhausted：{exc}",
-                reason_code="provider_fallback_exhausted",
-            )
-
-        if not response.tool_calls or len(response.tool_calls) != 1:
-            message = (
-                "LLM 未返回工具调用。"
-                if not response.tool_calls
-                else "LLM 每轮必须且只能返回一个工具调用。"
-            )
+            if exc.code == "context_budget_exceeded":
+                return MissionDeliberationDecision.escalate(
+                    str(exc),
+                    planning_result=MissionPlanningResult(
+                        status="blocked",
+                        message=str(exc),
+                    ),
+                    reason_code=exc.code,
+                )
+            provider_messages = {
+                "provider_timeout": "LLM 调用超时，请稍后重试。",
+                "provider_api_error": str(exc),
+                "provider_error": str(exc),
+                "provider_fallback_exhausted": str(exc),
+            }
+            if exc.code in provider_messages:
+                return self._deliberation_provider_error(
+                    messages=messages,
+                    started=started,
+                    message=provider_messages[exc.code],
+                    reason_code=exc.code,
+                )
+            if exc.code == "invalid_tool_call_count":
+                calls = list(exc.response.tool_calls or []) if exc.response else []
+                message = (
+                    "LLM 未返回工具调用。"
+                    if not calls
+                    else "LLM 每轮必须且只能返回一个工具调用。"
+                )
+                reason_code = "invalid_llm_decision"
+            elif exc.code == "malformed_tool_arguments":
+                message = "LLM 返回了畸形工具参数。"
+                reason_code = exc.code
+            elif exc.code == "unexpected_tool_name":
+                message = str(exc)
+                reason_code = exc.code
+            else:
+                message = str(exc)
+                reason_code = "invalid_llm_decision"
             self._record_trace(
                 messages=messages,
-                response=response,
+                response=exc.response,
                 start_time=started,
                 status="error",
                 error=message,
@@ -934,34 +976,30 @@ class LLMMissionPlanner:
                     status="error",
                     message=message,
                 ),
-                reason_code="invalid_llm_decision",
+                reason_code=reason_code,
+            )
+
+        if response is None:
+            return self._deliberation_provider_error(
+                messages=messages,
+                started=started,
+                message="LLM Harness 未返回模型结果。",
+                reason_code="provider_error",
             )
 
         tool_call = response.tool_calls[0]
-        if not isinstance(tool_call.arguments, dict):
-            message = "LLM 返回了畸形工具参数。"
-            self._record_trace(
-                messages=messages,
-                response=response,
-                start_time=started,
-                status="error",
-                error=message,
-            )
-            return MissionDeliberationDecision.escalate(
-                message,
-                planning_result=MissionPlanningResult(
-                    status="error",
-                    message=message,
-                ),
-                reason_code="malformed_tool_arguments",
-            )
-
         decision = self._parse_deliberation_tool_call(
             tool_call=tool_call,
             response=response,
             request=request,
-            graph_tool=tools[1],
-            legacy_plan_tool=tools[2],
+            graph_tool=_tool_schema_named(
+                tools,
+                "propose_task_graph",
+            ),
+            legacy_plan_tool=_tool_schema_named(
+                tools,
+                "propose_plan",
+            ),
         )
         self._record_trace(
             messages=messages,
@@ -991,18 +1029,11 @@ class LLMMissionPlanner:
             )
         return decision
 
-    def _prepare_managed_deliberation_request(
+    def _build_deliberation_harness_attempt(
         self,
         request: MissionDeliberationRequest,
-    ) -> tuple[
-        MissionDeliberationRequest,
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        Any,
-        int,
-    ]:
+    ) -> AgentHarnessAttempt:
         envelope = request.context_envelope
-        assert envelope is not None
 
         def build_request(
             authoritative: dict[str, Any],
@@ -1010,20 +1041,6 @@ class LLMMissionPlanner:
             advisory: dict[str, list[dict[str, Any]]],
             context_policy: dict[str, Any],
         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-            temporary_manifest = replace(
-                envelope.manifest,
-                model_context=context_policy,
-            )
-            temporary_envelope = replace(
-                envelope,
-                authoritative=dict(authoritative),
-                continuity=dict(continuity),
-                advisory={
-                    name: tuple(items)
-                    for name, items in advisory.items()
-                },
-                manifest=temporary_manifest,
-            )
             temporary_context = replace(
                 request.planner_context,
                 operator_corrections=list(
@@ -1036,6 +1053,21 @@ class LLMMissionPlanner:
                     advisory.get("external_knowledge", [])
                 ),
             )
+            temporary_envelope = None
+            if envelope is not None:
+                temporary_envelope = replace(
+                    envelope,
+                    authoritative=dict(authoritative),
+                    continuity=dict(continuity),
+                    advisory={
+                        name: tuple(items)
+                        for name, items in advisory.items()
+                    },
+                    manifest=replace(
+                        envelope.manifest,
+                        model_context=context_policy,
+                    ),
+                )
             temporary_request = replace(
                 request,
                 planner_context=temporary_context,
@@ -1044,26 +1076,112 @@ class LLMMissionPlanner:
             tools = build_mission_deliberation_tools(
                 temporary_context
             )
+            if self.agent_tool_runtime is not None:
+                tools.extend(self.agent_tool_runtime.tool_schemas())
             return self._deliberation_messages(
                 temporary_request
             ), tools
 
-        managed = self._context_manager.fit(
-            scope="mission_planner",
-            context_id=envelope.context_id,
-            authoritative=envelope.authoritative,
-            continuity=envelope.continuity,
-            advisory={
+        if envelope is not None:
+            context_id = envelope.context_id
+            authoritative = envelope.authoritative
+            continuity = envelope.continuity
+            advisory = {
                 name: list(items)
                 for name, items in envelope.advisory.items()
-            },
+            }
+        else:
+            context_id = (
+                f"{request.mission_id}:mission-deliberation:"
+                f"{request.iteration}"
+            )
+            authoritative = {
+                "mission_id": request.mission_id,
+                "command": request.command,
+                "state_snapshot": request.planner_context.state_snapshot,
+                "available_robots": build_available_robot_snapshot(
+                    request.planner_context.available_robots
+                ),
+                "tool_exposed_belief_ids": (
+                    list(request.planner_context.tool_exposed_belief_ids)
+                    if request.planner_context.tool_exposed_belief_ids
+                    is not None
+                    else None
+                ),
+            }
+            continuity = {
+                "iteration": request.iteration,
+                "observations": [
+                    item.to_dict() for item in request.observations
+                ],
+                "validation_errors": list(request.validation_errors),
+                "plan_revision": request.plan_revision,
+                "supersedes_plan_id": request.supersedes_plan_id,
+                "invalidation_evidence_ids": list(
+                    request.invalidation_evidence_ids
+                ),
+            }
+            advisory = {
+                "operator_corrections": list(
+                    request.planner_context.operator_corrections
+                ),
+                "retrieved_memories": list(
+                    request.planner_context.retrieved_memories
+                ),
+                "external_knowledge": list(
+                    request.planner_context.external_knowledge
+                ),
+            }
+        if self.agent_tool_runtime is not None:
+            authoritative = {
+                **authoritative,
+                "agent_tool_policy": (
+                    self.agent_tool_runtime.exposure_manifest()
+                ),
+            }
+        return AgentHarnessAttempt(
+            role="mission_agent",
+            run_id=(
+                f"{request.mission_id}:mission-deliberation:"
+                f"{request.iteration}"
+            ),
+            scope="mission_planner",
+            context_id=context_id,
+            authoritative=authoritative,
+            continuity=continuity,
+            advisory=advisory,
             build_request=build_request,
             compact_sections=("retrieved_memories",),
+            minimum_tool_calls=1,
+            maximum_tool_calls=1,
         )
-        model_manifest = managed.manifest.to_dict()
+
+    @staticmethod
+    def _managed_deliberation_request(
+        request: MissionDeliberationRequest,
+        harness_result: AgentHarnessAttemptResult,
+    ) -> MissionDeliberationRequest:
+        managed = harness_result.managed_context
+        envelope = request.context_envelope
+        if envelope is None:
+            return replace(
+                request,
+                planner_context=replace(
+                    request.planner_context,
+                    operator_corrections=list(
+                        managed.advisory.get("operator_corrections", [])
+                    ),
+                    retrieved_memories=list(
+                        managed.advisory.get("retrieved_memories", [])
+                    ),
+                    external_knowledge=list(
+                        managed.advisory.get("external_knowledge", [])
+                    ),
+                ),
+            )
         final_manifest = replace(
             envelope.manifest,
-            model_context=model_manifest,
+            model_context=managed.manifest.to_dict(),
         )
         final_envelope = replace(
             envelope,
@@ -1087,16 +1205,10 @@ class LLMMissionPlanner:
                 managed.advisory.get("external_knowledge", [])
             ),
         )
-        return (
-            replace(
-                request,
-                planner_context=final_context,
-                context_envelope=final_envelope,
-            ),
-            managed.messages,
-            managed.tools,
-            final_manifest,
-            managed.manifest.output_reserve_tokens,
+        return replace(
+            request,
+            planner_context=final_context,
+            context_envelope=final_envelope,
         )
 
     @staticmethod
@@ -1118,28 +1230,24 @@ class LLMMissionPlanner:
             },
         ]
 
-    def _chat_completion(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        *,
-        max_tokens: int = 4096,
-    ) -> ChatCompletion:
-        if self._provider_runtime is not None:
-            return self._provider_runtime.chat_completion(
-                messages=messages,
-                tools=tools,
-                temperature=0.0,
-                max_tokens=max_tokens,
+    @staticmethod
+    def _legacy_harness_error_message(exc: AgentHarnessError) -> str:
+        if exc.code == "provider_timeout":
+            return "LLM 调用超时，请稍后重试。"
+        if exc.code == "provider_api_error":
+            return f"LLM API 错误：{exc}"
+        if exc.code == "provider_fallback_exhausted":
+            return f"LLM fallback exhausted：{exc}"
+        if exc.code == "context_budget_exceeded":
+            return str(exc)
+        if exc.code == "invalid_tool_call_count":
+            calls = list(exc.response.tool_calls or []) if exc.response else []
+            return (
+                "LLM 未返回工具调用。"
+                if not calls
+                else "LLM 每轮必须且只能返回一个工具调用。"
             )
-        assert self._provider is not None
-        return self._provider.chat_completion(
-            messages=messages,
-            model=self._model_id,
-            tools=tools,
-            temperature=0.0,
-            max_tokens=max_tokens,
-        )
+        return f"LLM 调用错误：{exc}"
 
     def _parse_deliberation_tool_call(
         self,
@@ -1151,6 +1259,21 @@ class LLMMissionPlanner:
         legacy_plan_tool: dict[str, Any],
     ) -> MissionDeliberationDecision:
         arguments = tool_call.arguments
+        if (
+            self.agent_tool_runtime is not None
+            and self.agent_tool_runtime.has_tool(tool_call.name)
+        ):
+            projection = self.agent_tool_runtime.projection(tool_call.name)
+            return MissionDeliberationDecision.execute_tool(
+                tool_call.name,
+                dict(arguments),
+                tool_effect=(
+                    projection.tool.effect
+                    if projection is not None
+                    else "unknown"
+                ),
+                message=f"Execute admitted Agent Tool {tool_call.name}.",
+            )
         if tool_call.name == "inspect_mission_state":
             kind = arguments.get("kind")
             subject_id = arguments.get("subject_id")

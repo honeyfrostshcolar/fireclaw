@@ -15,19 +15,6 @@ class SensorPolicyDecision:
     reason: str | None = None
 
 
-VICTIM_SEARCH_ALTERNATIVES: dict[str, frozenset[str]] = {
-    "rgb_camera": frozenset({"thermal_camera"}),
-    "thermal_camera": frozenset({"rgb_camera"}),
-}
-
-NAVIGATION_SKILLS = frozenset({
-    "navigate_to_point",
-    "navigate_to_floor",
-    "return_to_safe_zone",
-})
-VICTIM_SEARCH_SKILLS = frozenset({"search_for_victims", "assess_victim"})
-
-
 def evaluate_sensor_policy(
     *,
     skill_name: str,
@@ -37,6 +24,8 @@ def evaluate_sensor_policy(
     dry_run: bool,
     verified_sensors: set[str],
     health_reason: str | None = None,
+    safety_class: str | None = None,
+    sensor_alternatives: dict[str, tuple[str, ...]] | None = None,
 ) -> SensorPolicyDecision:
     if health_status == "healthy":
         return SensorPolicyDecision(action="allow")
@@ -55,14 +44,15 @@ def evaluate_sensor_policy(
     if sensor == "gas_detector":
         return SensorPolicyDecision(action="block", reason=reason)
 
-    if sensor == "lidar" and skill_name in NAVIGATION_SKILLS:
+    if sensor == "lidar" and safety_class == "motion":
         return SensorPolicyDecision(action="warn" if dry_run else "block", reason=reason)
 
-    if sensor == "imu" and skill_name in NAVIGATION_SKILLS:
+    if sensor == "imu" and safety_class == "motion":
         return SensorPolicyDecision(action="warn" if dry_run else "escalate", reason=reason)
 
-    if sensor in {"rgb_camera", "thermal_camera"} and skill_name in VICTIM_SEARCH_SKILLS:
-        alternatives = VICTIM_SEARCH_ALTERNATIVES.get(sensor, frozenset())
+    alternatives_by_sensor = sensor_alternatives or {}
+    if sensor in alternatives_by_sensor:
+        alternatives = frozenset(alternatives_by_sensor[sensor])
         if alternatives & verified_sensors:
             alternative = sorted(alternatives & verified_sensors)[0]
             return SensorPolicyDecision(

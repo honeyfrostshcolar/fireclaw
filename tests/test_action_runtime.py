@@ -1,3 +1,5 @@
+import pytest
+
 from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
 from fireclaw_core.agent.robot import DryRunRobotAdapter, Ros1RobotAdapter, RobotActionResult
 from fireclaw_core.ros.ros1_config import parse_ros1_adapter_config
@@ -148,6 +150,41 @@ def test_robot_action_runtime_passes_cancellation_callback_to_backend():
 
     assert backend.cancellation_requested is not None
     assert backend.cancellation_requested() is False
+
+
+class InternalTypeErrorBackend:
+    def __init__(self):
+        self.call_count = 0
+
+    def execute(
+        self,
+        action_type,
+        inputs,
+        feedback_sink=None,
+        cancellation_requested=None,
+    ):
+        self.call_count += 1
+        raise TypeError("handler implementation failed after starting")
+
+
+def test_robot_action_runtime_does_not_replay_internal_type_error():
+    backend = InternalTypeErrorBackend()
+    runtime = RobotActionRuntime(backend=backend)
+
+    with pytest.raises(
+        TypeError,
+        match="handler implementation failed after starting",
+    ):
+        runtime.run(
+            skill_name="physical_action",
+            action_type="physical_action",
+            inputs={},
+            dry_run=True,
+            risk_level="low",
+            timeout_seconds=None,
+        )
+
+    assert backend.call_count == 1
 
 
 class CancelledBackend:

@@ -17,5 +17,19 @@ logs/
 results/
 checkpoints/
 
+# Plugin-local ROS build and runtime outputs.
+extensions/**/ros_ws/build/
+extensions/**/ros_ws/devel/
+extensions/**/ros_ws/install/
+extensions/**/ros_ws/log/
+extensions/**/ros_ws/src/CMakeLists.txt
+
+# Robot-platform ROS build and runtime outputs.
+robots/**/ros_ws/build/
+robots/**/ros_ws/devel/
+robots/**/ros_ws/install/
+robots/**/ros_ws/log/
+robots/**/ros_ws/src/CMakeLists.txt
+
 # FireClaw config (may contain secrets)
 fireclaw.toml

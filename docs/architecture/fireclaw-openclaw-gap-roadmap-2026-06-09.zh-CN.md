@@ -1,6 +1,11 @@
 # FireClaw 与 OpenClaw 功能核对和后续规划
 
 > 术语说明（2026-07-29）：本文是历史差距分析。文中的主智能体现统一称为 `Mission Coordinator`（任务协调器），机器人侧子智能体现统一称为 `Robot Agent`（机器人智能体）。两者均为 FireClaw 架构中的常驻 Agent；`subagent` 仅指未来按需派生、完成认知任务后退出的临时工作单元。详见 [FireClaw Agent Terminology](./fireclaw-agent-terminology.md)。
+>
+> Plugin/Skill/Tool 说明（2026-07-29）：本文中的 `skill` 多数实际指 legacy
+> 可执行 Tool。后续设计必须以
+> [Plugin, Skill, Tool, Runtime, and Adapter Terminology](./plugin-skill-tool-terminology.md)
+> 为准。
 
 日期：2026-06-09（最后更新：2026-06-10 02:00 CST）
 

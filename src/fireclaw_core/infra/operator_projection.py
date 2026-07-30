@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from fireclaw_core.execution.builtin_physical_skills import (
+    get_builtin_physical_skill,
+)
+
 
 class OperatorEventProjector:
+    def __init__(self, *, skill_catalog: Any | None = None) -> None:
+        self._skill_catalog = skill_catalog
+
     def project(self, event: dict[str, Any]) -> str | None:
         event_type = event.get("type")
         payload = event.get("payload") or {}
@@ -53,30 +60,27 @@ class OperatorEventProjector:
 
     def _project_skill_started(self, payload: dict[str, Any]) -> str:
         skill_name = _text(payload.get("skill_name"), "unknown")
-        inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
-        floor = inputs.get("floor")
-        floor_text = str(floor) if floor is not None else "目标"
-
-        if skill_name == "navigate_to_point":
-            x = inputs.get("x")
-            y = inputs.get("y")
-            frame_id = _text(inputs.get("frame_id"), "map")
-            if x is not None and y is not None:
-                return f"正在前往 {frame_id} 坐标系中的目标点 ({x}, {y})。"
-            return "正在前往目标点。"
-        if skill_name == "navigate_to_floor":
-            return f"正在前往{floor_text}楼。"
-        if skill_name == "search_for_victims":
-            if floor is not None:
-                return f"正在搜索{floor_text}楼被困人员。"
-            return "正在搜索当前目标区域的被困人员。"
-        if skill_name == "assess_victim":
-            return "正在评估被困人员状态。"
-        if skill_name == "report_status":
-            return "正在向操作员报告现场状态。"
-        if skill_name == "return_to_safe_zone":
-            return "正在返回安全区域。"
+        operator_message = payload.get("operator_message")
+        if isinstance(operator_message, str) and operator_message.strip():
+            return operator_message.strip()
+        plugin = self._physical_plugin(skill_name)
+        inputs = (
+            payload.get("inputs")
+            if isinstance(payload.get("inputs"), dict)
+            else {}
+        )
+        if plugin is not None and plugin.operator_started_message is not None:
+            return plugin.operator_started_message(inputs)
         return f"正在执行技能 {skill_name}。"
+
+    def _physical_plugin(self, skill_name: str):
+        if self._skill_catalog is None:
+            return get_builtin_physical_skill(skill_name)
+        getter = getattr(self._skill_catalog, "get", None)
+        if not callable(getter):
+            return None
+        value = getter(skill_name)
+        return getattr(value, "physical_plugin", value)
 
     def _project_skill_attempted(self, payload: dict[str, Any]) -> str | None:
         if payload.get("status") != "failed":

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
+import json
 import logging
 import time
 from typing import Any, Callable, Protocol
@@ -15,9 +16,14 @@ from fireclaw_core.agent.bounded_loop import (
     AgentLoopTurn,
     BoundedAgentLoop,
 )
+from fireclaw_core.agent.tool_runtime import AgentToolRuntime
+from fireclaw_core.approval.execution_authorization import (
+    execution_action_hash,
+)
 from fireclaw_core.agent.loop_checkpoint import (
     AgentLoopCheckpoint,
     AgentLoopCheckpointStore,
+    AgentLoopPendingOperation,
 )
 from fireclaw_core.agent.robot_registry import RobotRegistry
 from fireclaw_core.mission.active_observation import (
@@ -62,6 +68,7 @@ VALID_READ_KINDS = frozenset({
 })
 VALID_DELIBERATION_OPERATIONS = frozenset({
     "inspect_state",
+    "execute_agent_tool",
     "propose_plan",
     "request_observation",
     "request_clarification",
@@ -74,6 +81,7 @@ class MissionDeliberationLimits:
     max_iterations: int = 4
     timeout_seconds: float = 5.0
     max_observations: int = 3
+    max_agent_tool_executions: int = 3
 
     def __post_init__(self) -> None:
         if self.max_iterations <= 0:
@@ -82,6 +90,10 @@ class MissionDeliberationLimits:
             raise ValueError("timeout_seconds must be positive")
         if self.max_observations < 0:
             raise ValueError("max_observations must be non-negative")
+        if self.max_agent_tool_executions < 0:
+            raise ValueError(
+                "max_agent_tool_executions must be non-negative"
+            )
 
 
 @dataclass(frozen=True)
@@ -102,12 +114,14 @@ class MissionStateObservation:
     data: dict[str, Any]
     iteration: int
     subject_id: str | None = None
+    authoritative: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "kind": self.kind,
             "iteration": self.iteration,
             "data": dict(self.data),
+            "authoritative": self.authoritative,
         }
         if self.subject_id is not None:
             result["subject_id"] = self.subject_id
@@ -127,6 +141,7 @@ class MissionStateObservation:
                 if isinstance(value.get("subject_id"), str)
                 else None
             ),
+            authoritative=bool(value.get("authoritative", True)),
         )
 
 
@@ -153,6 +168,9 @@ class MissionDeliberationDecision:
     planning_result: MissionPlanningResult | None = None
     read_request: MissionStateReadRequest | None = None
     observation_request: MissionObservationRequest | None = None
+    tool_name: str | None = None
+    tool_arguments: dict[str, Any] | None = None
+    tool_effect: str | None = None
     reason_code: str | None = None
     context_manifest: MissionPlanningContextManifest | None = None
 
@@ -179,6 +197,23 @@ class MissionDeliberationDecision:
             operation="propose_plan",
             message=planning_result.message,
             planning_result=planning_result,
+        )
+
+    @classmethod
+    def execute_tool(
+        cls,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        tool_effect: str,
+        message: str = "Execute an admitted Agent Tool.",
+    ) -> MissionDeliberationDecision:
+        return cls(
+            operation="execute_agent_tool",
+            message=message,
+            tool_name=tool_name,
+            tool_arguments=dict(arguments),
+            tool_effect=tool_effect,
         )
 
     @classmethod
@@ -395,6 +430,8 @@ class MissionDeliberationAttempt:
     reason_code: str | None = None
     read_request: MissionStateReadRequest | None = None
     observation_request: MissionObservationRequest | None = None
+    tool_name: str | None = None
+    tool_arguments_hash: str | None = None
     validation_errors: tuple[str, ...] = ()
     context_id: str | None = None
     context_manifest: dict[str, Any] | None = None
@@ -417,6 +454,10 @@ class MissionDeliberationAttempt:
             result["observation_request"] = (
                 self.observation_request.to_dict()
             )
+        if self.tool_name is not None:
+            result["tool_name"] = self.tool_name
+        if self.tool_arguments_hash is not None:
+            result["tool_arguments_hash"] = self.tool_arguments_hash
         if self.context_id is not None:
             result["context_id"] = self.context_id
         if self.context_manifest is not None:
@@ -461,6 +502,16 @@ class MissionDeliberationAttempt:
             observation_request=(
                 MissionObservationRequest.from_dict(observation_request)
                 if isinstance(observation_request, dict)
+                else None
+            ),
+            tool_name=(
+                value["tool_name"]
+                if isinstance(value.get("tool_name"), str)
+                else None
+            ),
+            tool_arguments_hash=(
+                value["tool_arguments_hash"]
+                if isinstance(value.get("tool_arguments_hash"), str)
                 else None
             ),
             validation_errors=tuple(
@@ -594,6 +645,7 @@ class MissionDeliberationRuntime:
         snapshot_reader: MissionSnapshotReader | None = None,
         graph_compiler: MissionGraphCompiler | None = None,
         context_assembler: MissionPlanningContextAssembler | None = None,
+        agent_tool_runtime: AgentToolRuntime | None = None,
         cancellation_requested: Callable[[], bool] | None = None,
         checkpoint_store: AgentLoopCheckpointStore | None = None,
         monotonic: Callable[[], float] = time.monotonic,
@@ -606,6 +658,10 @@ class MissionDeliberationRuntime:
         self.graph_compiler = graph_compiler or MissionGraphCompiler(registry)
         self.context_assembler = (
             context_assembler or MissionPlanningContextAssembler()
+        )
+        self.agent_tool_runtime = (
+            agent_tool_runtime
+            or getattr(policy, "agent_tool_runtime", None)
         )
         self.cancellation_requested = cancellation_requested
         self.checkpoint_store = checkpoint_store
@@ -715,6 +771,14 @@ class MissionDeliberationRuntime:
             for item in adapter_state.get("seen_reads", [])
             if isinstance(item, list) and len(item) == 2
         }
+        agent_tool_execution_count = int(
+            adapter_state.get("agent_tool_execution_count") or 0
+        )
+        seen_agent_tool_calls = {
+            str(item)
+            for item in adapter_state.get("seen_agent_tool_calls", [])
+            if isinstance(item, str) and item
+        }
         last_planning_result = _planning_result_from_checkpoint(
             adapter_state.get("last_planning_result")
         )
@@ -755,6 +819,8 @@ class MissionDeliberationRuntime:
                     if last_planning_result is not None
                     else None
                 ),
+                "agent_tool_execution_count": agent_tool_execution_count,
+                "seen_agent_tool_calls": sorted(seen_agent_tool_calls),
             }
 
         def decide(
@@ -875,6 +941,7 @@ class MissionDeliberationRuntime:
             _MissionLoopTerminal,
         ]:
             nonlocal last_planning_result, validation_errors
+            nonlocal agent_tool_execution_count
 
             def record(
                 *,
@@ -882,6 +949,8 @@ class MissionDeliberationRuntime:
                 reason_code: str | None = None,
                 read_request: MissionStateReadRequest | None = None,
                 observation_request: MissionObservationRequest | None = None,
+                tool_name: str | None = None,
+                tool_arguments_hash: str | None = None,
                 errors: tuple[str, ...] = (),
             ) -> None:
                 attempts.append(
@@ -894,6 +963,8 @@ class MissionDeliberationRuntime:
                         reason_code=reason_code,
                         read_request=read_request,
                         observation_request=observation_request,
+                        tool_name=tool_name,
+                        tool_arguments_hash=tool_arguments_hash,
                         validation_errors=errors,
                         context_manifest=control.context_manifest,
                     )
@@ -1043,6 +1114,121 @@ class MissionDeliberationRuntime:
                 validation_errors = ()
                 return continuing(outcome="observed")
 
+            if decision.operation == "execute_agent_tool":
+                assert decision.tool_name is not None
+                arguments = dict(decision.tool_arguments or {})
+                action_hash = execution_action_hash(
+                    decision.tool_name,
+                    arguments,
+                )
+                if self.agent_tool_runtime is None:
+                    errors = ("Mission Agent Tool runtime is unavailable.",)
+                    record(
+                        outcome="rejected",
+                        reason_code="agent_tool_runtime_unavailable",
+                        tool_name=decision.tool_name,
+                        tool_arguments_hash=action_hash,
+                        errors=errors,
+                    )
+                    validation_errors = errors
+                    return continuing(
+                        outcome="rejected",
+                        reason_code="agent_tool_runtime_unavailable",
+                    )
+                if (
+                    agent_tool_execution_count
+                    >= self.limits.max_agent_tool_executions
+                ):
+                    record(
+                        outcome="rejected",
+                        reason_code="agent_tool_execution_limit",
+                        tool_name=decision.tool_name,
+                        tool_arguments_hash=action_hash,
+                    )
+                    return terminal(_MissionLoopTerminal(
+                        status="blocked",
+                        message=(
+                            "Mission deliberation exceeded its Agent Tool "
+                            "execution limit."
+                        ),
+                        reason_code="agent_tool_execution_limit",
+                        planning_result=MissionPlanningResult(
+                            status="blocked",
+                            message=(
+                                "Mission deliberation exceeded its Agent "
+                                "Tool execution limit."
+                            ),
+                        ),
+                    ))
+                if action_hash in seen_agent_tool_calls:
+                    record(
+                        outcome="rejected",
+                        reason_code="repeated_agent_tool_call",
+                        tool_name=decision.tool_name,
+                        tool_arguments_hash=action_hash,
+                    )
+                    return terminal(_MissionLoopTerminal(
+                        status="blocked",
+                        message=(
+                            "Mission deliberation repeated the same Agent "
+                            "Tool call without progress."
+                        ),
+                        reason_code="repeated_agent_tool_call",
+                        planning_result=MissionPlanningResult(
+                            status="blocked",
+                            message=(
+                                "Mission deliberation repeated the same "
+                                "Agent Tool call without progress."
+                            ),
+                        ),
+                    ))
+                result = self.agent_tool_runtime.execute(
+                    decision.tool_name,
+                    arguments,
+                    context={
+                        "mission_id": mission_id,
+                        "snapshot_id": state_snapshot.snapshot_id,
+                        "iteration": turn.iteration,
+                    },
+                )
+                agent_tool_execution_count += 1
+                seen_agent_tool_calls.add(action_hash)
+                observations.append(
+                    MissionStateObservation(
+                        kind=f"agent_tool:{decision.tool_name}",
+                        data=result.to_dict(),
+                        iteration=turn.iteration,
+                        authoritative=False,
+                    )
+                )
+                record(
+                    outcome=result.status,
+                    reason_code=result.error_code,
+                    tool_name=decision.tool_name,
+                    tool_arguments_hash=action_hash,
+                )
+                validation_errors = ()
+                if result.status == "approval_required":
+                    return terminal(_MissionLoopTerminal(
+                        status="escalated",
+                        message=(
+                            "Mission Agent Tool requires exact backend "
+                            "authorization before execution."
+                        ),
+                        reason_code="agent_tool_approval_required",
+                        planning_result=MissionPlanningResult(
+                            status="blocked",
+                            message=(
+                                "Mission Agent Tool requires exact backend "
+                                "authorization before execution."
+                            ),
+                        ),
+                    ))
+                return continuing(
+                    outcome=result.status,
+                    reason_code=result.error_code,
+                )
+
             if decision.operation == "request_observation":
                 assert decision.observation_request is not None
                 observation_request = decision.observation_request
@@ -1173,6 +1359,33 @@ class MissionDeliberationRuntime:
                 validation_errors=validation_errors,
             ))
 
+        def reconcile_pending(
+            pending: AgentLoopPendingOperation,
+            turn: AgentLoopTurn[_MissionLoopObservation],
+        ) -> AgentLoopTransition[
+            _MissionLoopObservation,
+            _MissionLoopTerminal,
+        ]:
+            message = (
+                "A side-effecting Mission Agent Tool may have run before "
+                "restart; automatic replay is prohibited."
+            )
+            return AgentLoopTransition(
+                status="escalated",
+                operation=pending.operation,
+                message=message,
+                reason_code="agent_tool_effect_outcome_unknown",
+                result=_MissionLoopTerminal(
+                    status="escalated",
+                    message=message,
+                    reason_code="agent_tool_effect_outcome_unknown",
+                    planning_result=MissionPlanningResult(
+                        status="blocked",
+                        message=message,
+                    ),
+                ),
+            )
+
         loop_result = BoundedAgentLoop[
             _MissionLoopDecision,
             _MissionLoopObservation,
@@ -1197,6 +1410,14 @@ class MissionDeliberationRuntime:
                 lambda value: _MissionLoopObservation.from_dict(value)
             ),
             adapter_state_provider=current_adapter_state,
+            requires_reconciliation=(
+                lambda control: (
+                    control.decision is not None
+                    and control.decision.operation == "execute_agent_tool"
+                    and control.decision.tool_effect != "read"
+                )
+            ),
+            reconcile_pending=reconcile_pending,
         )
         self._append_unexecuted_loop_attempts(
             loop_result=loop_result,
@@ -1519,6 +1740,33 @@ class MissionDeliberationRuntime:
                 f"{decision.operation} must not include an "
                 "observation_request."
             )
+        if decision.operation == "execute_agent_tool":
+            if (
+                not isinstance(decision.tool_name, str)
+                or not decision.tool_name.strip()
+            ):
+                errors.append(
+                    "execute_agent_tool requires a non-empty tool_name."
+                )
+            if not isinstance(decision.tool_arguments, dict):
+                errors.append(
+                    "execute_agent_tool requires object tool_arguments."
+                )
+            if (
+                not isinstance(decision.tool_effect, str)
+                or not decision.tool_effect.strip()
+            ):
+                errors.append(
+                    "execute_agent_tool requires a host-projected tool_effect."
+                )
+        elif (
+            decision.tool_name is not None
+            or decision.tool_arguments is not None
+            or decision.tool_effect is not None
+        ):
+            errors.append(
+                f"{decision.operation} must not include Agent Tool fields."
+            )
         if decision.operation == "propose_plan":
             if (
                 decision.planning_result is None
@@ -1550,6 +1798,8 @@ class MissionDeliberationRuntime:
         reason_code: str | None = None,
         read_request: MissionStateReadRequest | None = None,
         observation_request: MissionObservationRequest | None = None,
+        tool_name: str | None = None,
+        tool_arguments_hash: str | None = None,
         validation_errors: tuple[str, ...] = (),
         context_manifest: MissionPlanningContextManifest | None = None,
     ) -> MissionDeliberationAttempt:
@@ -1563,6 +1813,8 @@ class MissionDeliberationRuntime:
             reason_code=reason_code,
             read_request=read_request,
             observation_request=observation_request,
+            tool_name=tool_name,
+            tool_arguments_hash=tool_arguments_hash,
             validation_errors=validation_errors,
             context_id=(
                 context_manifest.context_id

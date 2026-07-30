@@ -21,6 +21,8 @@ def _failed_execution(
     failure_category: str | FailureCategory | None = None,
     error: str = "No path to target",
     attempt_count: int = 3,
+    skill_domain: str = "navigation",
+    safety_class: str | None = "motion",
 ) -> ExecutionResult:
     output = {
         "status": "failed",
@@ -41,6 +43,9 @@ def _failed_execution(
                 output=output,
                 error=error,
                 attempt_count=attempt_count,
+                skill_domain=skill_domain,
+                safety_class=safety_class,
+                action_binding=action,
             )
         ],
     )
@@ -81,6 +86,8 @@ def test_no_path_text_is_only_a_fallback_for_navigation() -> None:
     search = _produce(_failed_execution(
         skill_name="search_for_victims",
         action="search_for_victims",
+        skill_domain="perception",
+        safety_class="victim_perception",
     ))
 
     assert navigation is not None

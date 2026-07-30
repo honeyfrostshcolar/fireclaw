@@ -9,6 +9,13 @@ from fireclaw_core.mission.mission_planner import MissionPlanner
 from fireclaw_core.provider.provider import OpenAICompatProvider
 from fireclaw_core.provider.provider_runtime import ProviderRuntime, SimpleProviderRuntime
 from fireclaw_core.provider.model_catalog import ModelCatalog
+from fireclaw_core.agent.computer_tools import (
+    ComputerSandbox,
+    register_computer_tool_plugin,
+)
+from fireclaw_core.agent.tool_runtime import AgentToolRuntime
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.policy.deployment import DeploymentProfile
 
 
 def build_planner(
@@ -19,6 +26,7 @@ def build_planner(
     model: str | None = None,
     llm_trace_path: str | None = None,
     model_catalog_path: str | None = None,
+    deployment_profile: DeploymentProfile | None = None,
 ) -> Any:
     if planner_type == "llm":
         if not provider_base_url:
@@ -39,7 +47,26 @@ def build_planner(
             catalog=catalog,
         )
         trace_store = LLMTraceStore(llm_trace_path) if llm_trace_path else None
-        return LLMMissionPlanner(provider_runtime=runtime, trace_store=trace_store)
+        plugin_host = FireClawPluginHost()
+        agent_tool_runtime = None
+        if (
+            deployment_profile is not None
+            and deployment_profile.sandbox.enabled
+        ):
+            register_computer_tool_plugin(
+                plugin_host,
+                ComputerSandbox(deployment_profile.sandbox),
+            )
+            agent_tool_runtime = AgentToolRuntime(
+                plugin_host=plugin_host,
+                profile=deployment_profile,
+            )
+        return LLMMissionPlanner(
+            provider_runtime=runtime,
+            trace_store=trace_store,
+            plugin_host=plugin_host,
+            agent_tool_runtime=agent_tool_runtime,
+        )
     return MissionPlanner()
 
 

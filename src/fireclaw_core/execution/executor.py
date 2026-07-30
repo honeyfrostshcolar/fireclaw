@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 from typing import Any, Callable, Dict
 
@@ -9,10 +10,16 @@ from fireclaw_core.memory.embodied_memory import (
     MEMORY_RUNTIME_MODES,
     EmbodiedMemoryProducer,
 )
+from fireclaw_core.approval.execution_authorization import (
+    VerifiedExecutionAuthorization,
+    execution_action_hash,
+)
+from fireclaw_core.infra.runtime_state import ResourceLeaseConflict
 from fireclaw_core.monitoring.monitor import FailurePolicy
-from fireclaw_core.planner.planner import Plan
+from fireclaw_core.planner.planner import Plan, PlanStep
 from fireclaw_core.agent.robot import RobotActionResult
-from fireclaw_core.execution.skills import SkillRegistry
+from fireclaw_core.execution.skills import Skill, SkillRegistry
+from fireclaw_core.policy.capability import CapabilityPolicyDecision
 
 
 logger = logging.getLogger(__name__)
@@ -20,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 ExecutionEventSink = Callable[[str, Dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
+CapabilityPolicyCheck = Callable[
+    [Skill, dict[str, Any]],
+    CapabilityPolicyDecision,
+]
 
 
 @dataclass(frozen=True)
@@ -41,6 +52,9 @@ class StepExecutionResult:
     attempts: list[StepAttemptResult] | None = None
     failure_category: str | None = None
     operator_action: str | None = None
+    skill_domain: str | None = None
+    safety_class: str | None = None
+    action_binding: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +75,8 @@ class PlanExecutor:
         mission_id: str | None = None,
         robot_id: str | None = None,
         subtask_id: str | None = None,
+        resource_lease_manager: Any | None = None,
+        authorization_use_recorder: Any | None = None,
     ) -> None:
         if memory_producer is not None:
             if memory_producer.producer_type != "skill_runtime":
@@ -81,6 +97,8 @@ class PlanExecutor:
         self._mission_id = mission_id
         self._robot_id = robot_id
         self._subtask_id = subtask_id
+        self._resource_lease_manager = resource_lease_manager
+        self._authorization_use_recorder = authorization_use_recorder
         self._last_memory_event_id: str | None = None
 
     def execute(
@@ -88,10 +106,15 @@ class PlanExecutor:
         plan: Plan,
         *,
         parent_memory_event_id: str | None = None,
+        operation_id: str | None = None,
+        execution_authorization: (
+            VerifiedExecutionAuthorization | None
+        ) = None,
+        capability_policy_check: CapabilityPolicyCheck | None = None,
     ) -> ExecutionResult:
         self._last_memory_event_id = parent_memory_event_id
         step_results: list[StepExecutionResult] = []
-        for step in plan.steps:
+        for step_index, step in enumerate(plan.steps, start=1):
             if self._cancellation_requested():
                 return ExecutionResult(status="cancelled", steps=step_results)
             skill = self._registry.get(step.skill_name)
@@ -115,6 +138,66 @@ class PlanExecutor:
                 )
                 return ExecutionResult(status="failed", steps=step_results)
 
+            input_errors = skill.validate_inputs(step.inputs)
+            if input_errors:
+                error = "; ".join(input_errors)
+                self._emit(
+                    "skill.failed",
+                    {
+                        "skill_name": step.skill_name,
+                        "inputs": step.inputs,
+                        "status": "failed",
+                        "error": error,
+                    },
+                )
+                step_results.append(
+                    StepExecutionResult(
+                        skill_name=step.skill_name,
+                        inputs=step.inputs,
+                        status="failed",
+                        error=error,
+                        skill_domain=skill.domain,
+                        safety_class=(
+                            skill.physical_plugin.safety_class
+                            if skill.physical_plugin is not None
+                            else None
+                        ),
+                        action_binding=(
+                            skill.physical_plugin.action
+                            if skill.physical_plugin is not None
+                            else None
+                        ),
+                    )
+                )
+                return ExecutionResult(status="failed", steps=step_results)
+
+            if capability_policy_check is not None:
+                try:
+                    capability_decision = capability_policy_check(
+                        skill,
+                        dict(step.inputs),
+                    )
+                except Exception as exc:
+                    return self._capability_blocked_result(
+                        step_results=step_results,
+                        skill=skill,
+                        step=step,
+                        error=f"Capability policy evaluation failed: {exc}",
+                        reason_code="capability_policy_error",
+                    )
+                self._emit(
+                    "capability.policy_decided",
+                    capability_decision.to_dict(),
+                )
+                if capability_decision.status != "allow":
+                    return self._capability_blocked_result(
+                        step_results=step_results,
+                        skill=skill,
+                        step=step,
+                        error=capability_decision.message,
+                        reason_code=capability_decision.reason_code,
+                    )
+
             attempts: list[StepAttemptResult] = []
             max_attempts = max(1, skill.max_attempts)
             result: RobotActionResult | None = None
@@ -127,13 +210,147 @@ class PlanExecutor:
                     "skill_name": step.skill_name,
                     "inputs": step.inputs,
                     "max_attempts": max_attempts,
+                    "operator_message": skill.operator_message(
+                        "started",
+                        step.inputs,
+                    ),
                 },
             )
             for attempt_number in range(1, max_attempts + 1):
-                result = skill.run(
-                    step.inputs,
-                    cancellation_requested=self._cancellation_requested,
+                step_operation_id = (
+                    operation_id
+                    if len(plan.steps) == 1 and operation_id
+                    else (
+                        f"{operation_id}:step:{step_index}"
+                        if operation_id
+                        else (
+                            f"{self._subtask_id or self._mission_id or 'plan'}:"
+                            f"step:{step_index}"
+                        )
+                    )
                 )
+                resource_names = (
+                    skill.physical_plugin.resource_locks
+                    if skill.physical_plugin is not None
+                    else ()
+                )
+                lease_owner = (
+                    self._subtask_id
+                    or self._mission_id
+                    or self._robot_id
+                    or "fireclaw-executor"
+                )
+                leases = ()
+                try:
+                    if self._resource_lease_manager is not None and resource_names:
+                        leases = self._resource_lease_manager.acquire(
+                            robot_id=self._robot_id or "unknown-robot",
+                            resource_names=tuple(resource_names),
+                            owner_id=lease_owner,
+                            operation_id=step_operation_id,
+                            ttl_seconds=(
+                                max(
+                                    1.0,
+                                    float(
+                                        skill.timeout_seconds
+                                        if skill.timeout_seconds
+                                        is not None
+                                        else 30.0
+                                    ),
+                                )
+                                + 30.0
+                            ),
+                        )
+                        self._emit(
+                            "resource.acquired",
+                            {
+                                "skill_name": step.skill_name,
+                                "operation_id": step_operation_id,
+                                "resources": [
+                                    lease.to_dict() for lease in leases
+                                ],
+                            },
+                        )
+                    if execution_authorization is not None:
+                        if not execution_authorization.authorizes(
+                            step.skill_name,
+                            step.inputs,
+                        ):
+                            return self._resource_blocked_result(
+                                step_results=step_results,
+                                skill=skill,
+                                step=step,
+                                error=(
+                                    "Execution authorization does not cover "
+                                    "the exact skill inputs."
+                                ),
+                                operation_id=step_operation_id,
+                                reason_code="authorization_action_mismatch",
+                            )
+                        if (
+                            self._authorization_use_recorder is not None
+                            and not self._authorization_use_recorder(
+                                authorization_id=(
+                                    execution_authorization.authorization_id
+                                ),
+                                operation_id=step_operation_id,
+                                action_hash=execution_action_hash(
+                                    step.skill_name,
+                                    step.inputs,
+                                ),
+                                used_at=datetime.now(
+                                    timezone.utc
+                                ).isoformat(),
+                            )
+                        ):
+                            return self._resource_blocked_result(
+                                step_results=step_results,
+                                skill=skill,
+                                step=step,
+                                error=(
+                                    "Execution authorization use was stale "
+                                    "or conflicted with another action."
+                                ),
+                                operation_id=step_operation_id,
+                                reason_code="authorization_use_conflict",
+                            )
+                    result = skill.run(
+                        step.inputs,
+                        cancellation_requested=self._cancellation_requested,
+                    )
+                except ResourceLeaseConflict as exc:
+                    return self._resource_blocked_result(
+                        step_results=step_results,
+                        skill=skill,
+                        step=step,
+                        error=str(exc),
+                        operation_id=step_operation_id,
+                        reason_code="resource_lease_conflict",
+                    )
+                finally:
+                    if (
+                        leases
+                        and self._resource_lease_manager is not None
+                    ):
+                        released = self._resource_lease_manager.release(
+                            robot_id=self._robot_id or "unknown-robot",
+                            owner_id=lease_owner,
+                            operation_id=step_operation_id,
+                            resource_names=tuple(resource_names),
+                            generations={
+                                lease.resource_name: lease.generation
+                                for lease in leases
+                            },
+                        )
+                        self._emit(
+                            "resource.released",
+                            {
+                                "skill_name": step.skill_name,
+                                "operation_id": step_operation_id,
+                                "resource_names": list(resource_names),
+                                "released_count": released,
+                            },
+                        )
                 output = self._result_to_output(result)
                 attempt_status = result.status if result.status == "cancelled" else "succeeded" if result.ok else "failed"
                 self._emit(
@@ -195,6 +412,17 @@ class PlanExecutor:
                         attempts=attempts,
                         failure_category=failure_category,
                         operator_action=operator_action,
+                        skill_domain=skill.domain,
+                        safety_class=(
+                            skill.physical_plugin.safety_class
+                            if skill.physical_plugin is not None
+                            else None
+                        ),
+                        action_binding=(
+                            skill.physical_plugin.action
+                            if skill.physical_plugin is not None
+                            else None
+                        ),
                     )
                 )
                 return ExecutionResult(status="failed", steps=step_results)
@@ -217,12 +445,109 @@ class PlanExecutor:
                     output=output,
                     attempt_count=len(attempts),
                     attempts=attempts,
+                    skill_domain=skill.domain,
+                    safety_class=(
+                        skill.physical_plugin.safety_class
+                        if skill.physical_plugin is not None
+                        else None
+                    ),
+                    action_binding=(
+                        skill.physical_plugin.action
+                        if skill.physical_plugin is not None
+                        else None
+                    ),
                 )
             )
             if self._cancellation_requested():
                 return ExecutionResult(status="cancelled", steps=step_results)
 
         return ExecutionResult(status="succeeded", steps=step_results)
+
+    def _capability_blocked_result(
+        self,
+        *,
+        step_results: list[StepExecutionResult],
+        skill: Skill,
+        step: PlanStep,
+        error: str,
+        reason_code: str,
+    ) -> ExecutionResult:
+        self._emit(
+            "skill.failed",
+            {
+                "skill_name": step.skill_name,
+                "inputs": step.inputs,
+                "status": "failed",
+                "error": error,
+                "failure_category": reason_code,
+            },
+        )
+        step_results.append(
+            StepExecutionResult(
+                skill_name=step.skill_name,
+                inputs=step.inputs,
+                status="failed",
+                error=error,
+                failure_category=reason_code,
+                operator_action="wait_or_escalate",
+                skill_domain=skill.domain,
+                safety_class=(
+                    skill.physical_plugin.safety_class
+                    if skill.physical_plugin is not None
+                    else None
+                ),
+                action_binding=(
+                    skill.physical_plugin.action
+                    if skill.physical_plugin is not None
+                    else None
+                ),
+            )
+        )
+        return ExecutionResult(status="failed", steps=step_results)
+
+    def _resource_blocked_result(
+        self,
+        *,
+        step_results: list[StepExecutionResult],
+        skill: Skill,
+        step: PlanStep,
+        error: str,
+        operation_id: str,
+        reason_code: str,
+    ) -> ExecutionResult:
+        self._emit(
+            "skill.failed",
+            {
+                "skill_name": step.skill_name,
+                "inputs": step.inputs,
+                "status": "failed",
+                "error": error,
+                "failure_category": reason_code,
+                "operation_id": operation_id,
+            },
+        )
+        step_results.append(
+            StepExecutionResult(
+                skill_name=step.skill_name,
+                inputs=step.inputs,
+                status="failed",
+                error=error,
+                failure_category=reason_code,
+                operator_action="wait_or_escalate",
+                skill_domain=skill.domain,
+                safety_class=(
+                    skill.physical_plugin.safety_class
+                    if skill.physical_plugin is not None
+                    else None
+                ),
+                action_binding=(
+                    skill.physical_plugin.action
+                    if skill.physical_plugin is not None
+                    else None
+                ),
+            )
+        )
+        return ExecutionResult(status="failed", steps=step_results)
 
     def _result_to_output(self, result: RobotActionResult) -> dict[str, Any]:
         return {

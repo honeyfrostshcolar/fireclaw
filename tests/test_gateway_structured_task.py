@@ -411,6 +411,12 @@ def test_gateway_robot_agent_context_includes_skill_tools(tmp_path):
     assert "return_to_safe_zone" in names
     metadata_names = [m["name"] for m in captured_context["skill_metadata"]]
     assert "navigate_to_floor" in metadata_names
+    policy_manifest = captured_context["capability_policy"]
+    assert policy_manifest["policy_id"] == "fireclaw.capability-policy:v1"
+    assert "navigate_to_floor" in policy_manifest["after"]
+    assert "report_status" in policy_manifest["after"]
+    assert "assess_victim" in policy_manifest["before"]
+    assert "assess_victim" not in policy_manifest["after"]
 
 
 def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
@@ -519,12 +525,20 @@ def test_gateway_robot_agent_respects_profile_exposed_skills(tmp_path):
     names = [tool["function"]["name"] for tool in captured_context["skill_tools"]]
     assert "navigate_to_floor" in names
     assert "report_status" not in names  # Constrained by profile
+    excluded = {
+        decision["skill_name"]: decision
+        for decision in captured_context["capability_policy"]["excluded"]
+    }
+    assert excluded["report_status"]["reason_code"] == (
+        "skill_not_exposed_to_llm"
+    )
 
 
 def test_robot_agent_context_uses_runtime_verified_sensors(tmp_path):
     gateway = FireClawGateway(GatewayConfig(
         port=0,
         robot_agent_enabled=True,
+        memory_path=str(tmp_path / "memory.jsonl"),
         workspace_skills_dir=None,
     ))
     gateway.robot.available_sensors = []

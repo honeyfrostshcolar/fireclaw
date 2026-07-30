@@ -67,6 +67,7 @@ robot_id = "debug-robot-1"
 memory_path = "data/debug-sim/robot-memory.jsonl"
 event_path = "data/debug-sim/robot-events.jsonl"
 task_queue_path = "data/debug-sim/robot-tasks.jsonl"
+runtime_state_path = "data/debug-sim/robot-runtime.sqlite3"
 workspace_skills_dir = "skills"
 dry_run = true
 available_sensors = ["thermal_camera"]
@@ -87,6 +88,10 @@ planner = "llm"
     assert cfg["robot_gateway_memory_path"] == "data/debug-sim/robot-memory.jsonl"
     assert cfg["robot_gateway_event_path"] == "data/debug-sim/robot-events.jsonl"
     assert cfg["robot_gateway_task_queue_path"] == "data/debug-sim/robot-tasks.jsonl"
+    assert (
+        cfg["robot_gateway_runtime_state_path"]
+        == "data/debug-sim/robot-runtime.sqlite3"
+    )
     assert cfg["robot_gateway_workspace_skills_dir"] == "skills"
     assert cfg["robot_gateway_dry_run"] is True
     assert cfg["robot_gateway_available_sensors"] == ["thermal_camera"]
@@ -114,6 +119,40 @@ catalog = "robot-models.json"
 
     assert cfg["model_catalog_path"] == "central-models.json"
     assert cfg["robot_agent_model_catalog_path"] == "robot-models.json"
+
+
+def test_config_preserves_structured_deployment_policy(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[deployment]
+mode = "simulation"
+
+[deployment.tools.mission_agent]
+allow = ["group:computer"]
+deny = ["group:credential_access"]
+
+[deployment.sandbox.mission_agent]
+enabled = true
+backend = "docker"
+workspace_root = "data/mission-agent-workspace"
+image = "fireclaw-agent-sim:local"
+network = "none"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["deployment"]["mode"] == "simulation"
+    assert cfg["deployment"]["tools"]["mission_agent"]["allow"] == [
+        "group:computer"
+    ]
+    assert cfg["deployment"]["sandbox"]["mission_agent"]["enabled"] is True
+    assert (
+        cfg["deployment"]["sandbox"]["mission_agent"]["workspace_root"]
+        == "data/mission-agent-workspace"
+    )
 
 
 def test_config_loads_robot_gateway_profile_path(tmp_path):

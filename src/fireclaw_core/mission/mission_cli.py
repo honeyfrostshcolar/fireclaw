@@ -279,6 +279,7 @@ def main() -> int:
             "robot_agent_model_catalog_path": args.robot_agent_catalog,
             "mission_robot_profiles": args.robot_profile,
             "embodied_runtime_mode": args.embodied_runtime_mode,
+            "deployment": None,
             "memory_rag_backend": args.memory_rag_backend,
             "memory_rag_bm25_index_dir": args.memory_rag_bm25_index_dir,
             "memory_rag_dense_index_dir": args.memory_rag_dense_index_dir,
@@ -364,6 +365,11 @@ def main() -> int:
             ),
             memory_rag=memory_rag,
             external_knowledge_rag=external_knowledge_rag,
+            deployment_config=(
+                dict(merged["deployment"])
+                if isinstance(merged.get("deployment"), dict)
+                else None
+            ),
         )
         return 0
     if args.command_name == "mission":

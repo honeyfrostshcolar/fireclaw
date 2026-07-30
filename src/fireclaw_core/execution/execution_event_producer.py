@@ -14,14 +14,6 @@ from fireclaw_core.safety.local_failure import (
 )
 
 
-_NAVIGATION_ACTIONS = frozenset({
-    "navigate_to_point",
-    "navigate_to_floor",
-    "navigate_to_pose",
-    "navigate",
-})
-
-
 class RobotExecutionEventProducer:
     """Project final robot-local failures into a conservative mission event."""
 
@@ -55,6 +47,8 @@ class RobotExecutionEventProducer:
             failure_reason.category,
             action=action,
             skill_name=failed_step.skill_name,
+            skill_domain=failed_step.skill_domain,
+            safety_class=failed_step.safety_class,
         )
         if event_type is None:
             return None
@@ -103,6 +97,9 @@ class RobotExecutionEventProducer:
                 "failure_reason": failure_reason.to_dict(),
                 "skill_name": failed_step.skill_name,
                 "action": action,
+                "action_binding": failed_step.action_binding,
+                "skill_domain": failed_step.skill_domain,
+                "safety_class": failed_step.safety_class,
                 "attempt_count": failed_step.attempt_count,
             },
         )
@@ -170,9 +167,11 @@ def _event_type_for_failure(
     *,
     action: str,
     skill_name: str,
+    skill_domain: str | None,
+    safety_class: str | None,
 ) -> str | None:
     if category == FailureCategory.TARGET_UNREACHABLE:
-        if action in _NAVIGATION_ACTIONS or skill_name in _NAVIGATION_ACTIONS:
+        if safety_class == "motion" or skill_domain == "navigation":
             return "route_blocked"
         return "transient_failure"
     if category in {

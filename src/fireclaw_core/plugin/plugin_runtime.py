@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 
 # ---------------------------------------------------------------------------
 # Callable hook types
@@ -115,9 +116,8 @@ class PluginRuntime:
         {"provider", "memory", "tool_approval"}
     )
 
-    def __init__(self) -> None:
-        self._descriptors: list[FireClawPluginDescriptor] = []
-        self._callables: dict[tuple[str, str], list[tuple[str, PluginHookCallback]]] = {}
+    def __init__(self, host: FireClawPluginHost | None = None) -> None:
+        self.host = host or FireClawPluginHost()
         self.plugin_policy: Any = None  # PluginPolicy | None — avoid circular import
 
     # ------------------------------------------------------------------
@@ -159,7 +159,15 @@ class PluginRuntime:
             "tool_approval",
             descriptor.plugin_id,
         )
-        self._descriptors.append(descriptor)
+        self.host.activate(
+            descriptor.plugin_id,
+            lambda api: api.register_service(
+                f"{descriptor.plugin_id}:descriptor",
+                descriptor,
+            ),
+            name=descriptor.plugin_id,
+            source="descriptor",
+        )
 
     # ------------------------------------------------------------------
     # Accessors
@@ -168,7 +176,11 @@ class PluginRuntime:
     @property
     def descriptors(self) -> list[FireClawPluginDescriptor]:
         """Return all registered descriptors (copy)."""
-        return list(self._descriptors)
+        return [
+            item.value
+            for item in self.host.contributions("service")
+            if isinstance(item.value, FireClawPluginDescriptor)
+        ]
 
     def inventory(self) -> dict[str, Any]:
         """Return the current runtime inventory as a plain dict.
@@ -178,7 +190,7 @@ class PluginRuntime:
         """
         descriptor_ids: list[str] = []
         hook_names: list[str] = []
-        for d in self._descriptors:
+        for d in self.descriptors:
             descriptor_ids.append(d.plugin_id)
             hook_names.extend(d.provider_hooks)
             hook_names.extend(d.memory_hooks)
@@ -187,26 +199,27 @@ class PluginRuntime:
             "descriptor_ids": tuple(descriptor_ids),
             "hook_names": tuple(hook_names),
             "policy_active": self.plugin_policy is not None,
+            "plugin_host": self.host.inventory(),
         }
 
     def provider_hooks(self) -> list[str]:
         """Return all registered provider hook names across all descriptors."""
         hooks: list[str] = []
-        for d in self._descriptors:
+        for d in self.descriptors:
             hooks.extend(d.provider_hooks)
         return hooks
 
     def memory_hooks(self) -> list[str]:
         """Return all registered memory hook names across all descriptors."""
         hooks: list[str] = []
-        for d in self._descriptors:
+        for d in self.descriptors:
             hooks.extend(d.memory_hooks)
         return hooks
 
     def tool_approval_hooks(self) -> list[str]:
         """Return all registered tool approval hook names across all descriptors."""
         hooks: list[str] = []
-        for d in self._descriptors:
+        for d in self.descriptors:
             hooks.extend(d.tool_approval_hooks)
         return hooks
 
@@ -243,13 +256,20 @@ class PluginRuntime:
                 )
                 if not result.allowed:
                     raise ValueError(result.reason)
-        self._callables.setdefault((hook_type, hook_name), []).append(
-            (plugin_id, callback)
+        self.host.activate(
+            plugin_id,
+            lambda api: api.register_hook(
+                hook_type,
+                hook_name,
+                callback,
+            ),
+            name=plugin_id,
+            source="callable_hook",
         )
 
     def _find_descriptor(self, plugin_id: str) -> FireClawPluginDescriptor | None:
         """Return the descriptor with *plugin_id*, or ``None``."""
-        for d in self._descriptors:
+        for d in self.descriptors:
             if d.plugin_id == plugin_id:
                 return d
         return None
@@ -328,9 +348,16 @@ class PluginRuntime:
         """
         effects: list[dict[str, Any]] = []
         failures: list[PluginHookFailure] = []
-        for plugin_id, callback in self._callables.get(
-            (hook_type, hook_name), []
-        ):
+        callbacks = [
+            (
+                item.owner_plugin_id,
+                item.value,
+            )
+            for item in self.host.contributions("hook")
+            if item.metadata.get("hook_type") == hook_type
+            and item.metadata.get("hook_name") == hook_name
+        ]
+        for plugin_id, callback in callbacks:
             try:
                 callback_payload = deepcopy(payload)
             except Exception as exc:

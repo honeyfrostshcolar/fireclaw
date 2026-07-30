@@ -177,6 +177,11 @@ class MissionAgent:
                     registry=registry,
                     policy=planner_policy,
                     checkpoint_store=agent_loop_checkpoint_store,
+                    agent_tool_runtime=getattr(
+                        planner_policy,
+                        "agent_tool_runtime",
+                        None,
+                    ),
                 )
                 if planner_policy is not None
                 else None

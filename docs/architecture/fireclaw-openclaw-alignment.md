@@ -48,10 +48,12 @@ arms, or other hardware interfaces.
 | Task registry | `JsonlMissionRegistry` | `JsonlTaskQueue` | Both exist. |
 | Task runtime progress | Mission trace aggregation | Event ledger, task trace, action feedback | Robot trace exists; mission trace aggregation exists; live mission stream missing. |
 | Permissions/scopes | Mission-level authorization scopes | Robot-local operator authorization | Both exist at baseline level. |
+| Tool policy pipeline | Mission delegation and fleet constraints | Ordered capability projection and execution admission | One auditable pipeline now combines identity, task authorization, plugin ownership, robot profile, live state, safety, and exact action authorization. |
 | Safety/sandbox | Mission call policy and Robot Agent contract | Safety gate, emergency stop, ROS transport gating | Robot-local safety exists; mission failure policy incomplete. |
 | Memory | Mission memory and fleet lessons | Robot-local task/environment memory | Robot-local memory exists; mission memory is not fully designed. |
 | Provider runtime | Mission-level model selection | Robot-local/edge model fallback | `ProviderRuntime` implemented and wired into `LLMMissionPlanner` as the main path. Supports model fallback boundary and error normalization. |
-| Tools/skills/plugins | Mission tools: plan, assign, cancel, query, aggregate | Robot skills: navigate, search, assess, report, stop | Robot skill runtime exists; mission tools are still Python/CLI methods. |
+| Agent Harness | Mission prompt and task-graph semantics | Robot prompt and one-operation semantics | Both roles cross `ProviderAgentHarness`; neither calls the model directly. |
+| Plugins/Skills/Tools | Mission Skills coordinate planning Tools | Robot Skills coordinate atomic navigation, perception, and control Tools | One `FireClawPluginHost` owns Plugin contributions; current `SkillRegistry` names an executable Tool compatibility projection. |
 | Config/doctor/onboarding | Fleet and mission config checks | Robot ROS/skill/config checks | Robot doctor exists; fleet doctor missing. |
 
 ## Layer Responsibilities
@@ -164,13 +166,13 @@ Missing:
 - a durable waiting queue when recoverable tasks exceed local concurrency;
 - real deployment authentication.
 
-### 5. Robot Agent, Planner, and Skill Runtime
+### 5. Robot Agent, Planner, Tool, and Skill Runtime
 
 Responsibilities:
 
 - interpret robot-local commands;
-- validate skill schemas and preconditions;
-- run skills and robot actions;
+- validate Tool schemas and preconditions;
+- run Tools and robot actions;
 - report action feedback and terminal outcomes;
 - preserve planner/skill/adapter separation.
 
@@ -178,17 +180,43 @@ Current implementation:
 
 - `FireClawAgent`
 - local planner and safety gate;
-- skill manifest loading;
-- `RobotActionRuntime`;
+- legacy executable Tool manifest loading (`*.skill.json`);
+- declarative `PhysicalSkillPlugin` definitions and generic
+  `SkillRegistry.register_plugin()` compatibility APIs, following OpenClaw's
+  `defineToolPlugin/registerTool` shape for atomic Tools;
+- OpenClaw-aligned `SKILL.md` terminology for broader Agent workflows that can
+  coordinate multiple Tools;
+- `FireClawPluginHost`, following OpenClaw's plugin API and registration
+  transaction shape, for ownership and lifecycle of tools, physical
+  capabilities, hooks, services, context engines, and Agent Harnesses;
+- one `ProviderAgentHarness` for Mission and Robot model turns, enforcing
+  context budgets, tool schemas, provider invocation, cancellation, error
+  classification, and basic tool-call validation;
+- plugin-owned tool schemas, task-target bindings, mutation guards, safety
+  classification, resources, evidence, and operator projection;
+- `RobotActionRuntime` with registry-based Adapter dispatch and no per-skill
+  action switch;
+- SQLite WAL authoritative runtime state with revisioned task writes and
+  transactional task/event commits;
+- short-lived signed execution authorization bound to the command, structured
+  task, robot identity, and exact skill input hashes;
+- one OpenClaw-shaped ordered capability policy pipeline for planning-time tool
+  projection and execution-time admission, with stage-by-stage audit evidence;
+- executor-enforced persistent robot resource leases, with emergency stop
+  closing resource admission first;
 - robot adapter boundary;
 - action feedback and cancellation event handling.
 
 Missing:
 
 - richer robot-local planner for varied firefighting tasks;
-- typed skill contracts for more real robot capabilities;
-- stronger failure taxonomy;
-- skill-level degraded-mode policies.
+- typed Tool contracts and broader Skills for more real robot capabilities;
+- externally authenticated actor identity and scope claims for production
+  deployment;
+- discovery, signing, sandboxing, and out-of-process loading for third-party
+  physical plugins;
+- full wiring from success-evidence metadata into a generic completion
+  validator.
 
 ### 6. Robot Adapter and ROS Integration Layer
 

@@ -196,15 +196,22 @@ class TestAuthorizationResult:
 class TestGatewayScopeEnforcement:
     """Test that gateways enforce method scopes end-to-end."""
 
-    def _make_gateway(self):
+    def _make_gateway(self, tmp_path):
         from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
-        gateway = FireClawGateway(GatewayConfig(adapter="dry-run", port=0))
+        gateway = FireClawGateway(
+            GatewayConfig(
+                adapter="dry-run",
+                port=0,
+                memory_path=str(tmp_path / "memory.jsonl"),
+                workspace_skills_dir=None,
+            )
+        )
         gateway.start()
         return gateway
 
-    def test_read_scope_allows_get_state(self):
+    def test_read_scope_allows_get_state(self, tmp_path):
         import urllib.request
-        gateway = self._make_gateway()
+        gateway = self._make_gateway(tmp_path)
         try:
             req = urllib.request.Request(
                 f"{gateway.base_url}/state",
@@ -215,10 +222,10 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_read_scope_denies_post_tasks(self):
+    def test_read_scope_denies_post_tasks(self, tmp_path):
         import urllib.request
         import json
-        gateway = self._make_gateway()
+        gateway = self._make_gateway(tmp_path)
         try:
             data = json.dumps({"command": "test"}).encode()
             req = urllib.request.Request(
@@ -240,10 +247,10 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_write_scope_allows_post_tasks(self):
+    def test_write_scope_allows_post_tasks(self, tmp_path):
         import urllib.request
         import json
-        gateway = self._make_gateway()
+        gateway = self._make_gateway(tmp_path)
         try:
             data = json.dumps({"command": "test"}).encode()
             req = urllib.request.Request(
@@ -260,10 +267,10 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_no_scope_header_defaults_to_read_only(self):
+    def test_no_scope_header_defaults_to_read_only(self, tmp_path):
         import urllib.request
         import json
-        gateway = self._make_gateway()
+        gateway = self._make_gateway(tmp_path)
         try:
             # GET /state should work with no scope header (default read)
             req = urllib.request.Request(f"{gateway.base_url}/state")
@@ -286,9 +293,9 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_health_bypasses_scope_enforcement(self):
+    def test_health_bypasses_scope_enforcement(self, tmp_path):
         import urllib.request
-        gateway = self._make_gateway()
+        gateway = self._make_gateway(tmp_path)
         try:
             # Health check should work even with empty scopes
             req = urllib.request.Request(
@@ -300,10 +307,10 @@ class TestGatewayScopeEnforcement:
         finally:
             gateway.stop()
 
-    def test_emergency_scope_required_for_emergency_stop(self):
+    def test_emergency_scope_required_for_emergency_stop(self, tmp_path):
         import urllib.request
         import json
-        gateway = self._make_gateway()
+        gateway = self._make_gateway(tmp_path)
         try:
             # Write scope should NOT allow emergency stop
             data = json.dumps({}).encode()

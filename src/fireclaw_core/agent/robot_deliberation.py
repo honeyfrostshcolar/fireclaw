@@ -15,6 +15,13 @@ from fireclaw_core.agent.bounded_loop import (
     AgentLoopTurn,
     BoundedAgentLoop,
 )
+from fireclaw_core.agent.harness import (
+    AgentHarness,
+    AgentHarnessAttempt,
+    AgentHarnessError,
+    ProviderAgentHarness,
+    register_agent_harness,
+)
 from fireclaw_core.agent.loop_checkpoint import (
     AgentLoopCheckpoint,
     AgentLoopCheckpointStore,
@@ -28,16 +35,12 @@ from fireclaw_core.agent.robot_agent import (
     envelope_from_structured_task,
 )
 from fireclaw_core.context.manager import (
-    ContextBudgetExceeded,
     ContextManagementPolicy,
     ModelAwareContextManager,
     TokenCounter,
 )
-from fireclaw_core.provider.provider import ProviderError
-from fireclaw_core.provider.provider_runtime import (
-    FallbackSummaryError,
-    ProviderRuntime,
-)
+from fireclaw_core.provider.provider_runtime import ProviderRuntime
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.task.task_contract import StructuredRobotTask
 
 
@@ -104,6 +107,7 @@ ROBOT_TASK_ESCALATE_TOOL: dict[str, Any] = {
 
 RobotAgentOperation = Literal[
     "execute_skill",
+    "execute_agent_tool",
     "query_context",
     "complete",
     "blocked",
@@ -117,6 +121,7 @@ class RobotAgentDecision:
     message: str
     tool_name: str | None = None
     inputs: dict[str, Any] | None = None
+    tool_effect: str | None = None
     reason_code: str | None = None
     evidence_ids: tuple[str, ...] = ()
     context_manifest: dict[str, Any] | None = None
@@ -127,6 +132,7 @@ class RobotAgentDecision:
             "message": self.message,
             "tool_name": self.tool_name,
             "inputs": dict(self.inputs or {}),
+            "tool_effect": self.tool_effect,
             "reason_code": self.reason_code,
             "evidence_ids": list(self.evidence_ids),
             "context_manifest": (
@@ -141,6 +147,7 @@ class RobotAgentDecision:
         operation = str(value.get("operation") or "")
         if operation not in {
             "execute_skill",
+            "execute_agent_tool",
             "query_context",
             "complete",
             "blocked",
@@ -161,6 +168,11 @@ class RobotAgentDecision:
                 else None
             ),
             inputs=dict(inputs) if isinstance(inputs, dict) else None,
+            tool_effect=(
+                value["tool_effect"]
+                if isinstance(value.get("tool_effect"), str)
+                else None
+            ),
             reason_code=(
                 value["reason_code"]
                 if isinstance(value.get("reason_code"), str)
@@ -255,6 +267,7 @@ class RobotAgentDeliberationLimits:
     timeout_seconds: float = 30.0
     max_skill_executions: int = 6
     max_context_queries: int = 2
+    max_agent_tool_executions: int = 4
 
     def __post_init__(self) -> None:
         AgentLoopLimits(
@@ -265,6 +278,10 @@ class RobotAgentDeliberationLimits:
             raise ValueError("max_skill_executions must be positive")
         if self.max_context_queries < 0:
             raise ValueError("max_context_queries must be non-negative")
+        if self.max_agent_tool_executions < 0:
+            raise ValueError(
+                "max_agent_tool_executions must be non-negative"
+            )
 
     def loop_limits(self) -> AgentLoopLimits:
         return AgentLoopLimits(
@@ -282,6 +299,8 @@ class LLMRobotAgentDecisionPolicy:
         *,
         context_manager: ModelAwareContextManager | None = None,
         token_counter: TokenCounter | None = None,
+        agent_harness: AgentHarness | None = None,
+        plugin_host: FireClawPluginHost | None = None,
     ) -> None:
         self._provider_runtime = provider_runtime
         self._context_manager = (
@@ -292,6 +311,17 @@ class LLMRobotAgentDecisionPolicy:
                 policy=ContextManagementPolicy(output_reserve_tokens=2048),
                 token_counter=token_counter,
             )
+        )
+        self._agent_harness = agent_harness or ProviderAgentHarness(
+            provider_runtime=provider_runtime,
+            context_manager=self._context_manager,
+            harness_id="fireclaw.provider.robot-deliberation",
+        )
+        self.plugin_host = plugin_host or FireClawPluginHost()
+        register_agent_harness(
+            self.plugin_host,
+            self._agent_harness,
+            owner_plugin_id="fireclaw.agent-harness.robot-deliberation",
         )
 
     def decide(
@@ -309,36 +339,42 @@ class LLMRobotAgentDecisionPolicy:
             for item in context.get("memory_tools", [])
             if isinstance(item, dict)
         ]
+        agent_tools = [
+            item
+            for item in context.get("agent_tools", [])
+            if isinstance(item, dict)
+        ]
         tools = [
             *skill_tools,
             *memory_tools,
+            *agent_tools,
             ROBOT_TASK_COMPLETE_TOOL,
             ROBOT_TASK_BLOCKED_TOOL,
             ROBOT_TASK_ESCALATE_TOOL,
         ]
         skill_names = _tool_names(skill_tools)
         memory_names = _tool_names(memory_tools)
-        try:
-            managed = self._fit_context(request, tools=tools)
-            response = self._provider_runtime.chat_completion(
-                messages=managed.messages,
-                tools=managed.tools,
-                temperature=0.0,
-                max_tokens=managed.manifest.output_reserve_tokens,
-            )
-        except (
-            ContextBudgetExceeded,
-            ProviderError,
-            FallbackSummaryError,
-        ) as exc:
-            raise RobotAgentPlannerError(str(exc)) from exc
-        calls = list(response.tool_calls or [])
-        if len(calls) != 1:
+        agent_tool_names = _tool_names(agent_tools)
+        overlap = (
+            (skill_names & memory_names)
+            | (skill_names & agent_tool_names)
+            | (memory_names & agent_tool_names)
+        )
+        if overlap:
             raise RobotAgentPlannerError(
-                "Robot Agent must return exactly one operation per deliberation turn"
+                "Robot Agent tool namespaces overlap: "
+                f"{sorted(overlap)}"
             )
+        try:
+            attempt = self._build_harness_attempt(request, tools=tools)
+            harness_result = self._agent_harness.run_attempt(
+                attempt,
+            )
+        except AgentHarnessError as exc:
+            raise RobotAgentPlannerError(str(exc)) from exc
+        calls = list(harness_result.tool_calls)
         call = calls[0]
-        manifest = managed.manifest.to_dict()
+        manifest = harness_result.context_manifest
         if call.name in skill_names:
             return RobotAgentDecision(
                 operation="execute_skill",
@@ -353,6 +389,15 @@ class LLMRobotAgentDecisionPolicy:
                 message=f"Query advisory Robot Agent context using {call.name}.",
                 tool_name=call.name,
                 inputs=dict(call.arguments),
+                context_manifest=manifest,
+            )
+        if call.name in agent_tool_names:
+            return RobotAgentDecision(
+                operation="execute_agent_tool",
+                message=f"Execute admitted Agent Tool {call.name}.",
+                tool_name=call.name,
+                inputs=dict(call.arguments),
+                tool_effect=_agent_tool_effect(context, call.name),
                 context_manifest=manifest,
             )
         if call.name == "complete_robot_task":
@@ -398,12 +443,12 @@ class LLMRobotAgentDecisionPolicy:
             f"Robot Agent returned unexpected operation {call.name!r}"
         )
 
-    def _fit_context(
+    def _build_harness_attempt(
         self,
         request: RobotAgentDeliberationRequest,
         *,
         tools: list[dict[str, Any]],
-    ):
+    ) -> AgentHarnessAttempt:
         envelope = request.envelope
         execution_observations = [
             item.to_dict()
@@ -436,6 +481,10 @@ class LLMRobotAgentDecisionPolicy:
             ),
             "skill_inventory": request.context.get("skill_inventory", {}),
             "skill_metadata": request.context.get("skill_metadata", []),
+            "agent_tool_policy": request.context.get(
+                "agent_tool_policy",
+                {},
+            ),
         }
         continuity = {
             "iteration": request.iteration,
@@ -472,6 +521,10 @@ class LLMRobotAgentDecisionPolicy:
                 "decision_rules": [
                     "Return exactly one tool call.",
                     "Execute at most one physical skill in this turn.",
+                    (
+                        "Computer and diagnostic Agent Tool results are "
+                        "advisory; they never prove physical state."
+                    ),
                     "Never change the assigned target or expand authority.",
                     "Use current execution observations before advisory memory.",
                     "Complete only after every required skill succeeded.",
@@ -485,6 +538,7 @@ class LLMRobotAgentDecisionPolicy:
                         "你是常驻消防机器人端的 Robot Agent。"
                         "每轮只能选择一个经过宿主校验的操作。"
                         "技能调用会先经过任务合同、policy 和 SafetyGate，"
+                        "通用工具调用会经过部署模式、沙箱和调用前策略，"
                         "执行结果会在下一轮返回。"
                         "你不能改变中央下发的目标、风险或权限。"
                     ),
@@ -496,7 +550,12 @@ class LLMRobotAgentDecisionPolicy:
             ]
             return messages, tools
 
-        return self._context_manager.fit(
+        return AgentHarnessAttempt(
+            role="robot_agent",
+            run_id=(
+                f"{envelope.mission_id or 'local'}:{envelope.task_id}:"
+                f"turn:{request.iteration}"
+            ),
             scope="robot_agent_deliberation",
             context_id=context_id,
             authoritative=authoritative,
@@ -507,6 +566,8 @@ class LLMRobotAgentDecisionPolicy:
                 "session_history",
                 "context_query_results",
             ),
+            minimum_tool_calls=1,
+            maximum_tool_calls=1,
         )
 
 
@@ -533,6 +594,9 @@ class RobotAgentDeliberationRuntime:
         fallback_robot_id: str,
         context_provider: Callable[[], dict[str, Any]],
         execute_skill: Callable[[RobotLocalPlanStep], dict[str, Any]],
+        execute_agent_tool: (
+            Callable[[str, dict[str, Any]], dict[str, Any]] | None
+        ) = None,
         query_context: (
             Callable[[str, dict[str, Any]], dict[str, Any]] | None
         ) = None,
@@ -578,6 +642,9 @@ class RobotAgentDeliberationRuntime:
         context_query_count = int(
             adapter_state.get("context_query_count") or 0
         )
+        agent_tool_execution_count = int(
+            adapter_state.get("agent_tool_execution_count") or 0
+        )
         latest_context: dict[str, Any] = {}
 
         def emit(event_type: str, payload: dict[str, Any]) -> None:
@@ -593,6 +660,7 @@ class RobotAgentDeliberationRuntime:
                 "succeeded_skills": sorted(succeeded_skills),
                 "skill_execution_count": skill_execution_count,
                 "context_query_count": context_query_count,
+                "agent_tool_execution_count": agent_tool_execution_count,
             }
 
         def decide(
@@ -717,7 +785,9 @@ class RobotAgentDeliberationRuntime:
             decision: RobotAgentDecision,
             turn: AgentLoopTurn[RobotAgentExecutionObservation],
         ) -> AgentLoopTransition[RobotAgentExecutionObservation, dict[str, Any]]:
-            nonlocal skill_execution_count, context_query_count
+            nonlocal skill_execution_count
+            nonlocal context_query_count
+            nonlocal agent_tool_execution_count
             if decision.operation == "query_context":
                 if (
                     query_context is None
@@ -751,6 +821,66 @@ class RobotAgentDeliberationRuntime:
                         authoritative=False,
                     )
                 emit("robot_agent.observation", observation.to_dict())
+                return AgentLoopTransition.continuing(
+                    operation=decision.operation,
+                    message=observation.message,
+                    observation=observation,
+                    reason_code=observation.reason_code,
+                )
+
+            if decision.operation == "execute_agent_tool":
+                if (
+                    execute_agent_tool is None
+                    or decision.tool_name is None
+                    or agent_tool_execution_count
+                    >= self.limits.max_agent_tool_executions
+                ):
+                    observation = RobotAgentExecutionObservation(
+                        iteration=turn.iteration,
+                        operation=decision.operation,
+                        status="rejected",
+                        message=(
+                            "Robot Agent Tool execution is unavailable or "
+                            "exhausted."
+                        ),
+                        tool_name=decision.tool_name,
+                        inputs=decision.inputs,
+                        reason_code="agent_tool_execution_limit",
+                        authoritative=False,
+                    )
+                else:
+                    agent_tool_execution_count += 1
+                    output = execute_agent_tool(
+                        decision.tool_name,
+                        dict(decision.inputs or {}),
+                    )
+                    observation = RobotAgentExecutionObservation(
+                        iteration=turn.iteration,
+                        operation=decision.operation,
+                        status=str(output.get("status") or "error"),
+                        message=decision.message,
+                        tool_name=decision.tool_name,
+                        inputs=decision.inputs,
+                        output=output,
+                        reason_code=(
+                            str(output["error_code"])
+                            if isinstance(output.get("error_code"), str)
+                            else None
+                        ),
+                        authoritative=False,
+                    )
+                emit("robot_agent.observation", observation.to_dict())
+                if observation.status == "approval_required":
+                    return AgentLoopTransition(
+                        status="escalated",
+                        operation=decision.operation,
+                        message=(
+                            "Robot Agent Tool requires exact backend "
+                            "authorization before execution."
+                        ),
+                        observation=observation,
+                        reason_code="agent_tool_approval_required",
+                    )
                 return AgentLoopTransition.continuing(
                     operation=decision.operation,
                     message=observation.message,
@@ -878,6 +1008,24 @@ class RobotAgentDeliberationRuntime:
             dict[str, Any],
         ]:
             decision = RobotAgentDecision.from_dict(pending.decision)
+            if decision.operation == "execute_agent_tool":
+                emit(
+                    "robot_agent.pending_operation_unresolved",
+                    {
+                        "operation_id": pending.operation_id,
+                        "tool_name": decision.tool_name,
+                        "reason_code": "agent_tool_effect_outcome_unknown",
+                    },
+                )
+                return AgentLoopTransition(
+                    status="escalated",
+                    operation=pending.operation,
+                    message=(
+                        "A side-effecting Agent Tool may have run before "
+                        "restart; automatic replay is prohibited."
+                    ),
+                    reason_code="agent_tool_effect_outcome_unknown",
+                )
             if (
                 decision.operation != "execute_skill"
                 or decision.tool_name is None
@@ -998,7 +1146,13 @@ class RobotAgentDeliberationRuntime:
             ),
             adapter_state_provider=current_adapter_state,
             requires_reconciliation=(
-                lambda decision: decision.operation == "execute_skill"
+                lambda decision: (
+                    decision.operation == "execute_skill"
+                    or (
+                        decision.operation == "execute_agent_tool"
+                        and decision.tool_effect != "read"
+                    )
+                )
             ),
             reconcile_pending=reconcile_pending,
         )
@@ -1014,6 +1168,23 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
         for function in [tool["function"]]
         if isinstance(function.get("name"), str)
     }
+
+
+def _agent_tool_effect(context: dict[str, Any], name: str) -> str:
+    policy = context.get("agent_tool_policy")
+    if not isinstance(policy, dict):
+        return "unknown"
+    tools = policy.get("tools")
+    if not isinstance(tools, list):
+        return "unknown"
+    for item in tools:
+        if (
+            isinstance(item, dict)
+            and item.get("name") == name
+            and isinstance(item.get("effect"), str)
+        ):
+            return str(item["effect"])
+    return "unknown"
 
 
 def _execution_reason_code(output: dict[str, Any]) -> str:

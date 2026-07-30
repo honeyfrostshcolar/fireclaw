@@ -306,7 +306,7 @@ def test_module_cli_retrieves_memory_records_for_same_session(tmp_path):
     assert result["memory"]["query"]["target_floor"] == 1
 
 
-def test_module_cli_confirms_pending_high_risk_skill_across_processes(tmp_path):
+def test_module_cli_confirmation_words_do_not_authorize_across_processes(tmp_path):
     memory_path = tmp_path / "cli-memory.jsonl"
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -371,10 +371,9 @@ def test_module_cli_confirms_pending_high_risk_skill_across_processes(tmp_path):
     )
 
     result = json.loads(completed.stdout)
-    assert result["status"] == "succeeded"
-    assert result["confirmation"]["status"] == "confirmed"
-    assert result["execution"]["steps"][0]["skill_name"] == "smoke_entry"
-    assert result["execution"]["steps"][0]["output"]["confirmed"] is True
+    assert result["status"] == "awaiting_confirmation"
+    assert result["confirmation"]["status"] == "pending"
+    assert result["execution"] is None
 
 
 def test_module_cli_treats_skill_listing_as_successful_command(tmp_path):

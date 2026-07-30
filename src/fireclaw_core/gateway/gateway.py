@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,14 +16,29 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 from fireclaw_core.gateway.method_scopes import authorize_method
 
+from fireclaw_core.approval.execution_authorization import (
+    ExecutionAuthorization,
+    HmacExecutionAuthorizationAuthority,
+    authorized_action,
+    execution_scope_hash,
+)
+from fireclaw_core.infra.runtime_state import (
+    SqliteAgentLoopCheckpointStore,
+    SqliteAuthoritativeRuntimeStore,
+    SqliteEventLedger,
+    SqliteResourceLeaseManager,
+    SqliteTaskQueue,
+    StaleRuntimeStateWrite,
+)
 from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent, TelemetryTracker
 
 from fireclaw_core.agent.agent import FireClawAgent
-from fireclaw_core.agent.loop_checkpoint import (
-    JsonlAgentLoopCheckpointStore,
+from fireclaw_core.agent.computer_tools import (
+    ComputerSandbox,
+    register_computer_tool_plugin,
 )
+from fireclaw_core.agent.tool_runtime import AgentToolRuntime
 from fireclaw_core.gateway.control import AuthorizationRequest, ControlPolicy, OperatorContext, operator_from_payload
-from fireclaw_core.monitoring.event_ledger import EventLedger
 from fireclaw_core.memory.memory import JsonlMemoryStore
 from fireclaw_core.memory.embodied_memory import EmbodiedMemoryProducer, EmbodiedMemoryStore
 from fireclaw_core.memory.robot_memory import RobotMemoryRecorder
@@ -45,9 +60,24 @@ from fireclaw_core.agent.robot_deliberation import (
 from fireclaw_core.agent.skill_inventory import build_robot_skill_inventory
 from fireclaw_core.agent.robot_tools import build_robot_skill_tools
 from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot_adapter
-from fireclaw_core.task.task_queue import JsonlTaskQueue
 from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.task.task_state import project_task_state
+from fireclaw_core.policy.deployment import (
+    DeploymentProfile,
+    SandboxProfile,
+    deployment_profile_from_config,
+    validate_robot_deployment_binding,
+)
+
+
+def _default_robot_deployment_profile() -> DeploymentProfile:
+    return DeploymentProfile(
+        mode="real",
+        role="robot_agent",
+        sandbox=SandboxProfile(
+            workspace_root=Path("data/fireclaw-sandbox/robot-agent"),
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -61,6 +91,7 @@ class GatewayConfig:
     event_path: str = "memory/fireclaw-gateway-events.jsonl"
     task_queue_path: str = "memory/fireclaw-gateway-tasks.jsonl"
     robot_agent_checkpoint_path: str | None = None
+    runtime_state_path: str | None = None
     workspace_skills_dir: str | None = "skills"
     dry_run: bool = True
     available_sensors: tuple[str, ...] = ()
@@ -78,6 +109,32 @@ class GatewayConfig:
     embodied_memory_path: str | None = None
     embodied_memory_index_path: str | None = None
     embodied_runtime_mode: str | None = None
+    deployment_profile: DeploymentProfile = field(
+        default_factory=_default_robot_deployment_profile
+    )
+
+
+def resolve_gateway_storage_namespace(config: GatewayConfig) -> GatewayConfig:
+    """Keep implicit gateway state files in the configured memory namespace."""
+
+    if config.memory_path == "memory/fireclaw-gateway.jsonl":
+        return config
+    memory_path = Path(config.memory_path)
+    stem = memory_path.stem
+    updates: dict[str, str] = {}
+    if config.event_path == "memory/fireclaw-gateway-events.jsonl":
+        updates["event_path"] = str(
+            memory_path.with_name(f"{stem}-events.jsonl")
+        )
+    if config.task_queue_path == "memory/fireclaw-gateway-tasks.jsonl":
+        updates["task_queue_path"] = str(
+            memory_path.with_name(f"{stem}-tasks.jsonl")
+        )
+    if config.runtime_state_path is None:
+        updates["runtime_state_path"] = str(
+            memory_path.with_name(f"{stem}-runtime.sqlite3")
+        )
+    return replace(config, **updates) if updates else config
 
 
 @dataclass
@@ -87,6 +144,7 @@ class TaskControl:
     command: str
     started_at: str
     structured_task: dict[str, Any] | None = None
+    execution_authorization: ExecutionAuthorization | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
@@ -112,8 +170,6 @@ def resolve_gateway_config_with_profile(config: GatewayConfig, profile=None) -> 
     """Apply robot profile fields to gateway config before adapter/store construction."""
     if not config.robot_profile_path:
         return config
-    from dataclasses import replace
-
     if profile is None:
         profile = load_gateway_robot_profile(config)
     return replace(
@@ -155,7 +211,13 @@ class FireClawGateway:
         self.replication_security = replication_security
         self.robot_profile = load_gateway_robot_profile(config)
         resolved_config = resolve_gateway_config_with_profile(config, self.robot_profile)
+        resolved_config = resolve_gateway_storage_namespace(resolved_config)
         self.config = resolved_config
+        validate_robot_deployment_binding(
+            resolved_config.deployment_profile,
+            dry_run=resolved_config.dry_run,
+            embodied_runtime_mode=resolved_config.embodied_runtime_mode,
+        )
         self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
         apply_gateway_dry_run_to_robot(self.robot, resolved_config.dry_run)
         attach_profile_sensor_discovery(self.robot, self.robot_profile)
@@ -233,24 +295,70 @@ class FireClawGateway:
                 runtime_mode=resolved_config.embodied_runtime_mode,
                 entity_extraction_pipeline=self.entity_extraction_pipeline,
             )
-        self.events = EventLedger(resolved_config.event_path)
-        self.task_queue = JsonlTaskQueue(resolved_config.task_queue_path)
+        runtime_state_path = (
+            resolved_config.runtime_state_path
+            or str(
+                Path(resolved_config.memory_path).with_name(
+                    f"{Path(resolved_config.memory_path).stem}"
+                    "-runtime.sqlite3"
+                )
+            )
+        )
+        self.runtime_state = SqliteAuthoritativeRuntimeStore(
+            runtime_state_path
+        )
+        self.events = SqliteEventLedger(
+            self.runtime_state,
+            audit_path=resolved_config.event_path,
+        )
+        self.task_queue = SqliteTaskQueue(
+            self.runtime_state,
+            audit_path=resolved_config.task_queue_path,
+        )
         checkpoint_path = (
             resolved_config.robot_agent_checkpoint_path
             or f"{resolved_config.task_queue_path}.agent-loops.jsonl"
         )
-        self.agent_loop_checkpoints = JsonlAgentLoopCheckpointStore(
-            checkpoint_path
+        self.agent_loop_checkpoints = SqliteAgentLoopCheckpointStore(
+            self.runtime_state,
+            audit_path=checkpoint_path,
+        )
+        self.resource_leases = SqliteResourceLeaseManager(
+            self.runtime_state
+        )
+        self.execution_authorization_authority = (
+            HmacExecutionAuthorizationAuthority(
+                issuer_id=f"robot-gateway:{resolved_config.robot_id}",
+                key_id="robot-local-v1",
+                secret=self.runtime_state.get_or_create_secret(
+                    "execution_authorization_hmac"
+                ),
+            )
         )
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
-        self._event_lock = threading.Lock()
         self._task_threads: dict[str, threading.Thread] = {}
         self._task_controls: dict[str, TaskControl] = {}
         self._task_lock = threading.Lock()
-        self._emergency_stop = EmergencyStopState()
-        self._authorization_lock = threading.Lock()
-        self._pending_authorizations_by_session: dict[str, AuthorizationRequest] = {}
+        persisted_emergency = self.resource_leases.admission_state()
+        self._emergency_stop = EmergencyStopState(
+            active=bool(persisted_emergency.get("closed")),
+            reason=(
+                str(persisted_emergency["reason"])
+                if persisted_emergency.get("reason") is not None
+                else None
+            ),
+            activated_at=(
+                str(persisted_emergency["closed_at"])
+                if persisted_emergency.get("closed_at") is not None
+                else None
+            ),
+            task_id=(
+                str(persisted_emergency["task_id"])
+                if persisted_emergency.get("task_id") is not None
+                else None
+            ),
+        )
         self._event_bus = EventBus()
         self._telemetry = TelemetryTracker()
         self.robot_agent_runtime = self._build_robot_agent_runtime()
@@ -332,34 +440,59 @@ class FireClawGateway:
         operator: OperatorContext | None = None,
         dedupe_key: str | None = None,
         structured_task: dict[str, Any] | None = None,
+        execution_authorization: ExecutionAuthorization | None = None,
     ) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
         resolved_session_id = session_id or self.config.default_session_id
         resolved_operator = operator or operator_from_payload(None)
         control_decision = ControlPolicy().evaluate(resolved_operator, "task.submit")
-        duplicate = self.task_queue.find_non_terminal_by_dedupe_key(dedupe_key)
-        if duplicate is not None:
+        if self.resource_leases.admission_state().get("closed"):
             return {
-                "status": "duplicate",
-                "task_id": duplicate.task_id,
-                "session_id": duplicate.session_id,
-                "dedupe_key": dedupe_key,
-                "message": "任务已存在，返回现有未完成任务。",
+                "status": "blocked",
+                "session_id": resolved_session_id,
+                "message": "机器人处于急停资源冻结状态，拒绝新任务。",
+                "resource_admission": (
+                    self.resource_leases.admission_state()
+                ),
             }
         started_at = datetime.now(timezone.utc).isoformat()
-        self.task_queue.create(
-            task_id=task_id,
-            session_id=resolved_session_id,
-            command=command,
-            created_at=started_at,
-            dedupe_key=dedupe_key,
-        )
+        with self.runtime_state.transaction():
+            duplicate = self.task_queue.find_non_terminal_by_dedupe_key(
+                dedupe_key
+            )
+            if duplicate is not None:
+                return {
+                    "status": "duplicate",
+                    "task_id": duplicate.task_id,
+                    "session_id": duplicate.session_id,
+                    "dedupe_key": dedupe_key,
+                    "message": "任务已存在，返回现有未完成任务。",
+                }
+            self.task_queue.create(
+                task_id=task_id,
+                session_id=resolved_session_id,
+                command=command,
+                created_at=started_at,
+                dedupe_key=dedupe_key,
+            )
+        if (
+            execution_authorization is None
+            and isinstance(structured_task, dict)
+            and isinstance(
+                structured_task.get("execution_authorization"),
+                dict,
+            )
+        ):
+            execution_authorization = ExecutionAuthorization.from_dict(
+                structured_task["execution_authorization"]
+            )
         control = TaskControl(
             task_id=task_id,
             session_id=resolved_session_id,
             command=command,
             started_at=started_at,
             structured_task=structured_task,
+            execution_authorization=execution_authorization,
         )
         with self._task_lock:
             if len(self._task_controls) >= self.config.max_active_execution_tasks:
@@ -463,6 +596,9 @@ class FireClawGateway:
                     cancellation_requested=control.cancel_event.is_set,
                     operator=operator,
                     structured_task=control.structured_task,
+                    execution_authorization=(
+                        control.execution_authorization
+                    ),
                 )
             except Exception as exc:
                 failed_result = {
@@ -471,23 +607,26 @@ class FireClawGateway:
                     "session_id": control.session_id,
                     "message": str(exc),
                 }
-                self.task_queue.update(
-                    task_id,
-                    status="failed",
-                    ended_at=datetime.now(timezone.utc).isoformat(),
-                    error=str(exc),
-                    result=failed_result,
-                )
-                self._append_event(
-                    task_id=task_id,
-                    session_id=control.session_id,
-                    type="task.failed",
-                    payload={
-                        "status": "failed",
-                        "message": str(exc),
-                        "result": failed_result,
-                    },
-                )
+                with self.runtime_state.transaction():
+                    self.task_queue.update(
+                        task_id,
+                        status="failed",
+                        ended_at=datetime.now(
+                            timezone.utc
+                        ).isoformat(),
+                        error=str(exc),
+                        result=failed_result,
+                    )
+                    self._append_event(
+                        task_id=task_id,
+                        session_id=control.session_id,
+                        type="task.failed",
+                        payload={
+                            "status": "failed",
+                            "message": str(exc),
+                            "result": failed_result,
+                        },
+                    )
             finally:
                 with self._task_lock:
                     self._task_threads.pop(task_id, None)
@@ -616,6 +755,11 @@ class FireClawGateway:
             }
 
         activated_at = datetime.now(timezone.utc).isoformat()
+        self.resource_leases.close_admission(
+            reason=reason,
+            task_id=task_id,
+            closed_at=activated_at,
+        )
         cancelled_task_ids = self._cancel_all_active_tasks(reason=reason)
         robot_result = self.robot.emergency_stop(reason=reason)
         self._emergency_stop = EmergencyStopState(
@@ -715,35 +859,25 @@ class FireClawGateway:
                 payload=payload,
             )
 
-        # Start with task-required skills plus always-exposed skills
-        candidate_skills = (
-            set(task_object.required_skills)
-            | set(task_object.allowed_skills)
-            | {"report_status", "return_to_safe_zone"}
-        )
-
-        # If profile is loaded, constrain to profile's llm_exposed_skills
-        if self.robot_profile is not None:
-            profile_exposed = set(self.robot_profile.llm_exposed_skills)
-            candidate_skills = candidate_skills & profile_exposed
-
-        exposed_skill_names = tuple(
-            skill_name
-            for skill_name in agent.registry.names()
-            if skill_name in candidate_skills
-        )
-        skill_tools = build_robot_skill_tools(
-            agent.registry,
-            exposed_skill_names=exposed_skill_names,
-        )
-        skill_metadata = [
-            metadata
-            for metadata in agent.registry.list_metadata()
-            if metadata["name"] in exposed_skill_names
-        ]
+        agent_tool_runtime: AgentToolRuntime | None = None
+        deployment_profile = self.config.deployment_profile
+        if deployment_profile.sandbox.enabled:
+            register_computer_tool_plugin(
+                agent.plugin_host,
+                ComputerSandbox(deployment_profile.sandbox),
+            )
+            agent_tool_runtime = AgentToolRuntime(
+                plugin_host=agent.plugin_host,
+                profile=deployment_profile,
+                event_sink=lambda event: emit(
+                    str(event["type"]),
+                    dict(event["payload"]),
+                ),
+            )
 
         def build_context() -> dict[str, Any]:
-            robot_state = agent._state_snapshot(agent._get_robot_state())
+            robot_state_object = agent._get_robot_state()
+            robot_state = agent._state_snapshot(robot_state_object)
             runtime_sensors = (
                 robot_state.get("available_sensors")
                 if isinstance(robot_state, dict)
@@ -754,6 +888,41 @@ class FireClawGateway:
                 if runtime_sensors is not None
                 else agent.available_sensors
             )
+            capability_projection = agent.project_skill_capabilities(
+                task_object,
+                skill_names=agent.registry.names(),
+                robot_state=robot_state_object,
+            )
+            exposed_skill_names = capability_projection.after
+            skill_tools = build_robot_skill_tools(
+                agent.registry,
+                exposed_skill_names=exposed_skill_names,
+            )
+            skill_metadata = [
+                metadata
+                for metadata in agent.registry.list_metadata()
+                if metadata["name"] in exposed_skill_names
+            ]
+            primitive_skills = (
+                tuple(
+                    name
+                    for name in self.robot_profile.primitive_skills
+                    if name in exposed_skill_names
+                )
+                if self.robot_profile
+                else exposed_skill_names
+            )
+            composite_chains = (
+                {
+                    capability: chain
+                    for capability, chain in (
+                        self.robot_profile.capability_skill_chains.items()
+                    )
+                    if all(step in exposed_skill_names for step in chain)
+                }
+                if self.robot_profile
+                else {}
+            )
             context = {
                 "robot_state": robot_state,
                 "environment_state": agent._state_snapshot(
@@ -762,22 +931,20 @@ class FireClawGateway:
                 "available_sensors": sorted(verified_sensors),
                 "skill_tools": skill_tools,
                 "skill_metadata": skill_metadata,
+                "capability_policy": capability_projection.to_dict(),
                 "skill_inventory": build_robot_skill_inventory(
                     registry=agent.registry,
-                    primitive_skills=(
-                        self.robot_profile.primitive_skills
-                        if self.robot_profile
-                        else tuple(agent.registry.names())
-                    ),
-                    composite_chains=(
-                        self.robot_profile.capability_skill_chains
-                        if self.robot_profile
-                        else {}
-                    ),
+                    primitive_skills=primitive_skills,
+                    composite_chains=composite_chains,
                     verified_sensors=verified_sensors,
                 ),
                 "session_history": agent._recent_session_records(limit=50),
             }
+            if agent_tool_runtime is not None:
+                context["agent_tools"] = agent_tool_runtime.tool_schemas()
+                context["agent_tool_policy"] = (
+                    agent_tool_runtime.exposure_manifest()
+                )
             if self.entity_memory_tools is not None and task_object.mission_id:
                 context["memory_tools"] = (
                     self.entity_memory_tools.tool_schemas()
@@ -837,6 +1004,7 @@ class FireClawGateway:
                     command=task_object.command or task_object.task_type,
                     planning_result=planning_result,
                     structured_task=task_object,
+                    operation_id=step.operation_id,
                 )
                 step_executions.append(run)
                 emit(
@@ -868,6 +1036,11 @@ class FireClawGateway:
                     if event.get("type") == (
                         "robot_agent.skill_dispatch_finished"
                     ):
+                        self.resource_leases.release(
+                            robot_id=self.config.robot_id,
+                            owner_id=task_id,
+                            operation_id=operation_id,
+                        )
                         output = payload.get("output")
                         if isinstance(output, dict):
                             return dict(output)
@@ -909,12 +1082,34 @@ class FireClawGateway:
                     "advisory_only": True,
                 }
 
+            def execute_agent_tool(
+                tool_name: str,
+                arguments: dict[str, Any],
+            ) -> dict[str, Any]:
+                if agent_tool_runtime is None:
+                    return {
+                        "status": "blocked",
+                        "error_code": "agent_tool_runtime_unavailable",
+                        "message": "Robot Agent Tool runtime is unavailable.",
+                        "result_authority": "advisory",
+                    }
+                return agent_tool_runtime.execute(
+                    tool_name,
+                    arguments,
+                    context={
+                        "mission_id": task_object.mission_id,
+                        "task_id": task_object.task_id,
+                        "robot_id": self.config.robot_id,
+                    },
+                ).to_dict()
+
             emit("task.structured_received", task_object.to_dict())
             loop_result = self.robot_agent_runtime.run(
                 task_object,
                 fallback_robot_id=self.config.robot_id,
                 context_provider=build_context,
                 execute_skill=execute_skill,
+                execute_agent_tool=execute_agent_tool,
                 query_context=query_context,
                 reconcile_skill=reconcile_skill,
                 event_sink=emit,
@@ -950,6 +1145,7 @@ class FireClawGateway:
         cancellation_requested=None,
         operator: OperatorContext | None = None,
         structured_task: dict[str, Any] | None = None,
+        execution_authorization: ExecutionAuthorization | None = None,
     ) -> dict[str, Any]:
         if record_received:
             self._append_event(
@@ -962,6 +1158,8 @@ class FireClawGateway:
             task_id=task_id,
             session_id=session_id,
             cancellation_requested=cancellation_requested,
+            execution_authorization=execution_authorization,
+            operator=operator,
         )
         if structured_task is not None:
             task_object = StructuredRobotTask.from_dict(structured_task)
@@ -978,7 +1176,6 @@ class FireClawGateway:
         else:
             result = agent.run(command)
         result["task_id"] = task_id
-        self._record_result_events(task_id, session_id, result)
         self._record_authorization_request_if_needed(
             task_id=task_id,
             session_id=session_id,
@@ -986,6 +1183,7 @@ class FireClawGateway:
             result=result,
             operator=operator or operator_from_payload(None),
         )
+        self._record_result_events(task_id, session_id, result)
         return result
 
     def _record_authorization_request_if_needed(
@@ -1001,8 +1199,37 @@ class FireClawGateway:
             return
         risk_level = _risk_level_from_confirmation(result.get("confirmation"))
         decision = ControlPolicy().evaluate_risk(operator, action="task.confirm", risk_level=risk_level)
-        if decision.status != "approval_required":
+        if decision.status not in {"allow", "approval_required"}:
             return
+        planning = result.get("planning")
+        plan = (
+            planning.get("plan")
+            if isinstance(planning, dict)
+            else None
+        )
+        steps = plan.get("steps") if isinstance(plan, dict) else None
+        actions = [
+            authorized_action(
+                str(step.get("skill_name") or ""),
+                dict(step.get("inputs") or {}),
+            )
+            for step in (steps if isinstance(steps, list) else [])
+            if isinstance(step, dict)
+            and isinstance(step.get("skill_name"), str)
+            and isinstance(step.get("inputs"), dict)
+        ]
+        if not actions:
+            return
+        structured_task = (
+            dict(result["structured_task"])
+            if isinstance(result.get("structured_task"), dict)
+            else None
+        )
+        scope_hash = execution_scope_hash(
+            command=command,
+            structured_task=structured_task,
+            actions=actions,
+        )
         requested_at_dt = datetime.now(timezone.utc)
         expires_at_dt = requested_at_dt + timedelta(seconds=max(0, self.config.authorization_expiry_seconds))
         request = AuthorizationRequest(
@@ -1015,9 +1242,14 @@ class FireClawGateway:
             risk_level=risk_level,
             requested_at=requested_at_dt.isoformat(),
             expires_at=expires_at_dt.isoformat(),
+            structured_task=structured_task,
+            scope_hash=scope_hash,
+            authorized_actions=tuple(actions),
+            robot_id=self.config.robot_id,
         )
-        with self._authorization_lock:
-            self._pending_authorizations_by_session[session_id] = request
+        self.runtime_state.create_authorization_request(
+            request.to_dict()
+        )
         self._append_event(
             task_id=task_id,
             session_id=session_id,
@@ -1034,22 +1266,40 @@ class FireClawGateway:
         session_id: str,
         operator: OperatorContext,
     ) -> tuple[bool, dict[str, Any]]:
-        with self._authorization_lock:
-            request = self._pending_authorizations_by_session.get(session_id)
-        if request is None:
-            decision = ControlPolicy().evaluate(operator, "task.confirm")
-            if decision.status == "allow":
-                return True, {"control": decision.to_dict(), "authorization": None}
+        request_payload = (
+            self.runtime_state.pending_authorization_request(session_id)
+        )
+        if request_payload is None:
             return False, {
                 "status": "denied",
                 "session_id": session_id,
-                "message": "操作员没有权限确认任务。",
-                "control": decision.to_dict(),
+                "message": "没有绑定具体动作参数的待审批请求。",
             }
+        request = AuthorizationRequest.from_dict(request_payload)
         now = datetime.now(timezone.utc).isoformat()
+        task_record = self.task_queue.get(request.task_id)
+        task_result = task_record.result if task_record is not None else None
+        if (
+            not isinstance(task_result, dict)
+            or task_result.get("status") != "awaiting_confirmation"
+        ):
+            return False, {
+                "status": "denied",
+                "session_id": session_id,
+                "message": "审批请求尚未绑定到已提交的待确认任务结果。",
+                "reason_code": "authorization_task_not_pending",
+                "authorization": request.to_dict(),
+            }
         if request.is_expired(now):
-            with self._authorization_lock:
-                self._pending_authorizations_by_session.pop(session_id, None)
+            try:
+                self.runtime_state.resolve_authorization_request(
+                    request.request_id,
+                    status="expired",
+                    decided_by=operator.to_dict(),
+                    decided_at=now,
+                )
+            except StaleRuntimeStateWrite:
+                pass
             payload = {
                 "status": "expired",
                 "session_id": session_id,
@@ -1089,12 +1339,77 @@ class FireClawGateway:
                 "authorization": request.to_dict(),
                 "control": decision.to_dict(),
             }
-        with self._authorization_lock:
-            self._pending_authorizations_by_session.pop(session_id, None)
+        if request.scope_hash is None or not request.authorized_actions:
+            return False, {
+                "status": "denied",
+                "session_id": session_id,
+                "message": "审批请求缺少具体动作范围，拒绝签发执行授权。",
+                "authorization": request.to_dict(),
+            }
+        expires_at = (
+            datetime.now(timezone.utc)
+            + timedelta(
+                seconds=max(
+                    1,
+                    self.config.authorization_expiry_seconds,
+                )
+            )
+        ).isoformat()
+        execution_authorization = (
+            self.execution_authorization_authority.issue(
+                request_id=request.request_id,
+                operator_id=operator.operator_id,
+                mission_id=(
+                    str(request.structured_task.get("mission_id"))
+                    if isinstance(request.structured_task, dict)
+                    and request.structured_task.get("mission_id")
+                    is not None
+                    else None
+                ),
+                task_id=(
+                    str(request.structured_task.get("task_id"))
+                    if isinstance(request.structured_task, dict)
+                    and request.structured_task.get("task_id") is not None
+                    else request.task_id
+                ),
+                robot_id=request.robot_id or self.config.robot_id,
+                scope_hash=request.scope_hash,
+                authorized_actions=[
+                    dict(action)
+                    for action in request.authorized_actions
+                ],
+                issued_at=now,
+                expires_at=expires_at,
+            )
+        )
+        try:
+            with self.runtime_state.transaction():
+                resolved_request = (
+                    self.runtime_state.resolve_authorization_request(
+                        request.request_id,
+                        status="approved",
+                        decided_by=operator.to_dict(),
+                        decided_at=now,
+                    )
+                )
+                self.runtime_state.persist_execution_authorization(
+                    execution_authorization.to_dict()
+                )
+        except StaleRuntimeStateWrite:
+            return False, {
+                "status": "denied",
+                "session_id": session_id,
+                "message": "审批请求已被其他决策处理，拒绝重复批准。",
+                "reason_code": "authorization_request_stale",
+                "authorization": request.to_dict(),
+            }
         return True, {
             "status": "approved",
             "session_id": session_id,
-            "authorization": request.to_dict(),
+            "authorization": resolved_request,
+            "execution_authorization": (
+                execution_authorization.to_dict()
+            ),
             "control": decision.to_dict(),
             "approved_by": operator.to_dict(),
             "approved_at": now,
@@ -1287,23 +1602,28 @@ class FireClawGateway:
             )
             terminal_status = "cancelled" if was_cancel_requested else "completed"
             final_type = "task.cancelled" if terminal_status == "cancelled" else "task.completed"
-            self._append_event(
-                task_id=task_id,
-                session_id=session_id,
-                type=final_type,
-                payload={
-                    "status": terminal_status if was_cancel_requested else result.get("status"),
-                    "message": result.get("message"),
-                    "result": result,
-                    "cancel_requested": was_cancel_requested,
-                },
-            )
-            self.task_queue.update(
-                task_id,
-                status=terminal_status,
-                ended_at=datetime.now(timezone.utc).isoformat(),
-                result=result,
-            )
+            with self.runtime_state.transaction():
+                self._append_event(
+                    task_id=task_id,
+                    session_id=session_id,
+                    type=final_type,
+                    payload={
+                        "status": (
+                            terminal_status
+                            if was_cancel_requested
+                            else result.get("status")
+                        ),
+                        "message": result.get("message"),
+                        "result": result,
+                        "cancel_requested": was_cancel_requested,
+                    },
+                )
+                self.task_queue.update(
+                    task_id,
+                    status=terminal_status,
+                    ended_at=datetime.now(timezone.utc).isoformat(),
+                    result=result,
+                )
 
     def _task_result_from_events(self, events: list[dict[str, Any]]) -> dict[str, Any] | None:
         for event in reversed(events):
@@ -1329,6 +1649,8 @@ class FireClawGateway:
         task_id: str | None = None,
         session_id: str | None = None,
         cancellation_requested=None,
+        execution_authorization: ExecutionAuthorization | None = None,
+        operator: OperatorContext | None = None,
     ) -> FireClawAgent:
         resolved_session_id = session_id or self.config.default_session_id
         event_sink = None
@@ -1353,6 +1675,18 @@ class FireClawGateway:
             skill_memory_producer=self._skill_memory_producer,
             embodied_runtime_mode=self.config.embodied_runtime_mode,
             robot_memory_recorder=self.robot_memory_recorder,
+            execution_authorization_authority=(
+                self.execution_authorization_authority
+            ),
+            execution_authorization=execution_authorization,
+            resource_lease_manager=self.resource_leases,
+            authorization_use_recorder=(
+                self.runtime_state.record_authorization_use
+            ),
+            capability_actor=(
+                operator or operator_from_payload(None)
+            ),
+            robot_profile=self.robot_profile,
         )
 
     def _task_status(
@@ -1406,23 +1740,26 @@ class FireClawGateway:
         type: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        with self._event_lock:
-            result = self.events.append(
-                task_id=task_id,
-                session_id=session_id,
-                type=type,
-                payload=payload,
-            )
-        stream_event = StreamEvent(
-            event_type=type,
-            source=self.config.robot_id,
-            robot_id=self.config.robot_id,
+        result = self.events.append(
             task_id=task_id,
-            mission_id=session_id,
+            session_id=session_id,
+            type=type,
             payload=payload,
         )
-        self._event_bus.publish(stream_event)
-        self._telemetry.record_event(stream_event)
+
+        def publish_committed_event() -> None:
+            stream_event = StreamEvent(
+                event_type=type,
+                source=self.config.robot_id,
+                robot_id=self.config.robot_id,
+                task_id=task_id,
+                mission_id=session_id,
+                payload=payload,
+            )
+            self._event_bus.publish(stream_event)
+            self._telemetry.record_event(stream_event)
+
+        self.runtime_state.after_commit(publish_committed_event)
         return result
 
     def _publish_stream_event(
@@ -1863,10 +2200,48 @@ class FireClawGateway:
                 authorization = authorization_payload.get("authorization")
                 if isinstance(authorization, dict) and isinstance(authorization.get("task_id"), str):
                     self._wait_until_task_inactive(authorization["task_id"])
+                execution_authorization_payload = (
+                    authorization_payload.get(
+                        "execution_authorization"
+                    )
+                )
+                execution_authorization = (
+                    ExecutionAuthorization.from_dict(
+                        execution_authorization_payload
+                    )
+                    if isinstance(
+                        execution_authorization_payload,
+                        dict,
+                    )
+                    else None
+                )
+                original_command = (
+                    str(authorization.get("command") or "")
+                    if isinstance(authorization, dict)
+                    else ""
+                )
+                structured_task = (
+                    dict(authorization["structured_task"])
+                    if isinstance(authorization, dict)
+                    and isinstance(
+                        authorization.get("structured_task"),
+                        dict,
+                    )
+                    else None
+                )
+                if (
+                    structured_task is not None
+                    and execution_authorization is not None
+                ):
+                    structured_task["execution_authorization"] = (
+                        execution_authorization.to_dict()
+                    )
                 result = self.submit_agent(
-                    "确认执行",
+                    original_command,
                     session_id=session_id,
                     operator=operator,
+                    structured_task=structured_task,
+                    execution_authorization=execution_authorization,
                 )
                 if authorization_payload.get("status") == "approved" and result.get("task_id"):
                     self._append_event(
@@ -2017,6 +2392,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--memory-path", default=None)
     parser.add_argument("--event-path", default=None)
     parser.add_argument("--task-queue-path", default=None)
+    parser.add_argument(
+        "--runtime-state-path",
+        default=None,
+        help="Path to the authoritative SQLite runtime database.",
+    )
     parser.add_argument("--skills-dir", default=None)
     parser.add_argument("--no-workspace-skills", action="store_true", default=None)
     parser.add_argument("--session-id", default=None)
@@ -2056,6 +2436,7 @@ def main(argv: list[str] | None = None) -> int:
             "robot_gateway_memory_path": args.memory_path,
             "robot_gateway_event_path": args.event_path,
             "robot_gateway_task_queue_path": args.task_queue_path,
+            "robot_gateway_runtime_state_path": args.runtime_state_path,
             "robot_gateway_workspace_skills_dir": args.skills_dir,
             "robot_gateway_dry_run": False if args.real_run else None,
             "robot_gateway_available_sensors": args.available_sensor,
@@ -2080,6 +2461,8 @@ def main(argv: list[str] | None = None) -> int:
     sensors = merged.get("robot_gateway_available_sensors") or ()
 
     gateway = FireClawGateway(
+        # The deployment profile is immutable for the lifetime of this
+        # Gateway process; changing mode requires a restart.
         GatewayConfig(
             host=str(merged.get("robot_gateway_host", "127.0.0.1")),
             port=int(merged.get("robot_gateway_port", 8765)),
@@ -2089,6 +2472,7 @@ def main(argv: list[str] | None = None) -> int:
             memory_path=str(merged.get("robot_gateway_memory_path", "memory/fireclaw-gateway.jsonl")),
             event_path=str(merged.get("robot_gateway_event_path", "memory/fireclaw-gateway-events.jsonl")),
             task_queue_path=str(merged.get("robot_gateway_task_queue_path", "memory/fireclaw-gateway-tasks.jsonl")),
+            runtime_state_path=merged.get("robot_gateway_runtime_state_path"),
             workspace_skills_dir=None if workspace_skills_dir is None else str(workspace_skills_dir),
             dry_run=bool(merged.get("robot_gateway_dry_run", True)),
             available_sensors=tuple(str(sensor) for sensor in sensors),
@@ -2105,6 +2489,21 @@ def main(argv: list[str] | None = None) -> int:
             embodied_memory_path=merged.get("robot_gateway_embodied_memory_path"),
             embodied_memory_index_path=merged.get("robot_gateway_embodied_memory_index"),
             embodied_runtime_mode=merged.get("robot_gateway_embodied_runtime_mode"),
+            deployment_profile=deployment_profile_from_config(
+                merged.get("deployment"),
+                role="robot_agent",
+                default_workspace_root=(
+                    Path(
+                        str(
+                            merged.get(
+                                "robot_gateway_memory_path",
+                                "memory/fireclaw-gateway.jsonl",
+                            )
+                        )
+                    ).parent
+                    / "robot-agent-workspace"
+                ),
+            ),
         )
     )
     print(

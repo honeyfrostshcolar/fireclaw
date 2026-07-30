@@ -5,14 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fireclaw_core.execution.builtin_physical_skills import (
+    iter_builtin_physical_skills,
+)
 
-ROS1_ACTION_NAMES = (
-    "navigate_to_point",
-    "navigate_to_floor",
-    "search_for_victims",
-    "assess_victim",
-    "report_status",
-    "return_to_safe_zone",
+ROS1_ACTION_NAMES = tuple(
+    plugin.action for plugin in iter_builtin_physical_skills()
 )
 ROS1_INTERFACES = ("topic", "service", "action")
 ROS1_ENDPOINT_PROFILES: dict[str, dict[str, Any]] = {

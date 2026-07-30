@@ -5,6 +5,7 @@ import json
 import pytest
 
 from fireclaw_core.planner.planner_builder import build_planner
+from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
 
 def test_build_planner_deterministic():
@@ -28,6 +29,35 @@ def test_build_planner_llm_with_params():
         model="gpt-4o",
     )
     assert planner is not None
+
+
+def test_build_planner_projects_simulation_computer_tools(tmp_path):
+    planner = build_planner(
+        planner_type="llm",
+        provider_base_url="https://api.example.com/v1",
+        provider_api_key="test-key",
+        model="gpt-4o",
+        deployment_profile=DeploymentProfile(
+            mode="simulation",
+            role="mission_agent",
+            sandbox=SandboxProfile(
+                enabled=True,
+                workspace_root=tmp_path / "workspace",
+                image="fireclaw-agent-sim:test",
+            ),
+        ),
+    )
+
+    assert planner.agent_tool_runtime is not None
+    assert {
+        tool["function"]["name"]
+        for tool in planner.agent_tool_runtime.tool_schemas()
+    } == {
+        "computer_exec",
+        "computer_list_files",
+        "computer_read_file",
+        "computer_write_file",
+    }
 
 
 def test_build_planner_uses_model_catalog_for_context_budget(tmp_path):

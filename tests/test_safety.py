@@ -1,8 +1,22 @@
+from fireclaw_core.approval.execution_authorization import (
+    VerifiedExecutionAuthorization,
+)
 from fireclaw_core.planner.planner import RuleBasedPlanner
 from fireclaw_core.agent.robot import DryRunRobotAdapter, EnvironmentState, RobotState
 from fireclaw_core.safety.safety import SafetyGate
 from fireclaw_core.agent.robot import RobotActionResult
 from fireclaw_core.execution.skills import Skill, SkillRegistry, create_default_skill_registry
+
+
+def _verified_authorization() -> VerifiedExecutionAuthorization:
+    return VerifiedExecutionAuthorization(
+        authorization_id="exec-auth-test",
+        request_id="approval-test",
+        operator_id="supervisor-test",
+        scope_hash="scope-test",
+        authorized_action_hashes=frozenset({"action-test"}),
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
 
 
 def _successful_result():
@@ -106,7 +120,7 @@ def test_safety_blocks_non_dry_run_mode():
         planning_result,
         registry,
         dry_run=False,
-        operator_confirmed=True,
+        execution_authorization=_verified_authorization(),
         available_sensors=set(robot.available_sensors),
     )
 
@@ -123,7 +137,7 @@ def test_safety_blocks_non_dry_run_direct_skill_invocation():
         planning_result,
         registry,
         dry_run=False,
-        operator_confirmed=True,
+        execution_authorization=_verified_authorization(),
         available_sensors={"rgb_camera", "thermal_camera", "lidar"},
     )
 
@@ -209,7 +223,7 @@ def test_safety_allows_non_dry_run_direct_skill_with_real_robot_allowance():
         planning_result,
         registry,
         dry_run=False,
-        operator_confirmed=True,
+        execution_authorization=_verified_authorization(),
     )
 
     assert decision.status == "allow"
@@ -275,7 +289,7 @@ def test_safety_allows_confirmed_real_robot_skill():
         planning_result,
         registry,
         dry_run=False,
-        operator_confirmed=True,
+        execution_authorization=_verified_authorization(),
     )
 
     assert decision.status == "allow"
@@ -427,7 +441,7 @@ def test_safety_blocks_navigation_when_lidar_health_is_invalid() -> None:
         dry_run=False,
         robot_state=robot_state,
         environment_state=EnvironmentState(reachable_floors=[2]),
-        operator_confirmed=True,
+        execution_authorization=_verified_authorization(),
     )
 
     assert decision.status == "block"
@@ -482,7 +496,6 @@ def test_safety_requires_confirmation_when_imu_health_is_unknown_for_navigation(
         registry,
         dry_run=False,
         robot_state=robot_state,
-        operator_confirmed=False,
     )
 
     assert decision.status == "require_confirmation"

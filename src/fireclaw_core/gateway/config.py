@@ -37,6 +37,7 @@ Config file structure::
     memory_path = "data/debug-sim/robot-memory.jsonl"
     event_path = "data/debug-sim/robot-events.jsonl"
     task_queue_path = "data/debug-sim/robot-tasks.jsonl"
+    runtime_state_path = "data/debug-sim/robot-runtime.sqlite3"
 """
 from __future__ import annotations
 
@@ -91,6 +92,13 @@ def load_config(path: Path) -> dict[str, Any]:
     planner = raw.get("planner", {})
     cfg["planner_type"] = planner.get("type")
 
+    # [deployment] remains structured because role-specific policy and
+    # sandbox tables are evaluated by the trusted host at startup.
+    deployment = raw.get("deployment", {})
+    if deployment is not None and not isinstance(deployment, dict):
+        raise ValueError("[deployment] must be a TOML table")
+    cfg["deployment"] = deployment or {}
+
     # [provider]
     provider = raw.get("provider", {})
     cfg["provider_base_url"] = provider.get("base_url")
@@ -122,6 +130,7 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_gateway_memory_path"] = rg.get("memory_path")
     cfg["robot_gateway_event_path"] = rg.get("event_path")
     cfg["robot_gateway_task_queue_path"] = rg.get("task_queue_path")
+    cfg["robot_gateway_runtime_state_path"] = rg.get("runtime_state_path")
     cfg["robot_gateway_workspace_skills_dir"] = rg.get("workspace_skills_dir")
     cfg["robot_gateway_dry_run"] = rg.get("dry_run")
     cfg["robot_gateway_available_sensors"] = rg.get("available_sensors")

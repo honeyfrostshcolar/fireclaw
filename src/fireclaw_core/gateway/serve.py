@@ -15,6 +15,7 @@ from fireclaw_core.agent.robot_registry import load_robot_registry
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.memory.reconciliation import EmbodiedMemoryReconciler
 from fireclaw_core.rag.runtime_retrieval import RagRuntimeConfig
+from fireclaw_core.policy.deployment import deployment_profile_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ def start_server(
     embodied_runtime_mode: str | None = None,
     memory_rag: RagRuntimeConfig | None = None,
     external_knowledge_rag: RagRuntimeConfig | None = None,
+    deployment_config: dict[str, Any] | None = None,
 ) -> MissionGateway:
     """Assemble and start the MissionGateway HTTP server.
 
@@ -91,6 +93,11 @@ def start_server(
 
     _ensure_data_dir(data_dir, create_robot_template=not bool(robot_profiles))
 
+    deployment_profile = deployment_profile_from_config(
+        deployment_config,
+        role="mission_agent",
+        default_workspace_root=data_dir / "mission-agent-workspace",
+    )
     planner = build_planner(
         planner_type=planner_type,
         provider_base_url=provider_base_url,
@@ -98,6 +105,7 @@ def start_server(
         model=model,
         model_catalog_path=model_catalog_path,
         llm_trace_path=llm_trace_path,
+        deployment_profile=deployment_profile,
     )
 
     paths = MissionRuntimePaths(
@@ -180,6 +188,7 @@ def run_server_blocking(
     embodied_runtime_mode: str | None = None,
     memory_rag: RagRuntimeConfig | None = None,
     external_knowledge_rag: RagRuntimeConfig | None = None,
+    deployment_config: dict[str, Any] | None = None,
 ) -> None:
     """Start the server and block until interrupted (Ctrl+C)."""
     gw = start_server(
@@ -204,6 +213,7 @@ def run_server_blocking(
         embodied_runtime_mode=embodied_runtime_mode,
         memory_rag=memory_rag,
         external_knowledge_rag=external_knowledge_rag,
+        deployment_config=deployment_config,
     )
 
     shutdown_requested = False
