@@ -5,8 +5,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_STATUSES,
+)
 
-TERMINAL_TASK_STATUSES = {"completed", "cancelled", "failed", "denied", "lost"}
+
+TERMINAL_TASK_STATUSES = set(ROBOT_TASK_TERMINAL_STATUSES) | {
+    "succeeded",
+    "block",
+    "denied",
+}
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,11 @@ logger = logging.getLogger(__name__)
 
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.agent.loop_checkpoint import AgentLoopCheckpointStore
-from fireclaw_core.gateway.control import ControlPolicy, OperatorContext
+from fireclaw_core.gateway.control import (
+    ControlPolicy,
+    OperatorContext,
+    operator_from_payload,
+)
 from fireclaw_core.infra.log_redaction import redact_dict
 from fireclaw_core.memory.mission_memory_facade import MemoryAccessContext
 from fireclaw_core.memory.mission_memory_tools import (
@@ -74,6 +78,9 @@ from fireclaw_core.mission.task_graph import (
 )
 from fireclaw_core.task.task_contract import MemoryLineage, structured_task_from_mission_subtask
 from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
+from fireclaw_core.task.terminal_outcome import (
+    robot_task_status_from_trace,
+)
 
 
 class SubagentClient(Protocol):
@@ -222,6 +229,7 @@ class MissionAgent:
         self._latest_mission_state_refs: dict[str, tuple[int, str]] = {}
         self._active_task_graphs: dict[str, MissionTaskGraph] = {}
         self._revision_event_memory_refs: dict[tuple[str, str], str | None] = {}
+        self._mission_reports: dict[str, dict[str, Any]] = {}
         self.dispatch_recovery_report: list[dict[str, Any]] = []
         self.subagent_registry = subagent_registry
         self._session_lineage_store = session_lineage_store
@@ -1432,6 +1440,9 @@ class MissionAgent:
                         subtask_id=subtask.task_id,
                     )
         trace = self.mission_registry.mission_trace(mission_id)
+        report = self.final_report(mission_id)
+        if report is not None:
+            trace["final_report"] = report
         enriched_subtasks = []
         for subtask in trace.get("subtasks", []):
             if not isinstance(subtask, dict):
@@ -1532,11 +1543,19 @@ class MissionAgent:
         session_id: str | None = None,
         operator: dict[str, Any] | None = None,
         use_scheduler: bool = True,
+        run_control: Any | None = None,
     ) -> dict[str, Any]:
         deny = self._authorize("mission.plan")
         if deny is not None:
             return {**deny, "subtask_results": []}
         mission_id = _mission_id(session_id)
+        if _run_control_cancelled(run_control):
+            return {
+                "status": "cancelled",
+                "message": "Mission Run was cancelled before planning.",
+                "mission_id": mission_id,
+                "subtask_results": [],
+            }
         command_event_id = self._record_embodied_memory(
             mission_id,
             "command",
@@ -1847,6 +1866,7 @@ class MissionAgent:
                 operator=operator,
                 memory_command_event_id=command_event_id,
                 memory_plan_event_id=plan_event_id,
+                run_control=run_control,
             )
             # Flatten group subtask results into a top-level list for API consistency
             subtask_results: list[dict[str, Any]] = []
@@ -2184,9 +2204,11 @@ class MissionAgent:
         context: str | None = None,
         robot_id: str | None = None,
         subtask_id: str | None = None,
+        operator: OperatorContext | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Record an operator correction for a mission."""
-        deny = self._authorize("mission.correct")
+        resolved_operator = _operator_context(operator) if operator is not None else None
+        deny = self._authorize("mission.correct", operator=resolved_operator)
         if deny is not None:
             return {**deny, "status": "denied"}
 
@@ -2194,7 +2216,8 @@ class MissionAgent:
         if context is not None:
             content["context"] = context
 
-        operator_id = self.operator.operator_id if self.operator else None
+        effective_operator = resolved_operator or self.operator
+        operator_id = effective_operator.operator_id if effective_operator else None
         if operator_id:
             content["operator_id"] = operator_id
 
@@ -2211,11 +2234,60 @@ class MissionAgent:
             "operator_assertion",
             content,
             source_type="operator",
-            source_id=self._operator_source_id(),
+            source_id=(operator_id or self._operator_source_id()),
             robot_id=robot_id,
             subtask_id=subtask_id,
         )
         return {"status": "recorded", "mission_id": mission_id, "correction": correction}
+
+    def record_final_report(
+        self,
+        mission_id: str,
+        report: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist the advisory report after all Robot results are collected."""
+        value = dict(report)
+        self._mission_reports[mission_id] = value
+        if self.mission_registry is not None:
+            try:
+                self.mission_registry.record_final_report(
+                    mission_id=mission_id,
+                    report=value,
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+            except (KeyError, OSError, ValueError):
+                logger.warning(
+                    "Failed to persist final Mission report for %s",
+                    mission_id,
+                    exc_info=True,
+                )
+        self._record_mission_memory(
+            mission_id,
+            "outcome",
+            {"final_report": value},
+        )
+        self._record_embodied_memory(
+            mission_id,
+            "outcome",
+            "runtime_evidence",
+            {"final_report": value},
+            source_type="mission_report",
+        )
+        return value
+
+    def final_report(self, mission_id: str) -> dict[str, Any] | None:
+        if mission_id in self._mission_reports:
+            return dict(self._mission_reports[mission_id])
+        if self.mission_registry is None:
+            return None
+        mission = self.mission_registry.get_mission(mission_id)
+        if mission is None:
+            return None
+        value = getattr(mission, "final_report", None)
+        if isinstance(value, dict):
+            self._mission_reports[mission_id] = dict(value)
+            return dict(value)
+        return None
 
     def cancel_mission(
         self,
@@ -2223,7 +2295,8 @@ class MissionAgent:
         *,
         operator: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        deny = self._authorize("mission.cancel")
+        resolved_operator = _operator_context(operator) if operator is not None else None
+        deny = self._authorize("mission.cancel", operator=resolved_operator)
         if deny is not None:
             return {**deny, "mission_id": mission_id, "subtasks": []}
         if self.mission_registry is None:
@@ -2428,53 +2501,23 @@ def _memory_result_to_dict(result: Any) -> dict[str, Any]:
     return value
 
 
-_NON_TERMINAL_TOP_STATUSES = {"unknown", "running", "cancel_requested"}
-
-_TERMINAL_EVENT_TYPES = {"task.completed", "task.cancelled", "task.failed"}
-
-_EVENT_TO_MISSION_STATUS = {
-    "task.completed": "completed",
-    "task.cancelled": "cancelled",
-    "task.failed": "failed",
-}
-
-
 def _status_from_robot_trace(trace: dict[str, Any]) -> str | None:
-    """Extract a mission-level terminal status from a robot trace.
+    """Extract a canonical Robot Agent runtime status from a trace."""
 
-    Priority order (highest first):
-    1. queue_record.status
-    2. events — scan reversed for task.completed / task.cancelled / task.failed
-    3. trace["status"] — top-level (filter out non-terminal values)
-    4. result.status — inner agent result status
-    """
-    # 1. queue_record.status (robot-local terminal wrapper)
-    queue_record = trace.get("queue_record")
-    if isinstance(queue_record, dict):
-        qr_status = queue_record.get("status")
-        if isinstance(qr_status, str) and qr_status in TERMINAL_SUBTASK_STATUSES:
-            return qr_status
+    return robot_task_status_from_trace(trace)
 
-    # 2. Events — scan reversed for terminal lifecycle events
-    events = trace.get("events")
-    if isinstance(events, list):
-        for event in reversed(events):
-            if isinstance(event, dict):
-                event_type = event.get("type")
-                if isinstance(event_type, str) and event_type in _TERMINAL_EVENT_TYPES:
-                    return _EVENT_TO_MISSION_STATUS[event_type]
 
-    # 3. Top-level trace status (filter non-terminal values)
-    status = trace.get("status")
-    if isinstance(status, str) and status not in _NON_TERMINAL_TOP_STATUSES:
-        if status in TERMINAL_SUBTASK_STATUSES:
-            return status
+def _run_control_cancelled(run_control: Any | None) -> bool:
+    checker = getattr(run_control, "is_cancel_requested", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker())
+    except Exception:
+        return True
 
-    # 4. result.status (inner agent result — lowest priority)
-    result = trace.get("result")
-    if isinstance(result, dict):
-        result_status = result.get("status")
-        if isinstance(result_status, str) and result_status in TERMINAL_SUBTASK_STATUSES:
-            return result_status
 
-    return None
+def _operator_context(value: OperatorContext | dict[str, Any]) -> OperatorContext:
+    if isinstance(value, OperatorContext):
+        return value
+    return operator_from_payload(value)

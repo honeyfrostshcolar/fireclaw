@@ -3,8 +3,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_EVENT_TYPES,
+    ROBOT_TASK_TERMINAL_STATUSES,
+    robot_task_terminal_status_from_event,
+)
 
-TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled", "blocked", "clarify"}
+
+TERMINAL_TASK_STATUSES = set(ROBOT_TASK_TERMINAL_STATUSES) | {
+    "succeeded",
+    "clarify",
+}
 
 
 @dataclass
@@ -127,7 +136,7 @@ def project_task_state(events: list[dict[str, Any]]) -> dict[str, Any]:
                 task.active_action_id = None
         elif event_type == "task.cancel_requested":
             _set_nonterminal_task_status(task, "cancel_requested")
-        elif event_type in {"task.completed", "task.cancelled", "task.failed"}:
+        elif event_type in ROBOT_TASK_TERMINAL_EVENT_TYPES:
             _apply_terminal_task_event(task, event_type, payload, timestamp)
             if task.status == "cancelled":
                 if current_skill is not None and current_skill.status not in {"succeeded", "failed"}:
@@ -257,19 +266,11 @@ def _apply_terminal_task_event(
     task.ended_at = timestamp
     result = payload.get("result")
     task.result = dict(result) if isinstance(result, dict) else None
-    if event_type == "task.cancelled":
-        task.status = "cancelled"
-    elif event_type == "task.failed":
-        task.status = "failed"
-    else:
-        status = _string_or_none(payload.get("status"))
-        if status == "block":
-            task.status = "blocked"
-        elif status in {"succeeded", "failed", "clarify", "cancelled"}:
-            task.status = status
-        else:
-            result_status = _string_or_none(task.result.get("status")) if task.result else None
-            task.status = result_status or "failed"
+    status = robot_task_terminal_status_from_event({
+        "type": event_type,
+        "payload": payload,
+    })
+    task.status = status or "failed"
 
 
 def _string_or_none(value: Any) -> str | None:

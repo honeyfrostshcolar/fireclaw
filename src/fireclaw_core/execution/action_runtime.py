@@ -56,8 +56,14 @@ class RobotActionBackend(Protocol):
 class RobotAdapterActionBackend:
     robot: RobotAdapter
     handlers: dict[str, RobotActionHandler] = field(default_factory=dict)
+    # Kept true only for pre-plugin callers/tests.  FireClaw Agent production
+    # paths set it false and register every physical handler explicitly from a
+    # Plugin contribution.
+    auto_register_legacy_actions: bool = True
 
     def __post_init__(self) -> None:
+        if not self.auto_register_legacy_actions:
+            return
         capabilities_provider = getattr(self.robot, "capabilities", None)
         if not callable(capabilities_provider):
             return

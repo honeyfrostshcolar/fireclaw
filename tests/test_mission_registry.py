@@ -81,7 +81,7 @@ def test_mission_registry_updates_subtask_status_and_projects_trace(tmp_path):
     assert trace["status"] == "running"
     assert trace["subtask_count"] == 2
     assert trace["completed_subtask_count"] == 1
-    assert trace["subtasks"][0]["status"] == "succeeded"
+    assert trace["subtasks"][0]["status"] == "completed"
     assert trace["subtasks"][0]["result"] == {"status": "succeeded"}
 
 
@@ -111,3 +111,35 @@ def test_mission_registry_marks_mission_failed_when_any_subtask_fails(tmp_path):
     )
 
     assert registry.mission_trace("mission-1")["status"] == "failed"
+
+
+def test_mission_registry_projects_robot_escalation_without_success(tmp_path):
+    registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    registry.create_mission(
+        mission_id="mission-1",
+        session_id="operator-a",
+        command="搜索受困人员",
+        created_at="2026-06-08T01:00:00+00:00",
+    )
+    registry.record_subtask(
+        mission_id="mission-1",
+        robot_id="robot-1",
+        task_id="task-1",
+        command="搜索受困人员",
+        status="accepted",
+        created_at="2026-06-08T01:00:01+00:00",
+    )
+    registry.update_subtask(
+        mission_id="mission-1",
+        robot_id="robot-1",
+        task_id="task-1",
+        status="escalated",
+        updated_at="2026-06-08T01:00:02+00:00",
+        result={"status": "escalated", "message": "需要操作员确认"},
+    )
+
+    trace = registry.mission_trace("mission-1")
+
+    assert trace["status"] == "escalated"
+    assert trace["completed_subtask_count"] == 1
+    assert trace["subtasks"][0]["status"] == "escalated"

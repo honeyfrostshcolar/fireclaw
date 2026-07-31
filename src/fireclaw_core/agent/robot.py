@@ -6,9 +6,6 @@ from math import cos, isfinite, sin
 from typing import Any
 from typing import Protocol
 
-from fireclaw_core.execution.builtin_physical_skills import (
-    builtin_physical_action_names,
-)
 from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
 from fireclaw_core.ros.ros1_config import Ros1EndpointConfig
 from fireclaw_core.ros.ros1_template import render_ros1_template
@@ -63,8 +60,17 @@ class AdapterCapabilities:
     is_simulator: bool
 
 
+# Compatibility capability names for adapters that predate Plugin-owned
+# physical Tools.  New physical capabilities are advertised by their Plugin
+# contribution and do not require this core list or a same-named adapter
+# method.  Keep the legacy names only until old task profiles are migrated.
 ALL_ROBOT_ACTIONS = {
-    *builtin_physical_action_names(),
+    "navigate_to_floor",
+    "navigate_to_point",
+    "search_for_victims",
+    "assess_victim",
+    "report_status",
+    "return_to_safe_zone",
     "emergency_stop",
 }
 

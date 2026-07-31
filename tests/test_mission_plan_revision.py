@@ -620,7 +620,7 @@ def test_revision_dispatch_carries_completed_dependency_and_only_runs_pending(
     }
     assert executions["task-1"]["status"] == "carried"
     assert executions["task-1"]["robot_id"] == "robot-a"
-    assert executions["task-2"]["status"] == "succeeded"
+    assert executions["task-2"]["status"] == "completed"
     assert executions["task-2"]["robot_id"] == "robot-b"
 
 
@@ -789,4 +789,4 @@ def test_revision_dispatch_cancels_and_fences_removed_active_node(
     ]
     assert result["cancellation_results"][0]["node_id"] == "task-2"
     assert result["cancellation_results"][0]["status"] == "cancel_requested"
-    assert result["cancellation_terminal_states"][0]["status"] == "succeeded"
+    assert result["cancellation_terminal_states"][0]["status"] == "completed"

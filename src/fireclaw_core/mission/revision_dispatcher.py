@@ -34,6 +34,8 @@ VALID_NODE_RUNTIME_STATUSES = frozenset({
     "failed",
     "block",
     "blocked",
+    "escalated",
+    "timed_out",
     "denied",
     "lost",
     "cancel_requested",

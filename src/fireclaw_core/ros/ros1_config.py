@@ -5,12 +5,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fireclaw_core.execution.builtin_physical_skills import (
-    iter_builtin_physical_skills,
-)
-
-ROS1_ACTION_NAMES = tuple(
-    plugin.action for plugin in iter_builtin_physical_skills()
+# Compatibility endpoint names for the legacy ROS1 adapter configuration.
+# Plugin-owned physical Tools provide their own runtime endpoint contract and
+# are not imported while this low-level config module is initializing.
+ROS1_ACTION_NAMES = (
+    "navigate_to_floor",
+    "search_for_victims",
+    "assess_victim",
+    "report_status",
+    "return_to_safe_zone",
+    "emergency_stop",
 )
 ROS1_INTERFACES = ("topic", "service", "action")
 DEFAULT_ROS1_DIAGNOSTIC_TOPIC_ALLOWLIST = (

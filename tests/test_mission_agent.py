@@ -455,6 +455,63 @@ def test_mission_trace_normalizes_robot_completed_retrieval_to_completed(tmp_pat
     assert trace["subtasks"][0]["status"] == "completed"
 
 
+def test_mission_trace_prefers_escalated_result_over_stale_completed_wrapper(
+    tmp_path,
+):
+    registry = RobotRegistry(
+        [RobotRegistryEntry(robot_id="robot-1", base_url="http://robot.local")]
+    )
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission_registry.create_mission(
+        mission_id="mission-1",
+        session_id="session-1",
+        command="搜索受困人员",
+        created_at="2026-06-11T00:00:00+00:00",
+    )
+    mission_registry.record_subtask(
+        mission_id="mission-1",
+        robot_id="robot-1",
+        task_id="task-1",
+        command="搜索受困人员",
+        status="accepted",
+        created_at="2026-06-11T00:00:00+00:00",
+    )
+
+    class TraceClient:
+        def get_task_trace(self, entry, task_id):
+            return {
+                "task_id": task_id,
+                "status": "completed",
+                "result": {
+                    "status": "escalated",
+                    "message": "本地恢复失败，需要中央处理",
+                },
+                "queue_record": {"status": "completed"},
+                "events": [
+                    {
+                        "type": "task.completed",
+                        "payload": {"status": "escalated"},
+                    }
+                ],
+            }
+
+    agent = MissionAgent(
+        registry=registry,
+        subagent_client=TraceClient(),
+        mission_registry=mission_registry,
+    )
+
+    trace = agent.mission_trace("mission-1")
+
+    assert trace["status"] == "escalated"
+    assert trace["completed_subtask_count"] == 1
+    assert trace["subtasks"][0]["status"] == "escalated"
+    assert (
+        mission_registry.get_mission("mission-1").subtasks[0].status
+        == "escalated"
+    )
+
+
 def test_mission_agent_cancels_recorded_non_terminal_subtasks(tmp_path):
     registry = RobotRegistry(
         [

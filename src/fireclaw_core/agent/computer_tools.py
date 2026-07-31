@@ -10,18 +10,20 @@ import stat
 import subprocess
 import tempfile
 import threading
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from fireclaw_core.agent.docker_sandbox import (
     DockerSandboxRuntime,
     ProcessFactory,
 )
-from fireclaw_core.agent.tool_runtime import AgentTool
 from fireclaw_core.infra.path_security import (
     validate_sandbox_workspace_root,
 )
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.policy.deployment import SandboxProfile
+
+if TYPE_CHECKING:
+    from fireclaw_core.agent.tool_runtime import AgentTool
 
 
 COMPUTER_TOOL_PLUGIN_ID = "fireclaw.agent-tools.computer"
@@ -660,6 +662,13 @@ def register_computer_tool_plugin(
     *,
     plugin_id: str = COMPUTER_TOOL_PLUGIN_ID,
 ) -> None:
+    """Compatibility wrapper for the historical in-core registration API.
+
+    Canonical registration is now ``extensions/computer-tools`` discovered by
+    the generic extension loader.  This wrapper only adapts the public Plugin
+    provider for older callers and does not own Tool schemas.
+    """
+
     tools = computer_agent_tools(sandbox)
 
     def register(api) -> None:
@@ -687,132 +696,33 @@ def register_computer_tool_plugin(
     )
 
 
-def computer_agent_tools(sandbox: ComputerSandbox) -> tuple[AgentTool, ...]:
-    common = {
-        "roles": ("mission_agent", "robot_agent"),
-        "modes": ("simulation", "real"),
-        "requires_sandbox": True,
-        "metadata": {"family": "computer"},
-    }
-    return (
-        AgentTool(
-            name="computer_list_files",
-            description=(
-                "List files inside the configured agent sandbox workspace."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Workspace-relative directory.",
-                        "maxLength": 1024,
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 8,
-                    },
-                },
-                "additionalProperties": False,
-            },
-            handler=sandbox.list_files,
-            effect="read",
-            **common,
-        ),
-        AgentTool(
-            name="computer_read_file",
-            description=(
-                "Read one UTF-8 text file inside the configured sandbox."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 1024,
-                    },
-                    "max_chars": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": _MAX_FILE_CHARS,
-                    },
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-            handler=sandbox.read_file,
-            effect="read",
-            **common,
-        ),
-        AgentTool(
-            name="computer_write_file",
-            description=(
-                "Create or atomically replace a UTF-8 text file inside the "
-                "sandbox. Existing files require the SHA-256 returned by "
-                "computer_read_file."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 1024,
-                    },
-                    "content": {
-                        "type": "string",
-                        "maxLength": _MAX_FILE_CHARS,
-                    },
-                    "expected_sha256": {
-                        "type": "string",
-                        "minLength": 64,
-                        "maxLength": 64,
-                    },
-                },
-                "required": ["path", "content"],
-                "additionalProperties": False,
-            },
-            handler=sandbox.write_file,
-            effect="bounded_mutation",
-            **common,
-        ),
-        AgentTool(
-            name="computer_exec",
-            description=(
-                "Run an argv command in the configured Docker sandbox. "
-                "No host shell is used."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "argv": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 4096,
-                        },
-                        "minItems": 1,
-                        "maxItems": 128,
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "maxLength": 1024,
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "minimum": 0.1,
-                    },
-                },
-                "required": ["argv"],
-                "additionalProperties": False,
-            },
-            handler=sandbox.execute,
-            effect="process",
-            **common,
-        ),
+def computer_agent_tools(sandbox: ComputerSandbox) -> tuple[Any, ...]:
+    """Compatibility projection of the provider-owned ToolSpecs."""
+
+    from fireclaw_core.plugin.sdk_adapter import normalize_registered_tool
+
+    provider_path = (
+        Path(__file__).resolve().parents[3]
+        / "extensions"
+        / "computer-tools"
+        / "plugin"
+        / "entrypoint.py"
+    )
+    import importlib.util
+    import sys
+
+    module_name = "fireclaw_computer_tools_provider"
+    module = sys.modules.get(module_name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(module_name, provider_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("computer-tools extension provider is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    return tuple(
+        normalize_registered_tool(value)
+        for value in module._tools(sandbox)
     )
 
 

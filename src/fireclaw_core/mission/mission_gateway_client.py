@@ -75,6 +75,14 @@ class MissionGatewayClient:
         """GET /missions/{id}/trace"""
         return self._get(f"/missions/{mission_id}/trace")
 
+    def get_mission_run(self, mission_id: str) -> dict[str, Any]:
+        """GET /missions/{id}/run"""
+        return self._get(f"/missions/{mission_id}/run")
+
+    def get_mission_report(self, mission_id: str) -> dict[str, Any]:
+        """GET /missions/{id}/report"""
+        return self._get(f"/missions/{mission_id}/report")
+
     def get_mission_events(self, mission_id: str) -> dict[str, Any]:
         """GET /missions/{id}/events"""
         return self._get(f"/missions/{mission_id}/events")
@@ -172,6 +180,33 @@ class MissionGatewayClient:
     def cancel_mission(self, mission_id: str) -> dict[str, Any]:
         """POST /missions/{id}/cancel"""
         return self._post(f"/missions/{mission_id}/cancel", {})
+
+    def pause_mission(self, mission_id: str) -> dict[str, Any]:
+        """POST /missions/{id}/pause"""
+        return self._post(f"/missions/{mission_id}/pause", {})
+
+    def resume_mission(self, mission_id: str) -> dict[str, Any]:
+        """POST /missions/{id}/resume"""
+        return self._post(f"/missions/{mission_id}/resume", {})
+
+    def correct_mission(
+        self,
+        mission_id: str,
+        correction: str,
+        *,
+        context: str | None = None,
+        robot_id: str | None = None,
+        subtask_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /missions/{id}/corrections"""
+        body: dict[str, Any] = {"correction": correction}
+        if context is not None:
+            body["context"] = context
+        if robot_id is not None:
+            body["robot_id"] = robot_id
+        if subtask_id is not None:
+            body["subtask_id"] = subtask_id
+        return self._post(f"/missions/{mission_id}/corrections", body)
 
     def request_approval(self, mission_id: str, **kwargs: Any) -> dict[str, Any]:
         """POST /missions/{id}/approvals"""

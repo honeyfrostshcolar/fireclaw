@@ -42,6 +42,7 @@ from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore, valida
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
 from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
+from fireclaw_core.mission.mission_run import MissionRunManager
 from fireclaw_core.memory.reconciliation import (
     EmbodiedMemoryReconciler,
     ReplicationBatch,
@@ -52,7 +53,12 @@ logger = logging.getLogger(__name__)
 
 MISSION_TRACE_RE = re.compile(r"^/missions/([^/]+)/trace$")
 MISSION_EVENTS_RE = re.compile(r"^/missions/([^/]+)/events$")
+MISSION_RUN_RE = re.compile(r"^/missions/([^/]+)/run$")
+MISSION_REPORT_RE = re.compile(r"^/missions/([^/]+)/report$")
 MISSION_CANCEL_RE = re.compile(r"^/missions/([^/]+)/cancel$")
+MISSION_PAUSE_RE = re.compile(r"^/missions/([^/]+)/pause$")
+MISSION_RESUME_RE = re.compile(r"^/missions/([^/]+)/resume$")
+MISSION_CORRECTIONS_RE = re.compile(r"^/missions/([^/]+)/corrections?$")
 MISSION_APPROVALS_RE = re.compile(r"^/missions/([^/]+)/approvals$")
 MISSION_EVENTS_STREAM_RE = re.compile(r"^/missions/([^/]+)/events/stream$")
 MISSION_MEMORY_SYNC_RE = re.compile(r"^/missions/([^/]+)/memory/sync$")
@@ -90,6 +96,7 @@ class MissionGateway:
         session_lineage_store: JsonlSessionLineageStore | None = None,
         memory_reconciler: EmbodiedMemoryReconciler | None = None,
         replication_security: Any | None = None,
+        mission_run_manager: MissionRunManager | None = None,
     ) -> None:
         self.process_working_directory = Path.cwd().resolve(strict=False)
         self.config = config
@@ -114,6 +121,10 @@ class MissionGateway:
         self._thread: threading.Thread | None = None
         self._event_bus = EventBus()
         self._telemetry = TelemetryTracker()
+        self.mission_run_manager = mission_run_manager or MissionRunManager(
+            mission_agent,
+            event_sink=self._publish_run_event,
+        )
 
     @property
     def base_url(self) -> str:
@@ -166,6 +177,7 @@ class MissionGateway:
     def stop(self) -> None:
         if self._server is None:
             return
+        self.mission_run_manager.shutdown(wait=False)
         # Stop consolidation coordinator after stopping request intake
         coordinator = self.mission_agent.consolidation_coordinator
         if coordinator is not None:
@@ -191,6 +203,7 @@ class MissionGateway:
         session_id: str | None = None,
         operator: OperatorContext | None = None,
         use_scheduler: bool = True,
+        background: bool | None = None,
     ) -> dict[str, Any]:
         # Guard: validate resume ownership when session_id is provided
         if (
@@ -207,6 +220,34 @@ class MissionGateway:
                 return {"status": "denied", "message": decision.reason}
 
         operator_dict = operator.to_dict() if operator is not None else None
+        # Scheduler-backed submissions default to the non-blocking Mission Run
+        # path.  Explicit ``background=false`` remains available for legacy
+        # callers and deterministic CLI/test workflows.
+        if background is None:
+            background = bool(use_scheduler)
+        if background and self.mission_agent.mission_deliberation_runtime is None:
+            # Preserve an immediate, useful error for an unconfigured planner.
+            background = False
+        if background:
+            result = self.mission_run_manager.submit(
+                command,
+                mission_id=session_id,
+                operator=operator_dict,
+                use_scheduler=use_scheduler,
+            )
+            mission_id = result.get("mission_id")
+            if mission_id:
+                self.publish_event(
+                    "mission.submitted",
+                    "mission-gateway",
+                    mission_id=mission_id,
+                    payload={
+                        "command": command,
+                        "status": result.get("status"),
+                        "run_id": result.get("run_id"),
+                    },
+                )
+            return result
         result = self.mission_agent.plan_and_submit(
             command,
             session_id=session_id,
@@ -243,8 +284,59 @@ class MissionGateway:
                     )
         return result
 
+    def get_mission_run(self, mission_id: str) -> dict[str, Any]:
+        return self.mission_run_manager.get(mission_id)
+
+    def get_mission_report(self, mission_id: str) -> dict[str, Any]:
+        report = self.mission_run_manager.report(mission_id)
+        if report.get("status") == "not_found":
+            persisted = self.mission_agent.final_report(mission_id)
+            if persisted is not None:
+                return persisted
+        return report
+
+    def pause_mission(self, mission_id: str) -> dict[str, Any]:
+        return self.mission_run_manager.pause(mission_id)
+
+    def resume_mission(self, mission_id: str) -> dict[str, Any]:
+        return self.mission_run_manager.resume(mission_id)
+
+    def correct_mission(
+        self,
+        mission_id: str,
+        payload: dict[str, Any],
+        *,
+        operator: OperatorContext | None = None,
+    ) -> dict[str, Any]:
+        correction = payload.get("correction")
+        if not isinstance(correction, str) or not correction.strip():
+            return {
+                "status": "error",
+                "mission_id": mission_id,
+                "message": "Field 'correction' is required.",
+            }
+        return self.mission_run_manager.correct(
+            mission_id,
+            correction=correction.strip(),
+            context=_optional_string(payload, "context"),
+            robot_id=_optional_string(payload, "robot_id"),
+            subtask_id=_optional_string(payload, "subtask_id"),
+            operator=operator.to_dict() if operator is not None else None,
+        )
+
     def get_mission_trace(self, mission_id: str) -> dict[str, Any]:
-        return self.mission_agent.mission_trace(mission_id)
+        trace = self.mission_agent.mission_trace(mission_id)
+        run = self.mission_run_manager.get(mission_id)
+        if run.get("status") != "not_found":
+            trace["run"] = run
+            trace["run_status"] = run.get("run_status", run.get("status"))
+            if run.get("terminal") and trace.get("status") in {"created", "running"}:
+                trace["status"] = _mission_trace_status_from_run(
+                    str(run.get("run_status") or run.get("status") or "")
+                )
+            if run.get("final_report") is not None:
+                trace["final_report"] = run["final_report"]
+        return trace
 
     def get_mission_events(
         self,
@@ -579,7 +671,14 @@ class MissionGateway:
         *,
         operator: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        result = self.mission_agent.cancel_mission(mission_id, operator=operator)
+        run = self.mission_run_manager.get(mission_id)
+        if run.get("status") != "not_found":
+            result = self.mission_run_manager.cancel(
+                mission_id,
+                operator=operator,
+            )
+        else:
+            result = self.mission_agent.cancel_mission(mission_id, operator=operator)
         status = result.get("status")
         if status == "cancel_requested":
             self.publish_event(
@@ -780,6 +879,27 @@ class MissionGateway:
         )
         self._event_bus.publish(event)
         self._telemetry.record_event(event)
+
+    def _publish_run_event(
+        self,
+        event_type: str,
+        mission_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Bridge MissionRunManager lifecycle events onto the Gateway EventBus."""
+        self.publish_event(
+            event_type,
+            "mission-run",
+            mission_id=mission_id,
+            payload=payload,
+        )
+        if event_type == "mission.report_ready":
+            self.publish_event(
+                "mission.final_report_ready",
+                "mission-run",
+                mission_id=mission_id,
+                payload=payload,
+            )
 
     # ------------------------------------------------------------------
     # HTTP plumbing
@@ -1039,6 +1159,28 @@ class MissionGateway:
             self._write_json(handler, HTTPStatus.OK, self.get_mission_trace(mission_id))
             return
 
+        run_match = MISSION_RUN_RE.match(path)
+        if run_match:
+            mission_id = run_match.group(1)
+            result = self.get_mission_run(mission_id)
+            status = HTTPStatus.NOT_FOUND if result.get("status") == "not_found" else HTTPStatus.OK
+            self._write_json(handler, status, result)
+            return
+
+        report_match = MISSION_REPORT_RE.match(path)
+        if report_match:
+            mission_id = report_match.group(1)
+            result = self.get_mission_report(mission_id)
+            status = (
+                HTTPStatus.NOT_FOUND
+                if result.get("status") == "not_found"
+                else HTTPStatus.ACCEPTED
+                if result.get("status") == "pending"
+                else HTTPStatus.OK
+            )
+            self._write_json(handler, status, result)
+            return
+
         events_match = MISSION_EVENTS_RE.match(path)
         if events_match:
             mission_id = events_match.group(1)
@@ -1116,6 +1258,11 @@ class MissionGateway:
                     session_id=_optional_string(payload, "session_id"),
                     operator=operator,
                     use_scheduler=payload.get("use_scheduler", True),
+                    background=(
+                        payload.get("background")
+                        if isinstance(payload.get("background"), bool)
+                        else None
+                    ),
                 )
                 status = _mission_submit_status(result)
                 self._write_json(handler, status, result)
@@ -1246,6 +1393,42 @@ class MissionGateway:
                 self._write_json(handler, status, result)
                 return
 
+            pause_match = MISSION_PAUSE_RE.match(path)
+            if pause_match:
+                mission_id = pause_match.group(1)
+                result = self.pause_mission(mission_id)
+                status = HTTPStatus.NOT_FOUND if result.get("status") == "not_found" else HTTPStatus.OK
+                self._write_json(handler, status, result)
+                return
+
+            resume_match = MISSION_RESUME_RE.match(path)
+            if resume_match:
+                mission_id = resume_match.group(1)
+                result = self.resume_mission(mission_id)
+                status = HTTPStatus.NOT_FOUND if result.get("status") == "not_found" else HTTPStatus.OK
+                self._write_json(handler, status, result)
+                return
+
+            correction_match = MISSION_CORRECTIONS_RE.match(path)
+            if correction_match:
+                mission_id = correction_match.group(1)
+                result = self.correct_mission(
+                    mission_id,
+                    payload,
+                    operator=principal.operator,
+                )
+                status = (
+                    HTTPStatus.NOT_FOUND
+                    if result.get("status") == "not_found"
+                    else HTTPStatus.FORBIDDEN
+                    if result.get("status") == "denied"
+                    else HTTPStatus.BAD_REQUEST
+                    if result.get("status") == "error"
+                    else HTTPStatus.OK
+                )
+                self._write_json(handler, status, result)
+                return
+
             approvals_match = MISSION_APPROVALS_RE.match(path)
             if approvals_match:
                 mission_id = approvals_match.group(1)
@@ -1345,6 +1528,18 @@ def _mission_submit_status(result: dict[str, Any]) -> HTTPStatus:
     if status in ("no_planner", "no_robots", "unauthorized"):
         return HTTPStatus.BAD_REQUEST
     return HTTPStatus.ACCEPTED if result.get("mission_id") else HTTPStatus.BAD_REQUEST
+
+
+def _mission_trace_status_from_run(run_status: str) -> str:
+    return {
+        "completed": "succeeded",
+        "cancelled": "cancelled",
+        "escalated": "escalated",
+        "blocked": "failed",
+        "failed": "failed",
+        "timed_out": "failed",
+        "lost": "failed",
+    }.get(run_status, run_status or "running")
 
 
 def _sse_after_sequence(

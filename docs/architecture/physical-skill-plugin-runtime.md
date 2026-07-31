@@ -23,7 +23,7 @@ Mission Coordinator task contract
 -> FireClawPluginHost tool projection
 -> SkillRegistry compatibility view
 -> RobotActionRuntime
--> Robot Adapter action
+-> Plugin-owned handler / Adapter
 -> ROS / simulator / SDK / algorithm
 ```
 
@@ -78,9 +78,10 @@ Tool 是 LLM 可提出调用的原子接口，例如 `navigate_to_point`、
 
 ### Adapter
 
-Adapter 是算法和硬件实现边界。它通过 `supported_actions` 声明能力，并为
-Tool 声明的 `action` 提供同名受信任 callable。`RobotActionRuntime` 从注册表
-查找 handler，不包含导航、搜索或机械臂专用分支。
+Adapter 是算法和硬件实现边界。新 Plugin 直接在自己的
+`PhysicalToolSpec.handler` 中调用 Plugin-owned ROS/SDK Adapter；核心
+`RobotActionRuntime` 不要求 `RobotAdapter` 上存在同名方法，也不包含导航、搜索
+或机械臂专用分支。旧 `supported_actions`/同名 callable 只作为迁移兼容路径。
 
 ### Runtime / Algorithm
 
@@ -115,11 +116,9 @@ MCP 是可选传输层。只有能力运行在独立进程、另一台计算机�
 
 新增 `place_safety_beacon` 这类能力时，只需要：
 
-1. 在 Plugin 中使用 legacy `define_physical_skill_plugin()` 定义原子 Tool
-   合同；
-2. 在目标 Robot Adapter 中实现并声明 `deploy_beacon` action；
-3. 通过 `FireClawPluginApi.register_physical_capability()` 贡献能力，并由
-   `SkillRegistry.register_plugin()` 生成当前 Adapter 的兼容执行投影；
+1. 在 Plugin 中使用公开 `PhysicalToolSpec` 定义原子 Tool 合同和 handler；
+2. 在 Plugin 自己的 runtime/Adapter 中调用算法、ROS、SDK 或独立服务；
+3. 通过 `api.register_physical_tool()` 贡献能力，并由宿主的通用生命周期投影；
 4. 根据需要附带说明完整操作流程的 Skill；
 5. 增加 schema、安全、Adapter 和实机/仿真测试。
 
@@ -156,4 +155,5 @@ navigate_to_point(transition_entry)
 - `success_evidence` 已进入插件元数据，但仍需接入通用完成证据验证器；
 - schema 校验覆盖 FireClaw 当前使用的 JSON Schema 子集，不是完整
   JSON Schema 实现；
-- 每个真实 Adapter handler 仍必须单独进行安全审查、仿真验证和实机验证。
+- 旧 Adapter handler 仍必须单独进行安全审查、仿真验证和实机验证；新的
+  Plugin-owned handler 同样必须经过这些验证。

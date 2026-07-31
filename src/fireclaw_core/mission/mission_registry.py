@@ -5,8 +5,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_STATUSES,
+    normalize_robot_task_terminal_status,
+)
 
-TERMINAL_SUBTASK_STATUSES = {"succeeded", "completed", "cancelled", "failed", "block", "denied", "lost"}
+
+TERMINAL_SUBTASK_STATUSES = set(ROBOT_TASK_TERMINAL_STATUSES) | {
+    "succeeded",
+    "block",
+    "denied",
+}
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,7 @@ class MissionRecord:
     created_at: str
     updated_at: str
     subtasks: list[MissionSubtaskRecord] = field(default_factory=list)
+    final_report: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -73,6 +83,7 @@ class JsonlMissionRegistry:
         status: str,
         created_at: str,
     ) -> MissionSubtaskRecord:
+        status = normalize_robot_task_terminal_status(status) or status
         subtask = MissionSubtaskRecord(
             robot_id=robot_id,
             task_id=task_id,
@@ -101,6 +112,7 @@ class JsonlMissionRegistry:
         current = _find_subtask(mission.subtasks, robot_id, task_id)
         if current is None:
             raise KeyError(f"Mission subtask not found: {mission_id}/{robot_id}/{task_id}")
+        status = normalize_robot_task_terminal_status(status) or status
         updated = MissionSubtaskRecord(
             robot_id=current.robot_id,
             task_id=current.task_id,
@@ -113,6 +125,22 @@ class JsonlMissionRegistry:
         )
         self._append({"type": "subtask", "mission_id": mission_id, "subtask": updated.to_dict()})
         return updated
+
+    def record_final_report(
+        self,
+        *,
+        mission_id: str,
+        report: dict[str, Any],
+        updated_at: str,
+    ) -> None:
+        if self.get_mission(mission_id) is None:
+            raise KeyError(f"Mission not found: {mission_id}")
+        self._append({
+            "type": "mission.report",
+            "mission_id": mission_id,
+            "report": dict(report),
+            "updated_at": updated_at,
+        })
 
     def get_mission(self, mission_id: str) -> MissionRecord | None:
         return self._missions_by_id().get(mission_id)
@@ -132,6 +160,7 @@ class JsonlMissionRegistry:
                     created_at=mission.created_at,
                     updated_at=mission.updated_at,
                     subtasks=mission.subtasks,
+                    final_report=mission.final_report,
                 ))
             else:
                 result.append(mission)
@@ -143,7 +172,7 @@ class JsonlMissionRegistry:
             return {"mission_id": mission_id, "status": "not_found", "subtasks": []}
         subtasks = [subtask.to_dict() for subtask in mission.subtasks]
         terminal = [subtask for subtask in mission.subtasks if subtask.status in TERMINAL_SUBTASK_STATUSES]
-        return {
+        result = {
             "mission_id": mission.mission_id,
             "session_id": mission.session_id,
             "command": mission.command,
@@ -154,6 +183,9 @@ class JsonlMissionRegistry:
             "completed_subtask_count": len(terminal),
             "subtasks": subtasks,
         }
+        if mission.final_report is not None:
+            result["final_report"] = dict(mission.final_report)
+        return result
 
     def _missions_by_id(self) -> dict[str, MissionRecord]:
         missions: dict[str, MissionRecord] = {}
@@ -174,6 +206,7 @@ class JsonlMissionRegistry:
                     created_at=mission.created_at,
                     updated_at=mission.updated_at,
                     subtasks=list(existing_subtasks.values()),
+                    final_report=mission.final_report,
                 )
             elif entry_type == "subtask":
                 mission_id = entry.get("mission_id")
@@ -193,6 +226,22 @@ class JsonlMissionRegistry:
                         created_at=mission.created_at,
                         updated_at=subtask.updated_at,
                         subtasks=list(mission_subtasks.values()),
+                        final_report=mission.final_report,
+                    )
+            elif entry_type == "mission.report":
+                mission_id = entry.get("mission_id")
+                report = entry.get("report")
+                mission = missions.get(mission_id)
+                if isinstance(mission_id, str) and mission is not None and isinstance(report, dict):
+                    missions[mission_id] = MissionRecord(
+                        mission_id=mission.mission_id,
+                        session_id=mission.session_id,
+                        command=mission.command,
+                        status=mission.status,
+                        created_at=mission.created_at,
+                        updated_at=str(entry.get("updated_at") or mission.updated_at),
+                        subtasks=mission.subtasks,
+                        final_report=dict(report),
                     )
         return missions
 
@@ -231,16 +280,26 @@ def _find_subtask(
 def _mission_status(subtasks: list[MissionSubtaskRecord]) -> str:
     if not subtasks:
         return "created"
-    if any(subtask.status in {"failed", "block", "denied", "lost"} for subtask in subtasks):
+    normalized = [
+        normalize_robot_task_terminal_status(subtask.status)
+        for subtask in subtasks
+    ]
+    if any(status == "escalated" for status in normalized):
+        return "escalated"
+    if any(
+        status in {"blocked", "failed", "timed_out", "lost"}
+        for status in normalized
+    ):
         return "failed"
-    if any(subtask.status == "cancelled" for subtask in subtasks):
+    if any(status == "cancelled" for status in normalized):
         return "cancelled"
-    if all(subtask.status in TERMINAL_SUBTASK_STATUSES for subtask in subtasks):
+    if all(status == "completed" for status in normalized):
         return "succeeded"
     return "running"
 
 
 def _mission_from_dict(value: dict[str, Any]) -> MissionRecord:
+    final_report = value.get("final_report")
     return MissionRecord(
         mission_id=str(value.get("mission_id") or ""),
         session_id=value.get("session_id") if isinstance(value.get("session_id"), str) else None,
@@ -248,16 +307,18 @@ def _mission_from_dict(value: dict[str, Any]) -> MissionRecord:
         status=str(value.get("status") or "created"),
         created_at=str(value.get("created_at") or ""),
         updated_at=str(value.get("updated_at") or value.get("created_at") or ""),
+        final_report=dict(final_report) if isinstance(final_report, dict) else None,
     )
 
 
 def _subtask_from_dict(value: dict[str, Any]) -> MissionSubtaskRecord:
     result_value = value.get("result")
+    raw_status = str(value.get("status") or "unknown")
     return MissionSubtaskRecord(
         robot_id=str(value.get("robot_id") or ""),
         task_id=str(value.get("task_id") or ""),
         command=str(value.get("command") or ""),
-        status=str(value.get("status") or "unknown"),
+        status=normalize_robot_task_terminal_status(raw_status) or raw_status,
         created_at=str(value.get("created_at") or ""),
         updated_at=str(value.get("updated_at") or value.get("created_at") or ""),
         result=result_value if isinstance(result_value, dict) else None,

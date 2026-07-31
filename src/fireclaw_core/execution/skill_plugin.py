@@ -9,6 +9,7 @@ from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 
 InputCoercion = Literal["identity", "float", "integer", "string", "object"]
 ActionInputBuilder = Callable[[Any, dict[str, Any]], dict[str, Any]]
+PhysicalActionHandler = Callable[..., Any]
 OperatorMessageBuilder = Callable[[dict[str, Any]], str]
 
 _MISSING = object()
@@ -74,6 +75,10 @@ class PhysicalSkillPlugin:
     action_input_builder: ActionInputBuilder
     domain: str
     safety_class: str
+    # New Plugin-owned physical Tools provide this handler directly.  The
+    # optional field keeps old RobotAdapter method bindings working while the
+    # migration is completed.
+    action_handler: PhysicalActionHandler | None = None
     risk_level: str = "low"
     dry_run_only: bool = True
     allow_real_robot: bool = False

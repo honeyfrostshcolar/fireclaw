@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from fireclaw_core.approval.execution_authorization import (
     ExecutionAuthorization,
@@ -37,6 +37,10 @@ from fireclaw_core.task.task_contract import StructuredRobotTask, planning_resul
 from fireclaw_core.infra.workspace_skills import WorkspaceSkillLoadError, load_workspace_skills
 from fireclaw_core.context.manager import StructuredSemanticCompactor
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.plugin.extension_loader import (
+    FireClawExtensionLoadReport,
+    load_fireclaw_extensions,
+)
 from fireclaw_core.policy.capability import (
     CAPABILITY_POLICY_ID,
     CapabilityActor,
@@ -109,6 +113,9 @@ class FireClawAgent:
         robot_profile: Any | None = None,
         deployment_profile: DeploymentProfile | None = None,
         workspace_skill_executor: SandboxedSkillExecutor | None = None,
+        extension_paths: Sequence[str | Path] | None = None,
+        plugin_configs: Mapping[str, Mapping[str, Any]] | None = None,
+        plugin_services: Mapping[str, Any] | None = None,
     ) -> None:
         self.robot = robot or DryRunRobotAdapter(robot_id="fireclaw-dry-run")
         self.memory = memory or JsonlMemoryStore("memory/fireclaw-runs.jsonl")
@@ -150,16 +157,41 @@ class FireClawAgent:
             robot_profile
         )
         action_runtime = RobotActionRuntime(
-            backend=RobotAdapterActionBackend(self.robot),
+            backend=RobotAdapterActionBackend(
+                self.robot,
+                auto_register_legacy_actions=False,
+            ),
             event_sink=event_sink,
             task_id=task_id,
         )
+        self.action_runtime = action_runtime
         self.plugin_host = plugin_host or FireClawPluginHost()
+        self.extension_report: FireClawExtensionLoadReport | None = None
+        if extension_paths is not None:
+            deployment_mode = (
+                deployment_profile.mode
+                if deployment_profile is not None
+                else ("simulation" if dry_run else "real")
+            )
+            deployment_role = (
+                deployment_profile.role
+                if deployment_profile is not None
+                else "robot_agent"
+            )
+            self.extension_report = load_fireclaw_extensions(
+                self.plugin_host,
+                extension_paths,
+                mode=deployment_mode,
+                role=deployment_role,
+                plugin_configs=plugin_configs,
+                services=plugin_services,
+            )
         self.registry = create_default_skill_registry(
             self.robot,
             action_runtime=action_runtime,
             plugin_host=self.plugin_host,
         )
+        self.bind_plugin_physical_capabilities(replace=False)
         self.skill_load_errors: list[WorkspaceSkillLoadError] = []
         if workspace_skills_dir is not None:
             workspace_result = load_workspace_skills(
@@ -189,6 +221,31 @@ class FireClawAgent:
             resource_lease_manager=resource_lease_manager,
             authorization_use_recorder=authorization_use_recorder,
         )
+
+    def bind_plugin_physical_capabilities(self, *, replace: bool = True) -> tuple[str, ...]:
+        """Project Plugin-owned physical Tools into this Agent's registry.
+
+        Extension loading and Agent construction are separate lifecycle steps
+        in Gateway.  This method is the explicit bridge between the unified
+        Plugin Host and the generic skill/action runtime; it never looks up a
+        domain-specific method on ``RobotAdapter`` for Plugin-owned handlers.
+        """
+
+        bound: list[str] = []
+        for contribution in self.plugin_host.contributions("physical_capability"):
+            plugin = contribution.value
+            if not hasattr(plugin, "name") or not hasattr(plugin, "action"):
+                continue
+            if self.registry.get(str(plugin.name)) is not None and not replace:
+                continue
+            self.registry.register_plugin(
+                plugin,
+                robot=self.robot,
+                action_runtime=self.action_runtime,
+                replace=replace,
+            )
+            bound.append(str(plugin.name))
+        return tuple(sorted(set(bound)))
 
     def _safety_available_sensors(self) -> set[str] | None:
         if self._available_sensors_override:

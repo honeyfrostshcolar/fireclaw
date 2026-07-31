@@ -126,7 +126,7 @@ def main() -> int:
         session_id=args.session_id,
         poll_interval_seconds=args.poll_interval,
     )
-    return 0 if result.get("status") in {"succeeded", "awaiting_confirmation", "clarify"} else 1
+    return 0 if result.get("status") in {"completed", "escalated"} else 1
 
 
 if __name__ == "__main__":

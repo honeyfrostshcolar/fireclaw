@@ -47,7 +47,7 @@ class DeterministicPlanner:
                     MissionSubtask(
                         robot_id=robot.robot_id,
                         command=command,
-                        floor=2,
+                        floor=1,
                         capability_required="search_for_victims",
                         execution_group=0,
                     )
@@ -141,9 +141,9 @@ def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
         try:
             base = mission_gw.base_url
 
-            # 6. Submit mission "去二楼救人" through real HTTP
+            # 6. Submit a same-floor rescue mission through real HTTP
             status, body = _json_request(base, "POST", "/missions", {
-                "command": "去二楼救人",
+                "command": "搜索一楼受困人员",
                 "session_id": "e2e-gateway-test",
                 "use_scheduler": False,
             })

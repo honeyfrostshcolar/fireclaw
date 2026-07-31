@@ -16,6 +16,9 @@ from fireclaw_core.gateway.transport import (
     validate_gateway_response_limit,
 )
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry, TERMINAL_SUBAGENT_STATUSES
+from fireclaw_core.task.terminal_outcome import (
+    robot_task_status_from_trace,
+)
 
 
 class RobotSubagentClient:
@@ -307,13 +310,7 @@ def _decode_json_response(raw: bytes) -> dict[str, Any]:
 
 
 def _status_from_trace(trace: dict[str, Any]) -> str | None:
-    result = trace.get("result")
-    if isinstance(result, dict):
-        status = result.get("status")
-        if isinstance(status, str) and status:
-            return status
-    status = trace.get("status")
-    return status if isinstance(status, str) and status else None
+    return robot_task_status_from_trace(trace)
 
 
 def _error_from_trace(trace: dict[str, Any]) -> str | None:

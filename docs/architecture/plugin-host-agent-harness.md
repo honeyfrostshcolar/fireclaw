@@ -72,6 +72,42 @@ register only Tool wrappers marked with the Docker execution boundary.
 Trusted in-process Tool handlers and Hooks have deadlines and JSON result byte
 limits; these are operational bounds, not a substitute for sandboxing.
 
+## Manifest-First Extension Loading
+
+The OpenClaw-shaped discovery path is implemented by
+`src/fireclaw_core/plugin/extension_loader.py`:
+
+```text
+configured extension roots
+  -> read fireclaw.plugin.json (data only)
+  -> validate id, API version, relative entrypoint, trust class, and bounds
+  -> skip disabled extensions
+  -> import the declared provider entrypoint in a private package namespace
+  -> call provider.register(plugin_scoped_api)
+  -> atomically commit all contributions to FireClawPluginHost
+```
+
+The manifest is not a Tool definition and it does not grant host command
+execution. The provider owns its Tool schemas, Runtime/ROS adapter, Skill
+workflow, and plugin-specific configuration. Core code passes opaque
+manifest-keyed configuration and generic services; it does not add a new
+Gateway branch for each Plugin. `extensions/navigation-move-base` is the first
+package using this contract. Its old `fireclaw_core.navigation.move_base_plugin`
+path is now only a compatibility shim.
+
+Native Python extensions should use the public `fireclaw_plugin_sdk.ToolSpec`
+contract. The extension entrypoint contributes a host-neutral Tool description;
+the Plugin Host converts it to the internal `AgentTool` only at the registration
+boundary. This keeps third-party extensions from importing
+`fireclaw_core.agent.tool_runtime`, `fireclaw_core.plugin.plugin_host`, or
+deployment-policy implementation modules. Existing first-party callers that
+already construct `AgentTool` remain supported during migration.
+
+This mirrors OpenClaw's separation of discovery, manifest validation, registry
+ownership, and runtime activation. It is still an in-process trusted boundary;
+third-party package signatures and a general isolated Plugin process remain
+future hardening work.
+
 The old APIs are compatibility projections:
 
 - `PluginRuntime` projects descriptors and callable hooks;

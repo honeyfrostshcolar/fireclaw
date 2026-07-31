@@ -1,0 +1,39 @@
+{
+  "id": "fireclaw.navigation.move-base",
+  "name": "ROS1 move_base navigation",
+  "version": "0.1.0",
+  "description": "Typed navigation status, bounded tuning, cancellation and costmap tools for ROS1 move_base.",
+  "api_version": "1",
+  "entrypoint": "plugin/entrypoint.py",
+  "trust_level": "trusted",
+  "enabled_by_default": true,
+  "capabilities": [
+    "navigation",
+    "move_base",
+    "dynamic_reconfigure"
+  ],
+  "skills": [
+    "skills/navigation/SKILL.md"
+  ],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "real_mutation_enabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "real_mutable_parameters": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      }
+    }
+  }
+}

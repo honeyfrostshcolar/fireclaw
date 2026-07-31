@@ -115,7 +115,15 @@ class IncidentReplay:
         for subtask in mission.subtasks:
             if subtask.status in {"succeeded", "completed"}:
                 completed_count += 1
-            elif subtask.status in {"failed", "block", "denied", "lost"}:
+            elif subtask.status in {
+                "blocked",
+                "escalated",
+                "failed",
+                "timed_out",
+                "lost",
+                "block",
+                "denied",
+            }:
                 failed_count += 1
             elif subtask.status == "cancelled":
                 cancelled_count += 1

@@ -9,11 +9,9 @@ from fireclaw_core.mission.mission_planner import MissionPlanner
 from fireclaw_core.provider.provider import OpenAICompatProvider
 from fireclaw_core.provider.provider_runtime import ProviderRuntime, SimpleProviderRuntime
 from fireclaw_core.provider.model_catalog import ModelCatalog
-from fireclaw_core.agent.computer_tools import (
-    ComputerSandbox,
-    register_computer_tool_plugin,
-)
+from fireclaw_core.agent.computer_tools import ComputerSandbox
 from fireclaw_core.agent.tool_runtime import AgentToolRuntime
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.policy.deployment import DeploymentProfile
 
@@ -53,9 +51,16 @@ def build_planner(
             deployment_profile is not None
             and deployment_profile.sandbox.enabled
         ):
-            register_computer_tool_plugin(
+            load_fireclaw_extensions(
                 plugin_host,
-                ComputerSandbox(deployment_profile.sandbox),
+                ("extensions",),
+                mode=deployment_profile.mode,
+                role=deployment_profile.role,
+                services={
+                    "computer_sandbox": ComputerSandbox(
+                        deployment_profile.sandbox
+                    )
+                },
             )
             agent_tool_runtime = AgentToolRuntime(
                 plugin_host=plugin_host,

@@ -230,7 +230,15 @@ class TelemetryTracker:
         with self._lock:
             if event.event_type == "task.received" and event.task_id:
                 self._task_start.setdefault(event.task_id, ts)
-            elif event.event_type == "task.completed" and event.task_id:
+            elif event.event_type in {
+                "task.completed",
+                "task.blocked",
+                "task.escalated",
+                "task.failed",
+                "task.timed_out",
+                "task.cancelled",
+                "task.lost",
+            } and event.task_id:
                 self._task_end[event.task_id] = ts
                 self._task_start.setdefault(event.task_id, ts)
             elif event.event_type == "action.started":
@@ -247,7 +255,14 @@ class TelemetryTracker:
             elif event.event_type == "task.cancelled" and event.task_id:
                 self._cancel_done[event.task_id] = ts
                 self._cancel_request.setdefault(event.task_id, ts)
-            if event.event_type in ("task.failed", "action.failed"):
+            if event.event_type in (
+                "task.blocked",
+                "task.escalated",
+                "task.failed",
+                "task.timed_out",
+                "task.lost",
+                "action.failed",
+            ):
                 eid = event.payload.get("error", "")
                 if eid:
                     key = event.payload.get("action_id") or event.task_id or ""

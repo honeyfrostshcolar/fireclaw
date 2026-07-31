@@ -132,6 +132,17 @@ robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
 # cert_file = "certs/mission-gateway-client.crt"
 # key_file = "certs/mission-gateway-client.key"
 
+# OpenClaw-shaped extension discovery. FireClaw reads manifests and invokes
+# each enabled extension's declared entrypoint; plugin-specific fields stay
+# under the manifest ID and are not interpreted by Gateway core.
+[plugins]
+paths = ["extensions"]
+
+[plugins.config."fireclaw.navigation.move-base"]
+enabled = true
+# real_mutation_enabled = false
+# real_mutable_parameters = ["dwa/max_vel_x"]
+
 # External firefighting knowledge used to ground the LLM mission planner.
 # Rebuild indexes after running the RAG prepare-index pipeline so records carry
 # source_kind = "external_knowledge".
@@ -159,6 +170,12 @@ workspace_skills_dir = "skills"
 dry_run = true
 default_session_id = "default"
 max_active_execution_tasks = 1
+# Navigation Plugin: simulation exposes the finite move_base tuning catalog.
+# Real mode hides bounded tuning by default; enabling it still requires exact
+# operator approval and the listed parameter names.
+move_base_tools_enabled = true
+move_base_real_mutation_enabled = false
+move_base_real_mutable_parameters = []
 # runtime_state_path = "data/robot/runtime.sqlite3"
 
 [robot_gateway.tls]

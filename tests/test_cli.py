@@ -248,7 +248,7 @@ def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
     )
 
     result = json.loads(completed.stdout)
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     assert result["session_id"] == "demo-cli-session"
     assert result["operator"]["operator_id"] == "local-operator"
     assert result["control"]["status"] == "allow"
@@ -257,7 +257,7 @@ def test_module_cli_runs_rescue_demo_through_gateway_mock_ros1(tmp_path):
     assert "operator.identified" in result["event_types"]
     assert "control.decision" in result["event_types"]
     assert "action.succeeded" in result["event_types"]
-    assert result["state"]["task"]["status"] == "succeeded"
+    assert result["state"]["task"]["status"] == "completed"
     assert result["state"]["task"]["action_count"] == 5
     assert task_queue_path.exists()
 

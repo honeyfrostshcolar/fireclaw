@@ -34,13 +34,7 @@ from fireclaw_core.infra.runtime_state import (
 from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent, TelemetryTracker
 
 from fireclaw_core.agent.agent import FireClawAgent
-from fireclaw_core.agent.computer_tools import (
-    ComputerSandbox,
-    register_computer_tool_plugin,
-)
-from fireclaw_core.agent.ros_diagnostic_tools import (
-    register_ros1_diagnostic_tool_plugin,
-)
+from fireclaw_core.agent.computer_tools import ComputerSandbox
 from fireclaw_core.agent.tool_runtime import AgentToolRuntime
 from fireclaw_core.gateway.auth import (
     AuthenticatedGatewayPrincipal,
@@ -85,6 +79,12 @@ from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot
 from fireclaw_core.execution.runtime import SandboxedSkillExecutor
 from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.task.task_state import project_task_state
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_EVENT_TYPES,
+    build_robot_task_terminal_outcome,
+    robot_task_terminal_status_from_event,
+    robot_task_terminal_status_from_trace,
+)
 from fireclaw_core.policy.deployment import (
     DeploymentProfile,
     SandboxProfile,
@@ -134,6 +134,13 @@ class GatewayConfig:
     robot_agent_provider_api_key: str | None = None
     robot_agent_model: str | None = None
     robot_agent_model_catalog_path: str | None = None
+    extension_paths: tuple[str, ...] = ("extensions",)
+    plugin_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Compatibility settings for older deployments. New extensions should
+    # read their own manifest-keyed plugin_configs instead.
+    move_base_navigation_tools_enabled: bool = True
+    move_base_real_mutation_enabled: bool = False
+    move_base_real_mutable_parameters: tuple[str, ...] = ()
     robot_profile_path: str | None = None
     embodied_memory_path: str | None = None
     embodied_memory_index_path: str | None = None
@@ -242,6 +249,7 @@ class FireClawGateway:
         *,
         replication_security: Any | None = None,
         ros_diagnostics_backend: Ros1DiagnosticsBackend | None = None,
+        move_base_navigation_backend: Any | None = None,
         computer_sandbox: ComputerSandbox | None = None,
         workspace_skill_executor: SandboxedSkillExecutor | None = None,
     ) -> None:
@@ -291,6 +299,9 @@ class FireClawGateway:
                     robot_id=resolved_config.robot_id,
                 )
             )
+        # Extension entrypoints own backend selection. This optional service is
+        # retained for tests and deployments that inject a trusted adapter.
+        self.move_base_navigation_backend = move_base_navigation_backend
         self._validate_robot_profile()
         self.memory = JsonlMemoryStore(resolved_config.memory_path)
         self.embodied_memory: EmbodiedMemoryStore | None = None
@@ -690,6 +701,10 @@ class FireClawGateway:
                     "session_id": control.session_id,
                     "message": str(exc),
                 }
+                terminal_outcome = build_robot_task_terminal_outcome("failed")
+                failed_result["terminal_outcome"] = (
+                    terminal_outcome.to_dict()
+                )
                 with self.runtime_state.transaction():
                     self.task_queue.update(
                         task_id,
@@ -707,6 +722,9 @@ class FireClawGateway:
                         payload={
                             "status": "failed",
                             "message": str(exc),
+                            "terminal_outcome": (
+                                terminal_outcome.to_dict()
+                            ),
                             "result": failed_result,
                         },
                     )
@@ -951,18 +969,17 @@ class FireClawGateway:
                 execution_authorization
             )
         )
-        if self.ros_diagnostics_backend is not None:
-            register_ros1_diagnostic_tool_plugin(
-                agent.plugin_host,
-                self.ros_diagnostics_backend,
-            )
-            has_agent_tools = True
-        if self.computer_sandbox is not None:
-            register_computer_tool_plugin(
-                agent.plugin_host,
-                self.computer_sandbox,
-            )
-            has_agent_tools = True
+
+        extension_report = agent.extension_report
+        if extension_report is None:
+            raise RuntimeError("Robot Agent extensions were not loaded at construction time")
+        runtime_policy = getattr(self.robot_agent_runtime, "action_policy", None)
+        if runtime_policy is None:
+            runtime_policy = getattr(self.robot_agent_runtime, "_policy", None)
+        if runtime_policy is not None and hasattr(runtime_policy, "skill_catalog"):
+            runtime_policy.skill_catalog = agent.registry
+        has_agent_tools = bool(extension_report.tool_ids)
+        emit("plugin.extensions_loaded", extension_report.to_dict())
         if has_agent_tools:
             agent_tool_runtime = AgentToolRuntime(
                 plugin_host=agent.plugin_host,
@@ -1627,21 +1644,31 @@ class FireClawGateway:
         }
 
     def task_trace(self, task_id: str) -> dict[str, Any]:
-        events = self.events.events_for_task(task_id)
-        result = self._task_result_from_events(events)
-        queue_record = self.task_queue.get(task_id)
-        structured_task = None
         with self._task_lock:
             control = self._task_controls.get(task_id)
-            if control is not None:
-                structured_task = control.structured_task
+            task_is_active = control is not None
+            structured_task = (
+                control.structured_task
+                if control is not None
+                else None
+            )
+        with self.runtime_state.transaction():
+            events = self.events.events_for_task(task_id)
+            result = self._task_result_from_events(events)
+            queue_record = self.task_queue.get(task_id)
+            status = self._task_status(
+                task_id,
+                events,
+                result,
+                task_is_active=task_is_active,
+            )
         if structured_task is None and result is not None:
             structured_task = result.get("structured_task")
         return {
             "task_id": task_id,
             "events": events,
             "result": result,
-            "status": self._task_status(task_id, events, result),
+            "status": status,
             "state": project_task_state(events),
             "queue_record": queue_record.to_dict() if queue_record is not None else None,
             "structured_task": structured_task,
@@ -1765,19 +1792,20 @@ class FireClawGateway:
                 or (queue_record is not None and queue_record.status == "cancel_requested")
                 or self._has_event_type(task_id, "task.cancel_requested")
             )
-            terminal_status = "cancelled" if was_cancel_requested else "completed"
-            final_type = "task.cancelled" if terminal_status == "cancelled" else "task.completed"
+            terminal_outcome = build_robot_task_terminal_outcome(
+                result.get("status"),
+                cancellation_requested=was_cancel_requested,
+            )
+            result["terminal_outcome"] = terminal_outcome.to_dict()
             with self.runtime_state.transaction():
                 self._append_event(
                     task_id=task_id,
                     session_id=session_id,
-                    type=final_type,
+                    type=terminal_outcome.event_type,
                     payload={
-                        "status": (
-                            terminal_status
-                            if was_cancel_requested
-                            else result.get("status")
-                        ),
+                        "status": terminal_outcome.status,
+                        "raw_status": terminal_outcome.raw_status,
+                        "terminal_outcome": terminal_outcome.to_dict(),
                         "message": result.get("message"),
                         "result": result,
                         "cancel_requested": was_cancel_requested,
@@ -1785,20 +1813,25 @@ class FireClawGateway:
                 )
                 self.task_queue.update(
                     task_id,
-                    status=terminal_status,
+                    status=terminal_outcome.status,
                     ended_at=datetime.now(timezone.utc).isoformat(),
                     result=result,
                 )
 
     def _task_result_from_events(self, events: list[dict[str, Any]]) -> dict[str, Any] | None:
         for event in reversed(events):
-            if event.get("type") in {"task.completed", "task.cancelled", "task.failed"}:
+            if event.get("type") in ROBOT_TASK_TERMINAL_EVENT_TYPES:
                 payload = event.get("payload") or {}
                 result = payload.get("result")
                 if isinstance(result, dict):
-                    if event.get("type") == "task.cancelled":
-                        return {**result, "status": "cancelled"}
-                    return result
+                    status = robot_task_terminal_status_from_event(event)
+                    projected = dict(result)
+                    if status is not None:
+                        raw_status = projected.get("status")
+                        if raw_status != status:
+                            projected["raw_status"] = raw_status
+                        projected["status"] = status
+                    return projected
         return None
 
     def _has_live_skill_events(self, task_id: str) -> bool:
@@ -1854,6 +1887,43 @@ class FireClawGateway:
             robot_profile=self.robot_profile,
             deployment_profile=self.config.deployment_profile,
             workspace_skill_executor=self.workspace_skill_executor,
+            extension_paths=self.config.extension_paths,
+            plugin_configs=self.config.plugin_configs,
+            plugin_services={
+                "adapter": self.config.adapter,
+                "robot": self.robot,
+                "gateway_config": self.config,
+                "move_base_navigation_backend": self.move_base_navigation_backend,
+                "computer_sandbox": self.computer_sandbox,
+                "ros_diagnostics_backend": self.ros_diagnostics_backend,
+                "robot_action_dispatch": self._robot_action_dispatch,
+            },
+        )
+
+    def _robot_action_dispatch(
+        self,
+        action: str,
+        inputs: dict[str, Any],
+        *,
+        feedback_sink: Any = None,
+        cancellation_requested: Any = None,
+    ) -> Any:
+        """Compatibility dispatcher for legacy Plugin physical Tools."""
+
+        from fireclaw_core.execution.action_runtime import invoke_robot_action_handler
+
+        handler = getattr(self.robot, str(action), None)
+        if not callable(handler):
+            return {
+                "status": "blocked",
+                "error": f"legacy robot action {action!r} is unavailable",
+                "action": str(action),
+            }
+        return invoke_robot_action_handler(
+            handler,
+            dict(inputs),
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
         )
 
     def _task_status(
@@ -1861,16 +1931,25 @@ class FireClawGateway:
         task_id: str,
         events: list[dict[str, Any]],
         result: dict[str, Any] | None,
+        *,
+        task_is_active: bool,
     ) -> str:
-        if result is not None:
-            status = result.get("status")
-            return status if isinstance(status, str) else "completed"
+        queue_record = self.task_queue.get(task_id)
+        terminal_status = robot_task_terminal_status_from_trace({
+            "events": events,
+            "result": result,
+            "queue_record": (
+                queue_record.to_dict()
+                if queue_record is not None
+                else None
+            ),
+        })
+        if terminal_status is not None:
+            return terminal_status
         if any(event.get("type") == "task.cancel_requested" for event in events):
             return "cancel_requested"
-        with self._task_lock:
-            if task_id in self._task_controls:
-                return "running"
-        queue_record = self.task_queue.get(task_id)
+        if task_is_active:
+            return "running"
         if queue_record is not None:
             return queue_record.status
         return "unknown"
@@ -2049,6 +2128,9 @@ class FireClawGateway:
                     "status": "lost",
                     "task_id": lost_record.task_id,
                     "message": "Gateway restarted before terminal result; task was not replayed.",
+                    "terminal_outcome": (
+                        build_robot_task_terminal_outcome("lost").to_dict()
+                    ),
                     "queue_record": lost_record.to_dict(),
                 },
             )
@@ -2795,10 +2877,15 @@ def main(argv: list[str] | None = None) -> int:
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
             "robot_agent_model": args.robot_agent_model,
             "robot_agent_model_catalog_path": args.robot_agent_catalog,
+            "plugin_paths": None,
+            "plugin_configs": None,
             "robot_gateway_profile_path": args.robot_profile,
             "robot_gateway_embodied_memory_path": args.embodied_memory_path,
             "robot_gateway_embodied_memory_index": args.embodied_memory_index,
             "robot_gateway_embodied_runtime_mode": args.embodied_runtime_mode,
+            "robot_gateway_move_base_tools_enabled": None,
+            "robot_gateway_move_base_real_mutation_enabled": None,
+            "robot_gateway_move_base_real_mutable_parameters": None,
         },
     )
 
@@ -2826,6 +2913,12 @@ def _run_robot_gateway(
     if args.no_workspace_skills:
         workspace_skills_dir = None
     sensors = merged.get("robot_gateway_available_sensors") or ()
+    extension_paths = merged.get("plugin_paths") or ("extensions",)
+    if isinstance(extension_paths, str):
+        extension_paths = (extension_paths,)
+    plugin_configs = merged.get("plugin_configs") or {}
+    if not isinstance(plugin_configs, dict):
+        raise ValueError("plugin_configs must be an object")
 
     gateway = FireClawGateway(
         # The deployment profile is immutable for the lifetime of this
@@ -2869,6 +2962,25 @@ def _run_robot_gateway(
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
             robot_agent_model=merged.get("robot_agent_model"),
             robot_agent_model_catalog_path=merged.get("robot_agent_model_catalog_path"),
+            extension_paths=tuple(str(path) for path in extension_paths),
+            plugin_configs={
+                str(plugin_id): dict(config)
+                for plugin_id, config in plugin_configs.items()
+                if isinstance(config, dict)
+            },
+            move_base_navigation_tools_enabled=bool(
+                merged.get("robot_gateway_move_base_tools_enabled", True)
+            ),
+            move_base_real_mutation_enabled=bool(
+                merged.get("robot_gateway_move_base_real_mutation_enabled", False)
+            ),
+            move_base_real_mutable_parameters=tuple(
+                str(item)
+                for item in (
+                    merged.get("robot_gateway_move_base_real_mutable_parameters")
+                    or ()
+                )
+            ),
             robot_profile_path=merged.get("robot_gateway_profile_path"),
             embodied_memory_path=merged.get("robot_gateway_embodied_memory_path"),
             embodied_memory_index_path=merged.get("robot_gateway_embodied_memory_index"),

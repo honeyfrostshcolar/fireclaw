@@ -183,7 +183,7 @@ def test_mission_cli_trace_aggregates_robot_subagent_trace(tmp_path):
     assert trace["mission_id"] == "mission-cli-2"
     assert trace["status"] == "succeeded"
     assert trace["subtasks"][0]["robot_id"] == "robot-1"
-    assert trace["subtasks"][0]["robot_trace"]["result"]["status"] == "succeeded"
+    assert trace["subtasks"][0]["robot_trace"]["result"]["status"] == "completed"
 
 
 def test_mission_cli_cancel_requests_robot_subagent_cancellation(

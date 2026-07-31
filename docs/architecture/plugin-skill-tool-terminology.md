@@ -106,14 +106,14 @@ move_base Navigation Plugin
 ├── navigate_to_point Tool
 ├── get_navigation_status Tool
 ├── cancel_navigation Tool
-├── Ros1RobotAdapter
+├── Plugin-owned ROS/SDK Adapter
 └── move_base Runtime
 ```
 
 日常表达统一为：
 
 > 机器人具有导航 Skill；move_base Navigation Plugin 提供该 Skill 并注册
-> 导航 Tools；这些 Tools 通过 Adapter 由 move_base Runtime 执行。
+> 导航 Tools；这些 Tools 通过插件自己的 Adapter 由 move_base Runtime 执行。
 
 `navigate_to_point` 是 Tool，不应再被描述成一个完整的导航 Skill。
 
@@ -122,6 +122,7 @@ move_base Navigation Plugin
 ```text
 extensions/
   navigation-move-base/
+    fireclaw.plugin.json
     plugin/
     tools/
     runtime/

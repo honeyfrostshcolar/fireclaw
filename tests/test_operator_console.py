@@ -26,7 +26,7 @@ def test_operator_console_prints_human_readable_progress(tmp_path):
     )
 
     text = out.getvalue()
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     assert "已接收任务：去坐标 (2.0, 1.5) 救人。" in text
     assert "正在规划救援任务。" in text
     assert "安全检查通过。" in text

@@ -1118,7 +1118,12 @@ def _mission_operator() -> dict[str, Any]:
     return {
         "operator_id": "mission-agent",
         "role": "operator",
-        "control_scopes": ["task.submit", "task.cancel", "state.read"],
+        "control_scopes": [
+            "task.submit",
+            "task.cancel",
+            "mission.cancel",
+            "state.read",
+        ],
         "source": "mission_cli",
     }
 

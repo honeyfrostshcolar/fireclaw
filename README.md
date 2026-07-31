@@ -1555,12 +1555,13 @@ nav.degraded_mode_policy  # "retry"
 
 **Degraded mode policies:** `skip`, `fallback`, `retry`, `abort`, `escalate`
 
-### Physical Tool Runtime (Legacy PhysicalSkillPlugin API)
+### Physical Tool Runtime (Plugin API)
 
-内置机器人原子物理 Tool 当前通过兼容 API
-`define_physical_skill_plugin()` 声明，再由通用
-`SkillRegistry.register_plugin()` 绑定到当前 Robot Adapter。这个边界参考
-OpenClaw 的 `defineToolPlugin() -> api.registerTool()`：
+机器人原子物理 Tool 由 `extensions/` 下的 Plugin 使用公开
+`fireclaw_plugin_sdk.PhysicalToolSpec` 声明，并由通用
+`api.register_physical_tool()` 注册。Plugin 自己持有 ROS/SDK/算法 Adapter；核心
+只负责把它投影到统一生命周期和安全链。旧 `PhysicalSkillPlugin` 名称仍是内部
+兼容模型，不是新增能力的入口：
 
 ```text
 LLM-visible tool schema
@@ -1568,7 +1569,7 @@ LLM-visible tool schema
 -> SafetyGate schema/sensor/risk validation
 -> SkillRegistry
 -> RobotActionRuntime
--> registered Robot Adapter action
+-> Plugin-owned handler / Adapter
 -> ROS / simulator / robot SDK / algorithm
 ```
 
@@ -1582,15 +1583,16 @@ LLM-visible tool schema
 - Robot Agent 补充工具、默认后续技能和操作员进度消息。
 
 Agent loop、SafetyGate、PlanExecutor 和 Operator projector 不再按
-`navigate_to_point`、`search_for_victims` 等名字分派。新增物理能力需要新增
-Tool 定义和对应 Adapter handler，并由 Plugin 统一注册；只有硬件实现本身
-需要接触 ROS/SDK。
+`navigate_to_point`、`search_for_victims` 等名字分派。新增物理能力只需在
+Plugin 中新增 Tool 合同和 handler，并由 manifest loader 统一注册；核心不需要
+新增 Gateway 分支或修改 `Ros1RobotAdapter`。
 LLM 可见参数应限于任务级变量或经过验证的命名 profile。机器人 footprint、
 传感器 frame、硬件极限和原始安全参数不应直接开放给模型。
 
 当前代码名 `Skill` 实际是可执行 Tool 定义，LLM-facing schema 由它投影；
 真正的 Skill 是指导 Agent 如何组合多个 Tool 的 `SKILL.md` 工作流。
-`RobotAdapter` 是算法/硬件实现边界。MCP 只是在能力位于独立进程或远端服务
+`RobotAdapter` 是算法/硬件实现边界。新 Plugin 可以拥有自己的 Adapter；旧
+Robot Adapter 同名 action 仅为迁移兼容。MCP 只是在能力位于独立进程或远端服务
 时可选的传输协议，不是本地物理 Tool 必须经过的层。详细设计见
 [`docs/architecture/physical-skill-plugin-runtime.md`](docs/architecture/physical-skill-plugin-runtime.md)。
 
@@ -1608,7 +1610,10 @@ LLM 可见参数应限于任务级变量或经过验证的命名 profile。机�
 [`Navigation Skill`](extensions/navigation-move-base/skills/navigation/SKILL.md)
 指导 Agent 使用一个或多个导航 Tool。
 
-两个目录都不是新的 registry。Tool 和其他贡献仍由
+两个目录都不是新的 registry。FireClaw 只扫描 Plugin 根目录下的
+`fireclaw.plugin.json`，读取 manifest 后加载其中声明的 provider
+`entrypoint.py`；Plugin 自己提供 Tool schema、Runtime/Adapter 和配置校验。
+新 Plugin 不需要修改 Gateway 或 FireClaw 核心代码。Tool 和其他贡献仍由
 `FireClawPluginHost` 统一拥有和激活。现有 `.skill.json` 和
 `workspace_skills_dir` 是把可执行 Tool 称为 Skill 的 legacy compatibility
 API；新设计不得延续该含义。该兼容加载器只允许在 `simulation` deployment

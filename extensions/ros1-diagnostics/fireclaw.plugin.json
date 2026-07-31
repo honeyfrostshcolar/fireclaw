@@ -1,0 +1,19 @@
+{
+  "id": "fireclaw.agent-tools.ros1-diagnostics",
+  "name": "ROS1 diagnostic tools",
+  "version": "1.0.0",
+  "description": "Typed, read-only and bounded ROS1 observations for the Robot Agent.",
+  "api_version": "1",
+  "entrypoint": "plugin/entrypoint.py",
+  "trust_level": "builtin",
+  "enabled_by_default": true,
+  "capabilities": ["ros1_diagnostics", "bounded_sampling"],
+  "skills": [],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {"type": "boolean", "default": true}
+    }
+  }
+}

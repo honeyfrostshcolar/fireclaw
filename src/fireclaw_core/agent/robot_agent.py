@@ -28,7 +28,10 @@ from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.policy.capability import evaluate_delegation_policy
 from fireclaw_core.task.task_contract import StructuredRobotTask, planning_result_from_structured_task
 
-SAFE_SUPPLEMENTAL_SKILLS = supplemental_physical_skill_names()
+def _safe_supplemental_skills() -> tuple[str, ...]:
+    """Resolve Plugin-owned supplemental Tools only when a task is built."""
+
+    return supplemental_physical_skill_names()
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,9 @@ def envelope_from_structured_task(
     fallback_robot_id: str,
 ) -> RobotAgentTaskEnvelope:
     base_allowed = task.allowed_skills if task.allowed_skills else task.required_skills
-    allowed_skills = list(dict.fromkeys([*base_allowed, *SAFE_SUPPLEMENTAL_SKILLS]))
+    allowed_skills = list(
+        dict.fromkeys([*base_allowed, *_safe_supplemental_skills()])
+    )
     return RobotAgentTaskEnvelope(
         task_id=task.task_id,
         mission_id=task.mission_id,

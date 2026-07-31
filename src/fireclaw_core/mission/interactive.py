@@ -8,7 +8,13 @@ from fireclaw_core.gateway.auth import resolve_gateway_api_token
 from fireclaw_core.gateway.transport import GatewayTlsClientConfig
 from fireclaw_core.mission.mission_gateway_client import MissionGatewayClient
 
-TERMINAL_MISSION_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
+TERMINAL_MISSION_STATUSES = {
+    "succeeded",
+    "failed",
+    "cancelled",
+    "completed",
+    "escalated",
+}
 
 
 def parse_builtin_command(input_text: str) -> tuple[str, str | None]:
@@ -28,7 +34,15 @@ def display_event(event: dict[str, Any]) -> None:
     robot_id = str(event.get("robot_id") or "")
     task_id = str(event.get("task_id") or "")
     status = str(event.get("status") or event_type)
-    if event_type in {"task.completed", "task.failed", "task.cancelled"}:
+    if event_type in {
+        "task.completed",
+        "task.blocked",
+        "task.escalated",
+        "task.failed",
+        "task.timed_out",
+        "task.cancelled",
+        "task.lost",
+    }:
         print(f"[events] {robot_id}: {task_id} -> {event_type.split('.')[-1]}")
     else:
         print(f"[events] {robot_id}: {status}")

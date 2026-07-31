@@ -46,6 +46,12 @@ Config file structure::
     event_path = "data/debug-sim/robot-events.jsonl"
     task_queue_path = "data/debug-sim/robot-tasks.jsonl"
     runtime_state_path = "data/debug-sim/robot-runtime.sqlite3"
+
+    [plugins]
+    paths = ["extensions"]
+
+    [plugins.config."fireclaw.navigation.move-base"]
+    enabled = true
 """
 from __future__ import annotations
 
@@ -128,6 +134,18 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("[deployment] must be a TOML table")
     cfg["deployment"] = deployment or {}
 
+    # [plugins] is intentionally generic. The host only discovers manifests
+    # and passes each plugin's own config to its entrypoint.
+    plugins = raw.get("plugins", {})
+    if plugins is not None and not isinstance(plugins, dict):
+        raise ValueError("[plugins] must be a TOML table")
+    plugins = plugins or {}
+    cfg["plugin_paths"] = plugins.get("paths")
+    plugin_configs = plugins.get("config", {})
+    if plugin_configs is not None and not isinstance(plugin_configs, dict):
+        raise ValueError("[plugins.config] must be a TOML table")
+    cfg["plugin_configs"] = plugin_configs or {}
+
     # [provider]
     provider = raw.get("provider", {})
     cfg["provider_base_url"] = provider.get("base_url")
@@ -170,6 +188,15 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_gateway_embodied_memory_path"] = rg.get("embodied_memory_path")
     cfg["robot_gateway_embodied_memory_index"] = rg.get("embodied_memory_index")
     cfg["robot_gateway_embodied_runtime_mode"] = rg.get("embodied_runtime_mode")
+    cfg["robot_gateway_move_base_tools_enabled"] = rg.get(
+        "move_base_tools_enabled"
+    )
+    cfg["robot_gateway_move_base_real_mutation_enabled"] = rg.get(
+        "move_base_real_mutation_enabled"
+    )
+    cfg["robot_gateway_move_base_real_mutable_parameters"] = rg.get(
+        "move_base_real_mutable_parameters"
+    )
     robot_gateway_tls = rg.get("tls", {})
     if not isinstance(robot_gateway_tls, dict):
         raise ValueError("[robot_gateway.tls] must be a TOML table")

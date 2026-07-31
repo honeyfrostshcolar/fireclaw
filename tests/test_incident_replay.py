@@ -103,7 +103,7 @@ class TestReplaySubtaskEvents:
         assert changed["timestamp"] == "2026-06-08T10:05:00Z"
         assert changed["robot_id"] == "r-1"
         assert changed["task_id"] == "t-1"
-        assert changed["status"] == "succeeded"
+        assert changed["status"] == "completed"
         assert changed["content"] is None
 
     def test_submitted_only_subtask_has_no_status_changed_event(self, tmp_path: Path) -> None:

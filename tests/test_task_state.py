@@ -73,7 +73,7 @@ def test_project_task_state_summarizes_successful_skill_and_action():
 
     state = project_task_state(events)
 
-    assert state["task"]["status"] == "succeeded"
+    assert state["task"]["status"] == "completed"
     assert state["task"]["task_id"] == "task-1"
     assert state["task"]["session_id"] == "session-1"
     assert state["task"]["command"] == "去二楼救人"

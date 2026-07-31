@@ -1,0 +1,19 @@
+{
+  "id": "fireclaw.agent-tools.computer",
+  "name": "Restricted computer tools",
+  "version": "1.0.0",
+  "description": "Workspace-scoped file tools and Docker-only process execution.",
+  "api_version": "1",
+  "entrypoint": "plugin/entrypoint.py",
+  "trust_level": "builtin",
+  "enabled_by_default": true,
+  "capabilities": ["computer_sandbox"],
+  "skills": [],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {"type": "boolean", "default": true}
+    }
+  }
+}

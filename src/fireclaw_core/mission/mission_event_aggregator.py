@@ -7,6 +7,10 @@ from fireclaw_core.mission.mission_agent import SubagentClient
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
 from fireclaw_core.agent.robot_registry import RobotRegistry
 from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_STATUSES,
+    robot_task_terminal_status_from_event,
+)
 
 
 class MissionEventAggregator:
@@ -108,8 +112,9 @@ class MissionEventAggregator:
                             task_events[tid] = evt_status
                 if flow.task_ids and all(tid in task_events for tid in flow.task_ids):
                     statuses = set(task_events.values())
-                    failure_statuses = {"failed", "timed_out", "lost"}
-                    if failure_statuses & statuses:
+                    if "escalated" in statuses:
+                        new_status = "escalated"
+                    elif {"blocked", "failed", "timed_out", "lost"} & statuses:
                         new_status = "failed"
                     elif "cancelled" in statuses:
                         new_status = "cancelled"
@@ -135,16 +140,13 @@ class MissionEventAggregator:
 
 def _terminal_status_from_event(event: dict[str, Any]) -> str | None:
     """Extract terminal status from a robot event, if applicable."""
-    event_type = event.get("type") or event.get("event_type")
-    if event_type == "task.completed":
-        return "completed"
-    if event_type == "task.failed":
-        return "failed"
-    if event_type == "task.cancelled":
-        return "cancelled"
+    status = robot_task_terminal_status_from_event(event)
+    if status is not None:
+        return status
     payload = event.get("payload")
-    if isinstance(payload, dict):
-        status = payload.get("status")
-        if status in {"completed", "failed", "cancelled", "timed_out", "lost"}:
-            return str(status)
+    if not isinstance(payload, dict):
+        return None
+    payload_status = payload.get("status")
+    if payload_status in ROBOT_TASK_TERMINAL_STATUSES:
+        return str(payload_status)
     return None

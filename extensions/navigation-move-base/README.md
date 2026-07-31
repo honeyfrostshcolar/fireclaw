@@ -14,22 +14,33 @@ The intended package shape is:
 Navigation Plugin
 ├── Navigation Skill
 ├── navigate_to_point Tool
-├── future get_navigation_status Tool
-├── future cancel_navigation Tool
-├── Ros1RobotAdapter binding
+├── move_base_navigation_status Tool
+├── move_base_parameter_catalog/get/set_parameters Tools
+├── move_base_cancel_navigation Tool
+├── move_base_clear_costmaps Tool
+├── Plugin-owned ROS1 action adapter
 └── move_base Runtime
 ```
 
-Current FireClaw already has the legacy `PhysicalSkillPlugin` definition for
-the `navigate_to_point` Tool and a `Ros1RobotAdapter.navigate_to_point()`
-binding. Do not register a duplicate Tool.
+The package is discovered from `fireclaw.plugin.json` and activated through
+`plugin/entrypoint.py`. The entrypoint registers all of its Tool contributions
+atomically through the generic FireClaw Plugin Host. Gateway code does not name
+any move_base Tool or call a move_base-specific registration function.
+
+The old `fireclaw_core.navigation.move_base_plugin` import path is retained as
+a compatibility shim for existing tests and integrations; the canonical
+catalog, adapters, and Tool contracts are owned by this extension package.
+
+Simulation exposes the finite typed parameter catalog for tuning experiments.
+Real mode hides bounded mutation by default, and any explicitly enabled real
+parameter still requires exact operator approval.
 
 ## Runtime Contract
 
 ```text
 Tool: navigate_to_point
 Inputs: x, y, yaw, frame_id
-Adapter action: navigate_to_point
+Plugin action handler: navigate_to_point
 ROS action: /move_base
 ROS type: move_base_msgs/MoveBaseAction
 ```
@@ -38,7 +49,9 @@ ROS type: move_base_msgs/MoveBaseAction
 
 - `ros_ws/src/navigation/`: pinned upstream ROS Navigation Stack source.
 - `ros_ws/navigation.repos`: reproducible upstream checkout manifest.
-- `plugin/`: Plugin activation and lifecycle.
+- `fireclaw.plugin.json`: manifest read by the generic extension scanner.
+- `plugin/entrypoint.py`: provider-owned activation and Tool registration.
+- `plugin/move_base.py`: provider-owned parameter catalog and ROS adapters.
 - `tools/`: atomic FireClaw Tool definitions or compatibility bindings.
 - `runtime/`: optional thin integration helpers; do not duplicate `move_base`.
 - `skills/navigation/SKILL.md`: Agent navigation workflow.
@@ -80,7 +93,7 @@ The system-installed `move_base` remains usable. Sourcing this workspace's
 4. An RViz `2D Nav Goal` succeeds before Agent integration.
 5. Action feedback, success, abort, preempt, cancellation, and timeout are
    observable.
-6. FireClaw sends a single-floor `map` goal through
-   `Ros1RobotAdapter.navigate_to_point`.
+6. FireClaw sends a single-floor `map` goal through the Plugin-owned action
+   adapter.
 7. Emergency stop and `robot_motion`/`local_navigation` leases prevent new
    motion dispatch.

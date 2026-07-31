@@ -1,0 +1,22 @@
+{
+  "id": "replace.with.plugin-id",
+  "name": "Replace With Plugin Name",
+  "version": "0.1.0",
+  "description": "Provider-owned FireClaw extension.",
+  "api_version": "1",
+  "entrypoint": "plugin/entrypoint.py",
+  "trust_level": "trusted",
+  "enabled_by_default": false,
+  "capabilities": [],
+  "skills": [],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": false
+      }
+    }
+  }
+}

@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_STATUSES,
+)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -23,6 +27,8 @@ VALID_SUBAGENT_STATUSES = {
     "accepted",
     "running",
     "completed",
+    "blocked",
+    "escalated",
     "failed",
     "cancelled",
     "timed_out",
@@ -36,12 +42,7 @@ VALID_SUBAGENT_DELIVERY_STATUSES = {
     "failed",
 }
 
-TERMINAL_SUBAGENT_STATUSES = {
-    "completed",
-    "failed",
-    "cancelled",
-    "timed_out",
-    "lost",
+TERMINAL_SUBAGENT_STATUSES = set(ROBOT_TASK_TERMINAL_STATUSES) | {
     "orphaned",
 }
 

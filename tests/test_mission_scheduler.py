@@ -66,6 +66,8 @@ def test_failure_policy_defaults():
     assert policy.on_denied == "abort"
     assert policy.on_lost == "abort"
     assert policy.on_block == "escalate"
+    assert policy.on_escalated == "escalate"
+    assert policy.on_timed_out == "retry"
     assert policy.max_retries == 1
     assert policy.max_reassigns == 1
 
@@ -81,6 +83,9 @@ def test_failure_policy_decision_for():
     assert policy.decision_for("denied") == "abort"
     assert policy.decision_for("lost") == "skip"
     assert policy.decision_for("block") == "escalate"
+    assert policy.decision_for("blocked") == "escalate"
+    assert policy.decision_for("escalated") == "escalate"
+    assert policy.decision_for("timed_out") == "retry"
     assert policy.decision_for("succeeded") == "abort"  # unknown → abort
 
 
@@ -631,8 +636,8 @@ def test_scheduler_reassigns_failed_subtask(tmp_path):
     assert client.calls[1][0].robot_id == "r2"
 
 
-def test_scheduler_aborts_on_denied(tmp_path):
-    """When on_denied='abort', mission stops immediately on denied subtask."""
+def test_scheduler_escalates_legacy_denied_as_canonical_blocked(tmp_path):
+    """Legacy denied is projected to blocked before failure policy handling."""
     registry = RobotRegistry([
         RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
     ])
@@ -667,7 +672,7 @@ def test_scheduler_aborts_on_denied(tmp_path):
 
     result = scheduler.schedule(plan, mission_id="m1", session_id="m1")
 
-    assert result["status"] == "aborted"
+    assert result["status"] == "escalated"
     assert len(client.calls) == 1  # No retry/reassign for denied
 
 

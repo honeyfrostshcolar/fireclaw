@@ -11,7 +11,7 @@ def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_state(tmp_p
         operator_role="operator",
     )
 
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     assert result["session_id"] == "demo-session"
     assert result["operator"]["operator_id"] == "operator-a"
     assert result["operator"]["role"] == "operator"
@@ -22,7 +22,7 @@ def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_state(tmp_p
     assert "control.decision" in result["event_types"]
     assert "action.requested" in result["event_types"]
     assert "action.succeeded" in result["event_types"]
-    assert result["state"]["task"]["status"] == "succeeded"
+    assert result["state"]["task"]["status"] == "completed"
     assert result["state"]["task"]["action_count"] == 5
     assert len(result["state"]["actions"]) == 5
     assert result["action_events"][0]["payload"]["action_type"] == "navigate_to_point"

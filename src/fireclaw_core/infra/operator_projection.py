@@ -39,6 +39,21 @@ class OperatorEventProjector:
         if event_type == "task.completed":
             message = _text(payload.get("message"), "任务已完成")
             return f"任务完成：{message}"
+        if event_type == "task.blocked":
+            message = _text(payload.get("message"), "任务因前置条件不满足而阻塞")
+            return f"任务阻塞：{message}"
+        if event_type == "task.escalated":
+            message = _text(payload.get("message"), "任务需要上级智能体或操作员介入")
+            return f"任务已升级：{message}"
+        if event_type == "task.failed":
+            message = _text(payload.get("message"), "任务执行失败")
+            return f"任务失败：{message}"
+        if event_type == "task.timed_out":
+            message = _text(payload.get("message"), "任务执行超时")
+            return f"任务超时：{message}"
+        if event_type == "task.lost":
+            message = _text(payload.get("message"), "机器人任务状态丢失")
+            return f"任务失联：{message}"
         if event_type == "task.cancel_requested":
             return "已请求取消任务，等待当前步骤结束。"
         if event_type == "task.cancelled":

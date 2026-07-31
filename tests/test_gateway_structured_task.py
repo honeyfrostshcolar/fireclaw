@@ -453,7 +453,7 @@ def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
         trace = _wait_for_task_done(gateway.base_url, accepted["task_id"])
         events = _events_for_task(gateway.base_url, accepted["task_id"])
 
-        assert trace["result"]["status"] in {"clarify", "awaiting_confirmation"}
+        assert trace["result"]["status"] == "escalated"
         assert any(event.get("type") == "robot_agent.policy_rejected" for event in events)
     finally:
         gateway.stop()

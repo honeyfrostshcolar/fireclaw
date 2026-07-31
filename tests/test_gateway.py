@@ -236,13 +236,13 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert accepted["status"] == "accepted"
     assert accepted["task_id"].startswith("task-")
     assert accepted["session_id"] == "operator-a"
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     assert result["task_id"] == accepted["task_id"]
     assert result["session"]["session_id"] == "operator-a"
     assert result["execution"]["steps"][0]["output"]["mode"] == "simulator"
     assert recent["records"][0]["command"] == "去坐标 (2.0, 1.5) 救人"
     assert task["result"]["task_id"] == result["task_id"]
-    assert task["state"]["task"]["status"] == "succeeded"
+    assert task["state"]["task"]["status"] == "completed"
     assert task["state"]["task"]["skill_count"] == 5
     assert task["state"]["task"]["action_count"] == 5
     assert task["state"]["skills"][0]["skill_name"] == "navigate_to_point"
@@ -307,7 +307,7 @@ def test_gateway_persists_task_queue_lifecycle(tmp_path):
     finally:
         gateway.stop()
 
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     assert [record.task_id for record in records] == [accepted["task_id"]]
     assert records[0].status == "completed"
     assert records[0].started_at is not None
@@ -753,7 +753,7 @@ def test_gateway_records_operator_and_control_decision_for_task_submission(tmp_p
     finally:
         gateway.stop()
 
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     event_types = [event["type"] for event in events["events"]]
     assert event_types[:3] == ["task.received", "operator.identified", "control.decision"]
     operator_event = events["events"][1]
@@ -785,7 +785,12 @@ def test_gateway_sync_run_agent_still_returns_completed_result(tmp_path):
 
     assert result["status"] == "succeeded"
     assert result["task_id"].startswith("task-")
-    assert gateway.task_trace(result["task_id"])["result"]["status"] == "succeeded"
+    trace = gateway.task_trace(result["task_id"])
+    assert trace["status"] == "completed"
+    assert trace["result"]["status"] == "completed"
+    assert trace["result"]["raw_status"] == "succeeded"
+    assert trace["queue_record"]["status"] == "completed"
+    assert trace["events"][-1]["type"] == "task.completed"
 
 
 def test_gateway_confirms_pending_high_risk_skill(
@@ -835,11 +840,12 @@ def test_gateway_confirms_pending_high_risk_skill(
 
     assert pending["status"] == "accepted"
     assert pending["task_id"].startswith("task-")
-    assert pending_result["status"] == "awaiting_confirmation"
+    assert pending_result["status"] == "escalated"
+    assert pending_result["raw_status"] == "awaiting_confirmation"
     assert pending_result["execution"] is None
     assert confirmed["status"] == "accepted"
     assert confirmed["task_id"].startswith("task-")
-    assert confirmed_result["status"] == "succeeded"
+    assert confirmed_result["status"] == "completed"
     assert confirmed_result["confirmation"]["status"] == "confirmed"
     assert confirmed_result["execution"]["steps"][0]["skill_name"] == "smoke_entry"
     assert "confirmation.pending" in [event["type"] for event in pending_events["events"]]
@@ -892,9 +898,10 @@ def test_gateway_ignores_payload_operator_role_during_confirmation(
     finally:
         gateway.stop()
 
-    assert pending_result["status"] == "awaiting_confirmation"
+    assert pending_result["status"] == "escalated"
+    assert pending_result["raw_status"] == "awaiting_confirmation"
     assert status_code == 200
-    assert confirmed_result["status"] == "succeeded"
+    assert confirmed_result["status"] == "completed"
     assert "authorization.approved" in [
         event["type"] for event in confirmed_events["events"]
     ]
@@ -1247,7 +1254,7 @@ def test_gateway_events_endpoint_returns_recent_events(tmp_path):
     finally:
         gateway.stop()
 
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     assert "events" in events_response
     assert isinstance(events_response["events"], list)
     assert len(events_response["events"]) > 0
@@ -1572,7 +1579,7 @@ class TestGatewaySSEStream:
             gateway._event_bus.unsubscribe(token)
             gateway.stop()
 
-        assert result["status"] == "succeeded"
+        assert result["status"] == "completed"
         event_types = [e.event_type for e in collected]
         # Must include the key lifecycle events
         assert "task.received" in event_types, f"Expected task.received in {event_types}"

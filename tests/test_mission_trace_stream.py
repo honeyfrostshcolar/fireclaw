@@ -99,7 +99,7 @@ def test_stream_emits_status_change():
         status_changes = [e for e in events if e.type == "subtask.status_changed"]
         assert len(status_changes) >= 1
         assert status_changes[0].status == "completed"
-        assert status_changes[0].previous_status == "accepted"
+        assert status_changes[0].previous_status == "running"
     finally:
         os.unlink(tmp.name)
 

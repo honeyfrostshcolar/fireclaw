@@ -376,7 +376,7 @@ def test_scheduler_blocks_before_calling_robot_when_belief_changed() -> None:
         "belief_requirement_failed"
     )
     terminal = result["group_results"][0]["terminal_states"][0]
-    assert terminal["status"] == "block"
+    assert terminal["status"] == "blocked"
     assert terminal["dispatch_belief_gate"]["allowed"] is False
     assert terminal["dispatch_belief_gate"]["checks"][0][
         "reason_code"

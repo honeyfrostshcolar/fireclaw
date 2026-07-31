@@ -12,6 +12,31 @@ from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot
 from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
 
+def _dispatch_robot_action(
+    robot,
+    action: str,
+    inputs: dict,
+    *,
+    feedback_sink=None,
+    cancellation_requested=None,
+):
+    from fireclaw_core.execution.action_runtime import invoke_robot_action_handler
+
+    handler = getattr(robot, str(action), None)
+    if not callable(handler):
+        return {
+            "status": "blocked",
+            "error": f"legacy robot action {action!r} is unavailable",
+            "action": str(action),
+        }
+    return invoke_robot_action_handler(
+        handler,
+        dict(inputs),
+        feedback_sink=feedback_sink,
+        cancellation_requested=cancellation_requested,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw dry-run agent.")
     parser.add_argument(
@@ -113,7 +138,7 @@ def main() -> int:
             session_id=args.session_id,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result["status"] == "succeeded" else 1
+        return 0 if result["status"] == "completed" else 1
 
     if args.command is None:
         parser.error("command is required unless --demo rescue is used.")
@@ -155,6 +180,20 @@ def main() -> int:
         session_id=args.session_id,
         deployment_profile=deployment_profile,
         workspace_skill_executor=workspace_skill_executor,
+        extension_paths=("extensions",),
+        plugin_services={
+            "adapter": args.adapter,
+            "robot": robot,
+            "computer_sandbox": workspace_skill_executor,
+            "robot_action_dispatch": (
+                lambda action, inputs, **kwargs: _dispatch_robot_action(
+                    robot,
+                    action,
+                    inputs,
+                    **kwargs,
+                )
+            ),
+        },
     )
     result = agent.run(args.command)
     print(json.dumps(result, ensure_ascii=False, indent=2))

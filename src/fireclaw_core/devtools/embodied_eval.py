@@ -215,7 +215,15 @@ def _run_scenario(
             terminal_event = trace is not None and trace.get("status") in _TERMINAL_MISSION_STATUSES
 
             # Check dispatch success via subtask results (trace uses "subtasks" key)
-            _TERMINAL_SUBTASK = {"succeeded", "completed", "cancelled", "failed", "block", "denied", "lost"}
+            _TERMINAL_SUBTASK = {
+                "completed",
+                "blocked",
+                "escalated",
+                "failed",
+                "timed_out",
+                "cancelled",
+                "lost",
+            }
             subtasks_list = trace.get("subtasks", []) if trace else []
             dispatch_success = any(
                 isinstance(s, dict) and s.get("status") in _TERMINAL_SUBTASK

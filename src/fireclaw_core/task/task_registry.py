@@ -12,6 +12,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_STATUSES,
+)
+
 
 _UNSET = object()
 """Sentinel for distinguishing ``None`` (explicit clear) from 'not provided'."""
@@ -26,6 +30,8 @@ VALID_STATUSES = {
     "queued",
     "running",
     "succeeded",
+    "blocked",
+    "escalated",
     "failed",
     "timed_out",
     "cancelled",
@@ -46,13 +52,8 @@ VALID_DELIVERY_STATUSES = {
 VALID_NOTIFY_POLICIES = {"done_only", "state_changes", "silent"}
 VALID_SCOPE_KINDS = {"session", "mission", "subtask", "system"}
 
-TERMINAL_TASK_STATUSES = {
-    "completed",
-    "cancelled",
-    "failed",
+TERMINAL_TASK_STATUSES = set(ROBOT_TASK_TERMINAL_STATUSES) | {
     "denied",
-    "lost",
-    "timed_out",
     "succeeded",
 }
 

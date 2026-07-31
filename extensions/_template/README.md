@@ -2,6 +2,11 @@
 
 Copy this directory to `extensions/<plugin-name>/`.
 
+Before activation, edit `fireclaw.plugin.json` with a stable Plugin ID and
+declare the provider-owned `plugin/entrypoint.py`. FireClaw scans this
+manifest, then invokes the entrypoint; no Gateway or core source edit is
+required for a new Plugin.
+
 Document:
 
 - Plugin identity, version, ownership, and compatibility;

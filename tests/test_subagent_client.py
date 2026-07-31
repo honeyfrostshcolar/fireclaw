@@ -85,7 +85,7 @@ def test_robot_subagent_client_submits_task_and_reads_trace(tmp_path):
     assert state["robot_state"]["robot_id"] == "robot-1"
     assert submitted["status"] == "accepted"
     assert submitted["robot_id"] == "robot-1"
-    assert result["status"] == "succeeded"
+    assert result["status"] == "completed"
     assert trace["queue_record"]["status"] == "completed"
 
 
@@ -224,7 +224,7 @@ def test_robot_subagent_client_get_events(tmp_path):
 
         submitted = client.submit_task(
             entry,
-            command="去二楼救人",
+                command="去坐标 (2.0, 1.5) 救人",
             session_id="mission-1",
         )
         _wait_for_result(client, entry, submitted["task_id"])
@@ -276,7 +276,7 @@ def test_robot_subagent_client_sends_auth_token_header(tmp_path):
         )
         assert submitted["status"] == "accepted"
         result = _wait_for_result(client_with_token, entry, submitted["task_id"])
-        assert result["status"] == "succeeded"
+        assert result["status"] == "completed"
 
         unauthorized_result = client_without_token.get_state(entry)
         assert unauthorized_result.get("error") == "Unauthorized"

@@ -119,7 +119,7 @@ def test_planning_projection_records_each_exclusion_layer():
         if stage.stage == "plugin_exposure"
     )
     assert plugin_stage.evidence["owner_plugin_id"] == (
-        "fireclaw.navigation.point"
+        "fireclaw.navigation.move-base"
     )
 
 

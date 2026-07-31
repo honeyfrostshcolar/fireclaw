@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -34,6 +35,7 @@ from fireclaw_core.execution.skill_plugin import (
     validate_object_schema,
 )
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
 
 
 SkillHandler = Callable[..., RobotActionResult]
@@ -183,6 +185,17 @@ class SkillRegistry:
         action_runtime: RobotActionRuntime | None = None,
         replace: bool = False,
     ) -> Skill:
+        existing_physical = self.host.get(
+            "physical_capability",
+            plugin.name,
+        )
+        if existing_physical is not None:
+            if not replace and existing_physical.owner_plugin_id != plugin.plugin_id:
+                raise ValueError(
+                    f"Physical skill already registered: {plugin.name}"
+                )
+            if existing_physical.owner_plugin_id != plugin.plugin_id:
+                self.host.dispose_plugin(existing_physical.owner_plugin_id)
         skill = skill_from_physical_plugin(
             plugin,
             robot=robot,
@@ -245,18 +258,38 @@ def skill_from_physical_plugin(
     capabilities_provider = getattr(robot, "capabilities", None)
     capabilities = capabilities_provider() if callable(capabilities_provider) else None
     if (
-        capabilities is not None
+        plugin.action_handler is None
+        and capabilities is not None
         and plugin.action not in capabilities.supported_actions
     ):
         raise ValueError(
             f"Robot adapter does not support action {plugin.action!r} "
             f"required by plugin {plugin.plugin_id!r}"
         )
-    direct_action = getattr(robot, plugin.action, None)
-    if not callable(direct_action):
-        raise ValueError(
-            f"Robot adapter does not provide handler for action {plugin.action!r}"
-        )
+    if plugin.action_handler is not None:
+        def direct_action(**kwargs: Any) -> RobotActionResult:
+            feedback_sink = kwargs.pop("feedback_sink", None)
+            cancellation_requested = kwargs.pop("cancellation_requested", None)
+            raw_result = plugin.action_handler(
+                dict(kwargs),
+                feedback_sink=feedback_sink,
+                cancellation_requested=cancellation_requested,
+            )
+            return _coerce_physical_action_result(
+                raw_result,
+                robot=robot,
+                action=plugin.action,
+                inputs=kwargs,
+            )
+    else:
+        # Compatibility path for pre-plugin physical adapters.  New physical
+        # Plugins must provide ``action_handler`` and never depend on a
+        # same-named method on RobotAdapter.
+        direct_action = getattr(robot, plugin.action, None)
+        if not callable(direct_action):
+            raise ValueError(
+                f"Robot adapter does not provide handler for action {plugin.action!r}"
+            )
     if action_runtime is not None:
         register_action = getattr(action_runtime.backend, "register_action", None)
         if callable(register_action):
@@ -307,13 +340,65 @@ def skill_from_physical_plugin(
     )
 
 
+def _coerce_physical_action_result(
+    value: Any,
+    *,
+    robot: RobotAdapter,
+    action: str,
+    inputs: dict[str, Any],
+) -> RobotActionResult:
+    """Normalize a Plugin result without exposing core result types in SDK."""
+
+    if isinstance(value, RobotActionResult):
+        return value
+    if not isinstance(value, dict):
+        raise TypeError(
+            f"Physical Plugin action {action!r} must return an object result."
+        )
+    status = str(value.get("status") or ("succeeded" if value.get("ok") else "failed"))
+    ok = bool(value.get("ok", status == "succeeded"))
+    raw_data = value.get("data")
+    data = dict(raw_data) if isinstance(raw_data, dict) else dict(value)
+    return RobotActionResult(
+        ok=ok,
+        status=status,
+        robot_id=str(value.get("robot_id") or getattr(robot, "robot_id", "unknown")),
+        mode=str(value.get("mode") or getattr(robot, "mode", "unknown")),
+        action=str(value.get("action") or action),
+        dry_run=bool(value.get("dry_run", getattr(robot, "dry_run", True))),
+        data=data,
+        timestamp=str(
+            value.get("timestamp")
+            or datetime.now(timezone.utc).isoformat()
+        ),
+        error=(str(value["error"]) if value.get("error") is not None else None),
+    )
+
+
 def create_default_skill_registry(
     robot: RobotAdapter,
     action_runtime: RobotActionRuntime | None = None,
     *,
     plugin_host: FireClawPluginHost | None = None,
 ) -> SkillRegistry:
+    if plugin_host is None:
+        plugin_host = FireClawPluginHost()
+    # A caller that supplies an otherwise empty shared host still expects the
+    # standard first-party extensions to be activated.  This is the library
+    # compatibility path used by direct Agent construction; Gateway normally
+    # performs the same load explicitly and therefore already has physical
+    # contributions here.
+    if not plugin_host.contributions("physical_capability"):
+        _load_builtin_extension_capabilities(plugin_host, robot)
     registry = SkillRegistry(skills={}, host=plugin_host)
+    for contribution in plugin_host.contributions("physical_capability"):
+        plugin = contribution.value
+        if isinstance(plugin, PhysicalSkillPlugin):
+            registry.register_plugin(
+                plugin,
+                robot=robot,
+                action_runtime=action_runtime,
+            )
     capabilities_provider = getattr(robot, "capabilities", None)
     supported_actions = (
         capabilities_provider().supported_actions
@@ -327,12 +412,74 @@ def create_default_skill_registry(
     for plugin in iter_builtin_physical_skills():
         if plugin.action not in supported_actions:
             continue
+        # A manifest-loaded Plugin owns the canonical physical Tool.  Do not
+        # reintroduce the legacy built-in definition under the same name.
+        if plugin_host is not None and plugin_host.get(
+            "physical_capability",
+            plugin.name,
+        ) is not None:
+            continue
         registry.register_plugin(
             plugin,
             robot=robot,
             action_runtime=action_runtime,
         )
     return registry
+
+
+def _load_builtin_extension_capabilities(
+    host: FireClawPluginHost,
+    robot: RobotAdapter,
+) -> None:
+    """Load first-party physical Tools through the normal Plugin loader.
+
+    This keeps direct library callers compatible while making the extension
+    manifest/entrypoint path the canonical source of physical capabilities.
+    """
+
+    def dispatch(
+        action: str,
+        inputs: dict[str, Any],
+        *,
+        feedback_sink: Any = None,
+        cancellation_requested: Any = None,
+    ) -> Any:
+        handler = getattr(robot, str(action), None)
+        if not callable(handler):
+            return {
+                "status": "blocked",
+                "error": f"legacy robot action {action!r} is unavailable",
+                "action": str(action),
+            }
+        return invoke_robot_action_handler(
+            handler,
+            dict(inputs),
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
+        )
+
+    load_fireclaw_extensions(
+        host,
+        (Path(__file__).resolve().parents[3] / "extensions",),
+        mode="simulation" if bool(getattr(robot, "dry_run", True)) else "real",
+        role="robot_agent",
+        services={
+            "adapter": _plugin_adapter_mode(robot),
+            "robot": robot,
+            "robot_action_dispatch": dispatch,
+        },
+    )
+
+
+def _plugin_adapter_mode(robot: RobotAdapter) -> str:
+    """Normalize legacy adapter identifiers for extension providers."""
+
+    mode = str(getattr(robot, "mode", "dry-run"))
+    return {
+        "dry_run": "dry-run",
+        "mock_ros1": "mock-ros1",
+        "mock_ros2": "mock-ros2",
+    }.get(mode, mode)
 
 
 def create_subprocess_skill(

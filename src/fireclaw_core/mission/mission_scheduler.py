@@ -19,6 +19,7 @@ from fireclaw_core.mission.recovery_orchestrator import (
     CompletionRecoveryOrchestrator,
 )
 from fireclaw_core.mission.revision_dispatcher import (
+    ACTIVE_NODE_STATUSES,
     SUCCEEDED_NODE_STATUSES,
     VALID_NODE_RUNTIME_STATUSES,
     JsonlMissionDispatchStore,
@@ -36,10 +37,23 @@ from fireclaw_core.mission.task_graph import (
     task_graph_from_mission_plan,
 )
 from fireclaw_core.agent.robot_registry import RobotRegistry
+from fireclaw_core.task.terminal_outcome import (
+    normalize_robot_task_terminal_status,
+    robot_task_status_from_trace,
+)
 
 
 # Failure status categories
-_BAD_STATUSES = {"failed", "block", "denied", "lost"}
+_BAD_STATUSES = {
+    "blocked",
+    "escalated",
+    "failed",
+    "timed_out",
+    "lost",
+    # Persisted compatibility values.
+    "block",
+    "denied",
+}
 
 
 @dataclass(frozen=True)
@@ -52,6 +66,8 @@ class MissionFailurePolicy:
     on_denied: str = "abort"
     on_lost: str = "abort"
     on_block: str = "escalate"
+    on_escalated: str = "escalate"
+    on_timed_out: str = "retry"
     max_retries: int = 1
     max_reassigns: int = 1
 
@@ -62,6 +78,9 @@ class MissionFailurePolicy:
             "denied": self.on_denied,
             "lost": self.on_lost,
             "block": self.on_block,
+            "blocked": self.on_block,
+            "escalated": self.on_escalated,
+            "timed_out": self.on_timed_out,
         }
         return mapping.get(status, "abort")
 
@@ -125,6 +144,7 @@ class MissionScheduler:
         operator: dict[str, Any] | None = None,
         memory_command_event_id: str | None = None,
         memory_plan_event_id: str | None = None,
+        run_control: Any | None = None,
     ) -> dict[str, Any]:
         """Execute a mission plan by scheduling execution groups in order."""
         current_graph = self.mission_agent.active_task_graph(mission_id)
@@ -180,6 +200,14 @@ class MissionScheduler:
             memory_lineage_kwargs["memory_plan_event_id"] = memory_plan_event_id
 
         for group_index in sorted_group_indices:
+            if not _wait_for_run_control(run_control):
+                return {
+                    "status": "cancelled",
+                    "message": "Mission Run was cancelled by operator request.",
+                    "mission_id": mission_id,
+                    "group_results": group_results,
+                    "failure_decisions": failure_decisions,
+                }
             group_subtasks = groups[group_index]
             subtask_results: list[dict[str, Any]] = []
             current_attempts: list[_SubmittedAttempt] = []
@@ -265,9 +293,49 @@ class MissionScheduler:
             polled_terminal = self._poll_group_terminal(
                 mission_id,
                 current_attempts,
+                run_control=run_control,
             )
             group_terminal.extend(polled_terminal)
             terminal_states.extend(polled_terminal)
+            if _has_nonterminal_states(
+                polled_terminal,
+                expected_count=len(current_attempts),
+            ):
+                timeout_states = _timeout_attempt_states(
+                    current_attempts,
+                    polled_terminal,
+                )
+                group_terminal = timeout_states
+                terminal_states.extend(timeout_states)
+                self._update_execution_states(
+                    mission_id,
+                    node_executions,
+                    current_attempts,
+                    timeout_states,
+                    current_nodes,
+                )
+                self._mark_mission_subtasks_terminal(
+                    mission_id,
+                    timeout_states,
+                )
+                self._persist_checkpoint(
+                    current_graph,
+                    node_executions,
+                    memory_command_event_id=memory_command_event_id,
+                    memory_plan_event_id=memory_plan_event_id,
+                )
+                group_results.append({
+                    "group_index": group_index,
+                    "subtask_results": subtask_results,
+                    "terminal_states": terminal_states,
+                })
+                return {
+                    "status": "timed_out",
+                    "message": "One or more Robot subtasks did not reach a terminal state before the group timeout.",
+                    "mission_id": mission_id,
+                    "group_results": group_results,
+                    "failure_decisions": failure_decisions,
+                }
             self._update_execution_states(
                 mission_id,
                 node_executions,
@@ -601,8 +669,50 @@ class MissionScheduler:
                         "group_results": group_results,
                         "failure_decisions": failure_decisions,
                     }
-                group_terminal = self._poll_group_terminal(mission_id, current_attempts)
+                group_terminal = self._poll_group_terminal(
+                    mission_id,
+                    current_attempts,
+                    run_control=run_control,
+                )
                 terminal_states.extend(group_terminal)
+                if _has_nonterminal_states(
+                    group_terminal,
+                    expected_count=len(current_attempts),
+                ):
+                    timeout_states = _timeout_attempt_states(
+                        current_attempts,
+                        group_terminal,
+                    )
+                    terminal_states.extend(timeout_states)
+                    self._update_execution_states(
+                        mission_id,
+                        node_executions,
+                        current_attempts,
+                        timeout_states,
+                        current_nodes,
+                    )
+                    self._mark_mission_subtasks_terminal(
+                        mission_id,
+                        timeout_states,
+                    )
+                    self._persist_checkpoint(
+                        current_graph,
+                        node_executions,
+                        memory_command_event_id=memory_command_event_id,
+                        memory_plan_event_id=memory_plan_event_id,
+                    )
+                    group_results.append({
+                        "group_index": group_index,
+                        "subtask_results": subtask_results,
+                        "terminal_states": terminal_states,
+                    })
+                    return {
+                        "status": "timed_out",
+                        "message": "A retry or reassignment did not reach a terminal Robot state before the group timeout.",
+                        "mission_id": mission_id,
+                        "group_results": group_results,
+                        "failure_decisions": failure_decisions,
+                    }
                 self._update_execution_states(
                     mission_id,
                     node_executions,
@@ -647,6 +757,15 @@ class MissionScheduler:
             if revision_results:
                 group_result["revision_results"] = revision_results
             group_results.append(group_result)
+
+            if _run_control_cancelled(run_control):
+                return {
+                    "status": "cancelled",
+                    "message": "Mission Run was cancelled by operator request.",
+                    "mission_id": mission_id,
+                    "group_results": group_results,
+                    "failure_decisions": failure_decisions,
+                }
 
             # Check for abort decision
             if any(d.get("decision") == "abort" for d in failure_decisions):
@@ -1858,7 +1977,7 @@ class MissionScheduler:
             },
         )
         return {
-            "status": "block",
+            "status": "blocked",
             "robot_id": node.robot_id,
             "node_id": node.node_id,
             "message": (
@@ -2258,7 +2377,16 @@ class MissionScheduler:
             if attempt is None:
                 continue
             terminal.setdefault("node_id", attempt.node_id)
-            status = str(terminal.get("status") or "failed")
+            raw_status = terminal.get("status")
+            status = (
+                normalize_robot_task_terminal_status(raw_status)
+                or (
+                    str(raw_status)
+                    if raw_status in ACTIVE_NODE_STATUSES
+                    else "failed"
+                )
+            )
+            terminal["status"] = status
             if status not in VALID_NODE_RUNTIME_STATUSES:
                 status = "blocked"
             evidence_result = None
@@ -2279,12 +2407,12 @@ class MissionScheduler:
                 )
                 if not evidence_result.satisfied:
                     terminal["reported_status"] = status
-                    terminal["status"] = "block"
+                    terminal["status"] = "blocked"
                     terminal["error"] = (
                         "Robot reported success without satisfying the "
                         "compiled completion contract."
                     )
-                    status = "block"
+                    status = "blocked"
                     recovery_decision = self.recovery_orchestrator.decide(
                         mission_id=mission_id,
                         node=nodes[attempt.node_id],
@@ -2534,10 +2662,43 @@ class MissionScheduler:
                 return entry.robot_id
         return None
 
+    def _mark_mission_subtasks_terminal(
+        self,
+        mission_id: str,
+        states: list[dict[str, Any]],
+    ) -> None:
+        registry = getattr(self.mission_agent, "mission_registry", None)
+        if registry is None:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        for state in states:
+            robot_id = state.get("robot_id")
+            task_id = state.get("task_id")
+            if not isinstance(robot_id, str) or not isinstance(task_id, str):
+                continue
+            try:
+                registry.update_subtask(
+                    mission_id=mission_id,
+                    robot_id=robot_id,
+                    task_id=task_id,
+                    status=str(state.get("status") or "timed_out"),
+                    updated_at=now,
+                    result=dict(state),
+                    error=(
+                        str(state["error"])
+                        if isinstance(state.get("error"), str)
+                        else None
+                    ),
+                )
+            except (KeyError, OSError, ValueError):
+                continue
+
     def _poll_group_terminal(
         self,
         mission_id: str,
         attempts: list[_SubmittedAttempt],
+        *,
+        run_control: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Poll until the concrete executions from this dispatch round terminate."""
         if not attempts:
@@ -2549,6 +2710,16 @@ class MissionScheduler:
         }
 
         while time.monotonic() < deadline:
+            if _run_control_cancelled(run_control):
+                try:
+                    trace = self.mission_agent.mission_trace(mission_id)
+                except Exception as exc:
+                    return _lost_attempt_states(attempts, exc)
+                observed = [
+                    s for s in trace.get("subtasks", [])
+                    if (s.get("robot_id"), s.get("task_id")) in execution_keys
+                ]
+                return _cancelled_attempt_states(attempts, observed)
             try:
                 trace = self.mission_agent.mission_trace(mission_id)
             except Exception as exc:
@@ -2636,6 +2807,96 @@ def _lost_attempt_states(
     ]
 
 
+def _run_control_cancelled(run_control: Any | None) -> bool:
+    checker = getattr(run_control, "is_cancel_requested", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker())
+    except Exception:
+        return True
+
+
+def _wait_for_run_control(run_control: Any | None) -> bool:
+    if run_control is None:
+        return True
+    waiter = getattr(run_control, "wait_until_resumed", None)
+    if callable(waiter):
+        try:
+            return bool(waiter())
+        except Exception:
+            return False
+    return not _run_control_cancelled(run_control)
+
+
+def _cancelled_attempt_states(
+    attempts: list[_SubmittedAttempt],
+    observed: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_key = {
+        (str(item.get("robot_id") or ""), str(item.get("task_id") or "")): item
+        for item in observed
+    }
+    result: list[dict[str, Any]] = []
+    for attempt in attempts:
+        key = (attempt.subtask.robot_id, attempt.task_id)
+        item = dict(by_key.get(key, {}))
+        if item.get("status") not in TERMINAL_SUBTASK_STATUSES:
+            item.update(
+                {
+                    "robot_id": attempt.subtask.robot_id,
+                    "task_id": attempt.task_id,
+                    "node_id": attempt.node_id,
+                    "status": "cancelled",
+                    "error": "Mission Run cancelled by operator request.",
+                }
+            )
+        result.append(item)
+    return result
+
+
+def _has_nonterminal_states(
+    states: list[dict[str, Any]],
+    *,
+    expected_count: int,
+) -> bool:
+    # An invalidation observation intentionally returns active sibling nodes
+    # so the revision dispatcher can fence them before replanning.  Those
+    # active siblings are not a timeout.
+    if any(_contains_invalidation_event(item) for item in states):
+        return False
+    return len(states) < expected_count or any(
+        item.get("status") not in TERMINAL_SUBTASK_STATUSES
+        for item in states
+    )
+
+
+def _timeout_attempt_states(
+    attempts: list[_SubmittedAttempt],
+    observed: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_key = {
+        (str(item.get("robot_id") or ""), str(item.get("task_id") or "")): item
+        for item in observed
+    }
+    result: list[dict[str, Any]] = []
+    for attempt in attempts:
+        key = (attempt.subtask.robot_id, attempt.task_id)
+        item = dict(by_key.get(key, {}))
+        if item.get("status") not in TERMINAL_SUBTASK_STATUSES:
+            item.update(
+                {
+                    "robot_id": attempt.subtask.robot_id,
+                    "task_id": attempt.task_id,
+                    "node_id": attempt.node_id,
+                    "status": "timed_out",
+                    "error": "Robot task did not reach a terminal state before the group timeout.",
+                }
+            )
+        result.append(item)
+    return result
+
+
 def _recovery_trace_identity_error(
     trace: dict[str, Any],
     execution: MissionNodeExecution,
@@ -2668,35 +2929,22 @@ def _recovery_trace_identity_error(
 def _recovery_status_from_trace(
     trace: dict[str, Any],
 ) -> str | None:
-    queue_record = trace.get("queue_record")
-    if isinstance(queue_record, dict):
-        queue_status = queue_record.get("status")
-        if queue_status in VALID_NODE_RUNTIME_STATUSES:
-            return str(queue_status)
+    runtime_status = robot_task_status_from_trace(trace)
+    if runtime_status is not None:
+        return runtime_status
 
-    event_statuses = {
-        "task.completed": "completed",
-        "task.cancelled": "cancelled",
-        "task.failed": "failed",
-        "task.lost": "lost",
-    }
-    events = trace.get("events")
-    if isinstance(events, list):
-        for event in reversed(events):
-            if not isinstance(event, dict):
-                continue
-            status = event_statuses.get(str(event.get("type") or ""))
-            if status is not None:
-                return status
-
-    status = trace.get("status")
-    if status in VALID_NODE_RUNTIME_STATUSES:
-        return str(status)
-    result = trace.get("result")
-    if isinstance(result, dict):
-        result_status = result.get("status")
-        if result_status in VALID_NODE_RUNTIME_STATUSES:
-            return str(result_status)
+    # Scheduler-only persisted states never come from a Robot Gateway but may
+    # appear in an older checkpoint during restart reconciliation.
+    for value in (
+        trace.get("status"),
+        (
+            trace.get("queue_record", {}).get("status")
+            if isinstance(trace.get("queue_record"), dict)
+            else None
+        ),
+    ):
+        if value in VALID_NODE_RUNTIME_STATUSES:
+            return str(value)
     return None
 
 

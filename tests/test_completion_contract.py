@@ -295,8 +295,8 @@ def test_scheduler_blocks_robot_success_without_required_evidence(tmp_path) -> N
 
     assert result["status"] == "blocked"
     terminal = result["group_results"][0]["terminal_states"][0]
-    assert terminal["status"] == "block"
-    assert terminal["reported_status"] == "succeeded"
+    assert terminal["status"] == "blocked"
+    assert terminal["reported_status"] == "completed"
     assert terminal["completion_evidence_validation"]["satisfied"] is False
     assert terminal["recovery_decision"]["action"] == "replan"
     assert terminal["invalidation_event"]["event_type"] == (

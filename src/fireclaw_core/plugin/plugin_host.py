@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Literal
 
+from fireclaw_core.plugin.sdk_adapter import (
+    normalize_registered_physical_capability,
+    normalize_registered_tool,
+)
+
 
 PluginStatus = Literal["registered", "active", "failed", "disposed"]
 PluginTrustLevel = Literal[
@@ -212,6 +217,7 @@ class FireClawPluginApi:
         name: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        tool = normalize_registered_tool(tool)
         self._transaction.stage(
             kind="tool",
             contribution_id=name or _value_id(tool, "name"),
@@ -220,11 +226,31 @@ class FireClawPluginApi:
         )
 
     def register_physical_capability(self, capability: Any) -> None:
+        capability = normalize_registered_physical_capability(capability)
+        declared_plugin_id = getattr(capability, "plugin_id", None)
+        if declared_plugin_id is not None and declared_plugin_id != self.id:
+            raise PluginRegistrationError(
+                PluginDiagnostic(
+                    plugin_id=self.id,
+                    phase="register",
+                    code="physical_tool_owner_mismatch",
+                    message=(
+                        "Physical Tool plugin_id must match the injected "
+                        "Plugin API identity."
+                    ),
+                    contribution_kind="physical_capability",
+                    contribution_id=str(getattr(capability, "name", "")) or None,
+                )
+            )
         self._transaction.stage(
             kind="physical_capability",
             contribution_id=_value_id(capability, "name"),
             value=capability,
         )
+
+    def register_physical_tool(self, tool: Any) -> None:
+        """Register a public SDK physical Tool contract."""
+        self.register_physical_capability(tool)
 
     def register_hook(
         self,

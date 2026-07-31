@@ -23,11 +23,17 @@ from fireclaw_core.memory.embodied_memory import (
     EmbodiedMemoryStore,
     MEMORY_RUNTIME_MODES,
 )
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
 TERMINAL_MISSION_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
-TERMINAL_SUBTASK_STATUSES = frozenset({"succeeded", "completed", "cancelled", "failed", "block", "denied", "lost"})
+TERMINAL_SUBTASK_STATUSES = frozenset(
+    set(ROBOT_TASK_TERMINAL_STATUSES)
+    | {"succeeded", "block", "denied"}
+)
 
 
 @dataclass(frozen=True)

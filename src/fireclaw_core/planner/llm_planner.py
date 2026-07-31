@@ -885,6 +885,87 @@ class LLMMissionPlanner:
 
         return result
 
+    def generate_final_report(
+        self,
+        *,
+        mission_id: str,
+        command: str,
+        mission_status: str,
+        trace: dict[str, Any],
+        corrections: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+    ) -> dict[str, Any] | str:
+        """Ask the configured model to summarize a terminal Mission.
+
+        This is a read-only model call.  It has no physical tools and its
+        output is advisory text attached to the already-authoritative trace.
+        """
+        started = time.monotonic()
+        compact_trace = _bounded_report_payload(trace)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是消防机器人任务报告员。只能总结已经发生的结果，"
+                    "不能编造现场事实、不能改变任务状态、不能提出未经批准的动作。"
+                    "请用简洁中文返回 JSON：summary、completed、needs_attention、"
+                    "next_operator_action。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "mission_id": mission_id,
+                        "command": command,
+                        "mission_status": mission_status,
+                        "trace": compact_trace,
+                        "operator_corrections": list(corrections),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        harness_result = self._agent_harness.run_attempt(
+            AgentHarnessAttempt(
+                role="mission_agent",
+                run_id=f"mission-report:{uuid.uuid4()}",
+                scope="mission_final_report",
+                context_id=mission_id,
+                authoritative={
+                    "mission_id": mission_id,
+                    "command": command,
+                    "mission_status": mission_status,
+                    "trace": compact_trace,
+                },
+                continuity={"operator_corrections": list(corrections)},
+                advisory={},
+                build_request=lambda _authoritative, _continuity, _advisory, _policy: (
+                    messages,
+                    [],
+                ),
+                minimum_tool_calls=0,
+                maximum_tool_calls=0,
+                temperature=0.0,
+            )
+        )
+        response = harness_result.response
+        messages = harness_result.managed_context.messages
+        content = (response.content or "").strip()
+        self._record_trace(
+            messages=messages,
+            response=response,
+            start_time=started,
+            status="success" if content else "error",
+            error=None if content else "LLM returned an empty final report.",
+        )
+        if not content:
+            raise ValueError("LLM returned an empty final report.")
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            return content
+        return parsed if isinstance(parsed, dict) else content
+
     def decide(
         self,
         request: MissionDeliberationRequest,
@@ -1877,3 +1958,37 @@ class LLMMissionPlanner:
             error=error,
         )
         self._trace_store.record(trace)
+
+
+def _bounded_report_payload(value: Any, *, max_chars: int = 24_000) -> Any:
+    """Keep report prompts bounded without dropping terminal status fields."""
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return {"unserializable": type(value).__name__}
+    if len(encoded) <= max_chars:
+        return value
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for key in (
+            "mission_id",
+            "status",
+            "command",
+            "subtask_count",
+            "completed_subtask_count",
+            "subtasks",
+        ):
+            if key in value:
+                compact[key] = value[key]
+        if isinstance(compact.get("subtasks"), list):
+            compact["subtasks"] = [
+                item if len(json.dumps(item, ensure_ascii=False)) < 2_000 else {
+                    "robot_id": item.get("robot_id") if isinstance(item, dict) else None,
+                    "task_id": item.get("task_id") if isinstance(item, dict) else None,
+                    "status": item.get("status") if isinstance(item, dict) else None,
+                    "error": item.get("error") if isinstance(item, dict) else None,
+                }
+                for item in compact["subtasks"][:64]
+            ]
+        return compact
+    return encoded[:max_chars]
