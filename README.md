@@ -181,8 +181,13 @@ ROS1 `/move_base` proof。两条 stall lane 由可信 launch 将 DWA 前进速�
 支撑研究有效性结论。它现在会自动生成独立的 `ros_gazebo_system` 统一评测 bundle；
 可信 Gazebo `ContactManager` observer 会覆盖首个 goal 前到终态停止后的完整窗口，
 保留原始 contact 流、固定分类策略和加载的插件二进制哈希。六条任务 lane 的 dirty
-development smoke 均已验证该闭环；后续仍需在 clean commit 上重复运行、做 nightly
-稳定性统计和正式 test split。
+development smoke 均已验证该闭环。`extensions/navigation-move-base/config/acceptance/frozen-suite.yaml`
+现在冻结六个 task scenario、单楼层绝对 `map` point target、seed `0`、共享 world/map/
+robot/navigation asset hashes 和 validation/test 的 repeat index；trusted runner 会在
+启动 Gazebo 前校验 suite/scenario SHA-256，并把校验结果写入 `frozen-suite.json`。
+在 clean commit `fe807376a2c6c20bab36b2d3e8d63c16fb3b7b53` 上，validation 与 test
+各重复六条 lane 均已完成，两个 aggregate bundle 都是 `status=pass` 且
+`paper_evidence_complete=true`；后续可在相同冻结协议下继续做 nightly 稳定性统计。
 
 ## Embodied evaluation 状态
 

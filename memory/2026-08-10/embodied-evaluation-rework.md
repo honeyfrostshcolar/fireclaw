@@ -1051,3 +1051,127 @@ git diff --check                              pass
   独立待办。
 
 本轮没有 commit 或 push；保留用户当前工作树中的所有既有修改。
+
+### 2026-08-10 21:33 +08 — 冻结 validation/test 场景并在 clean commit 重跑六条 lane
+
+任务目标：把 Gazebo acceptance 的六个任务 scenario 冻结为可审计的
+validation/test suite，并在没有未提交代码改动的 commit 上各运行一次六条 lane。
+collision-calibration positive control 不属于这六条任务 suite，继续保持
+simulation-only、excluded-from-task-metrics。
+
+实现与冻结契约：
+
+- 新增 `extensions/navigation-move-base/config/acceptance/frozen-suite.yaml`，suite
+  `fireclaw-gazebo-navigation-acceptance` version `1.0.0`，lane
+  `ros_gazebo_system`，schema `fireclaw.gazebo-acceptance-suite/v1`。
+- 六个 task YAML 都声明 `scenario_version: 1.0.0`；suite 固定顺序为
+  `success`、`cancel`、`timeout`、`abort`、`stall-recover`、`stall-escalate`，每个
+  scenario seed 为 `0`，validation/test 均固定 `repeat_indices: [0]`。
+- suite 固定单楼层绝对 `map` point target、Plugin owner
+  `fireclaw.navigation.move-base`、tool `navigate_to_point`、backend
+  `Ros1MoveBaseBackend`、action `/move_base`，并记录 world/map/robot description/
+  navigation config/contact monitor/launch 的 SHA-256。suite 文件自身 SHA-256 为
+  `3d2593092239e3316eaf1f7930c66b73a6bd997e07ad7db43378b9fb85a98d05`。
+- 新增 `src/fireclaw_core/devtools/gazebo_acceptance_freeze.py`：读取并校验 suite、
+  每个 scenario YAML 的 hash/schema/id/version/seed/goal/terminal/actionlib 状态、
+  共享 asset hash 和 split selection；CLI 失败时 runner 在启动 ROS/Gazebo 前退出。
+- `run_gazebo_acceptance.sh` 对 validation/test 做 strict frozen preflight，
+  `conftest.py` 把已验证选择写进每个 source proof 的 `frozen-suite.json`，并记录
+  development/calibration 的明确非适用状态；新增 harness 回归覆盖六 scenario 的
+  两个 split selection。
+- 冻结实现提交为
+  `fe807376a2c6c20bab36b2d3e8d63c16fb3b7b53`
+  (`test: freeze Gazebo validation and test scenarios`)。提交后代码未再改动，所有
+  live source manifest 均记录此 commit 且 `repository.dirty == false`。
+
+已执行命令与验证：
+
+```text
+PYTHONPATH=src /home/lpp/miniconda3/envs/py310/bin/python -m pytest -q
+2002 passed, 7 skipped in 164.94s
+
+bash -n extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+pass
+```
+
+在该 clean commit 上，trusted runner 逐条运行以下两组（每条
+`FIRECLAW_GAZEBO_ACCEPTANCE_REPEAT_INDEX=0`）：
+
+```text
+validation:
+  clean-validation-success-v1
+  clean-validation-cancel-v1
+  clean-validation-timeout-v1
+  clean-validation-abort-v1
+  clean-validation-stall-recover-v1
+  clean-validation-stall-escalate-v1
+
+test:
+  clean-test-success-v1
+  clean-test-cancel-v1
+  clean-test-timeout-v1
+  clean-test-abort-v1
+  clean-test-stall-recover-v1
+  clean-test-stall-escalate-v1
+```
+
+十二条 live runner/evaluator 都返回 status `0`；每个 source proof 都包含
+`frozen-suite.json` 和 strict `frozen-suite-check.json`，schema 为
+`fireclaw.gazebo-frozen-selection/v1`，selected scenario 与实际 run 一致，
+scenario version 均为 `1.0.0`。validation source proof 位于
+`results/gazebo-acceptance/clean-validation-*-v1/`，test source proof 位于
+`results/gazebo-acceptance/clean-test-*-v1/`。
+
+validation aggregate：
+
+```text
+results/embodied-eval/ros-gazebo-system-clean-validation-20260810-v1/
+status                         pass
+paper_evidence_complete        true
+scenario_count                 6
+contract/terminal/final report 1.0 / 1.0 / 1.0
+scheduler/same-task/event       1.0 / 1.0 / 1.0
+plugin/adapter/assets           1.0 / 1.0 / 1.0
+provenance/paper evidence       1.0 / 1.0
+safe-stop/diagnostics           1.0 / 1.0
+recovery/escalation             1.0 / 1.0
+collision_free                  1.0 (missing count 0)
+task_success_rate               0.333333 (2 completed / 6 expected outcomes)
+outcomes                        completed=2, cancelled=1, timed_out=1,
+                                failed=1, escalated=1, blocked=0, lost=0
+system_latency_ms               24870.507333
+safe_stop_latency_ms            821.144797
+goal_position_error_m           0.242440
+```
+
+test aggregate：
+
+```text
+results/embodied-eval/ros-gazebo-system-clean-test-20260810-v1/
+status                         pass
+paper_evidence_complete        true
+scenario_count                 6
+contract/terminal/final report 1.0 / 1.0 / 1.0
+scheduler/same-task/event       1.0 / 1.0 / 1.0
+plugin/adapter/assets           1.0 / 1.0 / 1.0
+provenance/paper evidence       1.0 / 1.0
+safe-stop/diagnostics           1.0 / 1.0
+recovery/escalation             1.0 / 1.0
+collision_free                  1.0 (missing count 0)
+task_success_rate               0.333333 (2 completed / 6 expected outcomes)
+outcomes                        completed=2, cancelled=1, timed_out=1,
+                                failed=1, escalated=1, blocked=0, lost=0
+system_latency_ms               24679.526500
+safe_stop_latency_ms            804.475278
+goal_position_error_m           0.247200
+```
+
+研究/工程结论：冻结 selection、clean repository provenance、完整 raw proof、六种
+canonical terminal outcome、same-task resume、Plugin/Tool/ROS/Gazebo 版本、导航参数和
+collision evidence 均已进入两组正式 bundle。`task_success_rate=2/6` 是正确的，因为
+cancel、timeout、abort、escalate 是预期终态，不应被误计为“成功任务”；aggregate
+`contract_pass_rate=1.0` 才表示六条场景都满足各自预期行为。两组结果只证明当前固定
+TurtleBot3/Gazebo acceptance lane 的工程闭环，尚不构成 LLM baseline 或顶会方法贡献。
+
+下一步：将本次 freeze/result record push 到远端；之后在相同冻结 suite 下做多 repeat
+nightly stability，并把真实 provider credential baseline 与 Gazebo system lane 分开记录。
