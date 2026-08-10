@@ -1,6 +1,7 @@
 schema_version: fireclaw.gazebo-collision-calibration/v1
 scenario_id: turtlebot3-contact-positive-control
 scenario_type: collision_calibration
+scenario_version: 1.0.0
 simulation_only: true
 excluded_from_task_metrics: true
 description: >-

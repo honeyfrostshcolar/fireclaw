@@ -1,6 +1,7 @@
 schema_version: fireclaw.gazebo-acceptance/v1
 scenario_id: turtlebot3-move-base-abort
 scenario_type: abort
+scenario_version: 1.0.0
 description: >-
   A fixed single-floor goal outside the loaded map that makes the Plugin-owned
   ROS1 move_base action terminate as ABORTED, proving canonical failed

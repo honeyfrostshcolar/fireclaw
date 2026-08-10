@@ -170,6 +170,25 @@ FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$PWD/extensions/navigation-move-base/config
   extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
 ```
 
+Paper validation/test runs use the versioned
+`config/acceptance/frozen-suite.yaml`. It fixes the six scenario files, the
+single-floor `map` point-target contract, seed `0`, shared world/map/robot/
+navigation assets, and one repeat index per split. The trusted runner verifies
+the selected scenario and SHA-256 hashes before starting Gazebo, and stores the
+verified selection in `frozen-suite.json`:
+
+```bash
+FIRECLAW_PYTHON=/home/lpp/miniconda3/envs/py310/bin/python \
+FIRECLAW_GAZEBO_ACCEPTANCE_SPLIT=validation \
+FIRECLAW_GAZEBO_ACCEPTANCE_REPEAT_INDEX=0 \
+FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$PWD/extensions/navigation-move-base/config/acceptance/success.yaml" \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+Use `FIRECLAW_GAZEBO_ACCEPTANCE_SPLIT=test` for the held-out test repetition.
+The collision-calibration positive control remains simulation-only and is not
+part of this six-scenario task suite.
+
 The success scenario submits a structured task through Mission Run and the
 Robot Gateway. Because this is a non-dry physical Tool invocation, the first
 Robot task must reach `awaiting_confirmation`; the harness then uses the

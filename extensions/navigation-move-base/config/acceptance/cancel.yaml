@@ -1,6 +1,7 @@
 schema_version: fireclaw.gazebo-acceptance/v1
 scenario_id: turtlebot3-move-base-cancel
 scenario_type: cancel
+scenario_version: 1.0.0
 description: >-
   A fixed single-floor navigation goal cancelled by the Mission control plane
   after live progress, proving acknowledged stop and canonical cancellation

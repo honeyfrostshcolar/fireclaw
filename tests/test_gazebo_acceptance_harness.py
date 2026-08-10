@@ -50,6 +50,7 @@ def test_success_scenario_is_fixed_safe_and_repository_local() -> None:
 
     assert scenario.scenario_id == "turtlebot3-move-base-success"
     assert scenario.scenario_type == "success"
+    assert scenario.scenario_version == "1.0.0"
     assert scenario.initial_pose.frame_id == "map"
     assert scenario.goal.frame_id == "map"
     assert scenario.planned_displacement_m >= scenario.minimum_displacement_m
@@ -69,6 +70,43 @@ def test_success_scenario_is_fixed_safe_and_repository_local() -> None:
     )
     for path in scenario.assets.to_dict().values():
         Path(path).resolve(strict=True).relative_to(ROOT)
+
+
+def test_frozen_suite_verifies_all_validation_and_test_scenarios() -> None:
+    from fireclaw_core.devtools.gazebo_acceptance_freeze import (
+        FROZEN_SELECTION_SCHEMA_VERSION,
+        load_frozen_suite,
+        verify_frozen_selection,
+    )
+
+    suite_path = (
+        ROOT
+        / "extensions/navigation-move-base/config/acceptance/frozen-suite.yaml"
+    )
+    suite = load_frozen_suite(suite_path, repo_root=ROOT)
+
+    assert suite["lane"] == "ros_gazebo_system"
+    assert suite["suite_version"] == "1.0.0"
+    assert len(suite["scenarios"]) == 6
+    assert suite["repeat_policy"]["validation"]["repeat_indices"] == [0]
+    assert suite["repeat_policy"]["test"]["repeat_indices"] == [0]
+    scenario_ids = [item["scenario_id"] for item in suite["scenarios"]]
+    for split in ("validation", "test"):
+        assert suite["repeat_policy"][split]["scenario_ids"] == scenario_ids
+        for entry in suite["scenarios"]:
+            artifact = verify_frozen_selection(
+                suite_path,
+                ROOT / entry["path"],
+                split=split,
+                repo_root=ROOT,
+            )
+            assert artifact["schema_version"] == (
+                FROZEN_SELECTION_SCHEMA_VERSION
+            )
+            assert artifact["split"] == split
+            assert artifact["selected_scenario"]["scenario_id"] == (
+                entry["scenario_id"]
+            )
 
 
 def test_cancel_scenario_requires_progress_and_bounded_stop_proof() -> None:
@@ -265,6 +303,9 @@ def test_trusted_runner_injects_stall_only_for_exact_stall_scenarios() -> None:
     assert "config/acceptance/stall-recover.yaml" in runner
     assert "config/acceptance/stall-escalate.yaml" in runner
     assert "inject_stall:=true" in runner
+    assert "fireclaw_core.devtools.gazebo_acceptance_freeze" in runner
+    assert 'frozen-suite-check.json' in runner
+    assert '--split "$acceptance_split"' in runner
     assert "fireclaw_core.devtools.ros_gazebo_system_eval" in runner
     assert "config/acceptance/collision-calibration.yaml" in runner
     assert (

@@ -113,6 +113,7 @@ class CollisionCalibrationExpectation:
 @dataclass(frozen=True)
 class CollisionCalibrationScenario:
     schema_version: str
+    scenario_version: str
     scenario_id: str
     scenario_type: str
     description: str
@@ -148,6 +149,7 @@ class CollisionCalibrationScenario:
     def to_manifest(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
+            "scenario_version": self.scenario_version,
             "scenario_id": self.scenario_id,
             "scenario_type": self.scenario_type,
             "simulation_only": True,
@@ -304,6 +306,7 @@ class StallExpectation:
 @dataclass(frozen=True)
 class AcceptanceScenario:
     schema_version: str
+    scenario_version: str
     scenario_id: str
     scenario_type: str
     description: str
@@ -372,6 +375,7 @@ class AcceptanceScenario:
     def to_manifest(self) -> dict[str, Any]:
         result = {
             "schema_version": self.schema_version,
+            "scenario_version": self.scenario_version,
             "scenario_id": self.scenario_id,
             "scenario_type": self.scenario_type,
             "description": self.description,
@@ -719,6 +723,7 @@ def load_acceptance_scenario(
         raise ValueError("stall settings are only valid for stall scenarios")
     scenario = AcceptanceScenario(
         schema_version=schema_version,
+        scenario_version=_string(raw, "scenario_version"),
         scenario_id=_string(raw, "scenario_id"),
         scenario_type=scenario_type,
         description=_string(raw, "description"),
@@ -1104,6 +1109,7 @@ def _load_collision_calibration_scenario(
     )
     scenario = CollisionCalibrationScenario(
         schema_version=COLLISION_CALIBRATION_SCHEMA_VERSION,
+        scenario_version=_string(raw, "scenario_version"),
         scenario_id=_string(raw, "scenario_id"),
         scenario_type=COLLISION_CALIBRATION_SCENARIO_TYPE,
         description=_string(raw, "description"),

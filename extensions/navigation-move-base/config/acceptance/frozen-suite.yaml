@@ -1,0 +1,110 @@
+schema_version: fireclaw.gazebo-acceptance-suite/v1
+suite_id: fireclaw-gazebo-navigation-acceptance
+suite_version: 1.0.0
+description: >-
+  Frozen single-floor absolute-map validation and test scenarios for the
+  Plugin-owned TurtleBot3 Burger ROS1 move_base acceptance lane.
+lane: ros_gazebo_system
+target_contract:
+  type: point
+  frame_id: map
+  coordinate_semantics: absolute_single_floor_map
+seed_policy:
+  kind: fixed_per_scenario
+  values: [0]
+repeat_policy:
+  validation:
+    repeat_indices: [0]
+  test:
+    repeat_indices: [0]
+shared_assets:
+  launch:
+    path: extensions/navigation-move-base/launch/fireclaw_acceptance_world.launch
+    sha256: 11137abb3942903ff2afdc63038bb2e3846b54806d942cd5ad757aa704c65b34
+  robot_description:
+    path: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_description/urdf/turtlebot3_burger.urdf.xacro
+    sha256: 4461dd69c4cf4c6960397e5e458d8ae91c2dc131eb0756f398c41f1ef1619372
+  collision_monitor:
+    path: extensions/navigation-move-base/ros_ws/src/fireclaw_gazebo_contact_monitor/src/fireclaw_gazebo_contact_monitor.cpp
+    sha256: 16b9eea03703d940d6caf16889e66f6c230f4115385ca4264719fbae1c127165
+  world:
+    path: extensions/navigation-move-base/worlds/fireclaw_acceptance.world
+    sha256: 302d246f0b1f81e79e12c8f72dda8a3b04aa1e7f9b3b040c571117b75871ab29
+  map:
+    path: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.yaml
+    sha256: 9dd62fc62befe08848403966a9ebdc4831c4aee5df72169e96f95de615725b01
+  map_image:
+    path: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.pgm
+    sha256: 0103b9dfaa3b79592af71cc35d64f69cfbd3565d173160820ad8ef56cd27b3fc
+  ros1_config:
+    path: examples/ros1_configs/gazebo_turtlebot3_move_base.yaml
+    sha256: 14c88daa925434ffc8e3cf2289f743a971aec53b84071ca7286cf7f25dcdc416
+runtime_capture:
+  navigation_parameters:
+    required: true
+    namespace: /move_base/DWAPlannerROS
+    fields: [max_vel_x, min_vel_x]
+    global_fields: [planner_patience, recovery_behavior_enabled]
+  collision_evidence:
+    required: true
+    policy_id: fireclaw.acceptance.prohibited-contact/v1
+  plugin:
+    owner: fireclaw.navigation.move-base
+    tool: navigate_to_point
+    backend: Ros1MoveBaseBackend
+    action: /move_base
+scenarios:
+  - scenario_id: turtlebot3-move-base-success
+    scenario_version: 1.0.0
+    scenario_type: success
+    path: extensions/navigation-move-base/config/acceptance/success.yaml
+    sha256: acdeebfad8c7d3befbaf973754606136532ea5d58df2195b1a3f891a1086d9eb
+    seed: 0
+    target: {type: point, frame_id: map, x: 2.0, y: 0.0, yaw: 0.0}
+    expected_terminal_outcome: completed
+    actionlib_terminal_statuses: [3]
+  - scenario_id: turtlebot3-move-base-cancel
+    scenario_version: 1.0.0
+    scenario_type: cancel
+    path: extensions/navigation-move-base/config/acceptance/cancel.yaml
+    sha256: d3e962c350b43c1995ec1edbbaf55b58684e20e6beb3f6c9093807a65ce4183c
+    seed: 0
+    target: {type: point, frame_id: map, x: 2.0, y: 0.0, yaw: 0.0}
+    expected_terminal_outcome: cancelled
+    actionlib_terminal_statuses: [2, 8]
+  - scenario_id: turtlebot3-move-base-timeout
+    scenario_version: 1.0.0
+    scenario_type: timeout
+    path: extensions/navigation-move-base/config/acceptance/timeout.yaml
+    sha256: de3cd62695bd757daed7e05ae605f99db8efd9709fa697522f9b15c675b4ef87
+    seed: 0
+    target: {type: point, frame_id: map, x: 2.0, y: 0.0, yaw: 0.0}
+    expected_terminal_outcome: timed_out
+    actionlib_terminal_statuses: [2, 8]
+  - scenario_id: turtlebot3-move-base-abort
+    scenario_version: 1.0.0
+    scenario_type: abort
+    path: extensions/navigation-move-base/config/acceptance/abort.yaml
+    sha256: 21e868fad9a0156a31e3614df0bbf196266c1955c3b255dc6f4f8ef5b75ff07b
+    seed: 0
+    target: {type: point, frame_id: map, x: 9.5, y: 9.5, yaw: 0.0}
+    expected_terminal_outcome: failed
+    actionlib_terminal_statuses: [4]
+  - scenario_id: turtlebot3-move-base-stall-recover
+    scenario_version: 1.0.0
+    scenario_type: stall_recover
+    path: extensions/navigation-move-base/config/acceptance/stall-recover.yaml
+    sha256: a0714365466e82ef9c1d2efcc83c91e08ff0d5e87148f8227c23c2bd0a088ddf
+    seed: 0
+    target: {type: point, frame_id: map, x: -1.25, y: -0.5, yaw: 0.0}
+    expected_terminal_outcome: completed
+    actionlib_terminal_statuses: [2, 3, 8]
+  - scenario_id: turtlebot3-move-base-stall-escalate
+    scenario_version: 1.0.0
+    scenario_type: stall_escalate
+    path: extensions/navigation-move-base/config/acceptance/stall-escalate.yaml
+    sha256: d49397c03ac25c4fd4aaef248997bdad9c13690e8a005da1dadbf19dffe8987b
+    seed: 0
+    target: {type: point, frame_id: map, x: -1.25, y: -0.5, yaw: 0.0}
+    expected_terminal_outcome: escalated
+    actionlib_terminal_statuses: [2, 8]

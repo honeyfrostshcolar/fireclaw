@@ -81,6 +81,18 @@ case "$scenario_path" in
     ;;
 esac
 export FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$scenario_path"
+acceptance_split="${FIRECLAW_GAZEBO_ACCEPTANCE_SPLIT:-development}"
+if [[ "$acceptance_split" == "validation" || "$acceptance_split" == "test" ]]; then
+  collision_calibration_scenario="$repo_root/extensions/navigation-move-base/config/acceptance/collision-calibration.yaml"
+  if [[ "$scenario_path" != "$collision_calibration_scenario" ]]; then
+    "$python_bin" -m fireclaw_core.devtools.gazebo_acceptance_freeze \
+      --suite "$repo_root/extensions/navigation-move-base/config/acceptance/frozen-suite.yaml" \
+      --scenario "$scenario_path" \
+      --split "$acceptance_split" \
+      --repo-root "$repo_root" \
+      >"$run_dir/frozen-suite-check.json"
+  fi
+fi
 
 launch_args=(gui:=false seed:=0)
 abort_scenario="$repo_root/extensions/navigation-move-base/config/acceptance/abort.yaml"
@@ -138,14 +150,14 @@ if [[ "$scenario_path" == "$collision_calibration_scenario" ]]; then
     --source-proof "$run_dir" \
     --output-dir "$run_dir/evaluation" \
     --run-id "gazebo-collision-calibration-$run_id" \
-    --split "${FIRECLAW_GAZEBO_ACCEPTANCE_SPLIT:-development}" \
+    --split "$acceptance_split" \
     --repeat-index "${FIRECLAW_GAZEBO_ACCEPTANCE_REPEAT_INDEX:-0}"
 else
   "$python_bin" -m fireclaw_core.devtools.ros_gazebo_system_eval \
     --source-proof "$run_dir" \
     --output-dir "$run_dir/evaluation" \
     --run-id "ros-gazebo-system-$run_id" \
-    --split "${FIRECLAW_GAZEBO_ACCEPTANCE_SPLIT:-development}" \
+    --split "$acceptance_split" \
     --repeat-index "${FIRECLAW_GAZEBO_ACCEPTANCE_REPEAT_INDEX:-0}"
 fi
 evaluation_status=$?

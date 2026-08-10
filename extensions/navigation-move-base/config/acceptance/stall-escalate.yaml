@@ -1,6 +1,7 @@
 schema_version: fireclaw.gazebo-acceptance/v1
 scenario_id: turtlebot3-move-base-stall-escalate
 scenario_type: stall_escalate
+scenario_version: 1.0.0
 description: >-
   A fixed single-floor navigation goal starts with trusted zero DWA forward
   velocity bounds. After the real move_base action safely times out, the Robot

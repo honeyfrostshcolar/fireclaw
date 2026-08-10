@@ -1,6 +1,7 @@
 schema_version: fireclaw.gazebo-acceptance/v1
 scenario_id: turtlebot3-move-base-timeout
 scenario_type: timeout
+scenario_version: 1.0.0
 description: >-
   A fixed single-floor navigation goal stopped by the Plugin-owned physical
   action deadline after live progress, proving acknowledged ROS1 move_base

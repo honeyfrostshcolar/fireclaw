@@ -1,6 +1,7 @@
 schema_version: fireclaw.gazebo-acceptance/v1
 scenario_id: turtlebot3-move-base-stall-recover
 scenario_type: stall_recover
+scenario_version: 1.0.0
 description: >-
   A fixed single-floor navigation goal starts with trusted zero DWA forward
   velocity bounds. The Robot Agent must observe a safely timed-out real
