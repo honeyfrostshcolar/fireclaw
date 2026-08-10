@@ -178,8 +178,85 @@ ROS1 `/move_base` proof。两条 stall lane 由可信 launch 将 DWA 前进速�
 - 显式 trap 断言，证明任何 Adapter domain 方法都没有被调用。
 
 这套 lane 是确定性的工程正确性验收，不是 LLM planning 质量评测，也不能单独
-支撑研究有效性结论。后续仍需独立的重复运行/nightly 稳定性统计，以及与 LLM
-planning 和 ROS/Gazebo system evaluation 分离的 embodied evaluation。
+支撑研究有效性结论。它现在会自动生成独立的 `ros_gazebo_system` 统一评测 bundle；
+可信 Gazebo `ContactManager` observer 会覆盖首个 goal 前到终态停止后的完整窗口，
+保留原始 contact 流、固定分类策略和加载的插件二进制哈希。六条任务 lane 的 dirty
+development smoke 均已验证该闭环；后续仍需在 clean commit 上重复运行、做 nightly
+稳定性统计和正式 test split。
+
+## Embodied evaluation 状态
+
+`deterministic_integration`、`llm_planning` 与 `ros_gazebo_system` 三层评测均已
+接入版本化统一协议：场景显式
+声明 `point`、`area` 或 `entity` target、数据划分、seed、重复编号和预期 canonical
+结果。其中 deterministic 执行必须走 scheduler-backed background Mission Run，并从
+`/missions/{mission_id}/run` 读取不折叠的终态；LLM planning 则明确禁止 dispatch。
+deterministic 基线仍只包含两条
+point-navigation 场景。独立 LLM runner 已提供 point/area/entity development cases，
+但 scripted-provider 测试只证明评测主链正确，不能冒充真实模型性能。第三层会把
+六条 live Gazebo proof 规范化为统一 point target、canonical terminal、条件指标与
+content-addressed 原始证据。
+
+每次 deterministic run 要求一个新的空目录，自动保留成功、失败和 runner error，
+并生成 `run-manifest.json`、`scenario-suite.json`、`scenarios.jsonl`、指标定义及统计、
+Plugin/Tool inventory、Git/runtime provenance、Mission/Robot 原始事件、final report、
+paper summary 和带 SHA-256 的 `artifact-manifest.json`。`contract_passed` 表示预期行为
+是否满足，`task_success` 才表示任务真正完成；预期失败场景不会再被误算为任务成功。
+
+LLM planning runner 只运行生产 `LLMMissionPlanner` 和只读
+`MissionDeliberationRuntime`，不会构造 Gateway、scheduler、Robot Adapter 或 ROS。
+它保存冻结 state、完整 prompt/Tool schema、模型 Tool calls、requested/actual model、
+temperature、逐 case seed、token、延迟、可选 cost、编译后的 task graph、安全拒绝和
+no-dispatch 证明。area case 必须先读取 `passage_open`/`structural_stable` belief 再提案。
+
+```bash
+/home/lpp/miniconda3/envs/py310/bin/python \
+  -m fireclaw_core.devtools.embodied_eval \
+  --scenarios tests/fixtures/embodied_eval/rescue_scenarios.json \
+  --output-dir results/embodied-eval/<unique-run-id> \
+  --adapter simulator
+```
+
+```bash
+export FIRECLAW_PROVIDER_API_KEY='<secret>'
+/home/lpp/miniconda3/envs/py310/bin/python \
+  -m fireclaw_core.devtools.llm_planning_eval \
+  --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
+  --output-dir results/embodied-eval/<unique-llm-run-id> \
+  --provider-base-url https://<provider>/v1 \
+  --provider-name <provider-name> \
+  --model <model-id> \
+  --temperature 0
+```
+
+API key 只从指定环境变量读取，不进入 artifact。seed 会转发给兼容 provider，但不能
+保证后端确定性；正式论文数据仍应记录实际 response model 并执行多 seed 重复实验。
+
+运行任一 trusted Gazebo acceptance scenario 后，runner 会自动在
+`results/gazebo-acceptance/<run-id>/evaluation/` 生成第三层 bundle。也可以对既有 proof
+离线聚合：
+
+```bash
+/home/lpp/miniconda3/envs/py310/bin/python \
+  -m fireclaw_core.devtools.ros_gazebo_system_eval \
+  --source-proof results/gazebo-acceptance/<run-id> \
+  --output-dir results/embodied-eval/<unique-system-run-id> \
+  --split development
+```
+
+第三层分别报告 `contract_pass_rate` 和 `task_success_rate`：预期 cancel、timeout、
+failed 或 escalated 可以通过行为合同，但不会被计作任务完成。新 proof 会记录完整
+collision contact stream；旧 proof 或不完整采集仍记为 missing，而不是零碰撞。
+当前 dirty development smoke 仍不能冒充论文结果。
+
+碰撞测量另有独立的 `gazebo_collision_calibration` positive-control：它不创建 Mission、
+Robot task 或导航 goal，而是在静止 Burger 旁通过 Gazebo 服务生成一个固定浅重叠 SDF，
+要求原始 ContactManager 流检出 prohibited collision 后再删除模型，并验证机器人仍停止。
+独立 scorer 会重新分类原始 collision pair；该 lane 固定
+`task_metrics_applicable=false`，故已知碰撞不会污染任务成功率或 collision-free 分母。
+
+详细数据合同与三层运行方式见
+[`docs/evaluation/embodied-evaluation.md`](docs/evaluation/embodied-evaluation.md)。
 
 ## 关键架构文档
 

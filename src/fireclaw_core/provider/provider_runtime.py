@@ -102,6 +102,7 @@ class ProviderRuntime(Protocol):
         tools: list[dict[str, Any]],
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        seed: int | None = None,
     ) -> ChatCompletion:
         """Execute a chat completion request and return the result."""
         ...
@@ -161,14 +162,18 @@ class SimpleProviderRuntime:
         tools: list[dict[str, Any]],
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        seed: int | None = None,
     ) -> ChatCompletion:
-        return self._provider.chat_completion(
-            messages=messages,
-            model=self._model_id,
-            tools=tools,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        request: dict[str, Any] = {
+            "messages": messages,
+            "model": self._model_id,
+            "tools": tools,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if seed is not None:
+            request["seed"] = seed
+        return self._provider.chat_completion(**request)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -257,6 +262,7 @@ class FallbackProviderRuntime:
         tools: list[dict[str, Any]],
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        seed: int | None = None,
     ) -> ChatCompletion:
         """Try each candidate in order; return the first successful result."""
         if not self.candidates:
@@ -284,13 +290,16 @@ class FallbackProviderRuntime:
 
             start = time.monotonic()
             try:
-                result = provider.chat_completion(
-                    messages=messages,
-                    model=candidate.model_id,
-                    tools=tools,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+                request: dict[str, Any] = {
+                    "messages": messages,
+                    "model": candidate.model_id,
+                    "tools": tools,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if seed is not None:
+                    request["seed"] = seed
+                result = provider.chat_completion(**request)
                 latency_ms = (time.monotonic() - start) * 1000
                 attempts.append(
                     FallbackAttempt(

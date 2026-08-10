@@ -17,6 +17,7 @@ from fireclaw_core.agent.robot_deliberation import (
     RobotAgentDeliberationRuntime,
 )
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.evaluation.provenance import extension_inventory_snapshot
 from fireclaw_core.mission.mission_planner import MissionPlanner
 from fireclaw_core.mission.mission_run import MissionRunManager
 from fireclaw_core.mission.mission_runtime import (
@@ -246,6 +247,8 @@ class PluginInspection:
     timeout_seconds: float | None
     cancellation_ack_timeout_seconds: float
     extension_report: dict[str, Any]
+    reproducibility_plugin_inventory: dict[str, Any]
+    tool_inventory: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -259,6 +262,10 @@ class PluginInspection:
                 self.cancellation_ack_timeout_seconds
             ),
             "extension_report": self.extension_report,
+            "reproducibility_plugin_inventory": (
+                self.reproducibility_plugin_inventory
+            ),
+            "tool_inventory": self.tool_inventory,
         }
 
 
@@ -335,43 +342,55 @@ def inspect_navigation_plugin(
         task_id="acceptance-plugin-inspection",
         session_id="acceptance-plugin-inspection",
     )
-    contribution = agent.plugin_host.get(
-        "physical_capability",
-        scenario.required_tool,
-    )
-    if contribution is None:
-        raise AssertionError(
-            f"physical Tool is not registered: {scenario.required_tool}"
+    try:
+        contribution = agent.plugin_host.get(
+            "physical_capability",
+            scenario.required_tool,
         )
-    handler = contribution.value.action_handler
-    normalized_nonlocals = inspect.getclosurevars(handler).nonlocals
-    public_spec = normalized_nonlocals.get("value")
-    provider_handler = getattr(public_spec, "handler", None)
-    if not callable(provider_handler):
-        raise AssertionError("physical Tool handler is not inspectable")
-    provider_nonlocals = inspect.getclosurevars(provider_handler).nonlocals
-    backend = provider_nonlocals.get("backend")
-    if backend is None:
-        raise AssertionError("Navigation Plugin handler does not close over its backend")
-    report = agent.extension_report
-    if report is None:
-        raise AssertionError("Navigation Plugin extension report is missing")
-    return PluginInspection(
-        owner_plugin_id=contribution.owner_plugin_id,
-        backend_class=type(backend).__name__,
-        backend_module=type(backend).__module__,
-        action_name=str(getattr(backend, "action_name", "")),
-        contribution_id=contribution.contribution_id,
-        timeout_seconds=(
-            float(contribution.value.timeout_seconds)
-            if contribution.value.timeout_seconds is not None
-            else None
-        ),
-        cancellation_ack_timeout_seconds=float(
-            contribution.value.cancellation_ack_timeout_seconds
-        ),
-        extension_report=report.to_dict(),
-    )
+        if contribution is None:
+            raise AssertionError(
+                f"physical Tool is not registered: {scenario.required_tool}"
+            )
+        handler = contribution.value.action_handler
+        normalized_nonlocals = inspect.getclosurevars(handler).nonlocals
+        public_spec = normalized_nonlocals.get("value")
+        provider_handler = getattr(public_spec, "handler", None)
+        if not callable(provider_handler):
+            raise AssertionError("physical Tool handler is not inspectable")
+        provider_nonlocals = inspect.getclosurevars(provider_handler).nonlocals
+        backend = provider_nonlocals.get("backend")
+        if backend is None:
+            raise AssertionError(
+                "Navigation Plugin handler does not close over its backend"
+            )
+        report = agent.extension_report
+        if report is None:
+            raise AssertionError("Navigation Plugin extension report is missing")
+        plugin_inventory, tool_inventory = extension_inventory_snapshot(
+            agent,
+            repo_root=Path(__file__).resolve().parents[4],
+            deployment_profile=gateway.config.deployment_profile,
+        )
+        return PluginInspection(
+            owner_plugin_id=contribution.owner_plugin_id,
+            backend_class=type(backend).__name__,
+            backend_module=type(backend).__module__,
+            action_name=str(getattr(backend, "action_name", "")),
+            contribution_id=contribution.contribution_id,
+            timeout_seconds=(
+                float(contribution.value.timeout_seconds)
+                if contribution.value.timeout_seconds is not None
+                else None
+            ),
+            cancellation_ack_timeout_seconds=float(
+                contribution.value.cancellation_ack_timeout_seconds
+            ),
+            extension_report=report.to_dict(),
+            reproducibility_plugin_inventory=plugin_inventory,
+            tool_inventory=tool_inventory,
+        )
+    finally:
+        agent.plugin_host.dispose()
 
 
 def install_adapter_navigation_trap(gateway: FireClawGateway) -> list[dict[str, Any]]:

@@ -191,6 +191,21 @@ def test_openai_compat_provider_sends_tools():
     assert body["tools"] == tools
 
 
+def test_openai_compat_provider_forwards_optional_seed():
+    provider, requests = _make_provider(
+        json_body=_sample_openai_response()
+    )
+
+    provider.chat_completion(
+        messages=[{"role": "user", "content": "plan"}],
+        model="gpt-4",
+        seed=17,
+    )
+
+    body = json.loads(requests[0].content.decode("utf-8"))
+    assert body["seed"] == 17
+
+
 def test_openai_compat_provider_can_opt_into_environment_proxy():
     provider, _ = _make_provider(
         json_body=_sample_openai_response(),

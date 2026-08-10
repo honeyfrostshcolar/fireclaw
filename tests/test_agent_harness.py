@@ -40,6 +40,7 @@ class _Runtime:
         tools,
         temperature=0.0,
         max_tokens=4096,
+        seed=None,
     ):
         self.calls.append(
             {
@@ -47,6 +48,7 @@ class _Runtime:
                 "tools": tools,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
+                "seed": seed,
             }
         )
         return self.response
@@ -160,6 +162,23 @@ def test_harness_enforces_context_fit_and_returns_manifest() -> None:
     assert sent_payload["authoritative"]["snapshot_id"] == "snapshot-1"
     assert traces[0]["harness_id"] == "fireclaw.provider"
     assert traces[0]["classification"] == "ok"
+
+
+def test_harness_forwards_and_traces_optional_seed() -> None:
+    runtime = _Runtime(_response())
+    traces: list[dict] = []
+    harness = ProviderAgentHarness(
+        provider_runtime=runtime,
+        context_manager=_manager(runtime),
+        trace_sink=traces.append,
+    )
+
+    harness.run_attempt(_attempt(seed=17, temperature=0.25))
+
+    assert runtime.calls[0]["seed"] == 17
+    assert runtime.calls[0]["temperature"] == 0.25
+    assert traces[0]["seed"] == 17
+    assert traces[0]["temperature"] == 0.25
 
 
 def test_harness_rejects_unexposed_tool_after_provider_call() -> None:

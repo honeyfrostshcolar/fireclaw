@@ -154,46 +154,150 @@ Expected output: `{"status": "indexed", "record_count": N, "index_path": "..."}`
 - [ ] Run `memory_cli eval` with a fixture covering key queries
 - [ ] Verify hit_rate meets operational threshold before deploying memory-dependent features
 
-## 10. Embodied Scenario Evaluation
+## 10. Deterministic Integration Evaluation
 
-Run the scenario-level evaluation harness to verify the full mission/gateway
-chain before deploying to a real robot or presenting demo results.
+Run the deterministic integration lane to verify the Mission/Robot Gateway
+contract. This lane deliberately excludes LLM quality and ROS/Gazebo system
+performance.
 
 ### Run eval harness
 
 ```bash
-.venv/bin/python -m fireclaw_core.embodied_eval \
+.venv/bin/python -m fireclaw_core.devtools.embodied_eval \
   --scenarios tests/fixtures/embodied_eval/rescue_scenarios.json \
-  --output-dir results/embodied-eval/local-sim \
+  --output-dir results/embodied-eval/<unique-run-id> \
   --adapter simulator
 ```
 
-- `--adapter`: `dry-run`, `simulator`, or `ros1` (default: `simulator`)
+- `--output-dir` must be new or empty; an existing run is never overwritten.
+- `--run-id` optionally fixes the run identity; otherwise one is generated.
+- `--adapter`: `dry-run` or `simulator` (default: `simulator`). `ros1` and
+  `--ros1-config` are rejected and belong to the separate system lane.
 - `--poll-timeout`: seconds per scenario to wait for terminal status (default: 15)
 
 Exit codes: 0 = all pass, 2 = warnings, 1 = error.
 
 ### Output files
 
-- `summary.json`: overall status, scenario count, aggregated metrics
-- `scenarios.jsonl`: one JSON object per scenario with per-scenario metrics
+- `run-manifest.json`: lane, run identity, selection/retention rule, suite hash
+- `scenario-suite.json`: normalized point/area/entity cases, seeds, repeats, split
+- `scenarios.jsonl`: every attempted case, including failures and runner errors
+- `summary.json`, `metric-definitions.json`, `paper-summary.json`: exact metrics,
+  denominators, sample standard deviations, confidence intervals, and outcomes
+- `plugin-inventory.json`, `tool-inventory.json`, `provenance.json`: versions,
+  source digests, Tool schemas, Git commit/dirty hashes, Python/platform details
+- `cases/<case-id>/`: Mission Run, trace, events, Robot task traces, memory,
+  final report, and structured case record
+- `artifact-manifest.json`: size and SHA-256 for every artifact in the bundle
 
 ### Metrics reported
 
 | Metric | Meaning |
 |--------|---------|
+| `contract_pass_rate` | Fraction matching the declared scenario contract |
+| `task_success_rate` | Fraction with canonical `completed` and successful Robot subtasks |
 | `plan_success_rate` | Fraction of scenarios that produced a plan |
-| `dispatch_success_rate` | Fraction that dispatched subtasks to robots |
-| `terminal_event_rate` | Fraction that reached a terminal mission status |
+| `dispatch_success_rate` | Fraction whose Robot subtasks all completed |
+| `terminal_event_rate` | Fraction with a canonical Mission Run terminal outcome |
+| `final_report_rate` | Fraction with a persisted Mission final report |
 | `memory_record_rate` | Fraction that produced at least one memory record |
 | `average_latency_ms` | Mean end-to-end mission completion time |
 
 ### Deployment gate
 
 - [ ] Run eval harness with simulator adapter before demo/paper experiments
-- [ ] Verify `plan_success_rate >= 0.5` (planner resolves commands correctly)
-- [ ] Verify `terminal_event_rate` matches expectations for scenario set
-- [ ] Run with `--adapter ros1` on target robot for real-hardware validation
+- [ ] Verify `contract_pass_rate == 1.0` for the deterministic regression suite
+- [ ] Inspect `outcome_counts`, `errors.jsonl`, and missing-data fields; do not
+  select only successful cases
+- [ ] Verify Plugin/Tool inventory hashes are stable within the run
+- [ ] Use the dedicated ROS/Gazebo system lane for physical validation
+
+## 10.1 Offline LLM Planning Evaluation
+
+Run this lane against immutable point/area/entity fixtures. It uses the
+production Mission planner and deterministic graph compiler but has no
+Gateway, scheduler, Robot Adapter, ROS, or physical dispatch surface.
+
+```bash
+export FIRECLAW_PROVIDER_API_KEY='<secret>'
+.venv/bin/python -m fireclaw_core.devtools.llm_planning_eval \
+  --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
+  --output-dir results/embodied-eval/<unique-llm-run-id> \
+  --provider-base-url https://<provider>/v1 \
+  --provider-name <provider-name> \
+  --model <model-id> \
+  --temperature 0 \
+  --model-catalog <optional-model-catalog.json>
+```
+
+- The API key is read from `--api-key-env` (default:
+  `FIRECLAW_PROVIDER_API_KEY`) and is never stored.
+- Every provider request records the scenario seed. Seed support is forwarded,
+  not assumed to guarantee deterministic provider output.
+- A model catalog supplies optional input/output USD prices per million tokens.
+- `unsafe_proposal_proxy_rate` counts deterministic runtime rejections; it is
+  not an independently annotated unsafe-plan metric.
+- Exit codes are 0 = all contracts pass, 2 = retained warnings/failures, and
+  1 = configuration error.
+
+### Planning evaluation gate
+
+- [ ] Use a new output directory and a clean Git commit for paper runs
+- [ ] Freeze provider name, requested model, actual response model,
+  temperature, seeds, Tool inventory hash, and fixture hash
+- [ ] Confirm `no_dispatch_rate == 1.0` and inspect every retained failure
+- [ ] Confirm area cases contain `inspect_state` before accepted proposal
+- [ ] Use repeated seeds and a held-out test split; the included development
+  fixture is not a paper benchmark
+- [ ] Add an independent annotation protocol before claiming an unsafe-plan
+  rate
+
+## 10.2 ROS/Gazebo System Evaluation
+
+The trusted Gazebo acceptance runner now invokes the system evaluator after
+pytest and writes an immutable common-schema bundle to
+`results/gazebo-acceptance/<run-id>/evaluation/`. Select one of the six fixed
+scenario YAML files through `FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO`; the default
+is `success.yaml`.
+
+```bash
+FIRECLAW_PYTHON=.venv/bin/python \
+FIRECLAW_GAZEBO_ACCEPTANCE_SPLIT=development \
+FIRECLAW_GAZEBO_ACCEPTANCE_REPEAT_INDEX=0 \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+Existing source proofs can be collected without restarting ROS/Gazebo. Repeat
+`--source-proof` and supply aligned `--repeat-index` values when combining
+cases or repetitions:
+
+```bash
+.venv/bin/python -m fireclaw_core.devtools.ros_gazebo_system_eval \
+  --source-proof results/gazebo-acceptance/<run-id> \
+  --repeat-index 0 \
+  --split development \
+  --output-dir results/embodied-eval/<unique-system-run-id>
+```
+
+### System evaluation gate
+
+- [ ] Keep `contract_pass_rate` separate from `task_success_rate`; an expected
+  cancel, timeout, failure, or escalation is not a completed task
+- [ ] Verify scheduler evidence, same-task resume, canonical terminal/report,
+  Plugin owner/backend, and zero Adapter fallback calls
+- [ ] Inspect conditional safe-stop, diagnostics, recovery, and escalation
+  numerators and denominators
+- [ ] Verify maps, worlds, configs, source proofs, Plugin manifests, Tool
+  schemas, system versions, and navigation parameters are content-addressed
+- [ ] Build and load `fireclaw_gazebo_contact_monitor`; require its publisher
+  before the first goal and through terminal stop
+- [ ] Verify the raw contact stream, Robot scope, fixed support-contact filter,
+  episode counts, source asset, and loaded shared-library SHA-256
+- [ ] Treat missing, late, disconnected, truncated, or inconsistent collision
+  instrumentation as missing data, never as zero collisions
+- [ ] For paper runs, use a clean commit, frozen `validation`/`test` split,
+  explicit collision evidence, unique output directory, and repeated trials
+- [ ] Do not use `--reference-only` for an archival paper bundle
 
 ## 11. Emergency Stop Verification
 
@@ -213,9 +317,11 @@ curl -X POST http://localhost:18080/tasks/{task_id}/emergency-stop \
   -d '{"reason": "pre-deployment safety test"}'
 ```
 
-## 12. Embodied Experiment Proof Bundle
+## 12. Legacy Embodied Experiment Proof Repackager
 
-Package mission artifacts into a single auditable bundle for experiments, demos, or paper submissions.
+New deterministic evaluation runs already emit a complete content-addressed
+bundle and should not need this extra step. The command below remains for
+repackaging older or externally collected artifacts.
 
 ### Create proof bundle
 

@@ -49,7 +49,11 @@ def test_run_embodied_eval_produces_summary_and_metrics(tmp_path: Path):
     )
 
     assert result["status"] == "pass"
+    assert result["lane"] == "deterministic_integration"
+    assert result["run_id"].startswith("deterministic-integration-")
     assert result["scenario_count"] == 2
+    assert result["metrics"]["contract_pass_rate"] == 1.0
+    assert result["metrics"]["task_success_rate"] == 1.0
     assert result["metrics"]["plan_success_rate"] == 1.0
     assert result["metrics"]["dispatch_success_rate"] == 1.0
     assert result["metrics"]["terminal_event_rate"] == 1.0
@@ -58,11 +62,36 @@ def test_run_embodied_eval_produces_summary_and_metrics(tmp_path: Path):
 
     assert (output_dir / "summary.json").exists()
     assert (output_dir / "scenarios.jsonl").exists()
+    assert (output_dir / "run-manifest.json").exists()
+    assert (output_dir / "scenario-suite.json").exists()
+    assert (output_dir / "metric-definitions.json").exists()
+    assert (output_dir / "plugin-inventory.json").exists()
+    assert (output_dir / "tool-inventory.json").exists()
+    assert (output_dir / "provenance.json").exists()
+    assert (output_dir / "paper-summary.json").exists()
+    assert (output_dir / "artifact-manifest.json").exists()
 
     # Verify summary.json is valid JSON with expected fields
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert "scenario_count" in summary
     assert "metrics" in summary
+    assert summary["outcome_counts"]["completed"] == 2
+    assert summary["metric_statistics"]["contract_pass_rate"]["denominator"] == 2
+
+    scenario_records = [
+        json.loads(line)
+        for line in (output_dir / "scenarios.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert all(record["background_run"] for record in scenario_records)
+    assert all(record["scheduler_backed"] for record in scenario_records)
+    assert all(
+        record["observed_terminal_outcome"] == "completed"
+        for record in scenario_records
+    )
+    assert all(record["final_report_present"] for record in scenario_records)
+    assert (output_dir / "errors.jsonl").read_text(encoding="utf-8") == ""
 
 
 def test_run_embodied_eval_returns_exit_code(tmp_path: Path):
@@ -169,3 +198,24 @@ def test_embodied_eval_records_structured_task_metadata(tmp_path: Path):
     first = json.loads(scenario_lines[0])
     assert "structured_task" in first
     assert first["structured_task"]["required_skills"]
+    assert first["target_type"] == "point"
+    assert first["seed"] == 0
+    assert first["repeat_index"] == 0
+
+
+def test_embodied_eval_rejects_ros_inputs_into_deterministic_lane(
+    tmp_path: Path,
+) -> None:
+    result = run_embodied_eval(
+        scenarios_path=Path(
+            "tests/fixtures/embodied_eval/rescue_scenarios.json"
+        ),
+        output_dir=tmp_path / "eval",
+        adapter="ros1",
+        ros1_config_path="robot.yaml",
+    )
+
+    assert result["status"] == "error"
+    assert result["scenario_count"] == 0
+    assert "ros_gazebo_system" in result["error"]["message"]
+    assert (tmp_path / "eval" / "artifact-manifest.json").exists()

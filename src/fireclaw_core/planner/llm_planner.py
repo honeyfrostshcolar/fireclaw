@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 import json
+from math import isfinite
 import time
 import uuid
 from typing import Any
@@ -756,11 +757,26 @@ class LLMMissionPlanner:
         agent_harness: AgentHarness | None = None,
         plugin_host: FireClawPluginHost | None = None,
         agent_tool_runtime: AgentToolRuntime | None = None,
+        temperature: float = 0.0,
+        seed: int | None = None,
     ) -> None:
         if provider_runtime is None and (provider is None or model_id is None):
             raise ValueError("LLMMissionPlanner requires either provider_runtime or provider plus model_id.")
         self._provider = provider
         self._model_id = model_id or str(provider_runtime.status().get("model") or "unknown")
+        if (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or not isfinite(float(temperature))
+            or not 0.0 <= float(temperature) <= 2.0
+        ):
+            raise ValueError("LLMMissionPlanner temperature must be between 0 and 2.")
+        if seed is not None and (
+            isinstance(seed, bool) or not isinstance(seed, int)
+        ):
+            raise ValueError("LLMMissionPlanner seed must be an integer or None.")
+        self._temperature = float(temperature)
+        self._seed = seed
         self._trace_store = trace_store
         self._provider_runtime = provider_runtime or SimpleProviderRuntime(
             provider,
@@ -855,6 +871,8 @@ class LLMMissionPlanner:
                     ),
                     minimum_tool_calls=1,
                     maximum_tool_calls=1,
+                    temperature=self._temperature,
+                    seed=self._seed,
                 )
             )
             response = harness_result.response
@@ -951,6 +969,7 @@ class LLMMissionPlanner:
                 minimum_tool_calls=0,
                 maximum_tool_calls=0,
                 temperature=0.0,
+                seed=self._seed,
             )
         )
         response = harness_result.response
@@ -1240,6 +1259,8 @@ class LLMMissionPlanner:
             compact_sections=("retrieved_memories",),
             minimum_tool_calls=1,
             maximum_tool_calls=1,
+            temperature=self._temperature,
+            seed=self._seed,
         )
 
     @staticmethod

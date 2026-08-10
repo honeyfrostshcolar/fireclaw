@@ -22,6 +22,7 @@ from .fireclaw_harness import (
     wait_for_mission_run,
     wait_for_robot_task,
 )
+from .ros_harness import assert_collision_free
 from .scenario import AcceptanceScenario, Pose2D
 
 
@@ -70,6 +71,12 @@ def test_plugin_owned_navigation_abort(
         "status": "running",
         "started_at": _utc_now(),
         "repository": repository_snapshot(repo_root),
+        "execution": {
+            "mission_run_manager": "MissionRunManager",
+            "use_scheduler": True,
+            "background": True,
+            "authorization_resume": "same_task_id",
+        },
         "environment": {
             "python": sys.version,
             "platform": platform.platform(),
@@ -96,6 +103,7 @@ def test_plugin_owned_navigation_abort(
     authorization_events: list[dict[str, Any]] = []
     authorization_trace: dict[str, Any] = {}
     mission_trace: dict[str, Any] = {}
+    mission_run: dict[str, Any] = {}
     final_report: dict[str, Any] = {}
     plugin_inventory: dict[str, Any] = {}
     pose_evidence: dict[str, Any] = {}
@@ -103,11 +111,17 @@ def test_plugin_owned_navigation_abort(
     navigation_parameters: dict[str, Any] = {}
     abort_evidence: dict[str, Any] = {}
     ros_graph: dict[str, Any] = {}
+    collision_evidence: dict[str, Any] = {}
     trap_calls: list[dict[str, Any]] = []
     failure: BaseException | None = None
 
     try:
         readiness = ros_harness.wait_until_ready()
+        readiness["collision_instrumentation"] = (
+            recorder.wait_for_collision_instrumentation(
+                timeout_seconds=scenario.ros_readiness_seconds,
+            )
+        )
         bundle.write_json("readiness.json", readiness)
         initial_pose = ros_harness.current_pose()
         map_evidence = ros_harness.map_bounds()
@@ -242,6 +256,7 @@ def test_plugin_owned_navigation_abort(
             mission_id,
             timeout_seconds=scenario.mission_seconds,
         )
+        mission_run = dict(completed_run)
         mission_terminal_latency = monotonic() - abort_started
         mission_trace = mission_agent.mission_trace(mission_id)
         final_report = dict(completed_run.get("final_report") or {})
@@ -445,6 +460,10 @@ def test_plugin_owned_navigation_abort(
             "robot_displacement_m": displacement,
         }
         bundle.write_json("abort-evidence.json", abort_evidence)
+        collision_evidence = recorder.finalize_collision_evidence(
+            terminal_stop=pose_evidence.get("stopped"),
+        )
+        assert_collision_free(collision_evidence)
         manifest["status"] = "passed"
         manifest["action_id"] = action_id
         manifest["abort_started_at"] = abort_started_at
@@ -489,9 +508,18 @@ def test_plugin_owned_navigation_abort(
             mission_manager.shutdown(wait=True)
         if gateway is not None:
             gateway.stop()
+        if not collision_evidence:
+            collision_evidence = recorder.finalize_collision_evidence(
+                terminal_stop=pose_evidence.get("stopped"),
+            )
+        collision_records = recorder.collision_records()
         recorder.close()
         ros_graph = ros_harness.graph_snapshot()
         bundle.write_jsonl("goal-and-feedback.jsonl", recorder.records())
+        bundle.write_jsonl(
+            "collision-contact-stream.jsonl",
+            collision_records,
+        )
         bundle.write_jsonl("robot-events.jsonl", robot_events)
         bundle.write_jsonl(
             "authorization-events.jsonl",
@@ -504,6 +532,7 @@ def test_plugin_owned_navigation_abort(
             authorization_trace,
         )
         bundle.write_json("mission-trace.json", mission_trace)
+        bundle.write_json("mission-run.json", mission_run)
         bundle.write_json("final-report.json", final_report)
         bundle.write_json("pose-evidence.json", pose_evidence)
         bundle.write_json("map-evidence.json", map_evidence)
@@ -513,6 +542,11 @@ def test_plugin_owned_navigation_abort(
         )
         bundle.write_json("abort-evidence.json", abort_evidence)
         bundle.write_json("ros-graph.json", ros_graph)
+        bundle.write_json("collision-evidence.json", collision_evidence)
+        bundle.copy_file(
+            "collision-monitor-plugin.so",
+            recorder.collision_monitor_library_path(),
+        )
         bundle.write_json(
             "navigation-diagnostics.json",
             {

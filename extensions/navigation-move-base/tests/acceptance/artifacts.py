@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
@@ -69,6 +70,16 @@ class ArtifactBundle:
                     )
                     + "\n"
                 )
+        temporary.replace(target)
+        return target
+
+    def copy_file(self, name: str, source: str | Path) -> Path:
+        target = self.path(name)
+        origin = Path(source)
+        if origin.is_symlink() or not origin.is_file():
+            raise ValueError("artifact source must be a regular non-symlink file")
+        temporary = target.with_name(f".{target.name}.tmp")
+        shutil.copyfile(origin, temporary)
         temporary.replace(target)
         return target
 

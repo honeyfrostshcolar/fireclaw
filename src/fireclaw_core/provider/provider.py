@@ -97,6 +97,7 @@ class ModelProvider(Protocol):
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        seed: int | None = None,
     ) -> ChatCompletion: ...
 
 
@@ -152,6 +153,7 @@ class OpenAICompatProvider:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        seed: int | None = None,
     ) -> ChatCompletion:
         """Send a chat completion request and return a structured result."""
 
@@ -163,6 +165,8 @@ class OpenAICompatProvider:
         }
         if tools is not None:
             body["tools"] = tools
+        if seed is not None:
+            body["seed"] = seed
 
         response = self._post(body)
         return self._parse_response(response, model)

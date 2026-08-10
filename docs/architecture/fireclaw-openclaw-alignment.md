@@ -444,10 +444,22 @@ The next engineering priorities are:
 
 1. Real ROS1 robot hardware smoke test (requires physical robot or high-fidelity simulation).
 
-Already implemented (2026-06-11):
+Already implemented (updated 2026-08-10):
 
 - ✅ Real gateway-to-gateway embodied e2e proof (`test_embodied_gateway_e2e.py`).
-- ✅ Scenario-level experiment harness (`embodied_eval.py`).
+- ✅ Versioned deterministic-integration runner with scheduler-backed background
+  Mission Runs, canonical outcomes, typed targets, and reproducible artifacts
+  (`devtools/embodied_eval.py`, `evaluation/`).
+- ✅ Offline LLM-planning runner using the production bounded Mission
+  deliberation policy, frozen point/area/entity fixtures, model seed
+  forwarding, complete prompt/Tool/usage proof, deterministic proposal
+  scoring, and an explicit no-dispatch boundary
+  (`devtools/llm_planning_eval.py`, `evaluation/planning.py`).
+- ✅ ROS/Gazebo system proof collector and scorer for success, cancel, timeout,
+  native abort, diagnostics-first bounded recovery, and operator escalation;
+  it preserves canonical Mission Run outcomes, same-task resume, Plugin-owned
+  dispatch, safe-stop evidence, raw proof hashes, and explicit missing-data
+  semantics (`devtools/ros_gazebo_system_eval.py`, `evaluation/system.py`).
 - ✅ Memory learning closed-loop proof (`test_memory_learning_loop.py`).
 - ✅ Embodied experiment proof bundle (`embodied_proof_bundle.py`).
 - ✅ Deployable mission runtime factory wiring (`build_mission_agent_from_paths`).
@@ -457,7 +469,10 @@ ROS2 native adapter, full ACP/IDE platform parity, and full Web UI remain out of
 
 ## Next External Validation
 
-The next external validation step is a ROS1 high-fidelity or hardware proof run. This is not additional OpenClaw platform parity; it is robotics validation for FireClaw's embodied-agent claims.
+The next external validation step is repeated ROS1/Gazebo collection with
+collision instrumentation on a frozen test split, followed by a limited
+hardware proof run. This is not additional OpenClaw platform parity; it is
+robotics validation for FireClaw's embodied-agent claims.
 
 ## ROS1/Gazebo Unknown-State Semantics
 

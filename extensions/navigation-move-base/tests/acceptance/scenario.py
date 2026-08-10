@@ -5,12 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import atan2, cos, hypot, isfinite, pi, sin
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 import yaml
 
 
 SCHEMA_VERSION = "fireclaw.gazebo-acceptance/v1"
+COLLISION_CALIBRATION_SCHEMA_VERSION = (
+    "fireclaw.gazebo-collision-calibration/v1"
+)
+COLLISION_CALIBRATION_SCENARIO_TYPE = "collision_calibration"
+_COLLISION_CALIBRATION_MODEL_NAME = (
+    "fireclaw_collision_calibration_probe"
+)
+_GAZEBO_MODEL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 SCENARIO_TYPES = frozenset(
     {
         "success",
@@ -34,18 +43,149 @@ class Pose2D:
 @dataclass(frozen=True)
 class AcceptanceAssets:
     launch: Path
+    robot_description: Path
+    collision_monitor: Path
     world: Path
     map: Path
     map_image: Path
     ros1_config: Path
+    collision_probe: Path | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        result = {
             "launch": str(self.launch),
+            "robot_description": str(self.robot_description),
+            "collision_monitor": str(self.collision_monitor),
             "world": str(self.world),
             "map": str(self.map),
             "map_image": str(self.map_image),
             "ros1_config": str(self.ros1_config),
+        }
+        if self.collision_probe is not None:
+            result["collision_probe"] = str(self.collision_probe)
+        return result
+
+
+@dataclass(frozen=True)
+class Pose3D:
+    x: float
+    y: float
+    z: float
+    yaw: float
+
+
+@dataclass(frozen=True)
+class CollisionCalibrationExpectation:
+    model_name: str
+    world_pose: Pose3D
+    detection_timeout_seconds: float
+    minimum_prohibited_contact_states: int
+    minimum_collision_episodes: int
+    maximum_robot_displacement_m: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "simulation_only": True,
+            "excluded_from_task_metrics": True,
+            "injection": {
+                "method": "gazebo_spawn_sdf_model_static_overlap",
+                "model_name": self.model_name,
+                "reference_frame": "world",
+                "world_pose": {
+                    "x": self.world_pose.x,
+                    "y": self.world_pose.y,
+                    "z": self.world_pose.z,
+                    "yaw": self.world_pose.yaw,
+                },
+                "asset_label": "collision_probe",
+            },
+            "detection_timeout_seconds": self.detection_timeout_seconds,
+            "minimum_prohibited_contact_states": (
+                self.minimum_prohibited_contact_states
+            ),
+            "minimum_collision_episodes": self.minimum_collision_episodes,
+            "maximum_robot_displacement_m": (
+                self.maximum_robot_displacement_m
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class CollisionCalibrationScenario:
+    schema_version: str
+    scenario_id: str
+    scenario_type: str
+    description: str
+    seed: int
+    robot_id: str
+    robot_model: str
+    initial_pose: Pose2D
+    action_name: str
+    initial_position_tolerance_m: float
+    initial_yaw_tolerance_rad: float
+    stopped_linear_velocity_mps: float
+    stopped_angular_velocity_rps: float
+    ros_readiness_seconds: float
+    stopped_seconds: float
+    readiness_topics: tuple[str, ...]
+    readiness_transforms: tuple[tuple[str, str], ...]
+    calibration: CollisionCalibrationExpectation
+    assets: AcceptanceAssets
+
+    def initial_pose_error(self, pose: Pose2D) -> tuple[float, float]:
+        position_error = hypot(
+            pose.x - self.initial_pose.x,
+            pose.y - self.initial_pose.y,
+        )
+        yaw_error = abs(
+            atan2(
+                sin(pose.yaw - self.initial_pose.yaw),
+                cos(pose.yaw - self.initial_pose.yaw),
+            )
+        )
+        return position_error, min(yaw_error, pi)
+
+    def to_manifest(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "scenario_id": self.scenario_id,
+            "scenario_type": self.scenario_type,
+            "simulation_only": True,
+            "excluded_from_task_metrics": True,
+            "description": self.description,
+            "seed": self.seed,
+            "robot": {
+                "id": self.robot_id,
+                "model": self.robot_model,
+                "initial_pose": _pose_dict(self.initial_pose),
+            },
+            "readiness": {
+                "action_server": self.action_name,
+                "topics": list(self.readiness_topics),
+                "transforms": [
+                    list(transform) for transform in self.readiness_transforms
+                ],
+            },
+            "assertions": {
+                "initial_position_tolerance_m": (
+                    self.initial_position_tolerance_m
+                ),
+                "initial_yaw_tolerance_rad": (
+                    self.initial_yaw_tolerance_rad
+                ),
+                "stopped_linear_velocity_mps": (
+                    self.stopped_linear_velocity_mps
+                ),
+                "stopped_angular_velocity_rps": (
+                    self.stopped_angular_velocity_rps
+                ),
+            },
+            "timeouts": {
+                "ros_readiness_seconds": self.ros_readiness_seconds,
+                "stopped_seconds": self.stopped_seconds,
+            },
+            "calibration": self.calibration.to_dict(),
+            "assets": self.assets.to_dict(),
         }
 
 
@@ -320,7 +460,7 @@ def load_acceptance_scenario(
     path: str | Path | None = None,
     *,
     repo_root: str | Path | None = None,
-) -> AcceptanceScenario:
+) -> AcceptanceScenario | CollisionCalibrationScenario:
     root = Path(repo_root or repository_root()).resolve(strict=True)
     target = Path(path or default_scenario_path()).resolve(strict=True)
     _require_within(target, root, "scenario")
@@ -328,6 +468,8 @@ def load_acceptance_scenario(
     if not isinstance(raw, Mapping):
         raise ValueError("acceptance scenario must be a YAML object")
     schema_version = _string(raw, "schema_version")
+    if schema_version == COLLISION_CALIBRATION_SCHEMA_VERSION:
+        return _load_collision_calibration_scenario(raw, root)
     if schema_version != SCHEMA_VERSION:
         raise ValueError(
             f"unsupported acceptance scenario schema: {schema_version!r}"
@@ -382,6 +524,16 @@ def load_acceptance_scenario(
 
     assets = AcceptanceAssets(
         launch=_asset_path(assets_raw, "launch", root),
+        robot_description=_asset_path(
+            assets_raw,
+            "robot_description",
+            root,
+        ),
+        collision_monitor=_asset_path(
+            assets_raw,
+            "collision_monitor",
+            root,
+        ),
         world=_asset_path(assets_raw, "world", root),
         map=_asset_path(assets_raw, "map", root),
         map_image=_asset_path(assets_raw, "map_image", root),
@@ -811,6 +963,201 @@ def load_acceptance_scenario(
     return scenario
 
 
+def _load_collision_calibration_scenario(
+    raw: Mapping[str, Any],
+    root: Path,
+) -> CollisionCalibrationScenario:
+    if _string(raw, "scenario_type") != COLLISION_CALIBRATION_SCENARIO_TYPE:
+        raise ValueError(
+            "collision calibration schema requires "
+            "scenario_type='collision_calibration'"
+        )
+    if _boolean(raw, "simulation_only") is not True:
+        raise ValueError("collision calibration must be simulation_only")
+    if _boolean(raw, "excluded_from_task_metrics") is not True:
+        raise ValueError(
+            "collision calibration must be excluded from task metrics"
+        )
+    seed = _integer(raw, "seed")
+    if seed < 0:
+        raise ValueError("collision calibration seed must be non-negative")
+
+    robot = _mapping(raw, "robot")
+    initial_pose = _pose(
+        _mapping(robot, "initial_pose"),
+        "robot.initial_pose",
+    )
+    if initial_pose.frame_id != "map":
+        raise ValueError("collision calibration initial pose must use map")
+    robot_model = _string(robot, "model")
+    if robot_model != "burger":
+        raise ValueError("collision calibration is fixed to TurtleBot3 Burger")
+
+    readiness = _mapping(raw, "readiness")
+    action_name = _string(readiness, "action_server")
+    if action_name != "/move_base":
+        raise ValueError(
+            "collision calibration readiness action must be /move_base"
+        )
+    topic_values = readiness.get("topics")
+    if not isinstance(topic_values, list) or not topic_values:
+        raise ValueError("readiness.topics must be a non-empty list")
+    topics = tuple(
+        _nonempty_string(item, "readiness topic")
+        for item in topic_values
+    )
+    if not {"/clock", "/scan", "/odom"}.issubset(topics):
+        raise ValueError(
+            "readiness.topics must include /clock, /scan, and /odom"
+        )
+    transform_values = readiness.get("transforms")
+    if not isinstance(transform_values, list) or not transform_values:
+        raise ValueError("readiness.transforms must be a non-empty list")
+    transforms: list[tuple[str, str]] = []
+    for index, item in enumerate(transform_values):
+        if not isinstance(item, list) or len(item) != 2:
+            raise ValueError(
+                f"readiness.transforms[{index}] must contain parent and child"
+            )
+        transforms.append((
+            _nonempty_string(item[0], "transform parent"),
+            _nonempty_string(item[1], "transform child"),
+        ))
+    if ("map", "base_link") not in transforms:
+        raise ValueError("readiness.transforms must include map -> base_link")
+
+    assertions = _mapping(raw, "assertions")
+    timeouts = _mapping(raw, "timeouts")
+    calibration_raw = _mapping(raw, "calibration")
+    injection = _mapping(calibration_raw, "injection")
+    if _string(injection, "method") != "gazebo_spawn_sdf_model_static_overlap":
+        raise ValueError("collision calibration injection method is fixed")
+    model_name = _string(injection, "model_name")
+    if (
+        not _GAZEBO_MODEL_NAME_RE.fullmatch(model_name)
+        or model_name != _COLLISION_CALIBRATION_MODEL_NAME
+    ):
+        raise ValueError("collision calibration model_name is fixed")
+    if _string(injection, "reference_frame") != "world":
+        raise ValueError("collision calibration reference_frame must be world")
+    if _string(injection, "asset_label") != "collision_probe":
+        raise ValueError("collision calibration asset_label is fixed")
+    world_pose = _pose3d(
+        _mapping(injection, "world_pose"),
+        "calibration.injection.world_pose",
+    )
+    expected_probe_pose = Pose3D(
+        x=initial_pose.x + 0.05,
+        y=initial_pose.y,
+        z=0.08,
+        yaw=initial_pose.yaw,
+    )
+    if any(
+        abs(actual - expected) > 1e-9
+        for actual, expected in (
+            (world_pose.x, expected_probe_pose.x),
+            (world_pose.y, expected_probe_pose.y),
+            (world_pose.z, expected_probe_pose.z),
+            (world_pose.yaw, expected_probe_pose.yaw),
+        )
+    ):
+        raise ValueError(
+            "collision calibration probe must use the fixed shallow-overlap pose"
+        )
+    detection_timeout = _positive(
+        timeouts,
+        "collision_detection_seconds",
+    )
+    if detection_timeout > 15.0:
+        raise ValueError("collision calibration detection timeout is too large")
+    maximum_displacement = _positive(
+        assertions,
+        "maximum_robot_displacement_m",
+    )
+    if maximum_displacement > 0.2:
+        raise ValueError(
+            "collision calibration displacement bound must not exceed 0.2 m"
+        )
+
+    assets_raw = _mapping(raw, "assets")
+    assets = AcceptanceAssets(
+        launch=_asset_path(assets_raw, "launch", root),
+        robot_description=_asset_path(
+            assets_raw,
+            "robot_description",
+            root,
+        ),
+        collision_monitor=_asset_path(
+            assets_raw,
+            "collision_monitor",
+            root,
+        ),
+        world=_asset_path(assets_raw, "world", root),
+        map=_asset_path(assets_raw, "map", root),
+        map_image=_asset_path(assets_raw, "map_image", root),
+        ros1_config=_asset_path(assets_raw, "ros1_config", root),
+        collision_probe=_asset_path(
+            assets_raw,
+            "collision_probe",
+            root,
+        ),
+    )
+    scenario = CollisionCalibrationScenario(
+        schema_version=COLLISION_CALIBRATION_SCHEMA_VERSION,
+        scenario_id=_string(raw, "scenario_id"),
+        scenario_type=COLLISION_CALIBRATION_SCENARIO_TYPE,
+        description=_string(raw, "description"),
+        seed=seed,
+        robot_id=_string(robot, "id"),
+        robot_model=robot_model,
+        initial_pose=initial_pose,
+        action_name=action_name,
+        initial_position_tolerance_m=_positive(
+            assertions,
+            "initial_position_tolerance_m",
+        ),
+        initial_yaw_tolerance_rad=_positive(
+            assertions,
+            "initial_yaw_tolerance_rad",
+        ),
+        stopped_linear_velocity_mps=_nonnegative(
+            assertions,
+            "stopped_linear_velocity_mps",
+        ),
+        stopped_angular_velocity_rps=_nonnegative(
+            assertions,
+            "stopped_angular_velocity_rps",
+        ),
+        ros_readiness_seconds=_positive(
+            timeouts,
+            "ros_readiness_seconds",
+        ),
+        stopped_seconds=_positive(timeouts, "stopped_seconds"),
+        readiness_topics=topics,
+        readiness_transforms=tuple(transforms),
+        calibration=CollisionCalibrationExpectation(
+            model_name=model_name,
+            world_pose=world_pose,
+            detection_timeout_seconds=detection_timeout,
+            minimum_prohibited_contact_states=_positive_integer(
+                assertions,
+                "minimum_prohibited_contact_states",
+            ),
+            minimum_collision_episodes=_positive_integer(
+                assertions,
+                "minimum_collision_episodes",
+            ),
+            maximum_robot_displacement_m=maximum_displacement,
+        ),
+        assets=assets,
+    )
+    if scenario.calibration.minimum_collision_episodes > 8:
+        raise ValueError("collision calibration episode minimum is too large")
+    if scenario.calibration.minimum_prohibited_contact_states > 100:
+        raise ValueError("collision calibration state minimum is too large")
+    return scenario
+
+
 def _dwa_velocity_parameters(
     raw: Mapping[str, Any],
     label: str,
@@ -834,6 +1181,15 @@ def _pose(raw: Mapping[str, Any], label: str) -> Pose2D:
         frame_id=_string(raw, "frame_id"),
         x=_finite(raw, "x", label),
         y=_finite(raw, "y", label),
+        yaw=_finite(raw, "yaw", label),
+    )
+
+
+def _pose3d(raw: Mapping[str, Any], label: str) -> Pose3D:
+    return Pose3D(
+        x=_finite(raw, "x", label),
+        y=_finite(raw, "y", label),
+        z=_finite(raw, "z", label),
         yaw=_finite(raw, "yaw", label),
     )
 
@@ -949,7 +1305,12 @@ __all__ = [
     "AcceptanceAssets",
     "AcceptanceScenario",
     "CancellationExpectation",
+    "COLLISION_CALIBRATION_SCHEMA_VERSION",
+    "COLLISION_CALIBRATION_SCENARIO_TYPE",
+    "CollisionCalibrationExpectation",
+    "CollisionCalibrationScenario",
     "Pose2D",
+    "Pose3D",
     "default_scenario_path",
     "load_acceptance_scenario",
     "repository_root",

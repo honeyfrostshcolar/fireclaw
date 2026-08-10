@@ -74,6 +74,7 @@ class AgentHarnessAttempt:
     allowed_tool_names: frozenset[str] | None = None
     cancellation_requested: Callable[[], bool] | None = None
     temperature: float = 0.0
+    seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -185,11 +186,16 @@ class ProviderAgentHarness:
                     "Agent turn was cancelled before the provider call.",
                     managed_context=managed,
                 )
+            provider_request: dict[str, Any] = {
+                "messages": managed.messages,
+                "tools": managed.tools,
+                "temperature": attempt.temperature,
+                "max_tokens": managed.manifest.output_reserve_tokens,
+            }
+            if attempt.seed is not None:
+                provider_request["seed"] = attempt.seed
             response = self.provider_runtime.chat_completion(
-                messages=managed.messages,
-                tools=managed.tools,
-                temperature=attempt.temperature,
-                max_tokens=managed.manifest.output_reserve_tokens,
+                **provider_request
             )
             if self._cancelled(attempt):
                 raise AgentHarnessError(
@@ -288,6 +294,8 @@ class ProviderAgentHarness:
                     else error.code if error is not None else "unknown"
                 ),
                 "latency_ms": latency_ms,
+                "temperature": attempt.temperature,
+                "seed": attempt.seed,
                 "tool_names": (
                     [call.name for call in result.tool_calls]
                     if result is not None

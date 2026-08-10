@@ -18,7 +18,7 @@
   <arg name="inject_stall" default="false"/>
 
   <arg name="world_file"
-       default="$(find turtlebot3_gazebo)/worlds/turtlebot3_world.world"/>
+       default="$(dirname)/../worlds/fireclaw_acceptance.world"/>
   <arg name="map_file"
        default="$(find turtlebot3_navigation)/maps/map.yaml"/>
 

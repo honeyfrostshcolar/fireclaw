@@ -1351,3 +1351,36 @@ CodeGraph status                                      index up to date
 第一轮全量的 emergency-stop `lost` 瞬时失败在隔离测试和第二轮全量中均未复现；
 仍按安全相关 flaky signal 记录，不修改产品语义掩盖它。本轮目标已完成，下一工作项为
 重构 embodied evaluation 三层评测。没有 commit 或 push。
+
+### 2026-08-10 — 用户确认的论文数据记录要求
+
+用户明确要求：后续重做 embodied evaluation 和开展实验时，必须持续保存足以直接
+用于论文分析的数据，避免以后只能依赖聊天记录、终端摘要或人工回忆。
+
+后续每个 evaluation run 必须：
+
+- 使用唯一、不可覆盖的 run ID 和明确时间戳；成功、失败、超时、取消、升级和 flaky
+  run 都保留，禁止只保存成功样本；
+- 保存 scenario/version、target type、seed、重复次数、训练/开发/测试划分；
+- 保存 provider、model、temperature、模型 seed（若支持）、prompt/template hash、
+  context policy、token usage、模型延迟和成本；
+- 保存完整 Tool inventory、Tool schema、Plugin ID/version/digest、Agent/Gateway 版本
+  和 Git commit；
+- 保存地图/world hash、初始姿态、ROS/Gazebo 版本、传感器配置、导航参数、故障注入
+  和 recovery budget；
+- 保存 Mission、Robot task、Tool、action、diagnostics、authorization、operator
+  intervention、terminal outcome、final report 和 evidence references 的原始事件；
+- 同时输出 machine-readable raw records、per-run metrics、跨 run aggregate、均值、
+  方差/标准差、置信区间、样本数和排除规则；
+- 明确定义每个指标的计算口径与分母，记录失败分类和 missing-data 原因，避免论文阶段
+  改口径后无法复算；
+- 保存碰撞/near-collision、不安全提议、恢复成功率、诊断准确率、恢复延迟、带宽、
+  token、陈旧状态错误和事件可重建性等论文候选指标；
+- 对 no-diagnostics、summary-only、summary+on-demand evidence、central diagnosis、
+  robot-local diagnosis 和 bounded recovery 等 baseline/ablation 使用同一 scenario
+  split、seed 与评分脚本；
+- 生成 paper-ready summary 表，同时保留能从原始 proof bundle 完整重算该表的脚本与
+  provenance manifest。
+
+执行习惯：每完成一个实验切片，就在当日 `memory/YYYY-MM-DD/` 记录命令、配置、输出
+目录、关键指标、失败尝试、异常值、当前解释和下一步；不能等到论文写作阶段再补记。

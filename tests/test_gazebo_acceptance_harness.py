@@ -61,6 +61,12 @@ def test_success_scenario_is_fixed_safe_and_repository_local() -> None:
     assert scenario.terminal_status == "completed"
     assert scenario.actionlib_terminal_statuses == (3,)
     assert scenario.cancellation is None
+    assert scenario.assets.robot_description.name == (
+        "turtlebot3_burger.urdf.xacro"
+    )
+    assert scenario.assets.collision_monitor.name == (
+        "fireclaw_gazebo_contact_monitor.cpp"
+    )
     for path in scenario.assets.to_dict().values():
         Path(path).resolve(strict=True).relative_to(ROOT)
 
@@ -202,6 +208,39 @@ def test_stall_escalate_scenario_requires_diagnostics_without_recovery() -> None
     )
 
 
+def test_collision_calibration_is_simulation_only_and_task_excluded() -> None:
+    scenario_module = _load("scenario")
+    scenario = scenario_module.load_acceptance_scenario(
+        ROOT
+        / "extensions/navigation-move-base/config/acceptance/"
+        "collision-calibration.yaml",
+        repo_root=ROOT,
+    )
+
+    assert isinstance(
+        scenario,
+        scenario_module.CollisionCalibrationScenario,
+    )
+    assert scenario.scenario_type == "collision_calibration"
+    assert scenario.calibration.model_name == (
+        "fireclaw_collision_calibration_probe"
+    )
+    assert scenario.calibration.minimum_prohibited_contact_states == 3
+    assert scenario.calibration.minimum_collision_episodes == 1
+    assert scenario.assets.collision_probe is not None
+    assert scenario.assets.collision_probe.name == (
+        "collision_calibration_probe.sdf"
+    )
+    manifest = scenario.to_manifest()
+    assert manifest["simulation_only"] is True
+    assert manifest["excluded_from_task_metrics"] is True
+    assert manifest["calibration"]["injection"]["method"] == (
+        "gazebo_spawn_sdf_model_static_overlap"
+    )
+    for path in scenario.assets.to_dict().values():
+        Path(path).resolve(strict=True).relative_to(ROOT)
+
+
 def test_trusted_runner_injects_stall_only_for_exact_stall_scenarios() -> None:
     launch = (
         ROOT
@@ -210,14 +249,122 @@ def test_trusted_runner_injects_stall_only_for_exact_stall_scenarios() -> None:
     runner = (
         ACCEPTANCE / "run_gazebo_acceptance.sh"
     ).read_text(encoding="utf-8")
+    contact_world = (
+        ROOT
+        / "extensions/navigation-move-base/worlds/"
+        "fireclaw_acceptance.world"
+    ).read_text(encoding="utf-8")
 
     assert '<arg name="inject_stall" default="false"/>' in launch
     assert '<group if="$(arg inject_stall)">' in launch
     assert "/move_base/DWAPlannerROS/max_vel_x" in launch
     assert "/move_base/DWAPlannerROS/min_vel_x" in launch
+    assert "fireclaw_acceptance.world" in launch
+    assert "libfireclaw_gazebo_contact_monitor.so" in contact_world
+    assert "/fireclaw/acceptance/contacts" in contact_world
     assert "config/acceptance/stall-recover.yaml" in runner
     assert "config/acceptance/stall-escalate.yaml" in runner
     assert "inject_stall:=true" in runner
+    assert "fireclaw_core.devtools.ros_gazebo_system_eval" in runner
+    assert "config/acceptance/collision-calibration.yaml" in runner
+    assert (
+        "fireclaw_core.devtools.gazebo_collision_calibration_eval"
+        in runner
+    )
+    assert '--output-dir "$run_dir/evaluation"' in runner
+    assert "FIRECLAW_GAZEBO_ACCEPTANCE_SPLIT" in runner
+    assert "FIRECLAW_GAZEBO_ACCEPTANCE_REPEAT_INDEX" in runner
+    assert runner.index("pytest_status=$?") < runner.index(
+        '# Freeze ROS/Gazebo-owned logs before hashing'
+    )
+    assert runner.index('launch_pid=""') < runner.index(
+        "fireclaw_core.devtools.ros_gazebo_system_eval"
+    )
+
+
+def test_collision_calibration_live_test_uses_real_gazebo_contact_path() -> None:
+    source = (
+        ACCEPTANCE / "test_gazebo_collision_calibration.py"
+    ).read_text(encoding="utf-8")
+
+    assert "spawn_collision_calibration_probe" in source
+    assert "wait_for_prohibited_collision" in source
+    assert "delete_collision_calibration_probe" in source
+    assert '"collision-injection.json"' in source
+    assert '"collision-contact-stream.jsonl"' in source
+    assert '"move_base_goal_sent": False' in source
+    assert '"excluded_from_task_metrics": True' in source
+    assert "assert_collision_detected" in source
+
+
+def test_live_lanes_write_common_mission_and_provenance_evidence() -> None:
+    lane_files = (
+        "test_gazebo_navigation.py",
+        "test_gazebo_timeout.py",
+        "test_gazebo_stall.py",
+        "test_gazebo_abort.py",
+    )
+
+    for name in lane_files:
+        source = (ACCEPTANCE / name).read_text(encoding="utf-8")
+        assert '"mission-run.json"' in source
+        assert '"mission_run_manager": "MissionRunManager"' in source
+        assert '"use_scheduler": True' in source
+        assert '"background": True' in source
+        assert '"authorization_resume": "same_task_id"' in source
+        assert '"collision-evidence.json"' in source
+        assert '"collision-contact-stream.jsonl"' in source
+        assert "assert_collision_free" in source
+
+    navigation = (ACCEPTANCE / "test_gazebo_navigation.py").read_text(
+        encoding="utf-8"
+    )
+    timeout = (ACCEPTANCE / "test_gazebo_timeout.py").read_text(
+        encoding="utf-8"
+    )
+    assert navigation.count('"navigation-parameters.json"') == 2
+    assert '"navigation-parameters.json"' in timeout
+
+
+def test_collision_filter_excludes_only_ground_support_contacts() -> None:
+    harness = _load_package_module("ros_harness")
+    ground = "ground_plane::link::collision"
+    wheel = (
+        "turtlebot3_burger::wheel_left_link::"
+        "wheel_left_link_collision"
+    )
+    caster = (
+        "turtlebot3_burger::base_footprint::"
+        "base_footprint_fixed_joint_lump__caster_back_link_collision_1"
+    )
+    wall = "turtlebot3_world::wall_1::collision"
+
+    assert harness._classify_contact(
+        "turtlebot3_burger",
+        wheel,
+        ground,
+    ) == ("allowed_support_contact", "support_link_on_ground_plane")
+    assert harness._classify_contact(
+        "turtlebot3_burger",
+        ground,
+        caster,
+    ) == ("allowed_support_contact", "support_link_on_ground_plane")
+    assert harness._classify_contact(
+        "turtlebot3_burger",
+        wheel,
+        wall,
+    ) == (
+        "prohibited_collision",
+        "robot_contact_with_non_support_surface",
+    )
+    assert harness._classify_contact(
+        "turtlebot3_burger",
+        "turtlebot3_burger::base_footprint::base_link_collision",
+        ground,
+    ) == (
+        "prohibited_collision",
+        "robot_contact_with_non_support_surface",
+    )
 
 
 def test_stall_recover_policy_enforces_diagnostics_before_one_recovery() -> None:

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from fireclaw_core.evaluation.provenance import ros_gazebo_runtime_snapshot
+
 from .artifacts import ArtifactBundle
 from .ros_harness import RosHarness
 from .scenario import load_acceptance_scenario, repository_root
@@ -39,7 +41,12 @@ def artifact_bundle(
     require_explicit_gazebo_acceptance_opt_in: None,
     repo_root: Path,
 ) -> ArtifactBundle:
-    return ArtifactBundle.from_environment(repo_root)
+    bundle = ArtifactBundle.from_environment(repo_root)
+    bundle.write_json(
+        "system-versions.json",
+        ros_gazebo_runtime_snapshot(),
+    )
+    return bundle
 
 
 @pytest.fixture(scope="session")

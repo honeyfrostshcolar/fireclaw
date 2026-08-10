@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fireclaw_gazebo_contact_monitor</name>
+  <version>0.1.0</version>
+  <description>
+    Trusted Gazebo ContactManager observer for FireClaw acceptance tests.
+  </description>
+  <maintainer email="maintainers@fireclaw.invalid">FireClaw maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>gazebo_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>roscpp</depend>
+
+  <export>
+    <gazebo_ros plugin_path="${prefix}/lib"/>
+  </export>
+</package>

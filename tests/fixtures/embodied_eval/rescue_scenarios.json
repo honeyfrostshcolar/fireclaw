@@ -1,24 +1,43 @@
-[
-  {
-    "scenario_id": "navigate-point-a",
-    "command": "去坐标 (2.0, 1.5)",
-    "expected_target": {
-      "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
-      "frame_id": "map"
-    },
+{
+  "schema_version": "fireclaw.evaluation.scenario-suite.v1",
+  "suite_id": "deterministic-point-navigation",
+  "suite_version": "1.0.0",
+  "lane": "deterministic_integration",
+  "split": "test",
+  "defaults": {
+    "scenario_version": "1.0.0",
+    "target_type": "point",
     "expected_capability": "navigate_to_point",
+    "expected_terminal_outcomes": ["completed"],
+    "expected_plan_success": true,
+    "expected_dispatch_success": true,
+    "requires_target_contract": true,
+    "requires_terminal_status": true,
     "min_memory_records": 1,
-    "requires_terminal_status": true
+    "seeds": [0],
+    "repetitions": 1,
+    "task_type": "navigate"
   },
-  {
-    "scenario_id": "navigate-point-b",
-    "command": "去坐标 (-1.0, 3.0)",
-    "expected_target": {
-      "pose": {"x": -1.0, "y": 3.0, "yaw": 0.0},
-      "frame_id": "map"
+  "scenarios": [
+    {
+      "scenario_id": "navigate-point-a",
+      "command": "去坐标 (2.0, 1.5)",
+      "target": {
+        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+        "frame_id": "map"
+      }
     },
-    "expected_capability": "navigate_to_point",
-    "min_memory_records": 1,
-    "requires_terminal_status": true
+    {
+      "scenario_id": "navigate-point-b",
+      "command": "去坐标 (-1.0, 3.0)",
+      "target": {
+        "pose": {"x": -1.0, "y": 3.0, "yaw": 0.0},
+        "frame_id": "map"
+      }
+    }
+  ],
+  "metadata": {
+    "purpose": "deterministic Mission/Robot integration regression",
+    "not_for": ["LLM quality", "ROS/Gazebo system performance"]
   }
-]
+}

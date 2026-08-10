@@ -83,6 +83,26 @@ class TestSimpleProviderRuntime:
         assert status["type"] == "simple"
         assert status["model"] == "gpt-4"
 
+    def test_chat_completion_forwards_optional_seed(self):
+        completion = _make_completion()
+        provider = _make_provider(response=completion)
+        runtime = SimpleProviderRuntime(provider, "gpt-4")
+
+        runtime.chat_completion(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            seed=17,
+        )
+
+        provider.chat_completion.assert_called_once_with(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-4",
+            tools=[],
+            temperature=0.0,
+            max_tokens=4096,
+            seed=17,
+        )
+
     def test_select_model_returns_descriptor(self):
         provider = MagicMock()
         runtime = SimpleProviderRuntime(provider, "gpt-4")

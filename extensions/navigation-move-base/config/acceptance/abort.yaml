@@ -71,7 +71,9 @@ readiness:
 
 assets:
   launch: extensions/navigation-move-base/launch/fireclaw_acceptance_world.launch
-  world: robots/turtlebot3_burger/ros_ws/src/turtlebot3_simulations/turtlebot3_gazebo/worlds/turtlebot3_world.world
+  robot_description: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_description/urdf/turtlebot3_burger.urdf.xacro
+  collision_monitor: extensions/navigation-move-base/ros_ws/src/fireclaw_gazebo_contact_monitor/src/fireclaw_gazebo_contact_monitor.cpp
+  world: extensions/navigation-move-base/worlds/fireclaw_acceptance.world
   map: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.yaml
   map_image: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.pgm
   ros1_config: examples/ros1_configs/gazebo_turtlebot3_move_base.yaml

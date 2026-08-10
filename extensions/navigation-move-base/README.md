@@ -63,6 +63,8 @@ never treated as proof that the robot stopped.
 ## Layout
 
 - `ros_ws/src/navigation/`: pinned upstream ROS Navigation Stack source.
+- `ros_ws/src/fireclaw_gazebo_contact_monitor/`: acceptance-only trusted
+  Gazebo `ContactManager` WorldPlugin.
 - `ros_ws/navigation.repos`: reproducible upstream checkout manifest.
 - `fireclaw.plugin.json`: manifest read by the generic extension scanner.
 - `plugin/entrypoint.py`: provider-owned activation and Tool registration.
@@ -74,6 +76,8 @@ never treated as proof that the robot stopped.
 - `config/acceptance/`: validated, data-only acceptance scenarios.
 - `launch/fireclaw_acceptance_world.launch`: fixed trusted TurtleBot3
   acceptance environment; it is not an LLM-callable Tool.
+- `worlds/fireclaw_acceptance.world`: fixed world that loads the collision
+  observer before the Robot is spawned.
 
 A robot deployment may still own its launch and navigation parameters outside
 FireClaw. Upstream package launch files remain inside `ros_ws/src/navigation/`.
@@ -99,6 +103,19 @@ catkin_make
 
 The system-installed `move_base` remains usable. Sourcing this workspace's
 `devel/setup.bash` selects the pinned source build as an overlay.
+
+The live acceptance runner also requires the trusted contact observer. Build
+that package after changing its C++ source or CMake metadata:
+
+```bash
+catkin_make -C extensions/navigation-move-base/ros_ws \
+  --pkg fireclaw_gazebo_contact_monitor
+```
+
+The runner fails before starting a goal when the package inputs or shared
+library are absent, or when the C++ implementation is newer than the library;
+it never silently downgrades collision evidence to an unobserved zero. The
+proof records both the implementation source and exact loaded binary hashes.
 
 ## Live Gazebo Acceptance
 
@@ -202,7 +219,8 @@ quality.
 Proof bundles are written beneath `results/gazebo-acceptance/<run-id>/` and
 include pre-confirmation and post-confirmation snapshots of the same Robot
 task trace, Plugin inventory, ROS graph, goal/feedback/status stream, pose
-evidence, JUnit, and ROS logs. Mission keeps polling that task while it is
+evidence, full Mission Run, live navigation parameters, system versions,
+JUnit, and ROS logs. Mission keeps polling that task while it is
 `awaiting_confirmation`; after `/confirm`, the same task reaches `completed`,
 an acknowledged `cancelled`, an acknowledged `timed_out`, or a native
 move_base-derived `failed` terminal and the Mission produces the matching final
@@ -211,6 +229,51 @@ runs write `timeout-evidence.json`; abort runs write `abort-evidence.json`,
 `map-evidence.json`, and `navigation-parameters.json`; stall runs write
 `stall-evidence.json`, `navigation-diagnostics.json`, and before/after live
 navigation parameter snapshots.
+
+Every live scenario also starts the acceptance-only
+`libfireclaw_gazebo_contact_monitor.so` WorldPlugin. It reads Gazebo's physics
+`ContactManager`, filters the complete `turtlebot3_burger` collision scope, and
+publishes `gazebo_msgs/ContactsState` on
+`/fireclaw/acceptance/contacts`. The observer must be connected before the
+first `/move_base` goal and remain connected until the terminal stopped proof.
+The bundle retains the normalized full contact stream, its classification and
+episode counts, the observer source asset, and the exact loaded shared library
+SHA-256.
+
+The fixed `fireclaw.acceptance.prohibited-contact/v1` rule excludes only normal
+left-wheel, right-wheel, or caster contact with `ground_plane`. Robot contact
+with walls or other models, base/sensor contact with the ground, self-contact,
+and an unexpected contact pair are prohibited collision episodes. A stream
+overflow, missing publisher, late observer, or missing stopped terminal makes
+the metric unavailable rather than collision-free.
+
+After pytest exits, the trusted runner automatically normalizes that source
+proof into `<run-id>/evaluation/` using the shared `ros_gazebo_system` schema.
+The evaluation bundle embeds and hashes the raw proof and referenced assets,
+retains every canonical outcome, and reports behavior-contract success
+separately from completed-task success. New runs write
+`collision-contact-stream.jsonl`, `collision-evidence.json`, and the loaded
+`collision-monitor-plugin.so`. Older proofs without this instrumentation stay
+readable, but their collision metric remains missing and cannot be interpreted
+as zero collisions or used as a paper-ready result.
+
+### Collision positive control
+
+`config/acceptance/collision-calibration.yaml` is a simulation-only
+measurement calibration, not a navigation Mission. It spawns the small static
+`tests/acceptance/assets/collision_calibration_probe.sdf` through Gazebo's
+`/gazebo/spawn_sdf_model` service in shallow overlap with the stationary Burger,
+requires prohibited `base_link` contact in the raw ContactManager stream, and
+then deletes the model through `/gazebo/delete_model`. The proof also requires
+no `/move_base` goal, no non-zero `/cmd_vel`, stopped odometry, and bounded Robot
+displacement.
+
+The trusted runner routes this exact scenario to the independent
+`gazebo_collision_calibration` evaluator. That evaluator reclassifies the raw
+collision pair and verifies spawn/state/delete responses plus SDF, observer,
+and source-proof hashes. It always records `task_metrics_applicable=false`, so
+the deliberately induced contact cannot enter navigation success or
+collision-free denominators.
 
 ## Initial Acceptance Criteria
 
@@ -230,3 +293,9 @@ navigation parameter snapshots.
    timeout/cancel cause, owner ID, and backend evidence.
 10. A trap Adapter proves that navigation never falls back to a domain method
     on `RobotAdapter`.
+11. Trusted contact instrumentation covers the full goal-to-terminal-stop
+    window and reports either a validated collision count or explicit missing
+    data.
+12. A task-excluded positive control produces a real prohibited Gazebo contact,
+    is independently detected from the raw stream, and leaves the Robot stopped
+    after cleanup.

@@ -1,0 +1,64 @@
+schema_version: fireclaw.gazebo-collision-calibration/v1
+scenario_id: turtlebot3-contact-positive-control
+scenario_type: collision_calibration
+simulation_only: true
+excluded_from_task_metrics: true
+description: >-
+  A simulation-only positive control that spawns a small static SDF probe in
+  shallow overlap with a stationary TurtleBot3 Burger and requires the raw
+  Gazebo ContactManager evidence path to report a prohibited collision.
+seed: 0
+
+robot:
+  id: gazebo_turtlebot3
+  model: burger
+  initial_pose:
+    frame_id: map
+    x: -2.0
+    y: -0.5
+    yaw: 0.0
+
+readiness:
+  action_server: /move_base
+  topics:
+    - /clock
+    - /scan
+    - /odom
+  transforms:
+    - [map, base_link]
+
+assertions:
+  initial_position_tolerance_m: 0.20
+  initial_yaw_tolerance_rad: 0.35
+  stopped_linear_velocity_mps: 0.02
+  stopped_angular_velocity_rps: 0.05
+  maximum_robot_displacement_m: 0.15
+  minimum_prohibited_contact_states: 3
+  minimum_collision_episodes: 1
+
+timeouts:
+  ros_readiness_seconds: 90.0
+  collision_detection_seconds: 10.0
+  stopped_seconds: 5.0
+
+calibration:
+  injection:
+    method: gazebo_spawn_sdf_model_static_overlap
+    model_name: fireclaw_collision_calibration_probe
+    reference_frame: world
+    world_pose:
+      x: -1.95
+      y: -0.5
+      z: 0.08
+      yaw: 0.0
+    asset_label: collision_probe
+
+assets:
+  launch: extensions/navigation-move-base/launch/fireclaw_acceptance_world.launch
+  robot_description: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_description/urdf/turtlebot3_burger.urdf.xacro
+  collision_monitor: extensions/navigation-move-base/ros_ws/src/fireclaw_gazebo_contact_monitor/src/fireclaw_gazebo_contact_monitor.cpp
+  world: extensions/navigation-move-base/worlds/fireclaw_acceptance.world
+  map: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.yaml
+  map_image: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.pgm
+  ros1_config: examples/ros1_configs/gazebo_turtlebot3_move_base.yaml
+  collision_probe: extensions/navigation-move-base/tests/acceptance/assets/collision_calibration_probe.sdf
