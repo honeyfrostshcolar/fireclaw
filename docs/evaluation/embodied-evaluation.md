@@ -106,8 +106,9 @@ scenario/model seed, full prompts, projected Tool schemas, Tool calls, finish
 reason, usage, latency, optional catalog-based cost, and provider errors. A seed
 is forwarded to the OpenAI-compatible request, but the bundle explicitly warns
 that provider/model revisions and backend behavior can still be nondeterministic.
-API keys are read from an environment variable and are never written to the
-bundle. ROS/Gazebo fields remain explicitly not applicable in this lane.
+API keys are read from the shared config or its named environment variable and
+are never written to the bundle. ROS/Gazebo fields remain explicitly not
+applicable in this lane.
 
 The ROS/Gazebo lane preserves the complete source proof, verifies every source
 file and referenced map/world/config asset by SHA-256, and normalizes the live
@@ -155,17 +156,27 @@ warnings/failures, and `1` for configuration or runner errors.
 ## LLM planning command
 
 ```bash
-export FIRECLAW_PROVIDER_API_KEY='<secret>'
+cp fireclaw.example.toml fireclaw.toml
+# Fill [provider].name, base_url, api_key/api_key_env, model, and optional catalog.
 /home/lpp/miniconda3/envs/py310/bin/python \
   -m fireclaw_core.devtools.llm_planning_eval \
+  --config fireclaw.toml \
   --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
   --output-dir results/embodied-eval/<unique-llm-run-id> \
-  --provider-base-url https://<provider>/v1 \
-  --provider-name <provider-name> \
-  --model <model-id> \
   --temperature 0 \
   --model-catalog <optional-model-catalog.json>
 ```
+
+The runner and Gateway resolve the same `[provider]` table. Explicit runner
+flags override TOML values. The credential may be supplied by
+`[provider].api_key` or by the environment variable named by
+`[provider].api_key_env`; the secret is never written to the proof bundle.
+
+For the frozen 15-case real-provider development baseline, replace the
+scenario path with
+`tests/fixtures/embodied_eval/planning_scenarios_multiseed_development.json`.
+It expands point/area/entity over seeds `0,17,42,123,999`, is explicitly
+`paper_ready=false`, and must not be reported as a held-out test set.
 
 Each case retains `input.json`, the derived authoritative state snapshot,
 planner context, deliberation attempts/observations, compiled plan/task graph,
@@ -174,6 +185,16 @@ inventory. Run-level files add the union of exact planning Tool schemas and
 their hashes. `unsafe_proposal_proxy_rate` is defined as a deterministic
 runtime rejection proxy (invalid plan/observation or unexposed Tool call); it
 must not be presented as an independently annotated unsafe-plan rate.
+
+Planning protocol v2 applies executable target defaults before scoring: a
+point target that omits optional `yaw` is canonicalized to `yaw=0.0`. The host
+still rejects any response that does not contain exactly one Tool call and
+executes none of those calls, but it may issue one immediate repair request for
+that decision. A second invalid response escalates. Proof records keep every
+rejected response and repair prompt. Report `first_try_clean_rate` and
+`tool_protocol_valid_first_try_rate` as raw model behavior, and the conditional
+`planning_recovery_rate` as runtime-assisted recovery; do not merge them into a
+single success claim.
 
 ## ROS/Gazebo system command
 

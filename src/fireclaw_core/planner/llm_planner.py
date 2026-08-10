@@ -70,6 +70,7 @@ from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 # ---------------------------------------------------------------------------
 
 VALID_INTENTS: set[str] = {"search", "patrol", "firefight", "recon", "transport"}
+TOOL_PROTOCOL_REPAIR_MARKER = "fireclaw_tool_protocol_repair"
 
 MISSION_PLAN_TOOL: dict[str, Any] = {
     "type": "function",
@@ -113,7 +114,8 @@ MISSION_GRAPH_PROPOSAL_TOOL: dict[str, Any] = {
     "function": {
         "name": "propose_task_graph",
         "description": (
-            "提交语义任务图；runtime 将确定性选择机器人并注入安全、资源和恢复约束"
+            "单独调用一次以提交语义任务图；runtime 将确定性选择机器人并注入"
+            "安全、资源和恢复约束"
         ),
         "parameters": {
             "type": "object",
@@ -242,7 +244,10 @@ MISSION_STATE_INSPECTION_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "inspect_mission_state",
-        "description": "读取当前冻结任务状态快照中的一个受限视图，不会查询机器人实时接口",
+        "description": (
+            "单独调用一次以读取冻结状态的一个受限视图；结果在下一轮返回，"
+            "已有该 observation 时不得重读；不会查询机器人实时接口"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -516,7 +521,7 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
     snapshot = request.state_snapshot
     lines = [
         "你是消防机器人任务规划助手，运行在受限的多轮任务规划 runtime 中。",
-        "每轮必须且只能调用一个提供的工具。",
+        "每轮必须且只能返回一个 Tool call，禁止重复或组合调用；inspect 的结果下一轮返回，已有视图不得重读。",
         "你只能调用本轮宿主明确暴露的工具；不得臆造或绕过未暴露能力。",
         "通用 Agent Tool 由宿主执行并受部署模式、沙箱、审批和调用前策略约束。",
         "通用工具结果属于 advisory，不能单独证明机器人或火场的物理状态。",
@@ -528,6 +533,8 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
         "request_observation 只提交补证意图；宿主将校验目标、能力、传感器和机器人状态后再决定是否调度。",
         "信息充分时优先调用 propose_task_graph；缺少操作员关键信息时调用 request_clarification；",
         "状态危险、不确定或无法形成有效计划时调用 escalate。",
+        "巡检/巡视的 Mission intent=patrol，但导航节点必须用 task_type=navigation、capability_required=navigate；仅明确搜索/侦察才用 search/recon。",
+        "单层 target 使用 frame_id=map（zone 不是 frame）：point=pose(x,y,yaw?默认0)，area=area_id，entity=entity_id。",
         "propose_task_graph 只描述任务语义、目标、依赖和完成条件；不要选择机器人。",
         "每个节点必须在 belief_assumptions 中列出其执行所依赖的现场事实及期望值；没有现场事实依赖时使用空数组。",
         "belief_assumptions 只能引用已通过 environment_beliefs 查询看到的 belief_id；不得引用 uncertain、conflicted 或 stale belief。",
@@ -1008,9 +1015,7 @@ class LLMMissionPlanner:
         started = time.monotonic()
         fallback_messages = self._deliberation_messages(request)
         try:
-            harness_result = self._agent_harness.run_attempt(
-                self._build_deliberation_harness_attempt(request)
-            )
+            harness_result = self._run_deliberation_harness_attempt(request)
             request = self._managed_deliberation_request(
                 request,
                 harness_result,
@@ -1133,6 +1138,95 @@ class LLMMissionPlanner:
                 context_manifest=context_manifest,
             )
         return decision
+
+    def _run_deliberation_harness_attempt(
+        self,
+        request: MissionDeliberationRequest,
+    ) -> AgentHarnessAttemptResult:
+        """Run one decision with one fail-closed Tool-count repair attempt.
+
+        OpenClaw repairs recoverable provider Tool payload/transcript defects
+        before continuing. FireClaw keeps the stricter embodied boundary: the
+        first invalid Tool count is never executed, and the model receives one
+        explicit retry. A second invalid response propagates to ``decide`` and
+        is escalated without dispatch.
+        """
+
+        attempt = self._build_deliberation_harness_attempt(request)
+        try:
+            return self._agent_harness.run_attempt(attempt)
+        except AgentHarnessError as exc:
+            if exc.code != "invalid_tool_call_count":
+                raise
+            repair_attempt = self._tool_protocol_repair_attempt(
+                attempt,
+                exc,
+            )
+            return self._agent_harness.run_attempt(repair_attempt)
+
+    @staticmethod
+    def _tool_protocol_repair_attempt(
+        attempt: AgentHarnessAttempt,
+        error: AgentHarnessError,
+    ) -> AgentHarnessAttempt:
+        calls = tuple(error.response.tool_calls or ()) if error.response else ()
+        repair_context = {
+            "policy": "one_immediate_retry_then_escalate",
+            "error_code": error.code,
+            "repair_attempt": 1,
+            "required_tool_call_count": 1,
+            "received_tool_call_count": len(calls),
+            "received_tool_names": [call.name for call in calls],
+        }
+        base_builder = attempt.build_request
+
+        def build_repair_request(
+            authoritative: dict[str, Any],
+            continuity: dict[str, Any],
+            advisory: dict[str, list[dict[str, Any]]],
+            context_policy: dict[str, Any],
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            messages, tools = base_builder(
+                authoritative,
+                continuity,
+                advisory,
+                context_policy,
+            )
+            repaired_messages = deepcopy(messages)
+            repair_instruction = (
+                "\n\n## Host-enforced Tool protocol repair\n"
+                f"marker={TOOL_PROTOCOL_REPAIR_MARKER}\n"
+                "The immediately prior response was rejected without "
+                "executing any Tool because its Tool-call count was invalid. "
+                "This is the only repair attempt. Return exactly one exposed "
+                "Tool call and no second Tool call. Do not repeat a state "
+                "inspection already present in authoritative observations."
+            )
+            if (
+                repaired_messages
+                and repaired_messages[0].get("role") == "system"
+            ):
+                repaired_messages[0]["content"] = (
+                    str(repaired_messages[0].get("content") or "")
+                    + repair_instruction
+                )
+            else:
+                repaired_messages.insert(0, {
+                    "role": "system",
+                    "content": repair_instruction.strip(),
+                })
+            return repaired_messages, tools
+
+        return replace(
+            attempt,
+            run_id=f"{attempt.run_id}:tool-protocol-repair-1",
+            context_id=f"{attempt.context_id}:tool-protocol-repair-1",
+            continuity={
+                **attempt.continuity,
+                "tool_protocol_repair": repair_context,
+            },
+            build_request=build_repair_request,
+        )
 
     def _build_deliberation_harness_attempt(
         self,

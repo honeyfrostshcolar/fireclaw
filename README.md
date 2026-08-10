@@ -213,6 +213,10 @@ LLM planning runner 只运行生产 `LLMMissionPlanner` 和只读
 它保存冻结 state、完整 prompt/Tool schema、模型 Tool calls、requested/actual model、
 temperature、逐 case seed、token、延迟、可选 cost、编译后的 task graph、安全拒绝和
 no-dispatch 证明。area case 必须先读取 `passage_open`/`structural_stable` belief 再提案。
+planning protocol v2 对缺省 point `yaw` 按可执行 schema 规范化为 `0.0`，并在模型违反
+“每轮恰好一个 Tool call”时允许一次不执行原响应的受控重试。报告会分开记录
+`first_try_clean_rate`、`tool_protocol_valid_first_try_rate` 和条件
+`planning_recovery_rate`，因此修复后的成功不会冒充模型首轮成功。
 
 ```bash
 /home/lpp/miniconda3/envs/py310/bin/python \
@@ -223,19 +227,24 @@ no-dispatch 证明。area case 必须先读取 `passage_open`/`structural_stable
 ```
 
 ```bash
-export FIRECLAW_PROVIDER_API_KEY='<secret>'
+cp fireclaw.example.toml fireclaw.toml  # fill the shared [provider] table
 /home/lpp/miniconda3/envs/py310/bin/python \
   -m fireclaw_core.devtools.llm_planning_eval \
+  --config fireclaw.toml \
   --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
   --output-dir results/embodied-eval/<unique-llm-run-id> \
-  --provider-base-url https://<provider>/v1 \
-  --provider-name <provider-name> \
-  --model <model-id> \
   --temperature 0
 ```
 
-API key 只从指定环境变量读取，不进入 artifact。seed 会转发给兼容 provider，但不能
-保证后端确定性；正式论文数据仍应记录实际 response model 并执行多 seed 重复实验。
+`llm_planning_eval` 与 Gateway 共用 `fireclaw.toml` 的 `[provider]` 配置；显式 CLI
+参数仍可覆盖 TOML。API key 可以放在 `[provider].api_key`，或放在
+`[provider].api_key_env` 指定的环境变量中，均不会进入 artifact。seed 会转发给兼容
+provider，但不能保证后端确定性；正式论文数据仍应记录实际 response model 并执行多
+seed 重复实验。
+
+真实 Provider 的冻结 development 重复实验可改用
+`tests/fixtures/embodied_eval/planning_scenarios_multiseed_development.json`；它展开为
+point/area/entity × seeds `0,17,42,123,999` 共 15 cases，仍不是 held-out test set。
 
 运行任一 trusted Gazebo acceptance scenario 后，runner 会自动在
 `results/gazebo-acceptance/<run-id>/evaluation/` 生成第三层 bundle。也可以对既有 proof

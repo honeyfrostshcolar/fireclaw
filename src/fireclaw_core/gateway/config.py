@@ -24,8 +24,10 @@ Config file structure::
     type = "deterministic"           # or "llm"
 
     [provider]
+    name = "provider-name"
     base_url = "https://api.deepseek.com/v1"
     api_key = "sk-..."
+    api_key_env = "FIRECLAW_PROVIDER_API_KEY"
     model = "deepseek-chat"
 
     [robot_agent]
@@ -148,8 +150,10 @@ def load_config(path: Path) -> dict[str, Any]:
 
     # [provider]
     provider = raw.get("provider", {})
+    cfg["provider_name"] = provider.get("name")
     cfg["provider_base_url"] = provider.get("base_url")
     cfg["provider_api_key"] = provider.get("api_key")
+    cfg["provider_api_key_env"] = provider.get("api_key_env")
     cfg["model"] = provider.get("model")
     cfg["model_catalog_path"] = provider.get("catalog")
 

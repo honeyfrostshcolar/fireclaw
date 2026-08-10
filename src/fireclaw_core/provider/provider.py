@@ -178,6 +178,11 @@ class OpenAICompatProvider:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            # Some OpenAI-compatible gateways advertise gzip while returning
+            # an already-decoded body.  Requesting identity keeps response
+            # parsing reliable across those gateways without changing the
+            # JSON protocol or exposing provider-specific workarounds.
+            "Accept-Encoding": "identity",
         }
         try:
             with httpx.Client(

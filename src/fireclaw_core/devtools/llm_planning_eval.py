@@ -8,13 +8,12 @@ physically dispatched.
 
 Usage::
 
-    FIRECLAW_PROVIDER_API_KEY=... python -m \
+    python -m \
       fireclaw_core.devtools.llm_planning_eval \
+      --config fireclaw.toml \
       --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
       --output-dir results/embodied-eval/llm-planning-example \
-      --provider-base-url https://provider.example/v1 \
-      --provider-name example \
-      --model model-id
+      --temperature 0
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ import os
 from pathlib import Path
 import traceback
 from typing import Any
+from urllib.parse import urlparse
 
 from fireclaw_core.evaluation.artifacts import (
     EvaluationRunBundle,
@@ -54,6 +54,7 @@ from fireclaw_core.evaluation.provenance import (
     repository_snapshot,
     runtime_snapshot,
 )
+from fireclaw_core.gateway.config import find_config, load_config
 from fireclaw_core.infra.log_redaction import redact_dict
 from fireclaw_core.mission.mission_deliberation import (
     MissionDeliberationLimits,
@@ -305,6 +306,12 @@ def run_llm_planning_eval(
         "unexposed_tool_call_count": aggregate[
             "unexposed_tool_call_count"
         ],
+        "tool_protocol_violation_count": aggregate[
+            "tool_protocol_violation_count"
+        ],
+        "tool_protocol_repair_count": aggregate[
+            "tool_protocol_repair_count"
+        ],
         "suite": {
             "suite_id": suite.suite_id,
             "suite_version": suite.suite_version,
@@ -480,6 +487,10 @@ def _failed_case_record(
         "planning_latency_ms": round(max(0.0, latency_ms), 6),
         "contract_passed": False,
         "planning_success": False,
+        "first_try_clean": False,
+        "tool_protocol_valid_first_try": False,
+        "planning_recovery_applicable": False,
+        "planning_recovered": False,
         "target_match": False,
         "capability_match": False,
         "intent_match": False,
@@ -491,6 +502,8 @@ def _failed_case_record(
         "provider_success": False,
         "seed_forwarded": False,
         "model_call_count": None,
+        "tool_protocol_violation_count": 0,
+        "tool_protocol_repair_count": 0,
         "safety_rejection_count": 0,
         "unexposed_tool_call_count": 0,
         "physical_dispatch_count": 0,
@@ -648,6 +661,117 @@ def _json_copy(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
+def _nonempty_config_string(value: Any, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    value = value.strip()
+    return value or None
+
+
+def _provider_name_from_url(base_url: str) -> str:
+    hostname = urlparse(base_url).hostname
+    return hostname or "openai-compatible-provider"
+
+
+def _resolve_provider_settings(
+    *,
+    config_path: Path | None,
+    config: dict[str, Any],
+    provider_base_url: str | None,
+    provider_name: str | None,
+    model: str | None,
+    api_key_env: str | None,
+    model_catalog: str | None,
+) -> dict[str, Any]:
+    base_url = _nonempty_config_string(
+        provider_base_url
+        if provider_base_url is not None
+        else config.get("provider_base_url"),
+        field_name="provider_base_url",
+    )
+    if base_url is None:
+        raise ValueError(
+            "provider_base_url is required; pass --provider-base-url or "
+            "set [provider].base_url in fireclaw.toml"
+        )
+    resolved_name = _nonempty_config_string(
+        provider_name
+        if provider_name is not None
+        else config.get("provider_name"),
+        field_name="provider_name",
+    ) or _provider_name_from_url(base_url)
+    resolved_model = _nonempty_config_string(
+        model if model is not None else config.get("model"),
+        field_name="model",
+    )
+    if resolved_model is None:
+        raise ValueError(
+            "model is required; pass --model or set [provider].model in "
+            "fireclaw.toml"
+        )
+    resolved_api_key_env = _nonempty_config_string(
+        api_key_env
+        if api_key_env is not None
+        else config.get("provider_api_key_env"),
+        field_name="api_key_env",
+    ) or "FIRECLAW_PROVIDER_API_KEY"
+    configured_api_key = _nonempty_config_string(
+        config.get("provider_api_key"),
+        field_name="provider.api_key",
+    )
+    if api_key_env is None and configured_api_key is not None:
+        api_key = configured_api_key
+        credential_source = {
+            "kind": "config_file",
+            "name": "[provider].api_key",
+            "secret_value_recorded": False,
+        }
+    else:
+        api_key = os.environ.get(resolved_api_key_env)
+        credential_source = {
+            "kind": "environment_variable",
+            "name": resolved_api_key_env,
+            "secret_value_recorded": False,
+        }
+    if not api_key:
+        raise ValueError(
+            "Provider credential is missing; set [provider].api_key in "
+            "fireclaw.toml or the configured API-key environment variable "
+            f"{resolved_api_key_env!r}"
+        )
+
+    catalog_value = (
+        model_catalog
+        if model_catalog is not None
+        else config.get("model_catalog_path")
+    )
+    catalog_path: Path | None = None
+    if catalog_value is not None:
+        catalog_raw = _nonempty_config_string(
+            catalog_value,
+            field_name="model_catalog",
+        )
+        if catalog_raw is not None:
+            catalog_path = Path(catalog_raw)
+            if not catalog_path.is_absolute() and model_catalog is None:
+                catalog_path = (
+                    (config_path.parent if config_path else Path.cwd())
+                    / catalog_path
+                )
+            catalog_path = catalog_path.resolve(strict=True)
+    return {
+        "base_url": base_url,
+        "provider_name": resolved_name,
+        "model": resolved_model,
+        "api_key": api_key,
+        "api_key_env": resolved_api_key_env,
+        "credential_source": credential_source,
+        "catalog_path": catalog_path,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -655,18 +779,27 @@ def main(argv: list[str] | None = None) -> int:
             "evaluation proof bundle."
         ),
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Path to fireclaw.toml; defaults to ./fireclaw.toml when present. "
+            "Explicit provider flags override [provider]."
+        ),
+    )
     parser.add_argument("--scenarios", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--run-id", default=None)
-    parser.add_argument("--provider-base-url", required=True)
-    parser.add_argument("--provider-name", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--provider-base-url", default=None)
+    parser.add_argument("--provider-name", default=None)
+    parser.add_argument("--model", default=None)
     parser.add_argument(
         "--api-key-env",
-        default="FIRECLAW_PROVIDER_API_KEY",
+        default=None,
         help=(
             "Environment variable containing the provider API key; the key "
-            "is never written to artifacts."
+            "is never written to artifacts. [provider].api_key_env is used "
+            "when this flag is omitted."
         ),
     )
     parser.add_argument("--model-catalog", default=None)
@@ -685,44 +818,55 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-observations", type=int, default=3)
     args = parser.parse_args(argv)
 
-    api_key = os.environ.get(args.api_key_env)
-    if not api_key:
+    try:
+        config_path = find_config(args.config)
+        if args.config is not None and config_path is None:
+            raise ValueError(f"Config file not found: {args.config}")
+        config = load_config(config_path) if config_path is not None else {}
+        provider_settings = _resolve_provider_settings(
+            config_path=(
+                config_path.resolve(strict=True)
+                if config_path is not None
+                else None
+            ),
+            config=config,
+            provider_base_url=args.provider_base_url,
+            provider_name=args.provider_name,
+            model=args.model,
+            api_key_env=args.api_key_env,
+            model_catalog=args.model_catalog,
+        )
+    except (OSError, ValueError) as exc:
         print(json.dumps({
             "status": "error",
-            "error_type": "MissingCredential",
-            "message": (
-                f"Environment variable {args.api_key_env!r} is not set."
-            ),
+            "error_type": type(exc).__name__,
+            "message": str(exc),
         }, ensure_ascii=False))
         return 1
 
     try:
-        catalog_path = (
-            Path(args.model_catalog).resolve(strict=True)
-            if args.model_catalog
-            else None
-        )
+        catalog_path = provider_settings["catalog_path"]
         catalog_metadata, input_cost, output_cost = _catalog_metadata(
-            model=args.model,
+            model=provider_settings["model"],
             model_catalog_path=catalog_path,
         )
         provider = OpenAICompatProvider(
-            base_url=args.provider_base_url,
-            api_key=api_key,
+            base_url=provider_settings["base_url"],
+            api_key=provider_settings["api_key"],
             timeout=args.provider_timeout,
         )
         catalog = ModelCatalog(catalog_path) if catalog_path else None
         provider_runtime = SimpleProviderRuntime(
             provider=provider,
-            model_id=args.model,
+            model_id=provider_settings["model"],
             catalog=catalog,
         )
         result = run_llm_planning_eval(
             scenarios_path=Path(args.scenarios),
             output_dir=Path(args.output_dir),
             provider_runtime=provider_runtime,
-            provider_name=args.provider_name,
-            requested_model=args.model,
+            provider_name=provider_settings["provider_name"],
+            requested_model=provider_settings["model"],
             temperature=args.temperature,
             planning_timeout_seconds=args.planning_timeout,
             max_iterations=args.max_iterations,
@@ -731,14 +875,20 @@ def main(argv: list[str] | None = None) -> int:
             output_cost_per_million=output_cost,
             provider_metadata={
                 "endpoint_sha256": sha256(
-                    args.provider_base_url.encode("utf-8")
+                    provider_settings["base_url"].encode("utf-8")
                 ).hexdigest(),
                 "endpoint_recorded": False,
-                "credential_source": {
-                    "kind": "environment_variable",
-                    "name": args.api_key_env,
-                    "secret_value_recorded": False,
-                },
+                "credential_source": provider_settings[
+                    "credential_source"
+                ],
+                "config_source": (
+                    {
+                        "path": str(config_path),
+                        "section": "provider",
+                    }
+                    if config_path is not None
+                    else None
+                ),
                 "provider_timeout_seconds": args.provider_timeout,
                 "model_catalog": catalog_metadata,
             },

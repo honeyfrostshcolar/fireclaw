@@ -52,8 +52,10 @@ type = "deterministic"         # deterministic | llm
 
 # LLM Provider 配置（当 planner.type = "llm" 或 robot_agent.planner = "llm" 时使用）
 [provider]
+name = ""                    # stable provider identity recorded in evaluations
 base_url = ""
 api_key = ""
+api_key_env = "FIRECLAW_PROVIDER_API_KEY"
 model = ""
 # catalog = "models.json"  # context_window, max_tokens, optional tokenizer_id
 

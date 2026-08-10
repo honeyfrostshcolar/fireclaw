@@ -90,6 +90,36 @@ PLANNING_METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
         "denominator": "all attempted planning cases",
         "missing_policy": "provider, parser, validator, or runner errors count as false",
     },
+    "first_try_clean_rate": {
+        "kind": "rate",
+        "numerator": (
+            "cases producing a valid plan without a Tool-count repair or a "
+            "deterministic safety/semantic rejection"
+        ),
+        "denominator": "all attempted planning cases",
+        "missing_policy": "runner errors count as false",
+    },
+    "tool_protocol_valid_first_try_rate": {
+        "kind": "rate",
+        "numerator": (
+            "cases whose model responses each returned exactly one Tool call "
+            "without invoking the bounded Tool protocol repair"
+        ),
+        "denominator": "all attempted planning cases",
+        "missing_policy": "provider errors, zero calls, or malformed Tool counts count as false",
+    },
+    "planning_recovery_rate": {
+        "kind": "conditional_rate",
+        "numerator": (
+            "recovery-applicable cases that ultimately produced a validated "
+            "Mission task graph"
+        ),
+        "denominator": (
+            "cases with at least one bounded Tool protocol repair or "
+            "deterministic safety/semantic rejection"
+        ),
+        "missing_policy": "reported as not applicable when no case required recovery",
+    },
     "target_match_rate": {
         "kind": "rate",
         "numerator": "cases whose compiled graph contains the declared typed target",
@@ -173,6 +203,21 @@ PLANNING_METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
     "model_call_count": {
         "kind": "continuous",
         "value": "provider calls made by one planning case",
+        "denominator": "all attempted cases with a recorded count",
+        "missing_policy": "missing count is excluded and counted",
+    },
+    "tool_protocol_violation_count": {
+        "kind": "continuous",
+        "value": (
+            "model responses in one case that returned a Tool-call count "
+            "other than exactly one"
+        ),
+        "denominator": "all attempted cases with a recorded count",
+        "missing_policy": "missing count is excluded and counted",
+    },
+    "tool_protocol_repair_count": {
+        "kind": "continuous",
+        "value": "host-issued bounded Tool protocol repair requests in one case",
         "denominator": "all attempted cases with a recorded count",
         "missing_policy": "missing count is excluded and counted",
     },
@@ -341,6 +386,8 @@ _RATE_FIELDS = {
 _PLANNING_RATE_FIELDS = {
     "contract_pass_rate": "contract_passed",
     "planning_success_rate": "planning_success",
+    "first_try_clean_rate": "first_try_clean",
+    "tool_protocol_valid_first_try_rate": "tool_protocol_valid_first_try",
     "target_match_rate": "target_match",
     "capability_match_rate": "capability_match",
     "intent_match_rate": "intent_match",
@@ -353,9 +400,18 @@ _PLANNING_RATE_FIELDS = {
     "seed_forwarded_rate": "seed_forwarded",
 }
 
+_PLANNING_CONDITIONAL_RATE_FIELDS = {
+    "planning_recovery_rate": (
+        "planning_recovery_applicable",
+        "planning_recovered",
+    ),
+}
+
 _PLANNING_NUMERIC_FIELDS = (
     "planning_latency_ms",
     "model_call_count",
+    "tool_protocol_violation_count",
+    "tool_protocol_repair_count",
     "prompt_tokens",
     "completion_tokens",
     "total_tokens",
@@ -453,12 +509,43 @@ def aggregate_planning_records(
     values = list(records)
     count = len(values)
     statistics: dict[str, Any] = {}
-    metrics: dict[str, float] = {}
+    metrics: dict[str, float | None] = {}
     for metric_name, field_name in _PLANNING_RATE_FIELDS.items():
         successes = sum(
             1 for record in values if record.get(field_name) is True
         )
         summary = rate_statistics(successes, count)
+        statistics[metric_name] = summary
+        metrics[metric_name] = summary["value"]
+
+    for metric_name, fields in _PLANNING_CONDITIONAL_RATE_FIELDS.items():
+        applicable_field, success_field = fields
+        applicable = [
+            record
+            for record in values
+            if record.get(applicable_field) is True
+        ]
+        successes = sum(
+            1 for record in applicable if record.get(success_field) is True
+        )
+        if applicable:
+            summary = rate_statistics(successes, len(applicable))
+        else:
+            summary = {
+                "value": None,
+                "numerator": 0,
+                "denominator": 0,
+                "sample_standard_deviation": None,
+                "ci95": {
+                    "low": None,
+                    "high": None,
+                    "method": "not_applicable",
+                },
+            }
+        summary["attempted_case_count"] = count
+        summary["not_applicable_or_missing_count"] = (
+            count - len(applicable)
+        )
         statistics[metric_name] = summary
         metrics[metric_name] = summary["value"]
 
@@ -507,6 +594,14 @@ def aggregate_planning_records(
         ),
         "unexposed_tool_call_count": sum(
             int(record.get("unexposed_tool_call_count") or 0)
+            for record in values
+        ),
+        "tool_protocol_violation_count": sum(
+            int(record.get("tool_protocol_violation_count") or 0)
+            for record in values
+        ),
+        "tool_protocol_repair_count": sum(
+            int(record.get("tool_protocol_repair_count") or 0)
             for record in values
         ),
     }

@@ -219,24 +219,30 @@ production Mission planner and deterministic graph compiler but has no
 Gateway, scheduler, Robot Adapter, ROS, or physical dispatch surface.
 
 ```bash
-export FIRECLAW_PROVIDER_API_KEY='<secret>'
+cp fireclaw.example.toml fireclaw.toml
+# Fill the shared [provider] table before running the evaluation.
 .venv/bin/python -m fireclaw_core.devtools.llm_planning_eval \
+  --config fireclaw.toml \
   --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
   --output-dir results/embodied-eval/<unique-llm-run-id> \
-  --provider-base-url https://<provider>/v1 \
-  --provider-name <provider-name> \
-  --model <model-id> \
   --temperature 0 \
   --model-catalog <optional-model-catalog.json>
 ```
 
-- The API key is read from `--api-key-env` (default:
+- The API key is read from `[provider].api_key` or the environment variable
+  named by `[provider].api_key_env` (default:
   `FIRECLAW_PROVIDER_API_KEY`) and is never stored.
 - Every provider request records the scenario seed. Seed support is forwarded,
   not assumed to guarantee deterministic provider output.
+- The frozen real-provider development fixture is
+  `planning_scenarios_multiseed_development.json` (15 cases); it is not a
+  held-out test set.
 - A model catalog supplies optional input/output USD prices per million tokens.
 - `unsafe_proposal_proxy_rate` counts deterministic runtime rejections; it is
   not an independently annotated unsafe-plan metric.
+- Protocol v2 canonicalizes an omitted point `yaw` to `0.0`. An invalid Tool
+  count triggers at most one non-executing repair request for that decision;
+  a second violation escalates.
 - Exit codes are 0 = all contracts pass, 2 = retained warnings/failures, and
   1 = configuration error.
 
@@ -246,6 +252,8 @@ export FIRECLAW_PROVIDER_API_KEY='<secret>'
 - [ ] Freeze provider name, requested model, actual response model,
   temperature, seeds, Tool inventory hash, and fixture hash
 - [ ] Confirm `no_dispatch_rate == 1.0` and inspect every retained failure
+- [ ] Report `first_try_clean_rate`, `tool_protocol_valid_first_try_rate`, and
+  conditional `planning_recovery_rate` separately
 - [ ] Confirm area cases contain `inspect_state` before accepted proposal
 - [ ] Use repeated seeds and a held-out test split; the included development
   fixture is not a paper benchmark

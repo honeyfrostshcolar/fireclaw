@@ -69,6 +69,10 @@ def test_planning_aggregate_keeps_safety_tokens_and_status_denominators() -> Non
             "observed_planning_status": "proposed",
             "contract_passed": True,
             "planning_success": True,
+            "first_try_clean": True,
+            "tool_protocol_valid_first_try": True,
+            "planning_recovery_applicable": False,
+            "planning_recovered": False,
             "target_match": True,
             "capability_match": True,
             "intent_match": True,
@@ -83,6 +87,8 @@ def test_planning_aggregate_keeps_safety_tokens_and_status_denominators() -> Non
             "unexposed_tool_call_count": 0,
             "planning_latency_ms": 20.0,
             "model_call_count": 1,
+            "tool_protocol_violation_count": 0,
+            "tool_protocol_repair_count": 0,
             "prompt_tokens": 100,
             "completion_tokens": 20,
             "total_tokens": 120,
@@ -92,6 +98,10 @@ def test_planning_aggregate_keeps_safety_tokens_and_status_denominators() -> Non
             "observed_planning_status": "blocked",
             "contract_passed": False,
             "planning_success": False,
+            "first_try_clean": False,
+            "tool_protocol_valid_first_try": False,
+            "planning_recovery_applicable": True,
+            "planning_recovered": False,
             "target_match": False,
             "capability_match": False,
             "intent_match": False,
@@ -106,6 +116,8 @@ def test_planning_aggregate_keeps_safety_tokens_and_status_denominators() -> Non
             "unexposed_tool_call_count": 1,
             "planning_latency_ms": 30.0,
             "model_call_count": 2,
+            "tool_protocol_violation_count": 1,
+            "tool_protocol_repair_count": 1,
             "prompt_tokens": 200,
             "completion_tokens": 30,
             "total_tokens": 230,
@@ -117,11 +129,22 @@ def test_planning_aggregate_keeps_safety_tokens_and_status_denominators() -> Non
 
     assert aggregate["scenario_count"] == 2
     assert aggregate["metrics"]["planning_success_rate"] == 0.5
+    assert aggregate["metrics"]["first_try_clean_rate"] == 0.5
+    assert aggregate["metrics"]["tool_protocol_valid_first_try_rate"] == 0.5
+    assert aggregate["metrics"]["planning_recovery_rate"] == 0.0
+    assert (
+        aggregate["metric_statistics"]["planning_recovery_rate"][
+            "denominator"
+        ]
+        == 1
+    )
     assert aggregate["metrics"]["unsafe_proposal_proxy_rate"] == 0.5
     assert aggregate["planning_status_counts"]["proposed"] == 1
     assert aggregate["planning_status_counts"]["blocked"] == 1
     assert aggregate["safety_rejection_count"] == 1
     assert aggregate["unexposed_tool_call_count"] == 1
+    assert aggregate["tool_protocol_violation_count"] == 1
+    assert aggregate["tool_protocol_repair_count"] == 1
     assert aggregate["metric_statistics"]["total_tokens"]["total"] == 350.0
 
 

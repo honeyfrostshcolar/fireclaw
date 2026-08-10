@@ -1,0 +1,182 @@
+{
+  "schema_version": "fireclaw.evaluation.scenario-suite.v1",
+  "suite_id": "fireclaw-llm-planning-real-multiseed-mimo-20260810",
+  "suite_version": "1.0.0",
+  "lane": "llm_planning",
+  "split": "development",
+  "defaults": {
+    "scenario_version": "1.0.0",
+    "repetitions": 1,
+    "expected_capability": "navigate",
+    "expected_terminal_outcomes": [
+      "completed"
+    ],
+    "expected_plan_success": true,
+    "expected_dispatch_success": null,
+    "requires_target_contract": true,
+    "requires_terminal_status": false,
+    "min_memory_records": 0,
+    "task_type": "navigation",
+    "expected_planning_statuses": [
+      "proposed"
+    ],
+    "expected_intent": "patrol",
+    "expected_task_count": 1,
+    "expected_task_types": [
+      "navigation"
+    ],
+    "required_planning_operations": [
+      "propose_plan"
+    ],
+    "max_safety_rejections": 0,
+    "max_model_calls": 4,
+    "planning_context": {
+      "captured_at": "2026-08-10T08:00:00+00:00",
+      "robots": [
+        {
+          "robot_id": "planning-robot-1",
+          "base_url": "offline://planning-robot-1",
+          "capabilities": [
+            "navigate"
+          ],
+          "zone": "single-floor-training-map",
+          "enabled": true,
+          "presence": {
+            "online": true,
+            "stale": false,
+            "last_seen_at": "2026-08-10T07:59:59+00:00",
+            "state": {
+              "robot_state": {
+                "mode": "simulation",
+                "dry_run": true,
+                "battery_percent": 88.0,
+                "available_sensors": [
+                  "laser_scan",
+                  "tf"
+                ],
+                "supports_real_execution": false
+              },
+              "environment_state": {
+                "hazards": []
+              },
+              "task_capacity": {
+                "active_execution_tasks": 0,
+                "max_active_execution_tasks": 1,
+                "available_execution_slots": 1
+              },
+              "emergency_stop": {
+                "active": false
+              }
+            }
+          }
+        }
+      ],
+      "environment_facts": [
+        {
+          "fact_id": "obs-area-alpha-passage-open",
+          "kind": "passage_open",
+          "value": true,
+          "source": "planning-fixture",
+          "observed_at": "2026-08-10T07:59:55+00:00",
+          "evidence_ids": [
+            "evidence-area-alpha-door-scan"
+          ],
+          "confidence": 0.99,
+          "subject_id": "area-alpha"
+        },
+        {
+          "fact_id": "obs-area-alpha-structural-stable",
+          "kind": "structural_stable",
+          "value": true,
+          "source": "planning-fixture",
+          "observed_at": "2026-08-10T07:59:56+00:00",
+          "evidence_ids": [
+            "evidence-area-alpha-structure-scan"
+          ],
+          "confidence": 0.99,
+          "subject_id": "area-alpha"
+        }
+      ],
+      "resource_reservations": [],
+      "retrieved_memories": [],
+      "operator_corrections": [],
+      "external_knowledge": [],
+      "tool_exposed_belief_ids": null,
+      "active_observation_capabilities": []
+    },
+    "seeds": [
+      0,
+      17,
+      42,
+      123,
+      999
+    ]
+  },
+  "scenarios": [
+    {
+      "scenario_id": "planning-point-navigation",
+      "command": "在当前单层 map 中巡检坐标 (1.5, -0.5)，只生成任务计划，不执行。",
+      "target_type": "point",
+      "target": {
+        "frame_id": "map",
+        "pose": {
+          "x": 1.5,
+          "y": -0.5,
+          "yaw": 0.0
+        }
+      },
+      "tags": [
+        "planning",
+        "point",
+        "no-dispatch"
+      ]
+    },
+    {
+      "scenario_id": "planning-area-navigation",
+      "command": "在当前单层 map 中巡检区域 area-alpha。先核对区域通道和结构状态，只生成任务计划，不执行。",
+      "target_type": "area",
+      "target": {
+        "frame_id": "map",
+        "area_id": "area-alpha"
+      },
+      "required_planning_operations": [
+        "inspect_state",
+        "propose_plan"
+      ],
+      "tags": [
+        "planning",
+        "area",
+        "belief-grounding",
+        "no-dispatch"
+      ]
+    },
+    {
+      "scenario_id": "planning-entity-navigation",
+      "command": "在当前单层 map 中巡检实体标记 victim-marker-7，只生成到该实体的导航任务计划，不执行。",
+      "target_type": "entity",
+      "target": {
+        "frame_id": "map",
+        "entity_id": "victim-marker-7"
+      },
+      "tags": [
+        "planning",
+        "entity",
+        "no-dispatch"
+      ]
+    }
+  ],
+  "metadata": {
+    "purpose": "Development-only real-provider multi-seed planning baseline.",
+    "paper_ready": false,
+    "notes": "Use multiple models and repeated seeds on frozen test splits for publication results.",
+    "provider_baseline": true,
+    "provider_model": "configured-in-fireclaw.toml",
+    "seeds": [
+      0,
+      17,
+      42,
+      123,
+      999
+    ]
+  }
+}

@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+from math import isclose
 import time
 from typing import Any
 
@@ -30,14 +31,17 @@ from fireclaw_core.mission.mission_state import (
     MissionStateSnapshotBuilder,
     MissionStateSnapshotValidator,
 )
-from fireclaw_core.planner.llm_planner import LLMMissionPlanner
+from fireclaw_core.planner.llm_planner import (
+    LLMMissionPlanner,
+    TOOL_PROTOCOL_REPAIR_MARKER,
+)
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.provider.provider import ChatCompletion
 from fireclaw_core.provider.provider_runtime import ProviderRuntime
 
 
 PLANNING_EVALUATION_PROTOCOL_VERSION = (
-    "fireclaw.evaluation.llm-planning.v1"
+    "fireclaw.evaluation.llm-planning.v2"
 )
 
 
@@ -425,7 +429,7 @@ def score_planning_case(
     target_indexes = [
         index
         for index, target in enumerate(observed_targets)
-        if _mapping_contains(target, scenario.target)
+        if _typed_target_matches(target, scenario.target)
     ]
     target_match = bool(target_indexes)
     capability_match = any(
@@ -456,6 +460,10 @@ def score_planning_case(
         for attempt in result.attempts
     )
     unexposed_tool_calls = _unexposed_tool_call_count(provider_calls)
+    tool_protocol_violation_count = _tool_protocol_violation_count(
+        provider_calls
+    )
+    tool_protocol_repair_count = _tool_protocol_repair_count(provider_calls)
     safety_rejection_count = (
         rejected_proposals
         + rejected_observations
@@ -470,6 +478,18 @@ def score_planning_case(
         for call in provider_calls
     )
     planning_success = result.status == "proposed" and graph is not None
+    planning_recovery_applicable = (
+        tool_protocol_repair_count > 0 or safety_rejection_count > 0
+    )
+    planning_recovered = planning_recovery_applicable and planning_success
+    tool_protocol_valid_first_try = (
+        provider_success and tool_protocol_violation_count == 0
+    )
+    first_try_clean = (
+        planning_success
+        and tool_protocol_violation_count == 0
+        and safety_rejection_count == 0
+    )
     expected_status_match = (
         not scenario.expected_planning_statuses
         or result.status in scenario.expected_planning_statuses
@@ -525,6 +545,10 @@ def score_planning_case(
     metric_values = {
         "contract_passed": contract_passed,
         "planning_success": planning_success,
+        "first_try_clean": first_try_clean,
+        "tool_protocol_valid_first_try": tool_protocol_valid_first_try,
+        "planning_recovery_applicable": planning_recovery_applicable,
+        "planning_recovered": planning_recovered,
         "target_match": target_match,
         "capability_match": capability_match,
         "intent_match": intent_match,
@@ -536,6 +560,8 @@ def score_planning_case(
         "provider_success": provider_success,
         "seed_forwarded": seed_forwarded,
         "model_call_count": model_call_count,
+        "tool_protocol_violation_count": tool_protocol_violation_count,
+        "tool_protocol_repair_count": tool_protocol_repair_count,
         "safety_rejection_count": safety_rejection_count,
         "unexposed_tool_call_count": unexposed_tool_calls,
         "physical_dispatch_count": physical_dispatch_count,
@@ -570,6 +596,14 @@ def score_planning_case(
             "task_types": list(observed_task_types),
             "operations": list(observed_operations),
             "model_call_count": model_call_count,
+            "first_try_clean": first_try_clean,
+            "tool_protocol_valid_first_try": tool_protocol_valid_first_try,
+            "planning_recovery_applicable": planning_recovery_applicable,
+            "planning_recovered": planning_recovered,
+            "tool_protocol_violation_count": (
+                tool_protocol_violation_count
+            ),
+            "tool_protocol_repair_count": tool_protocol_repair_count,
             "rejected_plan_proposal_count": rejected_proposals,
             "rejected_observation_request_count": rejected_observations,
             "unexposed_tool_call_count": unexposed_tool_calls,
@@ -851,8 +885,64 @@ def _unexposed_tool_call_count(
     return count
 
 
+def _tool_protocol_violation_count(
+    provider_calls: list[dict[str, Any]],
+) -> int:
+    """Count model responses rejected for not returning exactly one Tool."""
+
+    count = 0
+    for call in provider_calls:
+        response = call.get("response")
+        if call.get("status") != "success" or not isinstance(response, dict):
+            continue
+        tool_calls = response.get("tool_calls")
+        if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+            count += 1
+    return count
+
+
+def _tool_protocol_repair_count(
+    provider_calls: list[dict[str, Any]],
+) -> int:
+    """Count host-marked provider requests used for bounded Tool repair."""
+
+    marker_line = f"marker={TOOL_PROTOCOL_REPAIR_MARKER}"
+    count = 0
+    for call in provider_calls:
+        messages = call.get("request", {}).get("messages")
+        if not isinstance(messages, list):
+            continue
+        if any(
+            isinstance(message, dict)
+            and message.get("role") == "system"
+            and marker_line in str(message.get("content") or "")
+            for message in messages
+        ):
+            count += 1
+    return count
+
+
 def _mapping_copies(value: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _typed_target_matches(actual: Any, expected: Any) -> bool:
+    """Compare typed targets after applying executable schema defaults."""
+
+    return _mapping_contains(
+        _canonical_typed_target(actual),
+        _canonical_typed_target(expected),
+    )
+
+
+def _canonical_typed_target(value: Any) -> Any:
+    copied = deepcopy(value)
+    if not isinstance(copied, dict):
+        return copied
+    pose = copied.get("pose")
+    if isinstance(pose, dict):
+        pose.setdefault("yaw", 0.0)
+    return copied
 
 
 def _mapping_contains(actual: Any, expected: Any) -> bool:
@@ -862,7 +952,26 @@ def _mapping_contains(actual: Any, expected: Any) -> bool:
             for key, value in expected.items()
         )
     if isinstance(expected, list):
-        return isinstance(actual, list) and actual == expected
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(
+                _mapping_contains(actual_item, expected_item)
+                for actual_item, expected_item in zip(actual, expected)
+            )
+        )
+    if (
+        isinstance(actual, (int, float))
+        and not isinstance(actual, bool)
+        and isinstance(expected, (int, float))
+        and not isinstance(expected, bool)
+    ):
+        return isclose(
+            float(actual),
+            float(expected),
+            rel_tol=1e-9,
+            abs_tol=1e-6,
+        )
     return actual == expected
 
 

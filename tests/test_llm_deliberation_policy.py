@@ -14,7 +14,10 @@ from fireclaw_core.mission.mission_state import (
     MissionEnvironmentFact,
     MissionStateSnapshotBuilder,
 )
-from fireclaw_core.planner.llm_planner import LLMMissionPlanner
+from fireclaw_core.planner.llm_planner import (
+    LLMMissionPlanner,
+    TOOL_PROTOCOL_REPAIR_MARKER,
+)
 from fireclaw_core.provider.provider import (
     ChatCompletion,
     TokenUsage,
@@ -484,6 +487,7 @@ def test_llm_policy_escalates_unknown_or_multiple_tool_calls() -> None:
     assert unknown.status == "escalated"
     assert unknown.reason_code == "unexpected_tool_name"
     assert unknown.attempts[0].operation == "escalate"
+    assert unknown_provider.chat_completion.call_count == 1
 
     multiple_provider = MagicMock()
     multiple_provider.chat_completion.return_value = ChatCompletion(
@@ -520,6 +524,64 @@ def test_llm_policy_escalates_unknown_or_multiple_tool_calls() -> None:
     assert multiple.status == "escalated"
     assert multiple.reason_code == "invalid_llm_decision"
     assert len(multiple.attempts) == 1
+    assert multiple_provider.chat_completion.call_count == 2
+    repair_messages = multiple_provider.chat_completion.call_args_list[
+        1
+    ].kwargs["messages"]
+    assert TOOL_PROTOCOL_REPAIR_MARKER in json.dumps(repair_messages)
+
+
+def test_llm_policy_recovers_one_invalid_tool_count_without_dispatch() -> None:
+    invalid_response = ChatCompletion(
+        content=None,
+        tool_calls=[
+            ToolCall(
+                id="duplicate-one",
+                name="inspect_mission_state",
+                arguments={"kind": "fleet_state"},
+            ),
+            ToolCall(
+                id="duplicate-two",
+                name="inspect_mission_state",
+                arguments={"kind": "fleet_state"},
+            ),
+        ],
+        usage=TokenUsage(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+        ),
+        model="test-model",
+        finish_reason="tool_calls",
+    )
+    provider = MagicMock()
+    provider.chat_completion.side_effect = [
+        invalid_response,
+        _response(
+            "propose_plan",
+            _plan_arguments(),
+            call_id="repaired-plan",
+        ),
+    ]
+    runtime, snapshot, context, _ = _runtime(provider)
+
+    result = runtime.deliberate(
+        mission_id="mission-1",
+        command="去二楼救人",
+        state_snapshot=snapshot,
+        planner_context=context,
+    )
+
+    assert result.status == "proposed"
+    assert result.planning_result is not None
+    assert result.planning_result.plan is not None
+    assert provider.chat_completion.call_count == 2
+    assert len(result.attempts) == 1
+    assert result.attempts[0].outcome == "accepted"
+    repair_messages = provider.chat_completion.call_args_list[1].kwargs[
+        "messages"
+    ]
+    assert TOOL_PROTOCOL_REPAIR_MARKER in json.dumps(repair_messages)
 
 
 def test_mission_agent_uses_llm_planner_as_deliberation_policy() -> None:

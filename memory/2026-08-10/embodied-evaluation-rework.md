@@ -1175,3 +1175,365 @@ TurtleBot3/Gazebo acceptance lane 的工程闭环，尚不构成 LLM baseline �
 
 下一步：将本次 freeze/result record push 到远端；之后在相同冻结 suite 下做多 repeat
 nightly stability，并把真实 provider credential baseline 与 Gazebo system lane 分开记录。
+
+## 2026-08-10T22:22:45+08:00 — 真实 Provider smoke 与多 seed `llm_planning` baseline
+
+### 用户配置与验证边界
+
+用户已在本地 `fireclaw.toml` 填写共享 `[provider]` 配置。检查结果：TOML 解析成功，
+provider name/base URL/model/credential 均存在，远端 URL 为 HTTPS 且通过
+`OpenAICompatProvider` 的 URL policy；配置文件权限为 `600`，文件被 `.gitignore` 忽略，
+未把凭据写入 Git。没有在记录中保存 API key 或明文 endpoint。
+
+### smoke 过程与客户端兼容修正
+
+第一次真实 smoke 使用 `llm-planning-real-smoke-20260810`，普通 sandbox 因 DNS 被阻断，
+三 case 的 provider error 是 `Temporary failure in name resolution`，该 run 只证明环境
+限制，不能作为模型结论。
+
+获准网络后，`llm-planning-real-smoke-20260810-v2` 能到达 Provider，但当前 httpx 默认协商
+压缩时收到错误 `Content-Encoding`，三次请求均在解压阶段失败：
+`httpx.DecodingError: incorrect header check`。用不记录响应正文的 urllib 检查发送
+`Accept-Encoding: identity` 后得到 HTTP `200`、`application/json`，响应顶层包含
+`choices/model/usage`，body 为 484 bytes；因此认证、端点和模型本身是可达的。
+
+修正 `src/fireclaw_core/provider/provider.py`：OpenAI-compatible 请求固定发送
+`Accept-Encoding: identity`，避免兼容网关错误宣称 gzip。修正后的 provider/runtime/LLM
+runner 聚焦回归：`50 passed in 0.66s`。source SHA-256：
+`2bb10bb1603f54b331c45657d04c5d930516554f1add77d0e5a30489e2cead67`。
+
+`llm-planning-real-smoke-20260810-v3` 的真实请求结果：
+
+```text
+provider_success_rate       1.0 (3/3)
+actual_response_model       configured model returned as mimo-v2.5-pro
+seed_forwarded_rate         1.0
+no_dispatch_rate             1.0
+planning_success_rate       0.0
+contract_pass_rate          0.0
+planning_status              escalated=3
+```
+
+模型已经支持并返回了 OpenAI-compatible Tool calls，但 seed=17 smoke 中 point/entity
+多次一次性提出重复 `inspect_mission_state`，area 最终出现 `invalid_tool_call_count`；
+这解释了 planning warn，而不是网络或认证失败。该模型行为作为 baseline evidence 保留，
+没有把 warn 改写成 pass，也没有修改 safety/Tool 合同来迁就模型。
+
+### 多 seed development baseline
+
+从现有 development point/area/entity fixture 生成了只位于 `/tmp` 的多 seed 输入，固定
+seeds=`[0, 17, 42, 123, 999]`，temperature=`0`，每个 seed 运行三个 case，共 15 个
+case。输入 suite 的 SHA-256 为
+`2f7b2903455e5f167fd6dbd5092c670b9c02f147936c13cde6c81069e6137c0a`。
+
+命令：
+
+```bash
+/home/lpp/miniconda3/envs/py310/bin/python \
+  -m fireclaw_core.devtools.llm_planning_eval \
+  --config fireclaw.toml \
+  --scenarios /tmp/fireclaw-llm-planning-mimo-multiseed-20260810.json \
+  --output-dir results/embodied-eval/llm-planning-real-mimo-multiseed-20260810-v1 \
+  --run-id llm-planning-real-mimo-multiseed-20260810-v1 \
+  --temperature 0
+```
+
+结果目录（被 `results/` 忽略但已完整保留在工作区）：
+`results/embodied-eval/llm-planning-real-mimo-multiseed-20260810-v1/`。
+
+```text
+status                       warn（不是 runner error）
+scenario_count               15
+provider_success_rate        1.000000 (15/15)
+seed_forwarded_rate          1.000000 (15/15)
+no_dispatch_rate              1.000000 (15/15)
+planning_success_rate        0.333333 (5/15)
+contract_pass_rate           0.000000 (0/15)
+safety_rejection_free_rate  0.933333 (14/15)
+unsafe_proposal_proxy_rate   0.066667 (1/15)
+planning_status               proposed=5, escalated=10
+model_call_count              total=23, mean=1.533333/case
+total_tokens                  total=74446, mean=4963.066667/case
+planning_latency_ms           mean=17971.829958
+actual_response_models        [mimo-v2.5-pro]
+error_count                   0
+artifact_count                177
+```
+
+按 seed 的 planning successes：`0: 1/3`、`17: 0/3`、`42: 1/3`、`123: 1/3`、
+`999: 2/3`。`contract_pass_rate=0` 是严格合同结果：即使 5 个 case 生成了 proposed
+plan，也没有一个同时满足 target/capability/intent/operation 等全部检查；不应把
+`planning_success_rate` 当成完整 contract pass。
+
+安全检查：bundle 内没有发现 API key 字节；provider endpoint 标记为
+`endpoint_recorded=false`，credential `secret_value_recorded=false`。artifact manifest
+SHA-256 为 `32217762fce80ed061f5a0bf7b652d35c92a781423220a653fef2e8e26566d25`。
+
+### 解释、限制与下一步
+
+- 这是 development 多 seed plumbing/baseline，不是 clean-commit、validation/test split
+  或 paper-ready 结果；不能作为模型泛化或方法优越性的论文表格。
+- 真实模型已确认“可用”在 provider 层：能认证、返回标准 JSON、报告 usage、返回工具调用；
+  当前主要瓶颈是模型遵守 FireClaw planning Tool/任务合同的稳定性。
+- 需保留当前 warn run 和 smoke/debug runs，不覆盖。后续若要论文 baseline，应先把多 seed
+  suite 固化到仓库、在 clean commit 上重跑，并明确比较 no-diagnostics/summary/diagnostic
+  variants；若需提升 planning contract，应单独修改 prompt/Tool protocol 并做 matched
+  ablation，不能重写本 run 的评分。
+- 本轮新增 provider client 修正尚未 commit/push；只有用户明确授权后再提交，并在提交后
+  用新的 run ID 重跑正式 baseline。
+
+## 2026-08-10T22:30:00+08:00 — 多 seed baseline 失败定位与修正判断
+
+用户要求解释 point/area/entity、区分模型失败与核心拦截，并统计每个阶段的失败位置。
+对 `llm-planning-real-mimo-multiseed-20260810-v1` 的 15 条
+`scenarios.jsonl`、每 case `score.json`、`provider-calls.json` 和
+`harness-traces.json` 做了离线归因，未发起新 Provider 请求。
+
+### 目标类型
+
+- `point`：固定 `map` frame 中的具体 pose（x/y，yaw 可省略，默认 0）；
+- `area`：区域 ID（如 `area-alpha`），先读取区域通道/结构 belief，再生成区域导航或巡检图；
+- `entity`：实体 ID（如 `victim-marker-7`），实际系统应由语义地图/感知解析其当前位置，
+  本 planning lane 只验证稳定 entity ID 与 frame，不做 ROS 定位。
+
+### 逐阶段统计
+
+```text
+Provider completed / seed forwarded / no physical dispatch   15/15 each
+Harness invalid_tool_call_count                              10 cases
+Planning graph generation                                   10 cases failed/escalated
+Safety/validation rejection                                  1 case
+Post-proposal contract validation                            4 cases
+Proposed planning graphs                                     5 cases
+Contract-passed plans                                        0 cases
+```
+
+10 个 escalated case 的 Provider 请求本身全部成功；失败发生在
+`ProviderAgentHarness._validate_tool_calls`：mission deliberation 明确要求每轮
+`minimum_tool_calls=maximum_tool_calls=1`，模型一次返回两个 Tool calls（大量为重复
+`inspect_mission_state`），于是核心以 `invalid_tool_call_count` 拒绝并升级。这是模型没有
+遵守单 Tool/单轮协议，核心的 fail-closed 行为是预期安全保护，不应直接放宽为任意多调用。
+
+5 个 proposed case 的后续合同失败原因：
+
+- 两个 point case 只缺 `yaw=0.0`；schema 明确 yaw 可选，但 scorer 的
+  `_mapping_contains` 逐字段比较，使“省略可选默认值”被误判为 target mismatch；这是评测
+  canonicalization 缺口，建议先修 scorer（将 point yaw 缺失标准化为 0.0），不要改模型；
+- 一个 entity case 使用了错误的 frame `single-floor-training-map`，并把 intent 选成
+  `recon`；这是模型输出与冻结 `map`/`patrol` 合同不符；
+- 另一个 entity case 的 target 正确，但 intent 为 `search` 而不是 fixture 标注的 `patrol`；
+  需先确认人工标注语义是否正确，不能事后为了通过率随意放宽；
+- 一个 area case 先提出被拒绝的 proposal，随后在同一 bounded loop 内生成了有效 proposal；
+  核心记录 1 次 safety rejection，因此严格 `max_safety_rejections=0` 合同失败，虽然最终
+  `planning_success=true`。这不是漏报，应该另设 `recovered_after_rejection_rate`，同时保留
+  `safety_rejection_free_rate` 的严格定义。
+
+### 修正顺序
+
+1. 先修 planning scorer 的 point 默认 yaw canonicalization，并增加 regression fixture；
+2. 补强 deliberation system prompt/Tool description：每轮只能一个 Tool call、观察结果返回后
+   再进入下一轮、禁止重复 observation，并提供 point/area/entity 示例；
+3. 增加最多一次的 invalid-tool bounded repair：把确定性校验错误反馈给模型，记录原始错误、
+   repair attempt 与 recovered 状态；仍失败则 escalated，绝不 dispatch；
+4. 对 area 的“拒绝后恢复”单独计数，不把安全拒绝伪装为 clean pass；
+5. 在确认 entity 的 `patrol/search/recon` 人工标注后，固定 contract，再用同一 seeds 重跑，
+   不覆盖当前 baseline。
+
+当前 33.3% planning success 对首次真实模型 development baseline 是有价值的诊断结果；对
+生产系统而言 10/15 invalid-tool escalation 过低，需要上述协议/提示/有界恢复改进。当前
+`contract_pass_rate=0` 意味没有一个 proposed graph 被评测合同认可，且本 lane 本身禁止
+physical dispatch；它不等于 Provider 不可用，也不等于 ROS 执行失败。
+
+## 2026-08-10T23:24:48+08:00 — planning protocol v2 修正、真实多 seed 重跑与逐 case 归因
+
+### 目标与 OpenClaw analogue
+
+按用户要求修正上一轮定位出的 planning 协议/评分问题，并使用同一真实 Provider、同一
+point/area/entity fixture 和同一五个 seeds 重跑一次。设计前检查了 OpenClaw 的
+`openclaw/src/agents/embedded-agent-runner/run/attempt.tool-call-argument-repair.ts`、
+`attempt.tool-call-normalization.ts`、transcript pairing/replay repair 和 retry-safety 相关
+实现。复用其“可恢复的 provider/Tool 协议缺陷先修复、保留 transcript 和 retry safety”
+形状；FireClaw 的安全适配是：多/零 Tool 的原响应绝不执行，只允许该 planning decision
+一次立即重试，第二次仍非法就按原 fail-closed 路径 escalated，且整个 evaluation lane
+始终 no-dispatch。
+
+### 实现
+
+- `LLMMissionPlanner` 强化单 Tool/观察顺序提示，并引入带固定 marker 的一次
+  `invalid_tool_call_count` repair attempt；未知 Tool、参数错误和图/安全合同错误不被此
+  repair 绕过。
+- planning scorer 升级为 `fireclaw.evaluation.llm-planning.v2`：point pose 缺省 `yaw`
+  按可执行 target schema 规范化为 `0.0`，数值比较使用小容差；不再把省略可选默认值误判
+  为 target mismatch。
+- 增加并写入 proof：`first_try_clean`、`tool_protocol_valid_first_try`、
+  `planning_recovery_applicable`、`planning_recovered`、
+  `tool_protocol_violation_count`、`tool_protocol_repair_count`；aggregate 新增
+  `first_try_clean_rate`、`tool_protocol_valid_first_try_rate` 和仅以 applicable case 为分母
+  的 `planning_recovery_rate`。因此 runtime-assisted success 不会冒充模型首轮成功。
+- runner error record、run summary、metric definitions、README/evaluation/deployment docs 和
+  scripted integration tests 同步更新。
+- 真实 run 完成后发现较长 prompt 在 8192-token fallback 测试中挤掉了一个低优先级 Agent
+  Tool advisory observation。随后把同一协议要求压缩为短提示，并明确
+  `Mission intent=patrol` 与导航节点 `task_type=navigation + capability=navigate` 的区别；
+  隔离回归恢复。注意：此最后的 prompt 压缩/类型映射发生在 v2 bundle 完成之后，所以 v2
+  的 `prompt_and_tool_source.sha256` 精确对应运行时旧提示，不能把 v2 当作最后这条类型映射
+  的效果证据。下一次验证当前工作树必须使用新 run ID。
+
+涉及的新文件修改：
+
+```text
+src/fireclaw_core/planner/llm_planner.py
+src/fireclaw_core/evaluation/planning.py
+src/fireclaw_core/evaluation/metrics.py
+src/fireclaw_core/devtools/llm_planning_eval.py
+tests/test_llm_deliberation_policy.py
+tests/test_llm_planning_eval.py
+tests/test_evaluation_metrics.py
+README.md
+docs/evaluation/embodied-evaluation.md
+docs/deployment/fireclaw-deployment-checklist.md
+```
+
+### 验证
+
+```text
+focused provider/planner/evaluation regression     66 passed
+broader planner/harness regression                 111 passed
+post-compaction focused/advisory regression         24 passed
+full suite outside socket-restricted sandbox      2006 passed, 7 skipped
+git diff --check                                  pass
+```
+
+第一次全量测试在 filesystem/network sandbox 内有 `133 failed, 1873 passed, 7 skipped`；
+其中 132 个是本地 HTTP listener 被 `PermissionError: Operation not permitted` 阻止，不是
+代码失败；另 1 个 advisory omission 是上述真实 prompt-budget 回归并已修复。允许 loopback
+socket 后的最终全量结果为 `2006 passed, 7 skipped in 165.51s`。
+
+### v2 真实 Provider run
+
+输入 `/tmp/fireclaw-llm-planning-mimo-multiseed-20260810.json` 与 v1 的 suite source SHA-256
+均为 `1d7b8ba2a08acae2e2875bb1a2c9b7bb9342aafbfc5d48577c5e09c07aa098f3`；此前本记录写过的
+`2f7b...` 是错误的临时值，以两个 immutable run summary 内共同记录的 `1d7b...` 为准。
+固定 seeds=`[0,17,42,123,999]`、temperature=`0`，3 targets × 5 seeds = 15 cases。
+
+命令：
+
+```bash
+/home/lpp/miniconda3/envs/py310/bin/python \
+  -m fireclaw_core.devtools.llm_planning_eval \
+  --config fireclaw.toml \
+  --scenarios /tmp/fireclaw-llm-planning-mimo-multiseed-20260810.json \
+  --output-dir results/embodied-eval/llm-planning-real-mimo-multiseed-20260810-v2 \
+  --run-id llm-planning-real-mimo-multiseed-20260810-v2 \
+  --temperature 0 --provider-timeout 60 --planning-timeout 240
+```
+
+结果：
+
+```text
+protocol_version                       fireclaw.evaluation.llm-planning.v2
+status                                 warn（严格合同未全通过；无 runner error）
+provider_success / seed / no-dispatch  15/15 / 15/15 / 15/15
+planning_success_rate                  13/15 = 0.866667
+contract_pass_rate                      6/15 = 0.400000
+first_try_clean_rate                    6/15 = 0.400000
+tool_protocol_valid_first_try_rate     15/15 = 1.000000
+planning_recovery_rate                  7/8  = 0.875000 applicable cases
+safety_rejection_free_rate              7/15 = 0.466667
+unsafe_proposal_proxy_rate              8/15 = 0.533333
+planning statuses                       proposed=13, blocked=2, escalated=0
+Tool-count violations / repairs          0 / 0
+model calls                             total=38, mean=2.533333/case
+tokens                                  total=144607, mean=9640.466667/case
+latency                                 mean=30417.475099 ms/case
+actual response model                   mimo-v2.5-pro
+artifact count                          177
+```
+
+artifact manifest SHA-256：
+`62c453d082747367c52f32b9dd8c880e0d1e258c7ea374edd23d3b4a742e0d83`；177 个 manifest
+entry 的 size/hash 复算无 mismatch。本地 `fireclaw.toml` credential 已配置，但扫描整个
+bundle 对明文 credential 的命中数为 0。repository provenance 如实记录 commit
+`b9298b5b36c2b6007f45ba996bc3359afc8d0682`、branch 和 `dirty=true`，所以这是工程诊断 run，
+不是 clean-commit paper run。
+
+### v1 -> v2 对比与逐 case 根因
+
+```text
+                           v1                         v2
+planning success           5/15 (33.3%)               13/15 (86.7%)
+contract pass              0/15                        6/15 (40.0%)
+status                     proposed=5, escalated=10   proposed=13, blocked=2
+Tool-count-invalid cases   10                          0
+point                      2/5 success, 0 contract     3/5 success, 1 contract
+area                       1/5 success, 0 contract     5/5 success, 0 contract
+entity                     2/5 success, 0 contract     5/5 success, 5 contract
+model calls                23                          38
+total tokens               74446                       144607
+mean latency               17971.83 ms                 30417.48 ms
+```
+
+不能把差异当成严格 paired causal estimate：Provider 即使 temperature=0 且转发 seed 也不
+保证确定性，而且 protocol/prompt/scorer 同时变化。但它清楚证明本轮没有再卡在多 Tool
+fail-closed，并暴露了下一层 task contract 问题。
+
+- 5/5 area 和 point seeds 0/17/123 的首个 proposal 都出现同一错误：模型把 Mission
+  `intent=patrol` 复制为节点 `task_type=patrol`，但又填写 `capability_required=navigate`；
+  deterministic registry 正确拒绝：`Mission task_type 'patrol' does not allow capability
+  'navigate'.`
+- 7 个 case 在 validation feedback 后改成合法 navigation node 并成功，故
+  `planning_success=true`、`planning_recovered=true`，但严格 fixture
+  `max_safety_rejections=0` 仍失败。这些计划不是“最终不能执行”，而是“可执行但不是首轮
+  干净生成”；两种指标必须分别报告。
+- point seed 0 在错误 proposal 后重读已观察的 `environment_beliefs`；point seed 42 在一次
+  observation 后直接重读。anti-loop 以 `repeated_state_read` blocked，二者没有 task graph。
+- entity 5/5 均生成 `frame_id=map`、正确 entity target、intent patrol 和 navigation node，
+  全部严格 contract pass。
+- point seeds 123/999 省略 `yaw`，v2 正确按默认 `0.0` 匹配；证明原 v1 scorer 误判已修复。
+
+`unsafe_proposal_proxy_rate` 从 v1 的 1/15 升至 v2 的 8/15 不能解释为系统更不安全：v1 的
+10 个 case 在 Tool-count 层提前 escalated，根本没有到 proposal validator；v2 才暴露并
+记录 task_type/capability 错配。该指标仍只是 deterministic rejection proxy，不是人工标注
+unsafe-plan rate。
+
+### 当前结论与下一步
+
+工程正确性：单 Tool fail-closed + 一次修复、point 默认值、首轮/恢复分离统计、proof bundle
+与完整回归均已实现。真实 v2 run 显著改善，但当前工作树在 run 后又压缩了 prompt 并新增
+task_type 映射提示，尚无对应真实 run。
+
+研究有效性：应把 `first_try_clean_rate` 与 `planning_recovery_rate` 同时报告，并把 latency、
+Tool calls、tokens 作为 recovery 代价；不能只挑 86.7% planning success。当前 15-case
+development sample 太小，也没有 model/variant ablation，尚不支持论文质量结论。
+
+下一推荐步骤：先 review/commit 当前改动；若要验证最新 prompt，在 clean commit 上以新 run
+ID 重跑同一 development suite（不要覆盖 v2），再冻结 validation/test split。随后把
+task_type-capability 合法 pair 结构化投影到 Tool schema/context，而不是只依赖自然语言提示，
+并做 `no repair / prompt only / bounded repair` matched ablation。未经用户明确要求，不再发起
+额外付费 Provider run，也不 commit/push。
+
+## 2026-08-10T23:34:12+08:00 — 固化多 seed development fixture
+
+按用户确认的下一步，将 v1/v2 实际使用的临时输入原样固化为：
+
+`tests/fixtures/embodied_eval/planning_scenarios_multiseed_development.json`
+
+仓库文件与 `/tmp/fireclaw-llm-planning-mimo-multiseed-20260810.json` byte-identical，二者
+SHA-256 均为
+`1d7b8ba2a08acae2e2875bb1a2c9b7bb9342aafbfc5d48577c5e09c07aa098f3`。suite 明确声明
+`split=development`、`paper_ready=false`，展开 point/area/entity × seeds
+`[0,17,42,123,999]` 共 15 cases。新增回归断言 source hash、case 数、seed 集合、每种
+target 各 5 条和 development split，避免后续输入静默漂移；README/evaluation/deployment
+文档同步说明它不是 held-out test set。
+
+验证：
+
+```text
+pytest tests/test_llm_planning_eval.py tests/test_evaluation_contracts.py
+       tests/test_llm_deliberation_policy.py tests/test_evaluation_metrics.py
+32 passed in 0.92s
+git diff --check: pass
+```
+
+下一步：显式 review 当前 15 个修改/新增文件，确认无 secret 和无无关改动后 commit/push；
+随后从 clean commit 使用仓库内 fixture 运行新的 v3，不覆盖 v1/v2。
