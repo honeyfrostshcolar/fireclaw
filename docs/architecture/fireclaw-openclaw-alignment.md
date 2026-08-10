@@ -180,9 +180,9 @@ Current implementation:
 
 - `FireClawAgent`
 - local planner and safety gate;
-- legacy executable Tool manifest loading (`*.skill.json`) as a
-  simulation-only, policy-projected `process` contribution that must execute
-  through `ComputerSandbox`;
+- manifest-first Plugin discovery with public typed Tool and physical Tool
+  contracts; process Tools must be Plugin contributions projected through the
+  deployment policy and `ComputerSandbox`;
 - declarative `PhysicalSkillPlugin` definitions and generic
   `SkillRegistry.register_plugin()` compatibility APIs, following OpenClaw's
   `defineToolPlugin/registerTool` shape for atomic Tools;
@@ -196,8 +196,8 @@ Current implementation:
   classification, and basic tool-call validation;
 - plugin-owned tool schemas, task-target bindings, mutation guards, safety
   classification, resources, evidence, and operator projection;
-- `RobotActionRuntime` with registry-based Adapter dispatch and no per-skill
-  action switch;
+- `RobotActionRuntime` with explicitly registered Plugin handlers and no
+  per-Tool action switch or Adapter method fallback;
 - SQLite WAL authoritative runtime state with revisioned task writes and
   transactional task/event commits;
 - short-lived signed execution authorization bound to the command, structured
@@ -215,8 +215,7 @@ Missing:
 - typed Tool contracts and broader Skills for more real robot capabilities;
 - externally authenticated actor identity and scope claims for production
   deployment;
-- discovery, signing, sandboxing, and out-of-process loading for third-party
-  physical plugins;
+- signing and out-of-process isolation for third-party physical Plugins;
 - full wiring from success-evidence metadata into a generic completion
   validator.
 
@@ -224,26 +223,25 @@ Missing:
 
 Responsibilities:
 
-- isolate ROS, simulator, SDK, perception, navigation, manipulation, communication, and actuation APIs from agent code;
-- render FireClaw actions into robot-specific payloads;
-- enforce explicit config before live transport;
-- propagate feedback, timeout, and cancellation.
+- keep core `RobotAdapter` limited to state, environment observation, and
+  emergency stop;
+- let each domain Plugin own ROS/SDK translation, feedback, timeout,
+  cancellation, and terminal-state mapping;
+- enforce explicit deployment and Plugin configuration before live transport.
 
 Current implementation:
 
-- `Ros1RobotAdapter`
-- `Ros1Transport`
-- `ros1_config`
-- `ros1_template`
-- mock, simulator, dry-run, and ROS1 adapter modes.
+- `Ros1RobotAdapter` for state, sensor discovery, and emergency stop;
+- `Ros1Transport`, `ros1_config`, and `ros1_template` as core transport
+  infrastructure;
+- Plugin-owned `Ros1MoveBaseBackend` for navigation;
+- mock, simulator, dry-run, and ROS1 Adapter modes.
 
 Missing:
 
-- live ROS master smoke tests;
-- real message construction/introspection beyond dictionary payloads;
-- ROS2 adapter beyond mock/skeleton behavior;
-- long-lived multi-action client registry;
-- deployment-specific robot config examples.
+- recorded current-architecture Gazebo and real-robot acceptance;
+- complete physical deadline enforcement across every Plugin Adapter;
+- a real ROS2 core Adapter and Nav2 Plugin.
 
 ### 7. Memory and Audit Layer
 

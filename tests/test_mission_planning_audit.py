@@ -36,7 +36,7 @@ def test_audit_record_serializes_robot_snapshot_and_decisions():
         available_robots=[
             {
                 "robot_id": "gazebo_turtlebot3",
-                "capabilities": ["search_for_victims"],
+                "capabilities": ["victim_search"],
                 "enabled": True,
                 "zone": "training",
             }
@@ -74,7 +74,7 @@ def test_build_available_robot_snapshot_is_serializable():
             RobotRegistryEntry(
                 robot_id="r1",
                 base_url="http://r1:8765",
-                capabilities=("search_for_victims", "patrol"),
+                capabilities=("victim_search", "patrol"),
                 zone=None,
                 enabled=True,
             )
@@ -84,7 +84,7 @@ def test_build_available_robot_snapshot_is_serializable():
     assert snapshot == [
         {
             "robot_id": "r1",
-            "capabilities": ["search_for_victims", "patrol"],
+            "capabilities": ["victim_search", "patrol"],
             "enabled": True,
             "zone": None,
         }
@@ -128,7 +128,7 @@ def test_jsonl_mission_planning_audit_sink_appends_records(tmp_path):
     sink = JsonlMissionPlanningAuditSink(path)
     record = MissionPlanningAuditRecord(
         command="去二楼搜索",
-        available_robots=[{"robot_id": "r1", "capabilities": ["search_for_victims"], "enabled": True, "zone": None}],
+        available_robots=[{"robot_id": "r1", "capabilities": ["victim_search"], "enabled": True, "zone": None}],
         tool_schema={"type": "function"},
         llm_tool_call={"id": "call-1", "name": "create_mission_plan", "arguments": {"intent": "search"}},
         decisions=[

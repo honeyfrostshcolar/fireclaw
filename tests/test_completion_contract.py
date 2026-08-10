@@ -39,7 +39,7 @@ from fireclaw_core.mission.task_graph import (
 def _victim_search_contract():
     return CompletionContractCompiler().compile(
         task_type="victim_search",
-        capability_required="search_for_victims",
+        capability_required="victim_search",
         target=MissionTarget(frame_id="building", floor=2),
         completion_goal="Search floor 2 and report the number of victims found.",
     )
@@ -60,10 +60,10 @@ def _terminal_state(*, floor: int = 2, victims_found: int | None = 1):
                 "execution": {
                     "steps": [
                         {
-                            "skill_name": "search_for_victims",
+                            "skill_name": "victim_search",
                             "status": "succeeded",
                             "output": {
-                                "action": "search_for_victims",
+                                "action": "victim_search",
                                 "timestamp": "2026-07-28T01:00:01+00:00",
                                 "data": data,
                             },
@@ -80,7 +80,7 @@ def test_default_task_type_registry_exposes_typed_policies() -> None:
 
     assert "victim_search" in registry.names()
     search = registry.require("victim_search")
-    assert search.allowed_capabilities == ("search_for_victims",)
+    assert search.allowed_capabilities == ("victim_search",)
     assert search.default_timeout_seconds == 180.0
     assert search.recovery_policy == "reassign"
 
@@ -118,7 +118,7 @@ def test_plan_projection_rejects_declared_contract_without_evidence() -> None:
                 robot_id="robot-a",
                 command="去二楼搜索受困人员",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 task_type="victim_search",
                 completion_goal="Search floor 2.",
                 completion_contract={
@@ -244,7 +244,7 @@ def _schedule_typed_search(tmp_path, *, include_result: bool):
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         )
     ])
     contract = _victim_search_contract()
@@ -256,7 +256,7 @@ def _schedule_typed_search(tmp_path, *, include_result: bool):
                 robot_id="robot-a",
                 command="去二楼搜索受困人员",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 node_id="search-floor-2",
                 task_type="victim_search",
                 target=MissionTarget(
@@ -321,7 +321,7 @@ def _typed_search_plan(
                 robot_id=robot_id,
                 command="去二楼搜索受困人员",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 node_id="search-floor-2",
                 task_type="victim_search",
                 target=MissionTarget(
@@ -440,12 +440,12 @@ def test_completion_rejection_returns_to_llm_and_dispatches_revised_plan(
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
         RobotRegistryEntry(
             robot_id="robot-b",
             base_url="http://robot-b.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
     agent = MissionAgent(
@@ -568,7 +568,7 @@ def test_incomplete_result_gets_one_persisted_result_recheck(tmp_path) -> None:
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         )
     ])
     mission_path = tmp_path / "missions.jsonl"

@@ -31,7 +31,7 @@ def test_mission_agent_submit_subtask_sends_structured_task():
         RobotRegistryEntry(
             robot_id="robot-1",
             base_url="http://robot-1",
-            capabilities=["search_for_victims"],
+            capabilities=["navigate_to_point"],
         )
     ])
     client = RecordingClient()
@@ -39,7 +39,7 @@ def test_mission_agent_submit_subtask_sends_structured_task():
 
     result = agent.submit_subtask(
         "robot-1",
-        "去坐标 (2.0, 1.5) 搜索受困人员",
+        "导航到 map 坐标 (2.0, 1.5)",
         session_id="session-1",
         operator={"operator_id": "operator-1"},
     )
@@ -56,21 +56,17 @@ def test_mission_agent_submit_subtask_sends_structured_task():
             "yaw": 0.0,
         }
     }
-    assert structured_task["required_skills"] == [
-        "navigate_to_point",
-        "search_for_victims",
-        "report_status",
-    ]
+    assert structured_task["required_skills"] == ["navigate_to_point"]
 
 
-def test_mission_agent_structured_task_uses_mission_subtask_floor_not_command_text():
+def test_mission_agent_structured_task_uses_explicit_target_not_command_text():
     from fireclaw_core.mission.mission_planner import MissionSubtask
 
     registry = RobotRegistry([
         RobotRegistryEntry(
             robot_id="robot-1",
             base_url="http://robot-1",
-            capabilities=["search_for_victims"],
+            capabilities=["navigate_to_point"],
         )
     ])
     client = RecordingClient()
@@ -78,10 +74,15 @@ def test_mission_agent_structured_task_uses_mission_subtask_floor_not_command_te
 
     planned_subtask = MissionSubtask(
         robot_id="robot-1",
-        command="search target zone alpha",
-        floor=2,
-        capability_required="search_for_victims",
+        command="navigate to the assigned map pose",
+        floor=None,
+        capability_required="navigate_to_point",
         execution_group=0,
+        task_type="navigate",
+        target={
+            "frame_id": "map",
+            "pose": {"x": 4.0, "y": -1.0, "yaw": 1.57},
+        },
     )
 
     result = agent.submit_subtask(
@@ -94,5 +95,9 @@ def test_mission_agent_structured_task_uses_mission_subtask_floor_not_command_te
 
     assert result["status"] == "accepted"
     structured_task = client.calls[0][1]["structured_task"]
-    assert structured_task["target"] == {"floor": 2}
-    assert structured_task["command"] == "search target zone alpha"
+    assert structured_task["target"] == {
+        "frame_id": "map",
+        "pose": {"x": 4.0, "y": -1.0, "yaw": 1.57},
+    }
+    assert structured_task["command"] == "navigate to the assigned map pose"
+    assert structured_task["required_skills"] == ["navigate_to_point"]

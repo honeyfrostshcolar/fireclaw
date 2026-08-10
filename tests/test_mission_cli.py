@@ -11,34 +11,6 @@ from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
 
 
-def _write_slow_policy_skill(skills_dir: Path) -> None:
-    skills_dir.mkdir()
-    (skills_dir / "slow_policy.py").write_text(
-        "import json, time\n"
-        "time.sleep(10)\n"
-        "print(json.dumps({'ok': True, 'data': {'policy': 'slow'}}))\n",
-        encoding="utf-8",
-    )
-    (skills_dir / "slow_policy.skill.json").write_text(
-        json.dumps(
-            {
-                "name": "slow_policy",
-                "description": "Slow policy skill used to test mission cancellation.",
-                "runtime": "subprocess",
-                "command": [sys.executable, "slow_policy.py"],
-                "timeout_seconds": 15,
-                "dry_run_only": True,
-                "risk_level": "low",
-                "input_schema": {
-                    "type": "object",
-                    "additionalProperties": True,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
 def _wait_for_cli_trace(mission_registry_path, robot_registry_path, mission_id):
     deadline = time.time() + 3
     while time.time() < deadline:
@@ -76,7 +48,6 @@ def test_mission_cli_submit_subtask_records_mission(tmp_path):
             memory_path=str(tmp_path / "robot-memory.jsonl"),
             event_path=str(tmp_path / "robot-events.jsonl"),
             task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -142,7 +113,6 @@ def test_mission_cli_trace_aggregates_robot_subagent_trace(tmp_path):
             memory_path=str(tmp_path / "robot-memory.jsonl"),
             event_path=str(tmp_path / "robot-events.jsonl"),
             task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -186,85 +156,6 @@ def test_mission_cli_trace_aggregates_robot_subagent_trace(tmp_path):
     assert trace["subtasks"][0]["robot_trace"]["result"]["status"] == "completed"
 
 
-def test_mission_cli_cancel_requests_robot_subagent_cancellation(
-    tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
-):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
-    gateway = FireClawGateway(
-        GatewayConfig(
-            host="127.0.0.1",
-            port=0,
-            adapter="dry-run",
-            robot_id="robot-1",
-            memory_path=str(tmp_path / "robot-memory.jsonl"),
-            event_path=str(tmp_path / "robot-events.jsonl"),
-            task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
-        ),
-        workspace_skill_executor=legacy_skill_executor,
-    )
-    gateway.start()
-    try:
-        robot_registry_path = tmp_path / "robots.json"
-        mission_registry_path = tmp_path / "missions.jsonl"
-        robot_registry_path.write_text(
-            json.dumps({"robots": [{"robot_id": "robot-1", "base_url": gateway.base_url}]}),
-            encoding="utf-8",
-        )
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "fireclaw_core.mission.mission_cli",
-                "submit-subtask",
-                "--robot",
-                "robot-1",
-                "--command",
-                    "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
-                "--session-id",
-                "mission-cli-cancel",
-                "--robot-registry",
-                str(robot_registry_path),
-                "--mission-registry",
-                str(mission_registry_path),
-            ],
-            check=True,
-            cwd=".",
-            text=True,
-            capture_output=True,
-        )
-
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "fireclaw_core.mission.mission_cli",
-                "cancel",
-                "mission-cli-cancel",
-                "--robot-registry",
-                str(robot_registry_path),
-                "--mission-registry",
-                str(mission_registry_path),
-            ],
-            check=True,
-            cwd=".",
-            text=True,
-            capture_output=True,
-        )
-        result = json.loads(completed.stdout)
-    finally:
-        gateway.stop()
-
-    assert result["status"] == "cancel_requested"
-    assert result["cancelled_subtask_count"] == 1
-    assert result["subtasks"][0]["robot_id"] == "robot-1"
-    assert result["subtasks"][0]["status"] == "cancel_requested"
-
-
 def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
     gateway1 = FireClawGateway(
         GatewayConfig(
@@ -275,7 +166,6 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
             memory_path=str(tmp_path / "robot1-memory.jsonl"),
             event_path=str(tmp_path / "robot1-events.jsonl"),
             task_queue_path=str(tmp_path / "robot1-tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway2 = FireClawGateway(
@@ -287,7 +177,6 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
             memory_path=str(tmp_path / "robot2-memory.jsonl"),
             event_path=str(tmp_path / "robot2-events.jsonl"),
             task_queue_path=str(tmp_path / "robot2-tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway1.start()
@@ -299,8 +188,8 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
             json.dumps(
                 {
                     "robots": [
-                        {"robot_id": "robot-1", "base_url": gateway1.base_url, "capabilities": ["search_for_victims"]},
-                        {"robot_id": "robot-2", "base_url": gateway2.base_url, "capabilities": ["search_for_victims"]},
+                        {"robot_id": "robot-1", "base_url": gateway1.base_url, "capabilities": ["victim_search"]},
+                        {"robot_id": "robot-2", "base_url": gateway2.base_url, "capabilities": ["victim_search"]},
                     ]
                 }
             ),
@@ -348,7 +237,6 @@ def test_mission_cli_rejects_submit_without_mission_scope(tmp_path):
             memory_path=str(tmp_path / "robot-memory.jsonl"),
             event_path=str(tmp_path / "robot-events.jsonl"),
             task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -600,7 +488,6 @@ def test_mission_cli_events(tmp_path):
             memory_path=str(tmp_path / "robot-memory.jsonl"),
             event_path=str(tmp_path / "robot-events.jsonl"),
             task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -801,7 +688,6 @@ def test_mission_cli_replay(tmp_path):
             memory_path=str(tmp_path / "robot-memory.jsonl"),
             event_path=str(tmp_path / "robot-events.jsonl"),
             task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -1124,9 +1010,9 @@ id = "debug-robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/debug-robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.strip(),
         encoding="utf-8",
     )
@@ -1153,7 +1039,7 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
     registry = json.loads(output_path.read_text(encoding="utf-8"))
     assert body["status"] == "written"
     assert registry["robots"][0]["robot_id"] == "debug-robot-1"
-    assert registry["robots"][0]["capabilities"] == ["search_for_victims"]
+    assert registry["robots"][0]["capabilities"] == ["victim_search"]
 
 
 def test_build_mission_runtime_paths_accepts_robot_profiles(tmp_path):
@@ -1305,9 +1191,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.format(data_dir=tmp_path / "robot-data").strip(),
         encoding="utf-8",
     )
@@ -1362,9 +1248,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.format(data_dir=tmp_path / "robot-data").strip(),
         encoding="utf-8",
     )
@@ -1418,9 +1304,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 
 [robot.sensor_discovery]
 enabled = true
@@ -1473,9 +1359,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.format(data_dir=tmp_path / "robot-data").strip(),
         encoding="utf-8",
     )
@@ -1528,9 +1414,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 
 [robot.discovery_fingerprint]
 source = "ros1"
@@ -1594,9 +1480,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.format(data_dir=tmp_path / "robot-data").strip(),
         encoding="utf-8",
     )
@@ -1643,9 +1529,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 
 [robot.discovery_fingerprint]
 source = "ros1"
@@ -1706,9 +1592,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.format(data_dir=tmp_path / "robot-data").strip(),
         encoding="utf-8",
     )
@@ -1772,9 +1658,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.format(data_dir=tmp_path / "robot-data").strip(),
         encoding="utf-8",
     )

@@ -178,7 +178,6 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_gateway_event_path"] = rg.get("event_path")
     cfg["robot_gateway_task_queue_path"] = rg.get("task_queue_path")
     cfg["robot_gateway_runtime_state_path"] = rg.get("runtime_state_path")
-    cfg["robot_gateway_workspace_skills_dir"] = rg.get("workspace_skills_dir")
     cfg["robot_gateway_dry_run"] = rg.get("dry_run")
     cfg["robot_gateway_available_sensors"] = rg.get("available_sensors")
     cfg["robot_gateway_default_session_id"] = rg.get("default_session_id")
@@ -188,15 +187,6 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["robot_gateway_embodied_memory_path"] = rg.get("embodied_memory_path")
     cfg["robot_gateway_embodied_memory_index"] = rg.get("embodied_memory_index")
     cfg["robot_gateway_embodied_runtime_mode"] = rg.get("embodied_runtime_mode")
-    cfg["robot_gateway_move_base_tools_enabled"] = rg.get(
-        "move_base_tools_enabled"
-    )
-    cfg["robot_gateway_move_base_real_mutation_enabled"] = rg.get(
-        "move_base_real_mutation_enabled"
-    )
-    cfg["robot_gateway_move_base_real_mutable_parameters"] = rg.get(
-        "move_base_real_mutable_parameters"
-    )
     robot_gateway_tls = rg.get("tls", {})
     if not isinstance(robot_gateway_tls, dict):
         raise ValueError("[robot_gateway.tls] must be a TOML table")

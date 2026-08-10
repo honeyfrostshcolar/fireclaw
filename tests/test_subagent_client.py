@@ -8,38 +8,6 @@ from fireclaw_core.agent.robot_registry import RobotRegistryEntry
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
 
-def _write_slow_policy_skill(skills_dir: Path, release_path: Path | None = None) -> None:
-    skills_dir.mkdir()
-    release_literal = str(release_path or (skills_dir / "release")).replace("\\", "\\\\").replace("'", "\\'")
-    (skills_dir / "slow_policy.py").write_text(
-        "import json, pathlib, time\n"
-        f"release = pathlib.Path('{release_literal}')\n"
-        "deadline = time.monotonic() + 10\n"
-        "while not release.exists() and time.monotonic() < deadline:\n"
-        "    time.sleep(0.02)\n"
-        "print(json.dumps({'ok': True, 'data': {'policy': 'slow'}}))\n",
-        encoding="utf-8",
-    )
-    (skills_dir / "slow_policy.skill.json").write_text(
-        json.dumps(
-            {
-                "name": "slow_policy",
-                "description": "Slow policy skill used to test subagent cancellation.",
-                "runtime": "subprocess",
-                "command": [sys.executable, "slow_policy.py"],
-                "timeout_seconds": 2,
-                "dry_run_only": True,
-                "risk_level": "low",
-                "input_schema": {
-                    "type": "object",
-                    "additionalProperties": True,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
 def _wait_for_result(client: RobotSubagentClient, entry: RobotRegistryEntry, task_id: str) -> dict:
     deadline = time.time() + 3
     while time.time() < deadline:
@@ -62,7 +30,6 @@ def test_robot_subagent_client_submits_task_and_reads_trace(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -89,44 +56,6 @@ def test_robot_subagent_client_submits_task_and_reads_trace(tmp_path):
     assert trace["queue_record"]["status"] == "completed"
 
 
-def test_robot_subagent_client_cancels_task(
-    tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
-):
-    skills_dir = tmp_path / "skills"
-    release_path = tmp_path / "release-slow-policy"
-    _write_slow_policy_skill(skills_dir, release_path)
-    gateway = FireClawGateway(
-        GatewayConfig(
-            host="127.0.0.1",
-            port=0,
-            adapter="dry-run",
-            robot_id="robot-2",
-            memory_path=str(tmp_path / "memory.jsonl"),
-            event_path=str(tmp_path / "events.jsonl"),
-            task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
-        ),
-        workspace_skill_executor=legacy_skill_executor,
-    )
-    gateway.start()
-    try:
-        entry = RobotRegistryEntry(robot_id="robot-2", base_url=gateway.base_url)
-        client = RobotSubagentClient()
-        submitted = client.submit_task(entry, command="slow_policy", session_id="mission-1")
-
-        cancelled = client.cancel_task(entry, submitted["task_id"], operator={"scopes": ["task.cancel"]})
-        release_path.write_text("release", encoding="utf-8")
-    finally:
-        release_path.write_text("release", encoding="utf-8")
-        gateway.stop()
-
-    assert cancelled["status"] == "cancel_requested"
-    assert cancelled["robot_id"] == "robot-2"
-
-
 def test_robot_subagent_client_check_presence_online(tmp_path):
     gateway = FireClawGateway(
         GatewayConfig(
@@ -137,7 +66,6 @@ def test_robot_subagent_client_check_presence_online(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -177,7 +105,6 @@ def test_robot_subagent_client_sends_structured_task_payload(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -185,14 +112,14 @@ def test_robot_subagent_client_sends_structured_task_payload(tmp_path):
         entry = RobotRegistryEntry(
             robot_id="robot-1",
             base_url=gateway.base_url,
-            capabilities=["search_for_victims"],
+            capabilities=["victim_search"],
         )
         client = RobotSubagentClient()
         task = StructuredRobotTask(
             task_id="structured-1",
             task_type="search",
             target={"floor": 2},
-            required_skills=["navigate_to_floor", "search_for_victims", "report_status"],
+            required_skills=["navigate_to_waypoint", "victim_search", "publish_operator_update"],
         )
 
         result = client.submit_task(entry, command="去2楼搜索受困人员", structured_task=task.to_dict())
@@ -214,7 +141,6 @@ def test_robot_subagent_client_get_events(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -256,7 +182,6 @@ def test_robot_subagent_client_sends_auth_token_header(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             api_token=token,
         )
     )

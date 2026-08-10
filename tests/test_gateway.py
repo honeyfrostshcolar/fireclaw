@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 import threading
 import time
 from urllib import request
@@ -21,6 +20,7 @@ from fireclaw_core.agent.robot_deliberation import (
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.monitoring.event_ledger import EventLedger
 from fireclaw_core.monitoring.stream_events import StreamEvent
+from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 from fireclaw_core.task.task_contract import StructuredRobotTask
 from fireclaw_core.task.task_queue import JsonlTaskQueue
 
@@ -65,51 +65,72 @@ def _json_error_request(base_url: str, method: str, path: str, payload: dict | N
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
-def _write_high_risk_skill(skills_dir: Path) -> None:
-    skills_dir.mkdir()
-    (skills_dir / "smoke_entry.py").write_text(
-        "import json\nprint(json.dumps({'ok': True, 'data': {'confirmed': True}}))\n",
-        encoding="utf-8",
+EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
+
+
+def _simulation_profile(tmp_path: Path) -> DeploymentProfile:
+    workspace = tmp_path / "sandbox"
+    return DeploymentProfile(
+        mode="simulation",
+        role="robot_agent",
+        sandbox=SandboxProfile(
+            workspace_root=workspace,
+            allowed_workspace_roots=(workspace,),
+        ),
     )
-    (skills_dir / "smoke_entry.skill.json").write_text(
+
+
+def _write_physical_test_extension(
+    root: Path,
+    name: str,
+    *,
+    risk_level: str = "low",
+    delay_seconds: float = 0.0,
+) -> None:
+    extension = root / name.replace("_", "-")
+    extension.mkdir(parents=True)
+    plugin_id = f"test.{name.replace('_', '-')}"
+    (extension / "fireclaw.plugin.json").write_text(
         json.dumps(
             {
-                "name": "smoke_entry",
-                "description": "High-risk dry-run skill.",
-                "runtime": "subprocess",
-                "command": [sys.executable, "smoke_entry.py"],
-                "dry_run_only": True,
-                "risk_level": "high",
+                "id": plugin_id,
+                "name": name,
+                "api_version": "1",
+                "entrypoint": "plugin.py",
+                "enabled_by_default": True,
+                "trust_level": "trusted",
             }
         ),
         encoding="utf-8",
     )
+    (extension / "plugin.py").write_text(
+        f'''import time
+from fireclaw_plugin_sdk import PhysicalToolSpec
 
+def _run(arguments, feedback_sink=None, cancellation_requested=None):
+    deadline = time.monotonic() + {delay_seconds!r}
+    while time.monotonic() < deadline:
+        if callable(cancellation_requested) and cancellation_requested():
+            return {{"status": "cancelled", "cancelled": True}}
+        time.sleep(0.01)
+    return {{"status": "succeeded", "tool": {name!r}}}
 
-def _write_slow_policy_skill(skills_dir: Path) -> None:
-    skills_dir.mkdir()
-    (skills_dir / "slow_policy.py").write_text(
-        "import json, time\n"
-        "time.sleep(1)\n"
-        "print(json.dumps({'ok': True, 'data': {'policy': 'slow'}}))\n",
-        encoding="utf-8",
-    )
-    (skills_dir / "slow_policy.skill.json").write_text(
-        json.dumps(
-            {
-                "name": "slow_policy",
-                "description": "Slow policy skill used to test cooperative cancellation.",
-                "runtime": "subprocess",
-                "command": [sys.executable, "slow_policy.py"],
-                "timeout_seconds": 2,
-                "dry_run_only": True,
-                "risk_level": "low",
-                "input_schema": {
-                    "type": "object",
-                    "additionalProperties": True,
-                },
-            }
-        ),
+def register(api):
+    api.register_physical_tool(PhysicalToolSpec(
+        plugin_id={plugin_id!r},
+        name={name!r},
+        label={name!r},
+        description="Canonical test-only physical Tool.",
+        input_schema={{"type": "object", "additionalProperties": True}},
+        output_schema={{"type": "object", "additionalProperties": True}},
+        action={name!r},
+        handler=_run,
+        domain="safety",
+        safety_class="test_action",
+        risk_level={risk_level!r},
+        dry_run_only=True,
+    ))
+''',
         encoding="utf-8",
     )
 
@@ -123,6 +144,23 @@ def _wait_for_task_result(gateway: FireClawGateway, task_id: str, timeout_second
             return result
         time.sleep(0.01)
     raise AssertionError(f"Task {task_id} did not finish before timeout.")
+
+
+def _wait_for_task_status(
+    gateway: FireClawGateway,
+    task_id: str,
+    expected_status: str,
+    timeout_seconds: float = 15.0,
+) -> dict:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        trace = gateway.task_trace(task_id)
+        if trace.get("status") == expected_status:
+            return trace
+        time.sleep(0.01)
+    raise AssertionError(
+        f"Task {task_id} did not reach {expected_status} before timeout."
+    )
 
 
 def _wait_for_event_type(gateway: FireClawGateway, task_id: str, event_type: str, timeout_seconds: float = 2.0) -> dict:
@@ -143,7 +181,6 @@ def test_gateway_returns_health_and_state(tmp_path):
             adapter="simulator",
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -172,10 +209,6 @@ def test_gateway_accepts_ros1_config_path_for_real_adapter_skeleton(tmp_path):
     config_path.write_text(
         """
 robot_id: gateway-ros1
-remap:
-  navigate_to_point:
-    profile: move_base
-    name: /move_base
 """.lstrip(),
         encoding="utf-8",
     )
@@ -189,7 +222,6 @@ remap:
             ros1_config_path=str(config_path),
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
         )
     )
 
@@ -206,7 +238,6 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -243,8 +274,8 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
     assert recent["records"][0]["command"] == "去坐标 (2.0, 1.5) 救人"
     assert task["result"]["task_id"] == result["task_id"]
     assert task["state"]["task"]["status"] == "completed"
-    assert task["state"]["task"]["skill_count"] == 5
-    assert task["state"]["task"]["action_count"] == 5
+    assert task["state"]["task"]["skill_count"] == 1
+    assert task["state"]["task"]["action_count"] == 1
     assert task["state"]["skills"][0]["skill_name"] == "navigate_to_point"
     assert task["state"]["skills"][0]["action_ids"][0].startswith("action-")
     assert task["state"]["actions"][0]["action_type"] == "navigate_to_point"
@@ -261,11 +292,11 @@ def test_gateway_runs_task_and_returns_recent_memory(tmp_path):
         "skill.started",
     ]
     assert event_types[-1] == "task.completed"
-    assert event_types.count("resource.acquired") == 5
-    assert event_types.count("resource.released") == 5
-    assert event_types.count("action.requested") == 5
-    assert event_types.count("skill.succeeded") == 5
-    assert event_types.count("capability.policy_decided") == 5
+    assert event_types.count("resource.acquired") == 1
+    assert event_types.count("resource.released") == 1
+    assert event_types.count("action.requested") == 1
+    assert event_types.count("skill.succeeded") == 1
+    assert event_types.count("capability.policy_decided") == 1
     first_action = next(event for event in events["events"] if event["type"] == "action.requested")
     assert first_action["payload"]["task_id"] == accepted["task_id"]
     assert first_action["payload"]["skill_name"] == "navigate_to_point"
@@ -290,7 +321,6 @@ def test_gateway_persists_task_queue_lifecycle(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -319,11 +349,9 @@ def test_gateway_persists_task_queue_lifecycle(tmp_path):
 
 def test_gateway_returns_existing_task_for_duplicate_dedupe_key(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "slow_policy", delay_seconds=1.0)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -333,10 +361,9 @@ def test_gateway_returns_existing_task_for_duplicate_dedupe_key(
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -344,13 +371,13 @@ def test_gateway_returns_existing_task_for_duplicate_dedupe_key(
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "slow_policy", "dedupe_key": "operator-retry-1"},
+            {"command": "运行 slow_policy", "dedupe_key": "operator-retry-1"},
         )
         second = _json_request(
             gateway.base_url,
             "POST",
             "/tasks",
-            {"command": "slow_policy", "dedupe_key": "operator-retry-1"},
+            {"command": "运行 slow_policy", "dedupe_key": "operator-retry-1"},
         )
     finally:
         gateway.stop()
@@ -364,11 +391,9 @@ def test_gateway_returns_existing_task_for_duplicate_dedupe_key(
 
 def test_gateway_cancel_updates_task_queue_state(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "slow_policy", delay_seconds=1.0)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -378,14 +403,13 @@ def test_gateway_cancel_updates_task_queue_state(
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
-        accepted = _json_request(gateway.base_url, "POST", "/tasks", {"command": "slow_policy"})
+        accepted = _json_request(gateway.base_url, "POST", "/tasks", {"command": "运行 slow_policy"})
         cancel = _json_request(
             gateway.base_url,
             "POST",
@@ -410,7 +434,6 @@ def test_gateway_result_recording_preserves_prior_cancel_request(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     task_id = "task-cancel-race"
@@ -466,7 +489,6 @@ def test_gateway_marks_stale_non_terminal_queue_records_lost_on_startup(tmp_path
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(event_path),
             task_queue_path=str(queue_path),
-            workspace_skills_dir=None,
         )
     )
 
@@ -506,7 +528,7 @@ def test_gateway_schedules_recoverable_robot_loop_on_startup(
         task_type="navigate",
         command="去二楼",
         target={"floor": 2},
-        required_skills=["navigate_to_floor"],
+        required_skills=["navigate_to_waypoint"],
     )
     ledger = EventLedger(event_path)
     ledger.append(
@@ -533,7 +555,7 @@ def test_gateway_schedules_recoverable_robot_loop_on_startup(
         decision={
             "operation": "execute_skill",
             "message": "navigate",
-            "tool_name": "navigate_to_floor",
+            "tool_name": "navigate_to_waypoint",
             "inputs": {"floor": 2},
         },
         prepared_at="2026-07-29T01:00:02+00:00",
@@ -597,7 +619,6 @@ def test_gateway_schedules_recoverable_robot_loop_on_startup(
             event_path=str(event_path),
             task_queue_path=str(queue_path),
             robot_agent_checkpoint_path=str(checkpoint_path),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="llm",
         )
@@ -626,7 +647,7 @@ def test_gateway_persists_physical_dispatch_boundaries(tmp_path):
             robot_agent_checkpoint_path=str(
                 tmp_path / "agent-loops.jsonl"
             ),
-            workspace_skills_dir=None,
+            deployment_profile=_simulation_profile(tmp_path),
         )
     )
 
@@ -635,9 +656,14 @@ def test_gateway_persists_physical_dispatch_boundaries(tmp_path):
             self.decisions = [
                     RobotAgentDecision(
                         operation="execute_skill",
-                        message="report",
-                        tool_name="report_status",
-                        inputs={},
+                        message="navigate",
+                        tool_name="navigate_to_point",
+                        inputs={
+                            "x": 2.0,
+                            "y": 1.5,
+                            "yaw": 0.0,
+                            "frame_id": "map",
+                        },
                 ),
                 RobotAgentDecision(
                     operation="complete",
@@ -656,8 +682,8 @@ def test_gateway_persists_physical_dispatch_boundaries(tmp_path):
         task_id="structured-audit",
         mission_id="mission-1",
             robot_id="robot-gateway",
-            task_type="report",
-            command="上报当前区域状态",
+            task_type="navigate",
+            command="去坐标 (2.0, 1.5)",
             target={
                 "pose": {
                     "x": 2.0,
@@ -665,7 +691,7 @@ def test_gateway_persists_physical_dispatch_boundaries(tmp_path):
                     "frame_id": "map",
                 }
             },
-        required_skills=["report_status"],
+        required_skills=["navigate_to_point"],
     )
     agent = gateway._create_agent(
         task_id="gateway-task-audit",
@@ -707,7 +733,6 @@ def test_gateway_lists_skills(tmp_path):
             adapter="dry-run",
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -729,7 +754,6 @@ def test_gateway_records_operator_and_control_decision_for_task_submission(tmp_p
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -774,7 +798,6 @@ def test_gateway_sync_run_agent_still_returns_completed_result(tmp_path):
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
         )
     )
 
@@ -795,11 +818,9 @@ def test_gateway_sync_run_agent_still_returns_completed_result(tmp_path):
 
 def test_gateway_confirms_pending_high_risk_skill(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_high_risk_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "smoke_entry", risk_level="high")
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -808,10 +829,9 @@ def test_gateway_confirms_pending_high_risk_skill(
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -828,7 +848,12 @@ def test_gateway_confirms_pending_high_risk_skill(
             "/confirm",
             {"session_id": "operator-a", "operator": {"operator_id": "supervisor-1", "role": "supervisor"}},
         )
-        confirmed_result = _wait_for_task_result(gateway, confirmed["task_id"])
+        confirmed_trace = _wait_for_task_status(
+            gateway,
+            confirmed["task_id"],
+            "completed",
+        )
+        confirmed_result = confirmed_trace["result"]
         pending_events = _json_request(gateway.base_url, "GET", f"/tasks/{pending['task_id']}/events")
         confirmed_events = _json_request(
             gateway.base_url,
@@ -840,11 +865,10 @@ def test_gateway_confirms_pending_high_risk_skill(
 
     assert pending["status"] == "accepted"
     assert pending["task_id"].startswith("task-")
-    assert pending_result["status"] == "escalated"
-    assert pending_result["raw_status"] == "awaiting_confirmation"
+    assert pending_result["status"] == "awaiting_confirmation"
     assert pending_result["execution"] is None
     assert confirmed["status"] == "accepted"
-    assert confirmed["task_id"].startswith("task-")
+    assert confirmed["task_id"] == pending["task_id"]
     assert confirmed_result["status"] == "completed"
     assert confirmed_result["confirmation"]["status"] == "confirmed"
     assert confirmed_result["execution"]["steps"][0]["skill_name"] == "smoke_entry"
@@ -852,15 +876,19 @@ def test_gateway_confirms_pending_high_risk_skill(
     assert "confirmation.confirmed" in [event["type"] for event in confirmed_events["events"]]
     assert "authorization.requested" in [event["type"] for event in pending_events["events"]]
     assert "authorization.approved" in [event["type"] for event in confirmed_events["events"]]
+    assert "task.resume_scheduled" in [event["type"] for event in confirmed_events["events"]]
+    assert "task.resume_started" in [event["type"] for event in confirmed_events["events"]]
+    assert "task.escalated" not in [event["type"] for event in confirmed_events["events"]]
+    assert [record.task_id for record in gateway.task_queue.list_records()] == [
+        pending["task_id"]
+    ]
 
 
 def test_gateway_ignores_payload_operator_role_during_confirmation(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_high_risk_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "smoke_entry", risk_level="high")
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -869,10 +897,9 @@ def test_gateway_ignores_payload_operator_role_during_confirmation(
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -889,7 +916,12 @@ def test_gateway_ignores_payload_operator_role_during_confirmation(
             "/confirm",
             {"session_id": "operator-a", "operator": {"operator_id": "op-1", "role": "operator"}},
         )
-        confirmed_result = _wait_for_task_result(gateway, confirmed["task_id"])
+        confirmed_trace = _wait_for_task_status(
+            gateway,
+            confirmed["task_id"],
+            "completed",
+        )
+        confirmed_result = confirmed_trace["result"]
         confirmed_events = _json_request(
             gateway.base_url,
             "GET",
@@ -898,9 +930,9 @@ def test_gateway_ignores_payload_operator_role_during_confirmation(
     finally:
         gateway.stop()
 
-    assert pending_result["status"] == "escalated"
-    assert pending_result["raw_status"] == "awaiting_confirmation"
+    assert pending_result["status"] == "awaiting_confirmation"
     assert status_code == 200
+    assert confirmed["task_id"] == pending["task_id"]
     assert confirmed_result["status"] == "completed"
     assert "authorization.approved" in [
         event["type"] for event in confirmed_events["events"]
@@ -909,11 +941,9 @@ def test_gateway_ignores_payload_operator_role_during_confirmation(
 
 def test_gateway_expires_pending_high_risk_authorization_before_confirm(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_high_risk_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "smoke_entry", risk_level="high")
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -922,11 +952,10 @@ def test_gateway_expires_pending_high_risk_authorization_before_confirm(
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
             authorization_expiry_seconds=0,
-            deployment_profile=legacy_skill_profile,
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -936,29 +965,88 @@ def test_gateway_expires_pending_high_risk_authorization_before_confirm(
             "/tasks",
             {"command": "运行 smoke_entry", "session_id": "operator-a"},
         )
-        _wait_for_task_result(gateway, pending["task_id"])
+        pending_result = _wait_for_task_result(gateway, pending["task_id"])
         status_code, expired = _json_error_request(
             gateway.base_url,
             "POST",
             "/confirm",
             {"session_id": "operator-a", "operator": {"operator_id": "supervisor-1", "role": "supervisor"}},
         )
+        expired_trace = _wait_for_task_status(
+            gateway,
+            pending["task_id"],
+            "escalated",
+        )
         pending_events = _json_request(gateway.base_url, "GET", f"/tasks/{pending['task_id']}/events")
     finally:
         gateway.stop()
 
     assert status_code == 403
+    assert pending_result["status"] == "awaiting_confirmation"
     assert expired["status"] == "expired"
+    assert expired_trace["queue_record"]["ended_at"] is not None
+    assert expired_trace["result"]["status"] == "escalated"
+    assert expired_trace["result"]["raw_status"] == "awaiting_confirmation"
     assert "authorization.expired" in [event["type"] for event in pending_events["events"]]
+
+
+def test_gateway_cancels_task_while_awaiting_confirmation(tmp_path):
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(
+        extension_root,
+        "smoke_entry",
+        risk_level="high",
+    )
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
+        ),
+    )
+    gateway.start()
+    try:
+        accepted = _json_request(
+            gateway.base_url,
+            "POST",
+            "/tasks",
+            {"command": "运行 smoke_entry", "session_id": "operator-a"},
+        )
+        waiting = _wait_for_task_result(gateway, accepted["task_id"])
+        cancel = _json_request(
+            gateway.base_url,
+            "POST",
+            f"/tasks/{accepted['task_id']}/cancel",
+        )
+        cancelled_trace = _wait_for_task_status(
+            gateway,
+            accepted["task_id"],
+            "cancelled",
+        )
+    finally:
+        gateway.stop()
+
+    assert waiting["status"] == "awaiting_confirmation"
+    assert cancel["status"] == "cancelled"
+    assert cancel["task_id"] == accepted["task_id"]
+    assert cancelled_trace["queue_record"]["ended_at"] is not None
+    assert gateway.runtime_state.pending_authorization_request("operator-a") is None
+    event_types = [event["type"] for event in cancelled_trace["events"]]
+    assert "authorization.cancelled" in event_types
+    assert "task.cancelled" in event_types
+    assert "task.escalated" not in event_types
 
 
 def test_gateway_cancels_active_task_between_skills(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "slow_policy", delay_seconds=1.0)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -967,10 +1055,9 @@ def test_gateway_cancels_active_task_between_skills(
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -979,7 +1066,7 @@ def test_gateway_cancels_active_task_between_skills(
             "POST",
             "/tasks",
             {
-                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "command": "运行 slow_policy",
                 "session_id": "operator-a",
             },
         )
@@ -1007,11 +1094,9 @@ def test_gateway_cancels_active_task_between_skills(
 
 def test_gateway_ignores_payload_observer_role_when_cancelling(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "slow_policy", delay_seconds=1.0)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -1020,10 +1105,9 @@ def test_gateway_ignores_payload_observer_role_when_cancelling(
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -1032,7 +1116,7 @@ def test_gateway_ignores_payload_observer_role_when_cancelling(
             "POST",
             "/tasks",
             {
-                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "command": "运行 slow_policy",
                 "session_id": "operator-a",
             },
         )
@@ -1056,11 +1140,9 @@ def test_gateway_ignores_payload_observer_role_when_cancelling(
 
 def test_gateway_rejects_second_execution_task_when_robot_is_busy(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "slow_policy", delay_seconds=1.0)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -1069,10 +1151,9 @@ def test_gateway_rejects_second_execution_task_when_robot_is_busy(
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -1081,7 +1162,7 @@ def test_gateway_rejects_second_execution_task_when_robot_is_busy(
             "POST",
             "/tasks",
             {
-                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "command": "运行 slow_policy",
                 "session_id": "operator-a",
             },
         )
@@ -1109,11 +1190,9 @@ def test_gateway_rejects_second_execution_task_when_robot_is_busy(
 
 def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_events(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "slow_policy", delay_seconds=1.0)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -1122,10 +1201,9 @@ def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_even
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -1134,7 +1212,7 @@ def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_even
             "POST",
             "/tasks",
             {
-                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "command": "运行 slow_policy",
                 "session_id": "operator-a",
             },
         )
@@ -1174,11 +1252,9 @@ def test_gateway_admin_emergency_stop_cancels_active_task_and_records_audit_even
 
 def test_gateway_ignores_payload_operator_role_for_emergency_stop(
     tmp_path,
-    legacy_skill_profile,
-    legacy_skill_executor,
 ):
-    skills_dir = tmp_path / "skills"
-    _write_slow_policy_skill(skills_dir)
+    extension_root = tmp_path / "extensions"
+    _write_physical_test_extension(extension_root, "slow_policy", delay_seconds=1.0)
     gateway = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -1187,10 +1263,9 @@ def test_gateway_ignores_payload_operator_role_for_emergency_stop(
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=str(skills_dir),
-            deployment_profile=legacy_skill_profile,
+            extension_paths=(str(EXTENSIONS), str(extension_root)),
+            deployment_profile=_simulation_profile(tmp_path),
         ),
-        workspace_skill_executor=legacy_skill_executor,
     )
     gateway.start()
     try:
@@ -1199,7 +1274,7 @@ def test_gateway_ignores_payload_operator_role_for_emergency_stop(
             "POST",
             "/tasks",
             {
-                "command": "去坐标 (2.0, 1.5) 救人 使用 slow_policy",
+                "command": "运行 slow_policy",
                 "session_id": "operator-a",
             },
         )
@@ -1238,7 +1313,6 @@ def test_gateway_events_endpoint_returns_recent_events(tmp_path):
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -1272,7 +1346,6 @@ def test_gateway_events_endpoint_filters_by_task_id(tmp_path):
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
             max_active_execution_tasks=2,
         )
     )
@@ -1316,7 +1389,6 @@ def test_gateway_events_endpoint_respects_limit(tmp_path):
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -1344,7 +1416,6 @@ def test_gateway_returns_401_without_token_when_api_token_set(tmp_path):
             adapter="simulator",
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
-            workspace_skills_dir=None,
             api_token="secret-token",
         )
     )
@@ -1387,7 +1458,6 @@ def test_gateway_returns_200_with_correct_token(tmp_path):
             adapter="simulator",
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
-            workspace_skills_dir=None,
             api_token="secret-token",
         )
     )
@@ -1412,7 +1482,6 @@ def test_gateway_shared_token_uses_server_owned_principal(tmp_path):
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
-            workspace_skills_dir=None,
             api_token="secret-token",
         )
     )
@@ -1459,7 +1528,6 @@ def test_gateway_health_endpoint_bypasses_auth(tmp_path):
             adapter="simulator",
             robot_id="robot-gateway",
             memory_path=str(tmp_path / "memory.jsonl"),
-            workspace_skills_dir=None,
             api_token="secret-token",
         )
     )
@@ -1489,7 +1557,6 @@ class TestGatewaySSEStream:
                 robot_id="robot-gateway",
                 memory_path=str(tmp_path / "memory.jsonl"),
                 event_path=str(tmp_path / "events.jsonl"),
-                workspace_skills_dir=None,
             )
         )
         gateway.start()
@@ -1522,7 +1589,6 @@ class TestGatewaySSEStream:
                 adapter="simulator",
                 robot_id="robot-gateway",
                 memory_path=str(tmp_path / "memory.jsonl"),
-                workspace_skills_dir=None,
                 api_token="gateway-secret",
             )
         )
@@ -1554,7 +1620,6 @@ class TestGatewaySSEStream:
                 robot_id="robot-gateway",
                 memory_path=str(tmp_path / "memory.jsonl"),
                 event_path=str(tmp_path / "events.jsonl"),
-                workspace_skills_dir=None,
             )
         )
         collected: list[StreamEvent] = []

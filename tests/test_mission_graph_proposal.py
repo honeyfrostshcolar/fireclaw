@@ -25,7 +25,7 @@ def _registry(*, two_robots: bool = True) -> RobotRegistry:
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims", "navigate"),
+            capabilities=("victim_search", "navigate"),
         )
     ]
     if two_robots:
@@ -33,7 +33,7 @@ def _registry(*, two_robots: bool = True) -> RobotRegistry:
             RobotRegistryEntry(
                 robot_id="robot-b",
                 base_url="http://robot-b.test",
-                capabilities=("search_for_victims", "navigate"),
+                capabilities=("victim_search", "navigate"),
             )
         )
     return RobotRegistry(entries)
@@ -78,7 +78,7 @@ def _snapshot(registry: RobotRegistry):
 def _node(
     node_id: str,
     *,
-    capability: str = "search_for_victims",
+    capability: str = "victim_search",
     task_type: str | None = None,
     target: MissionTarget | None = None,
     depends_on: tuple[str, ...] = (),

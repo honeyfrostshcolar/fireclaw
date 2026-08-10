@@ -14,7 +14,7 @@ from fireclaw_core.mission.task_graph import MissionTarget, MissionTaskNode
 def _node(*, recovery_policy: str = "reassign") -> MissionTaskNode:
     contract = CompletionContractCompiler().compile(
         task_type="victim_search",
-        capability_required="search_for_victims",
+        capability_required="victim_search",
         target=MissionTarget(frame_id="building", floor=2),
         completion_goal="Search floor 2.",
     )
@@ -22,7 +22,7 @@ def _node(*, recovery_policy: str = "reassign") -> MissionTaskNode:
         node_id="search-floor-2",
         robot_id="robot-a",
         command="去二楼搜索受困人员",
-        capability_required="search_for_victims",
+        capability_required="victim_search",
         target=MissionTarget(frame_id="building", floor=2),
         task_type="victim_search",
         completion_goal=contract.completion_goal,
@@ -41,7 +41,7 @@ def _semantic_rejection(node: MissionTaskNode):
                 "execution": {
                     "steps": [
                         {
-                            "skill_name": "search_for_victims",
+                            "skill_name": "victim_search",
                             "status": "succeeded",
                             "output": {
                                 "data": {"floor": 2},

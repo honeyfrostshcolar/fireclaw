@@ -163,19 +163,12 @@ port = 8765
 # Required before binding the Robot Gateway outside loopback.
 # api_token = "replace-with-a-random-secret"
 profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
-# Legacy external executable Tool-manifest directory. OpenClaw-style SKILL.md
-# workflows and Plugin packages use the documented skills/ and extensions/
-# layout; this compatibility setting currently discovers only *.skill.json.
-workspace_skills_dir = "skills"
 dry_run = true
 default_session_id = "default"
 max_active_execution_tasks = 1
 # Navigation Plugin: simulation exposes the finite move_base tuning catalog.
 # Real mode hides bounded tuning by default; enabling it still requires exact
 # operator approval and the listed parameter names.
-move_base_tools_enabled = true
-move_base_real_mutation_enabled = false
-move_base_real_mutable_parameters = []
 # runtime_state_path = "data/robot/runtime.sqlite3"
 
 [robot_gateway.tls]

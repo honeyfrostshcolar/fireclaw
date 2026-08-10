@@ -20,9 +20,9 @@ id = "profile-robot"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/profile-robot"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["victim_search"]
+enabled_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
+llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator_update"]
 """.strip(),
         encoding="utf-8",
     )

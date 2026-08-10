@@ -9,14 +9,14 @@ from fireclaw_core.execution.skills import Skill, SkillRegistry
 
 def _dry_run_registry() -> SkillRegistry:
     registry = SkillRegistry(skills={})
-    registry.register(Skill(name="navigate_to_floor", description="nav", handler=lambda inputs: None))
+    registry.register(Skill(name="navigate_to_waypoint", description="nav", handler=lambda inputs: None))
     return registry
 
 
 def _real_robot_registry() -> SkillRegistry:
     registry = SkillRegistry(skills={})
     registry.register(Skill(
-        name="navigate_to_floor",
+        name="navigate_to_waypoint",
         description="nav",
         handler=lambda inputs: None,
         dry_run_only=False,
@@ -31,7 +31,7 @@ def _planning() -> PlanningResult:
         message="planned",
         intent="search",
         target_floor=2,
-        plan=Plan("search", [PlanStep("navigate_to_floor", {"floor": 2})]),
+        plan=Plan("search", [PlanStep("navigate_to_waypoint", {"floor": 2})]),
     )
 
 
@@ -78,7 +78,7 @@ def test_unknown_sensors_require_confirmation_for_real_robot_skill_with_sensor_r
     registry = SkillRegistry(skills={})
     registry.register(
         Skill(
-            name="search_for_victims",
+            name="victim_search",
             description="search",
             handler=lambda inputs: None,
             dry_run_only=False,
@@ -91,7 +91,7 @@ def test_unknown_sensors_require_confirmation_for_real_robot_skill_with_sensor_r
         message="planned",
         intent="search",
         target_floor=2,
-        plan=Plan("search", [PlanStep("search_for_victims", {"floor": 2})]),
+        plan=Plan("search", [PlanStep("victim_search", {"floor": 2})]),
     )
     decision = SafetyGate().evaluate(
         planning,
@@ -107,14 +107,14 @@ def test_unknown_sensors_require_confirmation_for_real_robot_skill_with_sensor_r
 def test_unknown_sensors_warns_in_dry_run() -> None:
     registry = SkillRegistry(skills={})
     registry.register(Skill(
-        name="search_for_victims", description="search",
+        name="victim_search", description="search",
         handler=lambda inputs: None,
         required_sensors=["thermal_camera"],
     ))
     planning = PlanningResult(
         status="planned", message="planned", intent="search",
         target_floor=2,
-        plan=Plan("search", [PlanStep("search_for_victims", {"floor": 2})]),
+        plan=Plan("search", [PlanStep("victim_search", {"floor": 2})]),
     )
     decision = SafetyGate().evaluate(
         planning, registry, dry_run=True,
@@ -127,7 +127,7 @@ def test_unknown_sensors_warns_in_dry_run() -> None:
 def test_unknown_sensors_deduplicates_per_skill_with_multiple_sensors() -> None:
     registry = SkillRegistry(skills={})
     registry.register(Skill(
-        name="search_for_victims", description="search",
+        name="victim_search", description="search",
         handler=lambda inputs: None,
         dry_run_only=False, allow_real_robot=True,
         required_sensors=["thermal_camera", "lidar"],
@@ -135,7 +135,7 @@ def test_unknown_sensors_deduplicates_per_skill_with_multiple_sensors() -> None:
     planning = PlanningResult(
         status="planned", message="planned", intent="search",
         target_floor=2,
-        plan=Plan("search", [PlanStep("search_for_victims", {"floor": 2})]),
+        plan=Plan("search", [PlanStep("victim_search", {"floor": 2})]),
     )
     decision = SafetyGate().evaluate(
         planning, registry, dry_run=False,

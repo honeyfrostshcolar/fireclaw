@@ -29,7 +29,7 @@ def _registry() -> RobotRegistry:
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
 
@@ -73,7 +73,7 @@ def _planning_result(*, floor: int = 2) -> MissionPlanningResult:
                     robot_id="robot-a",
                     command="去二楼搜索受困人员",
                     floor=floor,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),

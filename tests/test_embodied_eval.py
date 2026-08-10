@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from fireclaw_core.devtools.embodied_eval import run_embodied_eval
+from fireclaw_core.devtools.embodied_eval import _dispatch_succeeded, run_embodied_eval
 
 
 def test_run_embodied_eval_produces_summary_and_metrics(tmp_path: Path):
@@ -16,18 +16,24 @@ def test_run_embodied_eval_produces_summary_and_metrics(tmp_path: Path):
     fixture_path.write_text(
         json.dumps([
             {
-                "scenario_id": "rescue-floor-2",
-                "command": "去二楼救人",
-                "expected_floor": 2,
-                "expected_capability": "search_for_victims",
+                "scenario_id": "navigate-point-a",
+                "command": "去坐标 (2.0, 1.5)",
+                "expected_target": {
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                    "frame_id": "map",
+                },
+                "expected_capability": "navigate_to_point",
                 "min_memory_records": 1,
                 "requires_terminal_status": True,
             },
             {
-                "scenario_id": "inspect-floor-1-smoke",
-                "command": "检查一楼烟雾",
-                "expected_floor": 1,
-                "expected_capability": "monitor_environment",
+                "scenario_id": "navigate-point-b",
+                "command": "去坐标 (-1.0, 3.0)",
+                "expected_target": {
+                    "pose": {"x": -1.0, "y": 3.0, "yaw": 0.0},
+                    "frame_id": "map",
+                },
+                "expected_capability": "navigate_to_point",
                 "min_memory_records": 1,
                 "requires_terminal_status": True,
             },
@@ -65,10 +71,13 @@ def test_run_embodied_eval_returns_exit_code(tmp_path: Path):
     fixture_path.write_text(
         json.dumps([
             {
-                "scenario_id": "rescue-floor-2",
-                "command": "去二楼救人",
-                "expected_floor": 2,
-                "expected_capability": "search_for_victims",
+                "scenario_id": "navigate-point-a",
+                "command": "去坐标 (2.0, 1.5)",
+                "expected_target": {
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                    "frame_id": "map",
+                },
+                "expected_capability": "navigate_to_point",
                 "min_memory_records": 1,
                 "requires_terminal_status": True,
             },
@@ -91,10 +100,13 @@ def test_run_embodied_eval_writes_doctor_report_for_bundle(tmp_path: Path):
     fixture_path.write_text(
         json.dumps([
             {
-                "scenario_id": "rescue-floor-2",
-                "command": "去二楼救人",
-                "expected_floor": 2,
-                "expected_capability": "search_for_victims",
+                "scenario_id": "navigate-point-a",
+                "command": "去坐标 (2.0, 1.5)",
+                "expected_target": {
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                    "frame_id": "map",
+                },
+                "expected_capability": "navigate_to_point",
                 "min_memory_records": 1,
                 "requires_terminal_status": True,
             }
@@ -106,8 +118,27 @@ def test_run_embodied_eval_writes_doctor_report_for_bundle(tmp_path: Path):
     run_embodied_eval(scenarios_path=fixture_path, output_dir=output_dir, adapter="simulator")
 
     doctor = json.loads((output_dir / "doctor-report.json").read_text(encoding="utf-8"))
-    assert doctor["status"] in {"ok", "warn", "fail"}
-    assert "findings" in doctor
+    assert doctor["status"] == "warn"
+    assert {
+        finding["code"] for finding in doctor["findings"]
+    } == {"readiness_not_probed"}
+
+
+@pytest.mark.parametrize(
+    ("subtasks", "expected"),
+    [
+        ([{"status": "completed"}], True),
+        ([{"status": "succeeded"}, {"status": "completed"}], True),
+        ([{"status": "blocked"}], False),
+        ([{"status": "lost"}], False),
+        ([], False),
+    ],
+)
+def test_dispatch_success_rejects_non_success_terminal_states(
+    subtasks: object,
+    expected: bool,
+) -> None:
+    assert _dispatch_succeeded(subtasks) is expected
 
 
 def test_run_embodied_eval_rejects_missing_fixture(tmp_path: Path):

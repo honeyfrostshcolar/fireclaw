@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fireclaw_core.execution.skills import RISK_LEVELS, Skill
+from fireclaw_core.execution.skills import RISK_LEVELS
 
 
 @dataclass(frozen=True)
@@ -82,63 +82,3 @@ def _require_risk_level(value: str) -> None:
         raise ValueError(
             f"PluginDescriptor field 'risk_level' must be one of: {allowed}."
         )
-
-
-# ---------------------------------------------------------------------------
-# Conversion from SkillManifest (Skill dataclass)
-# ---------------------------------------------------------------------------
-
-def descriptor_from_skill_manifest(skill: Skill) -> FireClawPluginDescriptor:
-    """Build a :class:`FireClawPluginDescriptor` from an existing
-    :class:`~fireclaw_core.skills.Skill` instance.
-
-    The mapping is intentionally conservative — it translates fields that
-    already exist on ``Skill`` without inventing new semantics.  Fields
-    that have no direct ``Skill`` counterpart (``adapter_bindings``,
-    ``approval_scope``, ``provider_hooks``, ``memory_hooks``) receive
-    sensible defaults derived from the skill's metadata.
-    """
-
-    # --- adapter_bindings ---
-    # Infer from domain and required_sensors.  A skill that needs sensors
-    # implicitly needs the adapter(s) that expose those sensors.
-    adapter_bindings: tuple[str, ...] = ()
-    if skill.required_sensors:
-        adapter_bindings = tuple(sorted(set(skill.required_sensors)))
-    elif skill.domain:
-        adapter_bindings = (skill.domain,)
-
-    # --- approval_scope ---
-    # Map risk_level → approval_scope so the safety gate can look it up
-    # without re-deriving the mapping itself.
-    _RISK_TO_SCOPE = {
-        "low": None,
-        "medium": "operator_confirm",
-        "high": "safety_officer",
-        "critical": "emergency_override",
-    }
-    approval_scope = _RISK_TO_SCOPE.get(skill.risk_level)
-
-    # --- capabilities ---
-    # Primary capability is the skill name; the domain adds a semantic tag.
-    capabilities: list[str] = [skill.name]
-    if skill.domain and skill.domain not in capabilities:
-        capabilities.append(skill.domain)
-
-    # --- required_sensors ---
-    required_sensors = tuple(skill.required_sensors)
-
-    # --- preconditions ---
-    preconditions = tuple(skill.preconditions) if skill.preconditions else ("skill_available",)
-
-    return FireClawPluginDescriptor(
-        plugin_id=skill.name,
-        capabilities=tuple(capabilities),
-        preconditions=preconditions,
-        risk_level=skill.risk_level,
-        required_sensors=required_sensors,
-        adapter_bindings=adapter_bindings,
-        approval_scope=approval_scope,
-        provider_hooks=(),
-        memory_hooks=(),
-    )

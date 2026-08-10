@@ -760,7 +760,7 @@ def test_terminal_trace_transition_queues_boundary(tmp_path: Path) -> None:
     entry1 = RobotRegistryEntry(
         robot_id="robot-1",
         base_url="http://localhost:9001",
-        capabilities=("search_for_victims",),
+        capabilities=("victim_search",),
         zone="zone-a",
     )
     registry = RobotRegistry([entry1])
@@ -826,7 +826,7 @@ def test_repeated_terminal_trace_does_not_queue_duplicate_boundary(tmp_path: Pat
 
     entry1 = RobotRegistryEntry(
         robot_id="robot-1", base_url="http://localhost:9001",
-        capabilities=("search_for_victims",), zone="zone-a",
+        capabilities=("victim_search",), zone="zone-a",
     )
     registry = RobotRegistry([entry1])
 

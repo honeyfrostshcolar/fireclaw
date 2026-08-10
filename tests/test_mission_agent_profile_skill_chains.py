@@ -37,10 +37,10 @@ def test_mission_agent_uses_selected_robot_profile_skill_chain(tmp_path: Path) -
         adapter="simulator",
         ros1_config=None,
         data_dir=tmp_path / "profile-robot",
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "report_status"),
-        llm_exposed_skills=("navigate_to_floor", "report_status"),
-        capability_skill_chains={"search_for_victims": ("navigate_to_floor", "report_status")},
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
+        capability_skill_chains={"navigation": ("navigate_to_point",)},
     )
     client = CapturingSubagentClient()
     agent = MissionAgent(
@@ -51,21 +51,26 @@ def test_mission_agent_uses_selected_robot_profile_skill_chain(tmp_path: Path) -
 
     subtask = MissionSubtask(
         robot_id="profile-robot",
-        command="去二楼搜索",
-        floor=2,
-        capability_required="search_for_victims",
+        command="去坐标 (2.0, 1.5)",
+        floor=None,
+        capability_required="navigation",
         execution_group=0,
+        task_type="navigate",
+        target={
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+            "frame_id": "map",
+        },
     )
     result = agent.submit_subtask(
         "profile-robot",
-        "去二楼搜索",
+        "去坐标 (2.0, 1.5)",
         session_id="m1",
         mission_subtask=subtask,
     )
 
     assert result["status"] == "accepted"
     assert client.last_structured_task is not None
-    assert client.last_structured_task["required_skills"] == ["navigate_to_floor", "report_status"]
+    assert client.last_structured_task["required_skills"] == ["navigate_to_point"]
 
 
 def test_mission_agent_falls_back_to_default_when_no_chains(tmp_path: Path) -> None:
@@ -75,10 +80,10 @@ def test_mission_agent_falls_back_to_default_when_no_chains(tmp_path: Path) -> N
         adapter="simulator",
         ros1_config=None,
         data_dir=tmp_path / "profile-robot",
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "report_status"),
-        llm_exposed_skills=("navigate_to_floor", "report_status"),
-        capability_skill_chains={"search_for_victims": ("navigate_to_floor", "report_status")},
+        capabilities=("navigate_to_point",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
+        capability_skill_chains={},
     )
     client = CapturingSubagentClient()
     agent = MissionAgent(
@@ -89,14 +94,19 @@ def test_mission_agent_falls_back_to_default_when_no_chains(tmp_path: Path) -> N
 
     subtask = MissionSubtask(
         robot_id="profile-robot",
-        command="去二楼搜索",
-        floor=2,
-        capability_required="search_for_victims",
+        command="去坐标 (2.0, 1.5)",
+        floor=None,
+        capability_required="navigate_to_point",
         execution_group=0,
+        task_type="navigate",
+        target={
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+            "frame_id": "map",
+        },
     )
     result = agent.submit_subtask(
         "profile-robot",
-        "去二楼搜索",
+        "去坐标 (2.0, 1.5)",
         session_id="m2",
         mission_subtask=subtask,
     )
@@ -104,10 +114,7 @@ def test_mission_agent_falls_back_to_default_when_no_chains(tmp_path: Path) -> N
     assert result["status"] == "accepted"
     assert client.last_structured_task is not None
     # Without chains, should fall back to default _skills_from_capability
-    assert client.last_structured_task["required_skills"] == [
-        "search_for_victims",
-        "report_status",
-    ]
+    assert client.last_structured_task["required_skills"] == ["navigate_to_point"]
 
 
 def test_mission_agent_generated_subtask_uses_chains(tmp_path: Path) -> None:
@@ -118,10 +125,10 @@ def test_mission_agent_generated_subtask_uses_chains(tmp_path: Path) -> None:
         adapter="simulator",
         ros1_config=None,
         data_dir=tmp_path / "profile-robot",
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "report_status"),
-        llm_exposed_skills=("navigate_to_floor", "report_status"),
-        capability_skill_chains={"search_for_victims": ("navigate_to_floor", "report_status")},
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
+        capability_skill_chains={"navigation": ("navigate_to_point",)},
     )
     client = CapturingSubagentClient()
     agent = MissionAgent(
@@ -133,10 +140,10 @@ def test_mission_agent_generated_subtask_uses_chains(tmp_path: Path) -> None:
     # Call without mission_subtask - triggers generated subtask path
     result = agent.submit_subtask(
         "profile-robot",
-        "去二楼搜索",
+        "去坐标 (2.0, 1.5)",
         session_id="m3",
     )
 
     assert result["status"] == "accepted"
     assert client.last_structured_task is not None
-    assert client.last_structured_task["required_skills"] == ["navigate_to_floor", "report_status"]
+    assert client.last_structured_task["required_skills"] == ["navigate_to_point"]

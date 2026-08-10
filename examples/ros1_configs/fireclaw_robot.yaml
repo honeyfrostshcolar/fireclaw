@@ -1,63 +1,13 @@
 # FireClaw firefighting robot ROS1 config template
-# Adapt endpoints to your actual robot's ROS topics/services/actions.
+# Domain runtime endpoints belong to their Plugins; this file configures only
+# the core robot state/fail-safe boundary and shared diagnostics.
 robot_id: "firebot_01"
 namespace: "/fireclaw/firebot_01"
 transport:
   enabled: true
   wait_for_server_seconds: 10.0
   wait_for_result_seconds: 60.0
-endpoints:
-  navigate_to_point:
-    interface: action
-    name: "/move_base"
-    type: "move_base_msgs/MoveBaseAction"
-    cancel_supported: true
-    feedback_supported: true
-    goal_template:
-      target_pose:
-        header:
-          frame_id: "${frame_id}"
-        pose:
-          position:
-            x: "${x}"
-            y: "${y}"
-            z: 0.0
-          orientation: "${orientation}"
-  search_for_victims:
-    interface: topic
-    name: "/perception/search"
-    type: "std_msgs/String"
-    request_template:
-      data: "search_current_area"
-  report_status:
-    interface: topic
-    name: "/operator_report"
-    type: "std_msgs/String"
-    request_template:
-      data: "status_report_current_area"
-  return_to_safe_zone:
-    interface: action
-    name: "/navigate_to_safe_zone"
-    type: "move_base_msgs/MoveBaseAction"
-    cancel_supported: true
-    goal_template:
-      target_pose:
-        header:
-          frame_id: "map"
-        pose:
-          position: "${targets.safe_zone}"
-          orientation:
-            x: 0.0
-            y: 0.0
-            z: 0.0
-            w: 1.0
 emergency_stop:
   interface: service
   name: "/emergency_stop"
   type: "std_srvs/Trigger"
-timeouts:
-  default_seconds: 30.0
-targets:
-  safe_zone:
-    x: 0.0
-    y: 0.0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -25,7 +26,7 @@ from fireclaw_core.mission.world_state_belief import WorldStateBelief
 ACTIVE_OBSERVATION_CAPABILITIES = frozenset({
     "monitor_environment",
     "recon",
-    "search_for_victims",
+    "victim_search",
 })
 UNRESOLVED_BELIEF_STATUSES = frozenset({
     "conflicted",
@@ -131,10 +132,20 @@ class MissionObservationCompiler:
         registry: RobotRegistry,
         *,
         completion_contract_compiler: CompletionContractCompiler | None = None,
+        active_observation_capabilities: Iterable[str] | None = None,
+        task_type_by_capability: Mapping[str, str] | None = None,
     ) -> None:
         self.registry = registry
         self.completion_contract_compiler = (
             completion_contract_compiler or CompletionContractCompiler()
+        )
+        self.active_observation_capabilities = frozenset(
+            active_observation_capabilities
+            if active_observation_capabilities is not None
+            else ACTIVE_OBSERVATION_CAPABILITIES
+        )
+        self.task_type_by_capability = dict(
+            task_type_by_capability or {}
         )
 
     def compile(
@@ -160,7 +171,10 @@ class MissionObservationCompiler:
             raise ActiveObservationError(
                 "Mission observation request must target an unresolved belief."
             )
-        if request.capability_required not in ACTIVE_OBSERVATION_CAPABILITIES:
+        if (
+            request.capability_required
+            not in self.active_observation_capabilities
+        ):
             raise ActiveObservationError(
                 "Mission observation request uses a capability outside the "
                 "active-observation allowlist."
@@ -190,10 +204,8 @@ class MissionObservationCompiler:
             candidates,
             key=lambda state: self._allocation_score(state, request.target),
         )
-        task_type = (
-            "victim_search"
-            if request.capability_required == "search_for_victims"
-            else "reconnaissance"
+        task_type = self._task_type_for_capability(
+            request.capability_required
         )
         completion_goal = (
             f"Observe belief {belief.belief_id} and return a structured "
@@ -237,6 +249,24 @@ class MissionObservationCompiler:
             belief=belief,
             subtask=subtask,
         )
+
+    def _task_type_for_capability(self, capability: str) -> str:
+        configured = self.task_type_by_capability.get(capability)
+        if configured is not None:
+            return configured
+        matches = [
+            definition.task_type
+            for definition in (
+                self.completion_contract_compiler.registry.definitions()
+            )
+            if capability in definition.allowed_capabilities
+        ]
+        if len(matches) != 1:
+            raise ActiveObservationError(
+                "Active-observation capability must map to exactly one "
+                f"registered mission task type: {capability!r}."
+            )
+        return matches[0]
 
     def _eligible(
         self,

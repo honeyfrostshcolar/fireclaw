@@ -39,17 +39,22 @@ class DeterministicPlanner:
         return MissionPlanningResult(
             status="planned",
             message="Plan created.",
-            intent="rescue",
+            intent="point_navigation",
             plan=MissionPlan(
-                intent="rescue",
+                intent="point_navigation",
                 command=command,
                 subtasks=[
                     MissionSubtask(
                         robot_id=robot.robot_id,
                         command=command,
-                        floor=1,
-                        capability_required="search_for_victims",
+                        floor=None,
+                        capability_required="navigate_to_point",
                         execution_group=0,
+                        task_type="navigate",
+                        target={
+                            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                            "frame_id": "map",
+                        },
                     )
                 ],
             ),
@@ -80,7 +85,6 @@ def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
             memory_path=str(tmp_path / "robot_memory.jsonl"),
             event_path=str(tmp_path / "robot_events.jsonl"),
             task_queue_path=str(tmp_path / "robot_tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     robot_gw.start()
@@ -95,7 +99,7 @@ def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
                     {
                         "robot_id": "robot-1",
                         "base_url": robot_base_url,
-                        "capabilities": ["search_for_victims"],
+                        "capabilities": ["navigate_to_point"],
                     }
                 ]
             }),
@@ -141,9 +145,9 @@ def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
         try:
             base = mission_gw.base_url
 
-            # 6. Submit a same-floor rescue mission through real HTTP
+            # 6. Submit a single-floor absolute-map mission through real HTTP
             status, body = _json_request(base, "POST", "/missions", {
-                "command": "搜索一楼受困人员",
+                "command": "去坐标 (2.0, 1.5)",
                 "session_id": "e2e-gateway-test",
                 "use_scheduler": False,
             })

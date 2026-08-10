@@ -50,7 +50,7 @@ def _write_profile(path: Path, data_dir: Path, *, skill_chain: bool = True) -> N
         chain_section = """
 
 [capability_skill_chains]
-search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]
+navigation = ["navigate_to_point"]
 """
     path.write_text(
         f"""
@@ -59,9 +59,9 @@ id = "e2e-robot"
 base_url = "http://127.0.0.1:0"
 adapter = "simulator"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 {chain_section}""".strip(),
         encoding="utf-8",
     )
@@ -97,19 +97,24 @@ def test_profile_driven_flow_end_to_end(tmp_path: Path) -> None:
     # Profile skill chains were loaded into the agent
     assert "e2e-robot" in agent.profile_skill_chains_by_robot
     chains = agent.profile_skill_chains_by_robot["e2e-robot"]
-    assert "search_for_victims" in chains
+    assert "navigation" in chains
 
     # Submit a subtask with capability_required
     subtask = MissionSubtask(
         robot_id="e2e-robot",
-        command="去二楼搜索幸存者",
-        floor=2,
-        capability_required="search_for_victims",
+        command="去坐标 (2.0, 1.5)",
+        floor=None,
+        capability_required="navigation",
         execution_group=0,
+        task_type="navigate",
+        target={
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+            "frame_id": "map",
+        },
     )
     result = agent.submit_subtask(
         "e2e-robot",
-        "去二楼搜索幸存者",
+        "去坐标 (2.0, 1.5)",
         session_id="e2e-mission",
         mission_subtask=subtask,
     )
@@ -118,11 +123,9 @@ def test_profile_driven_flow_end_to_end(tmp_path: Path) -> None:
     # The structured task should use the profile's skill chain
     captured = client.last_structured_task
     assert captured is not None, "structured_task should be captured"
-    assert captured["required_skills"] == [
-        "navigate_to_floor", "search_for_victims", "report_status",
-    ]
+    assert captured["required_skills"] == ["navigate_to_point"]
     assert captured["robot_id"] == "e2e-robot"
-    assert captured["task_type"] == "search"
+    assert captured["task_type"] == "navigate"
 
 
 def test_profile_driven_flow_without_chain_falls_back_to_default(tmp_path: Path) -> None:
@@ -142,14 +145,19 @@ def test_profile_driven_flow_without_chain_falls_back_to_default(tmp_path: Path)
 
     subtask = MissionSubtask(
         robot_id="e2e-robot",
-        command="去二楼搜索幸存者",
-        floor=2,
-        capability_required="search_for_victims",
+        command="去坐标 (2.0, 1.5)",
+        floor=None,
+        capability_required="navigation",
         execution_group=0,
+        task_type="navigate",
+        target={
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+            "frame_id": "map",
+        },
     )
     result = agent.submit_subtask(
         "e2e-robot",
-        "去二楼搜索幸存者",
+        "去坐标 (2.0, 1.5)",
         session_id="e2e-fallback",
         mission_subtask=subtask,
     )
@@ -157,30 +165,33 @@ def test_profile_driven_flow_without_chain_falls_back_to_default(tmp_path: Path)
 
     captured = client.last_structured_task
     assert captured is not None
-    # Default single-floor mapping searches locally without implicit navigation.
-    assert captured["required_skills"] == [
-        "search_for_victims", "report_status",
-    ]
+    # Without a profile chain, core does not invent a domain workflow.
+    assert captured["required_skills"] == ["navigation"]
 
 
 def test_structured_task_from_subtask_uses_profile_chains(tmp_path: Path) -> None:
     """Direct structured_task_from_mission_subtask respects capability_skill_chains."""
     subtask = MissionSubtask(
         robot_id="e2e-robot",
-        command="去二楼搜索幸存者",
-        floor=2,
-        capability_required="search_for_victims",
+        command="去坐标 (2.0, 1.5)",
+        floor=None,
+        capability_required="navigation",
         execution_group=0,
+        task_type="navigate",
+        target={
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+            "frame_id": "map",
+        },
     )
-    chains = {"search_for_victims": ["navigate_to_floor", "search_for_victims", "report_status"]}
+    chains = {"navigation": ["navigate_to_point"]}
     task = structured_task_from_mission_subtask(
         mission_id="e2e-test",
         subtask=subtask,
         capability_skill_chains=chains,
     )
-    assert task.required_skills == ["navigate_to_floor", "search_for_victims", "report_status"]
+    assert task.required_skills == ["navigate_to_point"]
     assert task.robot_id == "e2e-robot"
-    assert task.task_type == "search"
+    assert task.task_type == "navigate"
 
 
 def test_gateway_rejects_mismatched_profile_at_startup(tmp_path: Path) -> None:
@@ -193,7 +204,7 @@ id = "bad-robot"
 base_url = "http://127.0.0.1:0"
 adapter = "simulator"
 data_dir = "data/robots/bad-robot"
-capabilities = ["search_for_victims"]
+capabilities = ["navigation"]
 enabled_skills = ["nonexistent_skill"]
 llm_exposed_skills = ["nonexistent_skill"]
 """.strip(),
@@ -204,7 +215,6 @@ llm_exposed_skills = ["nonexistent_skill"]
         FireClawGateway(GatewayConfig(
             port=0,
             robot_profile_path=str(profile_path),
-            workspace_skills_dir=None,
         ))
 
 
@@ -217,12 +227,11 @@ def test_gateway_starts_with_valid_profile(tmp_path: Path) -> None:
     gateway = FireClawGateway(GatewayConfig(
         port=0,
         robot_profile_path=str(profile_path),
-        workspace_skills_dir=None,
     ))
     gateway.start()
     try:
         assert gateway.robot_profile is not None
         assert gateway.robot_profile.robot_id == "e2e-robot"
-        assert "search_for_victims" in gateway.robot_profile.capability_skill_chains
+        assert "navigation" in gateway.robot_profile.capability_skill_chains
     finally:
         gateway.stop()

@@ -27,7 +27,7 @@ def test_project_task_state_summarizes_successful_skill_and_action():
         _event("task.planned", {"intent": "rescue_victim"}, timestamp="2026-06-03T00:00:01+00:00"),
         _event(
             "skill.started",
-            {"skill_name": "navigate_to_floor", "inputs": {"floor": 2}},
+            {"skill_name": "navigate_to_waypoint", "inputs": {"floor": 2}},
             timestamp="2026-06-03T00:00:02+00:00",
         ),
         _event(
@@ -35,8 +35,8 @@ def test_project_task_state_summarizes_successful_skill_and_action():
             {
                 "action_id": "action-1",
                 "task_id": "task-1",
-                "skill_name": "navigate_to_floor",
-                "action_type": "navigate_to_floor",
+                "skill_name": "navigate_to_waypoint",
+                "action_type": "navigate_to_waypoint",
                 "inputs": {"floor": 2},
                 "risk_level": "low",
                 "dry_run": True,
@@ -56,12 +56,12 @@ def test_project_task_state_summarizes_successful_skill_and_action():
         ),
         _event(
             "skill.attempted",
-            {"skill_name": "navigate_to_floor", "attempt_number": 1, "status": "succeeded"},
+            {"skill_name": "navigate_to_waypoint", "attempt_number": 1, "status": "succeeded"},
             timestamp="2026-06-03T00:00:06+00:00",
         ),
         _event(
             "skill.succeeded",
-            {"skill_name": "navigate_to_floor", "attempt_count": 1},
+            {"skill_name": "navigate_to_waypoint", "attempt_count": 1},
             timestamp="2026-06-03T00:00:07+00:00",
         ),
         _event(
@@ -128,8 +128,8 @@ def test_project_task_state_tracks_final_cancelled_result():
 def test_project_task_state_records_action_feedback():
     events = [
         _event("task.received", {"command": "去二楼救人"}),
-        _event("skill.started", {"skill_name": "navigate_to_floor", "inputs": {"floor": 2}}),
-        _event("action.requested", {"action_id": "action-1", "skill_name": "navigate_to_floor", "action_type": "navigate_to_floor"}),
+        _event("skill.started", {"skill_name": "navigate_to_waypoint", "inputs": {"floor": 2}}),
+        _event("action.requested", {"action_id": "action-1", "skill_name": "navigate_to_waypoint", "action_type": "navigate_to_waypoint"}),
         _event("action.started", {"action_id": "action-1"}),
         _event("action.feedback", {"action_id": "action-1", "progress": 0.4, "message": "approaching stairwell"}),
         _event("action.feedback", {"action_id": "action-1", "progress": 0.8, "message": "near target floor"}),

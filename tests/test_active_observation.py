@@ -266,7 +266,7 @@ class _ActiveObservationPolicy:
                             robot_id="robot-b",
                             command="Search the second floor.",
                             floor=2,
-                            capability_required="search_for_victims",
+                            capability_required="victim_search",
                         )
                     ],
                 ),
@@ -341,7 +341,7 @@ def test_mission_agent_observes_refreshes_snapshot_and_resumes_planning() -> Non
         RobotRegistryEntry(
             robot_id="robot-b",
             base_url="http://robot-b.test",
-            capabilities=("recon", "search_for_victims"),
+            capabilities=("recon", "victim_search"),
         ),
     ])
     observed_at = datetime.now(timezone.utc).isoformat()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fireclaw_core.agent.agent import FireClawAgent
 from fireclaw_core.agent.robot import DryRunRobotAdapter, RobotActionResult
 from fireclaw_core.execution.execution_event_producer import (
@@ -10,6 +12,7 @@ from fireclaw_core.execution.executor import (
     StepExecutionResult,
 )
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 from fireclaw_core.safety.local_failure import FailureCategory
 from fireclaw_core.task.task_contract import StructuredRobotTask
 
@@ -84,8 +87,8 @@ def test_navigation_target_unreachable_produces_route_blocked_event() -> None:
 def test_no_path_text_is_only_a_fallback_for_navigation() -> None:
     navigation = _produce(_failed_execution())
     search = _produce(_failed_execution(
-        skill_name="search_for_victims",
-        action="search_for_victims",
+        skill_name="victim_search",
+        action="victim_search",
         skill_domain="perception",
         safety_class="victim_perception",
     ))
@@ -128,6 +131,11 @@ def test_non_failure_and_unprojectable_failure_do_not_emit_event() -> None:
 
 
 class _BlockedRobot(DryRunRobotAdapter):
+    def navigate_to_point(self, **_kwargs):
+        raise AssertionError("RobotAdapter domain fallback must never run")
+
+
+class _BlockedNavigationBackend:
     def navigate_to_point(
         self,
         x: float,
@@ -135,24 +143,25 @@ class _BlockedRobot(DryRunRobotAdapter):
         *,
         yaw: float = 0.0,
         frame_id: str = "map",
-    ) -> RobotActionResult:
-        return RobotActionResult(
-            ok=False,
-            status="failed",
-            robot_id=self.robot_id,
-            mode=self.mode,
-            action="navigate_to_point",
-            dry_run=self.dry_run,
-            data={
-                "x": x,
-                "y": y,
-                "yaw": yaw,
-                "frame_id": frame_id,
-                "failure_category": "target_unreachable",
-            },
-            timestamp="2026-07-28T10:00:00+00:00",
-            error="Planner confirmed no path to target",
-        )
+        **_kwargs,
+    ) -> dict:
+        return {
+            "status": "failed",
+            "x": x,
+            "y": y,
+            "yaw": yaw,
+            "frame_id": frame_id,
+            "failure_category": "target_unreachable",
+            "error": "Planner confirmed no path to target",
+        }
+
+
+def _simulation_profile() -> DeploymentProfile:
+    return DeploymentProfile(
+        mode="simulation",
+        role="robot_agent",
+        sandbox=SandboxProfile(),
+    )
 
 
 def _structured_task() -> StructuredRobotTask:
@@ -171,12 +180,17 @@ def test_robot_agent_emits_plan_invalidation_after_final_failure() -> None:
     events = []
     agent = FireClawAgent(
         robot=_BlockedRobot(robot_id="robot-a"),
-        workspace_skills_dir=None,
         session_id="mission-1",
         task_id="runtime-task-9",
         event_sink=lambda event_type, payload: events.append(
             (event_type, payload)
         ),
+        extension_paths=(Path(__file__).resolve().parents[1] / "extensions",),
+        plugin_services={
+            "adapter": "dry-run",
+            "fireclaw.navigation.move-base.backend": _BlockedNavigationBackend(),
+        },
+        deployment_profile=_simulation_profile(),
     )
 
     result = agent.run_structured_task(_structured_task())
@@ -203,8 +217,12 @@ def test_gateway_task_trace_exposes_produced_invalidation_event(
         memory_path=str(tmp_path / "memory.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
         task_queue_path=str(tmp_path / "tasks.jsonl"),
-        workspace_skills_dir=None,
-    ))
+        deployment_profile=_simulation_profile(),
+        ),
+        plugin_services={
+            "fireclaw.navigation.move-base.backend": _BlockedNavigationBackend(),
+        },
+    )
     gateway.robot = _BlockedRobot(robot_id="robot-a")
 
     accepted = gateway.submit_agent(

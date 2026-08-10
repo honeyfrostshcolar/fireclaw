@@ -1,5 +1,10 @@
 # FireClaw 与 OpenClaw 功能核对和后续规划
 
+> **历史文档，已被 2026-08-09 Plugin boundary cleanup 取代。**
+> 本文保留当时的差距判断和实现轨迹；其中旧 Tool 名、workspace loader、
+> executable manifest 与 Adapter 领域动作只描述历史状态，不能作为当前 API、
+> 配置或验收依据。
+
 > 术语说明（2026-07-29）：本文是历史差距分析。文中的主智能体现统一称为 `Mission Coordinator`（任务协调器），机器人侧子智能体现统一称为 `Robot Agent`（机器人智能体）。两者均为 FireClaw 架构中的常驻 Agent；`subagent` 仅指未来按需派生、完成认知任务后退出的临时工作单元。详见 [FireClaw Agent Terminology](./fireclaw-agent-terminology.md)。
 >
 > Plugin/Skill/Tool 说明（2026-07-29）：本文中的 `skill` 多数实际指 legacy

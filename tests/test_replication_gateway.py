@@ -366,7 +366,6 @@ def test_robot_gateway_rejects_request_before_export(tmp_path: Path) -> None:
             memory_path=str(tmp_path / "legacy.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         ),
         replication_security=ReplicationServerSecurity(
             identity=ReplicationSigningIdentity("robot-1", "robot-key"),
@@ -534,7 +533,6 @@ def _build_real_replication_stack(
             memory_path=str(tmp_path / "robot-legacy.jsonl"),
             event_path=str(tmp_path / "robot-events.jsonl"),
             task_queue_path=str(tmp_path / "robot-tasks.jsonl"),
-            workspace_skills_dir=None,
             embodied_memory_path=str(tmp_path / "robot-memory.jsonl"),
             embodied_runtime_mode="simulation",
         ),

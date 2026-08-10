@@ -1,7 +1,8 @@
-"""Scenario-level evaluation harness for embodied rescue missions.
+"""Deterministic scenario-level integration harness.
 
-Runs rescue scenarios through the real mission/gateway chain and produces
-metrics suitable for paper/demo reporting.
+Runs fixtures through the Mission/Robot Gateway chain. This is useful for
+contract regression, but it is not a Gazebo acceptance lane, a ROS readiness
+probe, or publication evidence.
 
 Usage:
     python -m fireclaw_core.embodied_eval \\
@@ -28,8 +29,11 @@ from fireclaw_core.mission.mission_planner import (
     MissionPlanningResult,
     MissionSubtask,
 )
-from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
-from fireclaw_core.subagent.subagent_client import RobotSubagentClient
+from fireclaw_core.mission.mission_runtime import (
+    MissionRuntimePaths,
+    build_mission_agent_from_paths,
+)
+from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
 
 # ---------------------------------------------------------------------------
@@ -38,10 +42,10 @@ from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
 
 class ScenarioPlanner:
-    """Deterministic planner that uses scenario metadata to build subtasks."""
+    """Deterministic planner for single-floor absolute-map scenarios."""
 
-    def __init__(self, expected_floor: int, expected_capability: str) -> None:
-        self.expected_floor = expected_floor
+    def __init__(self, expected_target: dict[str, Any], expected_capability: str) -> None:
+        self.expected_target = dict(expected_target)
         self.expected_capability = expected_capability
 
     def plan(self, command: str, *, context: MissionPlannerContext) -> MissionPlanningResult:
@@ -57,17 +61,19 @@ class ScenarioPlanner:
         return MissionPlanningResult(
             status="planned",
             message="Plan created.",
-            intent="rescue",
+            intent="point_navigation",
             plan=MissionPlan(
-                intent="rescue",
+                intent="point_navigation",
                 command=command,
                 subtasks=[
                     MissionSubtask(
                         robot_id=robot.robot_id,
                         command=command,
-                        floor=self.expected_floor,
+                        floor=None,
                         capability_required=self.expected_capability,
                         execution_group=0,
+                        task_type="navigate",
+                        target=self.expected_target,
                     )
                 ],
             ),
@@ -105,7 +111,19 @@ def _write_artifact(path: Path, data: Any) -> None:
     """Write a JSON artifact file for proof-bundle consumption."""
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-_TERMINAL_MISSION_STATUSES = {"succeeded", "completed", "failed"}
+_TERMINAL_MISSION_STATUSES = {
+    "succeeded",
+    "completed",
+    "blocked",
+    "escalated",
+    "failed",
+    "timed_out",
+    "cancelled",
+    "lost",
+    "aborted",
+}
+_SUCCESS_MISSION_STATUSES = {"succeeded", "completed"}
+_SUCCESS_SUBTASK_STATUSES = {"succeeded", "completed"}
 
 
 def _run_scenario(
@@ -120,9 +138,19 @@ def _run_scenario(
     """Run a single rescue scenario and return collected metrics."""
     scenario_id = scenario["scenario_id"]
     command = scenario["command"]
-    expected_floor = scenario.get("expected_floor", 1)
-    expected_capability = scenario.get("expected_capability", "search_for_victims")
+    expected_target = scenario.get(
+        "expected_target",
+        {
+            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+            "frame_id": "map",
+        },
+    )
+    expected_capability = scenario.get(
+        "expected_capability",
+        "navigate_to_point",
+    )
     requires_terminal = scenario.get("requires_terminal_status", True)
+    min_memory_records = int(scenario.get("min_memory_records", 0))
 
     start_time = time.monotonic()
 
@@ -136,7 +164,11 @@ def _run_scenario(
             memory_path=str(tmp_dir / "robot_memory.jsonl"),
             event_path=str(tmp_dir / "robot_events.jsonl"),
             task_queue_path=str(tmp_dir / "robot_tasks.jsonl"),
-            workspace_skills_dir=None,
+            deployment_profile=DeploymentProfile(
+                mode="simulation",
+                role="robot_agent",
+                sandbox=SandboxProfile(),
+            ),
         )
     )
     robot_gw.start()
@@ -173,7 +205,7 @@ def _run_scenario(
             paths,
             operator_id="eval-op",
             role="operator",
-            planner=ScenarioPlanner(expected_floor, expected_capability),
+            planner=ScenarioPlanner(expected_target, expected_capability),
         )
 
         mission_config = MissionGatewayConfig(port=0)
@@ -191,13 +223,26 @@ def _run_scenario(
             base = mission_gw.base_url
 
             # Submit mission
-            status, body = _json_request(base, "POST", "/missions", {
+            _http_status, body = _json_request(base, "POST", "/missions", {
                 "command": command,
                 "session_id": f"eval-{scenario_id}",
-                "use_scheduler": False,
+                "use_scheduler": True,
+                # Keep this deterministic harness synchronous. The Gazebo lane
+                # separately validates background Runs and final reports.
+                "background": False,
             })
 
-            plan_success = body.get("status") == "planned"
+            plan_success = (
+                body.get("status") not in {
+                    "no_planner",
+                    "no_robots",
+                    "unauthorized",
+                    "denied",
+                    "error",
+                    "blocked",
+                }
+                and isinstance(body.get("plan"), dict)
+            )
             mission_id = body.get("mission_id", "")
 
             # Poll trace until terminal
@@ -212,23 +257,14 @@ def _run_scenario(
 
             elapsed_ms = (time.monotonic() - start_time) * 1000
 
-            terminal_event = trace is not None and trace.get("status") in _TERMINAL_MISSION_STATUSES
+            terminal_event = (
+                trace is not None
+                and trace.get("status") in _TERMINAL_MISSION_STATUSES
+            )
 
-            # Check dispatch success via subtask results (trace uses "subtasks" key)
-            _TERMINAL_SUBTASK = {
-                "completed",
-                "blocked",
-                "escalated",
-                "failed",
-                "timed_out",
-                "cancelled",
-                "lost",
-            }
+            # A terminal failure is not a successful dispatch.
             subtasks_list = trace.get("subtasks", []) if trace else []
-            dispatch_success = any(
-                isinstance(s, dict) and s.get("status") in _TERMINAL_SUBTASK
-                for s in subtasks_list
-            ) if isinstance(subtasks_list, list) else False
+            dispatch_success = _dispatch_succeeded(subtasks_list)
 
             # Extract structured task metadata from trace
             structured_task = None
@@ -240,14 +276,30 @@ def _run_scenario(
                     structured_task = subtask["structured_task"]
                     break
                 robot_trace = subtask.get("robot_trace")
-                if isinstance(robot_trace, dict) and isinstance(robot_trace.get("structured_task"), dict):
+                if isinstance(robot_trace, dict) and isinstance(
+                    robot_trace.get("structured_task"),
+                    dict,
+                ):
                     structured_task = robot_trace["structured_task"]
                     break
 
             # Check memory records
             memory_store = agent.mission_memory
-            memory_records = memory_store.list_records(mission_id=mission_id) if memory_store else []
+            memory_records = (
+                memory_store.list_records(mission_id=mission_id)
+                if memory_store
+                else []
+            )
             memory_record_count = len(memory_records)
+            target_contract_ok = (
+                isinstance(structured_task, dict)
+                and _mapping_contains(
+                    structured_task.get("target"),
+                    expected_target,
+                )
+                and expected_capability
+                in structured_task.get("required_skills", [])
+            )
 
             # --- Collect proof-bundle-ready artifacts ---
             scenario_prefix = output_dir / scenario_id
@@ -269,7 +321,10 @@ def _run_scenario(
                 try:
                     flows = agent._task_flow_store.list_recent(limit=50)
                     mission_flows = [f.to_dict() for f in flows if f.mission_id == mission_id]
-                    _write_artifact(scenario_prefix / "task-flow.json", redact_dict({"flows": mission_flows}))
+                    _write_artifact(
+                        scenario_prefix / "task-flow.json",
+                        redact_dict({"flows": mission_flows}),
+                    )
                 except Exception:
                     pass
 
@@ -278,7 +333,10 @@ def _run_scenario(
                 try:
                     lineage = agent._session_lineage_store.get(mission_id)
                     if lineage is not None:
-                        _write_artifact(scenario_prefix / "session-lineage.json", redact_dict(lineage.to_dict()))
+                        _write_artifact(
+                            scenario_prefix / "session-lineage.json",
+                            redact_dict(lineage.to_dict()),
+                        )
                 except Exception:
                     pass
 
@@ -286,7 +344,16 @@ def _run_scenario(
             if memory_records:
                 _write_artifact(
                     scenario_prefix / "memory-eval.json",
-                    redact_dict({"mission_id": mission_id, "record_count": memory_record_count, "records": [r.to_dict() for r in memory_records]}),
+                    redact_dict(
+                        {
+                            "mission_id": mission_id,
+                            "record_count": memory_record_count,
+                            "records": [
+                                record.to_dict()
+                                for record in memory_records
+                            ],
+                        }
+                    ),
                 )
 
             result: dict[str, Any] = {
@@ -296,13 +363,20 @@ def _run_scenario(
                 "dispatch_success": dispatch_success,
                 "terminal_event": terminal_event,
                 "memory_record_count": memory_record_count,
+                "target_contract_ok": target_contract_ok,
                 "latency_ms": round(elapsed_ms, 2),
                 "mission_status": trace.get("status") if trace else "unknown",
                 "structured_task": structured_task,
             }
 
             # Evaluate pass/fail
-            passed = plan_success
+            passed = (
+                plan_success
+                and dispatch_success
+                and target_contract_ok
+                and memory_record_count >= min_memory_records
+                and result["mission_status"] in _SUCCESS_MISSION_STATUSES
+            )
             if requires_terminal:
                 passed = passed and terminal_event
 
@@ -318,6 +392,33 @@ def _run_scenario(
 # ---------------------------------------------------------------------------
 # Aggregation
 # ---------------------------------------------------------------------------
+
+
+def _dispatch_succeeded(subtasks: Any) -> bool:
+    return (
+        isinstance(subtasks, list)
+        and bool(subtasks)
+        and all(
+            isinstance(subtask, dict)
+            and subtask.get("status") in _SUCCESS_SUBTASK_STATUSES
+            for subtask in subtasks
+        )
+    )
+
+
+def _mapping_contains(actual: Any, expected: Any) -> bool:
+    """Return whether actual recursively contains the expected contract."""
+
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return False
+        return all(
+            key in actual and _mapping_contains(actual[key], value)
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return isinstance(actual, list) and actual == expected
+    return actual == expected
 
 
 def _aggregate_metrics(scenario_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -459,17 +560,22 @@ def run_embodied_eval(
     # Consolidate per-scenario artifacts into top-level proof-bundle-ready files
     _consolidate_artifacts(output_dir, scenario_results)
 
-    # Emit simulator-scoped doctor report for self-contained proof bundle acceptance
+    # Preserve the historical artifact filename for consumers, but make clear
+    # that this deterministic harness did not perform a readiness probe.
     doctor_report = {
-        "status": "ok" if status == "pass" else "warn",
+        "status": "warn",
         "adapter": adapter,
         "scenario_count": len(scenario_results),
         "metrics": metrics,
         "findings": [
             {
-                "severity": "info",
-                "code": "simulator_eval_completed",
-                "message": "Simulator embodied evaluation completed and produced proof artifacts.",
+                "severity": "warn",
+                "code": "readiness_not_probed",
+                "message": (
+                    "Deterministic integration evaluation completed; ROS, "
+                    "Gazebo, Plugin backend readiness, and physical execution "
+                    "were not probed by this report."
+                ),
             }
         ],
     }

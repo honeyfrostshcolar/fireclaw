@@ -23,7 +23,9 @@ Mission Coordinator task contract
 -> FireClawPluginHost tool projection
 -> SkillRegistry compatibility view
 -> RobotActionRuntime
+-> monotonic deadline / operator cancellation arbitration
 -> Plugin-owned handler / Adapter
+-> bounded runtime stop acknowledgement
 -> ROS / simulator / SDK / algorithm
 ```
 
@@ -48,7 +50,7 @@ FireClaw 增加了 OpenClaw 软件工具不需要的具身约束：
 
 - 任务目标到工具参数的权威绑定；
 - LLM 不得改写的 protected inputs；
-- Robot Adapter action binding；
+- Plugin-owned handler 与 Adapter binding；
 - 传感器、风险、安全类别和前置条件；
 - 资源锁、完成证据、超时、取消和反馈；
 - real/simulation/dry-run 隔离；
@@ -71,7 +73,7 @@ Skill 是 Agent-facing 的能力说明和工作流，可以指导 Agent 组合�
 ### Tool
 
 Tool 是 LLM 可提出调用的原子接口，例如 `navigate_to_point`、
-`get_navigation_status` 和 `cancel_navigation`。当前 legacy
+`move_base_navigation_status` 和 `move_base_cancel_navigation`。当前 legacy
 `PhysicalSkillPlugin` 声明的是 physical Tool contract，包括 schema、任务
 绑定、安全元数据、执行 action、资源和证据。LLM 不能直接得到 ROS handle
 或 Adapter 对象。
@@ -81,7 +83,7 @@ Tool 是 LLM 可提出调用的原子接口，例如 `navigate_to_point`、
 Adapter 是算法和硬件实现边界。新 Plugin 直接在自己的
 `PhysicalToolSpec.handler` 中调用 Plugin-owned ROS/SDK Adapter；核心
 `RobotActionRuntime` 不要求 `RobotAdapter` 上存在同名方法，也不包含导航、搜索
-或机械臂专用分支。旧 `supported_actions`/同名 callable 只作为迁移兼容路径。
+或机械臂专用分支。旧 `supported_actions`/同名 callable 回退已经删除。
 
 ### Runtime / Algorithm
 
@@ -128,6 +130,34 @@ Agent loop、Robot Agent policy、SafetyGate、PlanExecutor、Operator projector
 `place_safety_beacon` 和不同的 Adapter action 名 `deploy_beacon` 验证了这条
 扩展路径。
 
+## Deadline、取消与可信终态
+
+`PhysicalToolSpec` 可以声明：
+
+- `timeout_seconds`：从 action 启动开始计算的 monotonic deadline；
+- `cancellation_ack_timeout_seconds`：发出取消信号后等待底层 Runtime 确认停止的
+  最大时间。
+
+`RobotActionRuntime` 将 operator cancellation 与 deadline expiry 合成为同一个
+可调用控制信号，并保留首个原因。Plugin handler 必须 cooperative cancel：收到
+信号后停止自己拥有的 ROS action、SDK operation 或算法任务，并在结果中明确返回
+`cancellation_acknowledged=true` 和 `runtime_stopped=true`。
+
+终态规则为：
+
+| 条件 | Action / Task 终态 |
+| --- | --- |
+| deadline 前正常完成 | `succeeded` / `completed` |
+| 操作员取消且 Runtime 确认停止 | `cancelled` |
+| deadline 到期且 Runtime 确认停止 | `timed_out` |
+| 取消后未在宽限期内确认停止 | `lost` |
+
+core 使用监督线程保证 deadline 和取消确认等待有界，但不会终止 Python 线程后
+冒充机器人已经停止。未确认停止时，晚到的 feedback/result 不得产生第二个终态；
+执行器保留相关 resource lease，并关闭持久化资源准入，等待操作员检查或执行
+emergency-stop/recovery。只有明确的 safe-stop acknowledgement 才允许正常释放
+运动控制资源。
+
 ## 多楼层能力
 
 “去二楼”不是给 `navigate_to_point` Tool 增加一个 `floor` 参数。它需要电梯/楼梯
@@ -146,14 +176,14 @@ navigate_to_point(transition_entry)
 
 ## 已知边界
 
-- Python 内置信任插件已有通用注册 API，但第三方物理插件的发现、签名、
-  sandbox 和动态加载尚未完成；
-- workspace JSON manifest 当前主要承载 legacy subprocess Tool，不会获得任意
-  Robot Adapter 权限；
+- Python 受信任插件已有通用发现和注册 API，但第三方物理插件的签名、
+  独立进程隔离和发布兼容策略尚未完成；
+- 旧 workspace executable-Tool manifest loader 已删除；进程 Tool 必须由
+  Plugin 注册并经过 deployment policy 与 `ComputerSandbox`；
 - `resource_locks` 已接入 SQLite WAL 支持的机器人本地资源租约；执行器在
-  Adapter side effect 前原子获取，并在成功、失败或取消路径释放；
+  Adapter side effect 前原子获取；成功、普通失败和已确认取消后释放，取消未确认
+  时保留并关闭资源准入；
 - `success_evidence` 已进入插件元数据，但仍需接入通用完成证据验证器；
 - schema 校验覆盖 FireClaw 当前使用的 JSON Schema 子集，不是完整
   JSON Schema 实现；
-- 旧 Adapter handler 仍必须单独进行安全审查、仿真验证和实机验证；新的
-  Plugin-owned handler 同样必须经过这些验证。
+- Plugin-owned handler 必须单独进行安全审查、仿真验证和实机验证。

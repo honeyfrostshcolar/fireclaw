@@ -1,6 +1,6 @@
 # FireClaw Current Spatial Scope
 
-更新时间：2026-07-29
+更新时间：2026-08-09
 
 ## Current Contract
 
@@ -17,21 +17,21 @@ navigate_to_point(x, y, yaw=0.0, frame_id="map")
 - `yaw` 是目标朝向，单位为弧度；
 - `frame_id` 明确坐标系，默认是 `map`；
 - Robot Agent 不得修改中央任务合同中的目标 pose；
-- Robot Adapter 负责把目标转换成 ROS action 或机器人 SDK 命令。
+- Navigation Plugin 的 Adapter 负责把目标转换成 ROS action 或机器人 SDK
+  命令；core `RobotAdapter` 不提供领域动作方法。
 
 ## Compatibility Boundary
 
-以下字段和接口暂时保留，以便读取历史记录以及以后扩展多楼层能力：
+以下数据字段暂时保留，以便读取历史记录以及以后扩展多楼层能力：
 
-- `navigate_to_floor`
 - `MissionTarget.floor`
 - `PlanningResult.target_floor`
 - `RobotState.current_floor`
 - `EnvironmentState.reachable_floors`
 - `EnvironmentState.victims_by_floor`
 
-它们不是当前能力声明。当前默认 Robot Agent profile 不向 LLM 暴露
-`navigate_to_floor`，ROS1/Gazebo 示例也不再配置该 endpoint。
+它们不是当前能力声明，也不会自动产生跨楼层 Tool。ROS1/Gazebo 示例只配置
+单楼层绝对 `map` pose。
 
 ## Planning And Execution
 
@@ -56,8 +56,8 @@ MissionTarget.pose
 -> Robot Agent target-envelope validation
 -> navigate_to_point tool proposal
 -> SafetyGate
--> Skill runtime
--> RobotAdapter
+-> physical Tool runtime
+-> Plugin-owned handler / Ros1MoveBaseBackend
 -> ROS move_base / robot SDK
 ```
 
@@ -66,7 +66,7 @@ MissionTarget.pose
 
 ## Future Multi-Floor Extension
 
-未来启用多楼层能力时，不能只重新暴露 `navigate_to_floor`。至少需要补充：
+未来启用多楼层能力时，不能只增加一个“去某楼层”的原子接口。至少需要补充：
 
 - 楼梯、电梯和坡道等跨层设施模型；
 - 楼层与地图 frame 的切换协议；

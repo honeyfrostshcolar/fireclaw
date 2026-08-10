@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field, replace
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -76,7 +77,6 @@ from fireclaw_core.agent.robot_deliberation import (
 from fireclaw_core.agent.skill_inventory import build_robot_skill_inventory
 from fireclaw_core.agent.robot_tools import build_robot_skill_tools
 from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot_adapter
-from fireclaw_core.execution.runtime import SandboxedSkillExecutor
 from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.task.task_state import project_task_state
 from fireclaw_core.task.terminal_outcome import (
@@ -98,7 +98,7 @@ from fireclaw_core.ros.ros1_diagnostics import Ros1DiagnosticsBackend
 def _default_robot_deployment_profile() -> DeploymentProfile:
     workspace_root = Path("data/fireclaw-sandbox/robot-agent")
     return DeploymentProfile(
-        mode="real",
+        mode="simulation",
         role="robot_agent",
         sandbox=SandboxProfile(
             workspace_root=workspace_root,
@@ -119,7 +119,6 @@ class GatewayConfig:
     task_queue_path: str = "memory/fireclaw-gateway-tasks.jsonl"
     robot_agent_checkpoint_path: str | None = None
     runtime_state_path: str | None = None
-    workspace_skills_dir: str | None = "skills"
     dry_run: bool = True
     available_sensors: tuple[str, ...] = ()
     default_session_id: str = "default"
@@ -136,11 +135,6 @@ class GatewayConfig:
     robot_agent_model_catalog_path: str | None = None
     extension_paths: tuple[str, ...] = ("extensions",)
     plugin_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Compatibility settings for older deployments. New extensions should
-    # read their own manifest-keyed plugin_configs instead.
-    move_base_navigation_tools_enabled: bool = True
-    move_base_real_mutation_enabled: bool = False
-    move_base_real_mutable_parameters: tuple[str, ...] = ()
     robot_profile_path: str | None = None
     embodied_memory_path: str | None = None
     embodied_memory_index_path: str | None = None
@@ -249,12 +243,12 @@ class FireClawGateway:
         *,
         replication_security: Any | None = None,
         ros_diagnostics_backend: Ros1DiagnosticsBackend | None = None,
-        move_base_navigation_backend: Any | None = None,
         computer_sandbox: ComputerSandbox | None = None,
-        workspace_skill_executor: SandboxedSkillExecutor | None = None,
+        plugin_services: Mapping[str, Any] | None = None,
     ) -> None:
         self._process_working_directory = Path.cwd().resolve(strict=False)
         self.replication_security = replication_security
+        self._plugin_services = dict(plugin_services or {})
         self.robot_profile = load_gateway_robot_profile(config)
         resolved_config = resolve_gateway_config_with_profile(config, self.robot_profile)
         resolved_config = resolve_gateway_storage_namespace(resolved_config)
@@ -277,9 +271,6 @@ class FireClawGateway:
             self.computer_sandbox = ComputerSandbox(
                 resolved_config.deployment_profile.sandbox
             )
-        self.workspace_skill_executor = (
-            workspace_skill_executor or self.computer_sandbox
-        )
         self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
         apply_gateway_dry_run_to_robot(self.robot, resolved_config.dry_run)
         attach_profile_sensor_discovery(self.robot, self.robot_profile)
@@ -299,9 +290,6 @@ class FireClawGateway:
                     robot_id=resolved_config.robot_id,
                 )
             )
-        # Extension entrypoints own backend selection. This optional service is
-        # retained for tests and deployments that inject a trusted adapter.
-        self.move_base_navigation_backend = move_base_navigation_backend
         self._validate_robot_profile()
         self.memory = JsonlMemoryStore(resolved_config.memory_path)
         self.embodied_memory: EmbodiedMemoryStore | None = None
@@ -450,19 +438,37 @@ class FireClawGateway:
             return
         from fireclaw_core.agent.robot_profile import validate_robot_capability_profile
         from fireclaw_core.execution.skills import create_default_skill_registry
-        from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
+        from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
+        from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 
-        ros1_config = None
-        if self.robot_profile.ros1_config is not None:
-            ros1_config = load_ros1_adapter_config(self.robot_profile.ros1_config)
-        registry = create_default_skill_registry(self.robot)
-        errors = validate_robot_capability_profile(
-            self.robot_profile,
-            registry,
-            ros1_config=ros1_config,
+        host = FireClawPluginHost()
+        load_fireclaw_extensions(
+            host,
+            self.config.extension_paths,
+            mode=self.config.deployment_profile.mode,
+            role="robot_agent",
+            plugin_configs=self.config.plugin_configs,
+            services=self._extension_services(),
         )
+        registry = create_default_skill_registry(self.robot, plugin_host=host)
+        errors = validate_robot_capability_profile(self.robot_profile, registry)
         if errors:
             raise ValueError("Invalid robot profile: " + "; ".join(errors))
+
+    def _extension_services(self) -> dict[str, Any]:
+        """Build the generic host service bag without naming domain Plugins."""
+
+        services = dict(self._plugin_services)
+        services["adapter"] = self.config.adapter
+        services.setdefault(
+            "fireclaw.agent-tools.computer.sandbox",
+            self.computer_sandbox,
+        )
+        services.setdefault(
+            "fireclaw.agent-tools.ros1-diagnostics.backend",
+            self.ros_diagnostics_backend,
+        )
+        return services
 
     @property
     def base_url(self) -> str:
@@ -663,11 +669,14 @@ class FireClawGateway:
 
         def worker() -> None:
             try:
-                self.task_queue.update(
-                    task_id,
-                    status="running",
-                    started_at=datetime.now(timezone.utc).isoformat(),
-                )
+                if resumed:
+                    self.task_queue.update(task_id, status="running")
+                else:
+                    self.task_queue.update(
+                        task_id,
+                        status="running",
+                        started_at=datetime.now(timezone.utc).isoformat(),
+                    )
                 if resumed:
                     self._append_event(
                         task_id=task_id,
@@ -730,8 +739,10 @@ class FireClawGateway:
                     )
             finally:
                 with self._task_lock:
-                    self._task_threads.pop(task_id, None)
-                    self._task_controls.pop(task_id, None)
+                    if self._task_threads.get(task_id) is threading.current_thread():
+                        self._task_threads.pop(task_id, None)
+                    if self._task_controls.get(task_id) is control:
+                        self._task_controls.pop(task_id, None)
 
         thread = threading.Thread(
             target=worker,
@@ -749,6 +760,66 @@ class FireClawGateway:
             with self._task_lock:
                 control = self._task_controls.get(task_id)
                 queue_record = self.task_queue.get(task_id)
+                if (
+                    queue_record is not None
+                    and queue_record.status == "awaiting_confirmation"
+                ):
+                    if control is not None:
+                        control.cancel_event.set()
+                    decided_at = datetime.now(timezone.utc).isoformat()
+                    pending = self._pending_authorization_for_task(
+                        session_id=queue_record.session_id,
+                        task_id=task_id,
+                    )
+                    with self.runtime_state.transaction():
+                        if pending is not None:
+                            try:
+                                resolved = (
+                                    self.runtime_state
+                                    .resolve_authorization_request(
+                                        str(pending["request_id"]),
+                                        status="cancelled",
+                                        decided_by=(
+                                            resolved_operator.to_dict()
+                                        ),
+                                        decided_at=decided_at,
+                                    )
+                                )
+                            except StaleRuntimeStateWrite:
+                                resolved = pending
+                            self._append_event(
+                                task_id=task_id,
+                                session_id=queue_record.session_id,
+                                type="authorization.cancelled",
+                                payload={
+                                    "status": "cancelled",
+                                    "authorization": resolved,
+                                    "cancelled_by": (
+                                        resolved_operator.to_dict()
+                                    ),
+                                    "cancelled_at": decided_at,
+                                },
+                            )
+                        terminal_result = self._terminalize_waiting_task(
+                            task_id=task_id,
+                            session_id=queue_record.session_id,
+                            status="cancelled",
+                            message=(
+                                "任务在等待确认期间被取消；"
+                                "未执行待授权动作。"
+                            ),
+                            reason_code="cancelled_while_awaiting_confirmation",
+                        )
+                    return {
+                        "status": "cancelled",
+                        "task_id": task_id,
+                        "session_id": queue_record.session_id,
+                        "message": (
+                            terminal_result.get("message")
+                            if isinstance(terminal_result, dict)
+                            else "任务已取消。"
+                        ),
+                    }
                 if control is not None and queue_record is not None and queue_record.is_terminal:
                     control = None
                 if control is not None:
@@ -973,11 +1044,13 @@ class FireClawGateway:
         extension_report = agent.extension_report
         if extension_report is None:
             raise RuntimeError("Robot Agent extensions were not loaded at construction time")
-        runtime_policy = getattr(self.robot_agent_runtime, "action_policy", None)
-        if runtime_policy is None:
-            runtime_policy = getattr(self.robot_agent_runtime, "_policy", None)
-        if runtime_policy is not None and hasattr(runtime_policy, "skill_catalog"):
-            runtime_policy.skill_catalog = agent.registry
+        bind_skill_catalog = getattr(
+            self.robot_agent_runtime,
+            "bind_skill_catalog",
+            None,
+        )
+        if callable(bind_skill_catalog):
+            bind_skill_catalog(agent.registry)
         has_agent_tools = bool(extension_report.tool_ids)
         emit("plugin.extensions_loaded", extension_report.to_dict())
         if has_agent_tools:
@@ -1426,6 +1499,81 @@ class FireClawGateway:
             },
         )
 
+    def _pending_authorization_for_task(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        payload = (
+            self.runtime_state.pending_authorization_request_for_task(
+                task_id
+            )
+        )
+        if (
+            isinstance(payload, dict)
+            and payload.get("task_id") == task_id
+            and payload.get("session_id") == session_id
+        ):
+            return payload
+        return None
+
+    def _terminalize_waiting_task(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        status: str,
+        message: str,
+        reason_code: str,
+    ) -> dict[str, Any] | None:
+        record = self.task_queue.get(task_id)
+        if record is None:
+            return None
+        if record.is_terminal:
+            return dict(record.result) if record.result is not None else None
+
+        result = dict(record.result or {})
+        raw_status = result.get("raw_status") or result.get("status")
+        terminal_outcome = build_robot_task_terminal_outcome(status)
+        if isinstance(raw_status, str) and raw_status != status:
+            terminal_outcome = replace(
+                terminal_outcome,
+                raw_status=raw_status,
+            )
+            result["raw_status"] = raw_status
+        result.update(
+            {
+                "status": status,
+                "task_id": task_id,
+                "session_id": session_id,
+                "message": message,
+                "reason_code": reason_code,
+                "terminal_outcome": terminal_outcome.to_dict(),
+            }
+        )
+        self._append_event(
+            task_id=task_id,
+            session_id=session_id,
+            type=terminal_outcome.event_type,
+            payload={
+                "status": status,
+                "raw_status": terminal_outcome.raw_status,
+                "terminal_outcome": terminal_outcome.to_dict(),
+                "message": message,
+                "reason_code": reason_code,
+                "result": result,
+            },
+        )
+        self.task_queue.update(
+            task_id,
+            status=status,
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            error=(message if status not in {"completed", "cancelled"} else None),
+            result=result,
+        )
+        return result
+
     def _authorize_confirmation(
         self,
         *,
@@ -1458,26 +1606,37 @@ class FireClawGateway:
             }
         if request.is_expired(now):
             try:
-                self.runtime_state.resolve_authorization_request(
-                    request.request_id,
-                    status="expired",
-                    decided_by=operator.to_dict(),
-                    decided_at=now,
-                )
+                with self.runtime_state.transaction():
+                    self.runtime_state.resolve_authorization_request(
+                        request.request_id,
+                        status="expired",
+                        decided_by=operator.to_dict(),
+                        decided_at=now,
+                    )
+                    payload = {
+                        "status": "expired",
+                        "session_id": session_id,
+                        "authorization": request.to_dict(),
+                        "expired_at": now,
+                    }
+                    self._append_event(
+                        task_id=request.task_id,
+                        session_id=session_id,
+                        type="authorization.expired",
+                        payload=payload,
+                    )
+                    self._terminalize_waiting_task(
+                        task_id=request.task_id,
+                        session_id=session_id,
+                        status="escalated",
+                        message=(
+                            "执行授权请求已过期；任务未执行，"
+                            "需要操作员重新提交。"
+                        ),
+                        reason_code="authorization_expired",
+                    )
             except StaleRuntimeStateWrite:
                 pass
-            payload = {
-                "status": "expired",
-                "session_id": session_id,
-                "authorization": request.to_dict(),
-                "expired_at": now,
-            }
-            self._append_event(
-                task_id=request.task_id,
-                session_id=session_id,
-                type="authorization.expired",
-                payload=payload,
-            )
             return False, {
                 "status": "expired",
                 "session_id": session_id,
@@ -1581,6 +1740,170 @@ class FireClawGateway:
             "approved_at": now,
         }
 
+    def confirm_task(
+        self,
+        *,
+        session_id: str,
+        operator: OperatorContext,
+    ) -> dict[str, Any]:
+        with self._task_lock:
+            with self.runtime_state.transaction():
+                request_payload = (
+                    self.runtime_state.pending_authorization_request(
+                        session_id
+                    )
+                )
+                if request_payload is None:
+                    return {
+                        "status": "denied",
+                        "session_id": session_id,
+                        "message": "没有绑定具体动作参数的待审批请求。",
+                    }
+                request = AuthorizationRequest.from_dict(request_payload)
+                now = datetime.now(timezone.utc).isoformat()
+                if request.is_expired(now):
+                    _, expired = self._authorize_confirmation(
+                        session_id=session_id,
+                        operator=operator,
+                    )
+                    return expired
+
+                admission_state = self.resource_leases.admission_state()
+                if admission_state.get("closed"):
+                    return {
+                        "status": "blocked",
+                        "task_id": request.task_id,
+                        "session_id": session_id,
+                        "message": "机器人处于急停资源冻结状态，暂不恢复任务。",
+                        "resource_admission": admission_state,
+                    }
+                other_active = [
+                    active_control
+                    for active_task_id, active_control
+                    in self._task_controls.items()
+                    if active_task_id != request.task_id
+                ]
+                if (
+                    len(other_active)
+                    >= self.config.max_active_execution_tasks
+                ):
+                    return {
+                        "status": "busy",
+                        "task_id": request.task_id,
+                        "session_id": session_id,
+                        "message": (
+                            "机器人当前已有其他任务执行，"
+                            "请稍后再次确认。"
+                        ),
+                        "active_tasks": [
+                            {
+                                "task_id": active_control.task_id,
+                                "session_id": active_control.session_id,
+                                "command": active_control.command,
+                                "started_at": active_control.started_at,
+                                "cancel_requested": (
+                                    active_control.cancel_event.is_set()
+                                ),
+                            }
+                            for active_control in other_active
+                        ],
+                    }
+
+                authorized, authorization_payload = (
+                    self._authorize_confirmation(
+                        session_id=session_id,
+                        operator=operator,
+                    )
+                )
+                if not authorized:
+                    return authorization_payload
+                execution_payload = authorization_payload.get(
+                    "execution_authorization"
+                )
+                if not isinstance(execution_payload, dict):
+                    raise RuntimeError(
+                        "Approved confirmation did not issue execution "
+                        "authorization."
+                    )
+                execution_authorization = (
+                    ExecutionAuthorization.from_dict(execution_payload)
+                )
+                structured_task = (
+                    dict(request.structured_task)
+                    if request.structured_task is not None
+                    else None
+                )
+                if structured_task is not None:
+                    structured_task["execution_authorization"] = (
+                        execution_authorization.to_dict()
+                    )
+                queue_record = self.task_queue.get(request.task_id)
+                if queue_record is None:
+                    raise KeyError(
+                        f"Task queue record not found: {request.task_id}"
+                    )
+                resume_result = {
+                    "status": "accepted",
+                    "task_id": request.task_id,
+                    "session_id": session_id,
+                    "message": "确认已批准；原任务正在恢复执行。",
+                    "authorization_id": (
+                        execution_authorization.authorization_id
+                    ),
+                }
+                self.task_queue.update(
+                    request.task_id,
+                    status="accepted",
+                    result=resume_result,
+                )
+                self._append_event(
+                    task_id=request.task_id,
+                    session_id=session_id,
+                    type="authorization.approved",
+                    payload=authorization_payload,
+                )
+                self._append_event(
+                    task_id=request.task_id,
+                    session_id=session_id,
+                    type="task.resume_scheduled",
+                    payload={
+                        **resume_result,
+                        "request_id": request.request_id,
+                        "execution_authorization": (
+                            execution_authorization.to_dict()
+                        ),
+                        "structured_task": structured_task,
+                        "requested_by": request.requested_by.to_dict(),
+                        "approved_by": operator.to_dict(),
+                    },
+                )
+                control = TaskControl(
+                    task_id=request.task_id,
+                    session_id=session_id,
+                    command=request.command,
+                    started_at=(
+                        queue_record.started_at
+                        or queue_record.created_at
+                    ),
+                    structured_task=structured_task,
+                    execution_authorization=execution_authorization,
+                )
+            self._task_controls[request.task_id] = control
+
+        self._start_task_worker(
+            control,
+            request.requested_by,
+            resumed=True,
+        )
+        return {
+            "status": "accepted",
+            "task_id": request.task_id,
+            "session_id": session_id,
+            "message": "确认已批准；原任务正在恢复执行。",
+            "authorization_id": execution_authorization.authorization_id,
+            "approved_by": operator.to_dict(),
+        }
+
     def list_skills(self, session_id: str | None = None) -> dict[str, Any]:
         return self.run_agent("你有哪些技能", session_id=session_id)
 
@@ -1656,6 +1979,12 @@ class FireClawGateway:
             events = self.events.events_for_task(task_id)
             result = self._task_result_from_events(events)
             queue_record = self.task_queue.get(task_id)
+            if (
+                result is None
+                and queue_record is not None
+                and isinstance(queue_record.result, dict)
+            ):
+                result = dict(queue_record.result)
             status = self._task_status(
                 task_id,
                 events,
@@ -1792,12 +2121,85 @@ class FireClawGateway:
                 or (queue_record is not None and queue_record.status == "cancel_requested")
                 or self._has_event_type(task_id, "task.cancel_requested")
             )
-            terminal_outcome = build_robot_task_terminal_outcome(
-                result.get("status"),
-                cancellation_requested=was_cancel_requested,
+            pending_authorization = self._pending_authorization_for_task(
+                session_id=session_id,
+                task_id=task_id,
             )
+            if (
+                result.get("status") == "awaiting_confirmation"
+                and pending_authorization is not None
+                and not was_cancel_requested
+            ):
+                with self.runtime_state.transaction():
+                    self._append_event(
+                        task_id=task_id,
+                        session_id=session_id,
+                        type="task.awaiting_confirmation",
+                        payload={
+                            "status": "awaiting_confirmation",
+                            "request_id": pending_authorization.get(
+                                "request_id"
+                            ),
+                            "message": result.get("message"),
+                            "result": result,
+                        },
+                    )
+                    self.task_queue.update(
+                        task_id,
+                        status="awaiting_confirmation",
+                        result=result,
+                    )
+                return
+
+            raw_status = result.get("status")
+            if raw_status == "awaiting_confirmation":
+                terminal_outcome = replace(
+                    build_robot_task_terminal_outcome(
+                        "cancelled"
+                        if was_cancel_requested
+                        else "escalated"
+                    ),
+                    raw_status="awaiting_confirmation",
+                )
+            else:
+                terminal_outcome = build_robot_task_terminal_outcome(
+                    raw_status,
+                    cancellation_requested=was_cancel_requested,
+                )
             result["terminal_outcome"] = terminal_outcome.to_dict()
             with self.runtime_state.transaction():
+                if (
+                    raw_status == "awaiting_confirmation"
+                    and was_cancel_requested
+                    and pending_authorization is not None
+                ):
+                    decided_at = datetime.now(timezone.utc).isoformat()
+                    try:
+                        resolved_authorization = (
+                            self.runtime_state.resolve_authorization_request(
+                                str(pending_authorization["request_id"]),
+                                status="cancelled",
+                                decided_by=dict(
+                                    pending_authorization.get(
+                                        "requested_by"
+                                    )
+                                    or {}
+                                ),
+                                decided_at=decided_at,
+                            )
+                        )
+                    except StaleRuntimeStateWrite:
+                        resolved_authorization = pending_authorization
+                    self._append_event(
+                        task_id=task_id,
+                        session_id=session_id,
+                        type="authorization.cancelled",
+                        payload={
+                            "status": "cancelled",
+                            "authorization": resolved_authorization,
+                            "cancelled_at": decided_at,
+                        },
+                    )
                 self._append_event(
                     task_id=task_id,
                     session_id=session_id,
@@ -1862,7 +2264,6 @@ class FireClawGateway:
         return FireClawAgent(
             robot=self.robot,
             memory=self.memory,
-            workspace_skills_dir=self.config.workspace_skills_dir,
             dry_run=self.config.dry_run,
             available_sensors=set(self.config.available_sensors) if self.config.available_sensors else None,
             session_id=resolved_session_id,
@@ -1886,44 +2287,9 @@ class FireClawGateway:
             ),
             robot_profile=self.robot_profile,
             deployment_profile=self.config.deployment_profile,
-            workspace_skill_executor=self.workspace_skill_executor,
             extension_paths=self.config.extension_paths,
             plugin_configs=self.config.plugin_configs,
-            plugin_services={
-                "adapter": self.config.adapter,
-                "robot": self.robot,
-                "gateway_config": self.config,
-                "move_base_navigation_backend": self.move_base_navigation_backend,
-                "computer_sandbox": self.computer_sandbox,
-                "ros_diagnostics_backend": self.ros_diagnostics_backend,
-                "robot_action_dispatch": self._robot_action_dispatch,
-            },
-        )
-
-    def _robot_action_dispatch(
-        self,
-        action: str,
-        inputs: dict[str, Any],
-        *,
-        feedback_sink: Any = None,
-        cancellation_requested: Any = None,
-    ) -> Any:
-        """Compatibility dispatcher for legacy Plugin physical Tools."""
-
-        from fireclaw_core.execution.action_runtime import invoke_robot_action_handler
-
-        handler = getattr(self.robot, str(action), None)
-        if not callable(handler):
-            return {
-                "status": "blocked",
-                "error": f"legacy robot action {action!r} is unavailable",
-                "action": str(action),
-            }
-        return invoke_robot_action_handler(
-            handler,
-            dict(inputs),
-            feedback_sink=feedback_sink,
-            cancellation_requested=cancellation_requested,
+            plugin_services=self._extension_services(),
         )
 
     def _task_status(
@@ -2048,6 +2414,161 @@ class FireClawGateway:
             if record.is_terminal:
                 continue
             events = self.events.events_for_task(record.task_id)
+            if record.status == "awaiting_confirmation":
+                pending_payload = self._pending_authorization_for_task(
+                    session_id=record.session_id,
+                    task_id=record.task_id,
+                )
+                if pending_payload is not None:
+                    request = AuthorizationRequest.from_dict(
+                        pending_payload
+                    )
+                    if request.is_expired(now):
+                        recovery_operator = {
+                            "operator_id": "gateway-recovery",
+                            "display_name": "Gateway Recovery",
+                            "role": "system",
+                            "control_scopes": [],
+                            "source": "gateway_recovery",
+                        }
+                        try:
+                            with self.runtime_state.transaction():
+                                self.runtime_state.resolve_authorization_request(
+                                    request.request_id,
+                                    status="expired",
+                                    decided_by=recovery_operator,
+                                    decided_at=now,
+                                )
+                                self._append_event(
+                                    task_id=record.task_id,
+                                    session_id=record.session_id,
+                                    type="authorization.expired",
+                                    payload={
+                                        "status": "expired",
+                                        "authorization": request.to_dict(),
+                                        "expired_at": now,
+                                        "source": "gateway_recovery",
+                                    },
+                                )
+                                self._terminalize_waiting_task(
+                                    task_id=record.task_id,
+                                    session_id=record.session_id,
+                                    status="escalated",
+                                    message=(
+                                        "Gateway 恢复时发现执行授权请求"
+                                        "已过期；任务未执行。"
+                                    ),
+                                    reason_code="authorization_expired",
+                                )
+                        except StaleRuntimeStateWrite:
+                            pass
+                    continue
+
+            resume_scheduled_index = -1
+            resume_started_index = -1
+            resume_payload: dict[str, Any] | None = None
+            for index, event in enumerate(events):
+                if event.get("type") == "task.resume_scheduled":
+                    payload = event.get("payload")
+                    if isinstance(payload, dict):
+                        resume_scheduled_index = index
+                        resume_payload = payload
+                elif event.get("type") == "task.resume_started":
+                    resume_started_index = index
+            if (
+                resume_payload is not None
+                and resume_scheduled_index > resume_started_index
+            ):
+                execution_payload = resume_payload.get(
+                    "execution_authorization"
+                )
+                if isinstance(execution_payload, dict):
+                    execution_authorization = (
+                        ExecutionAuthorization.from_dict(
+                            execution_payload
+                        )
+                    )
+                    try:
+                        authorization_expires_at = datetime.fromisoformat(
+                            execution_authorization.expires_at.replace(
+                                "Z",
+                                "+00:00",
+                            )
+                        )
+                    except ValueError:
+                        authorization_expires_at = datetime.min.replace(
+                            tzinfo=timezone.utc
+                        )
+                    if authorization_expires_at > datetime.now(timezone.utc):
+                        structured_task = resume_payload.get(
+                            "structured_task"
+                        )
+                        if not isinstance(structured_task, dict):
+                            structured_task = next(
+                                (
+                                    event.get("payload")
+                                    for event in reversed(events)
+                                    if event.get("type")
+                                    == "task.structured_received"
+                                    and isinstance(
+                                        event.get("payload"),
+                                        dict,
+                                    )
+                                ),
+                                None,
+                            )
+                        if isinstance(structured_task, dict):
+                            structured_task = dict(structured_task)
+                            structured_task["execution_authorization"] = (
+                                execution_authorization.to_dict()
+                            )
+                        control = TaskControl(
+                            task_id=record.task_id,
+                            session_id=record.session_id,
+                            command=record.command,
+                            started_at=(
+                                record.started_at or record.created_at
+                            ),
+                            structured_task=structured_task,
+                            execution_authorization=(
+                                execution_authorization
+                            ),
+                        )
+                        with self._task_lock:
+                            self._task_controls[record.task_id] = control
+                        self._start_task_worker(
+                            control,
+                            operator_from_payload(
+                                resume_payload.get("requested_by")
+                            ),
+                            resumed=True,
+                        )
+                        continue
+                    with self.runtime_state.transaction():
+                        self._append_event(
+                            task_id=record.task_id,
+                            session_id=record.session_id,
+                            type="task.resume_rejected",
+                            payload={
+                                "status": "escalated",
+                                "reason_code": (
+                                    "execution_authorization_expired"
+                                ),
+                            },
+                        )
+                        self._terminalize_waiting_task(
+                            task_id=record.task_id,
+                            session_id=record.session_id,
+                            status="escalated",
+                            message=(
+                                "Gateway 恢复前执行授权已过期；"
+                                "任务未重新执行。"
+                            ),
+                            reason_code=(
+                                "execution_authorization_expired"
+                            ),
+                        )
+                    continue
             structured_payload = next(
                 (
                     event.get("payload")
@@ -2532,69 +3053,20 @@ class FireClawGateway:
                 return
             if parsed.path == "/confirm":
                 session_id = _payload_session(payload, self.config.default_session_id)
-                authorized, authorization_payload = self._authorize_confirmation(
+                result = self.confirm_task(
                     session_id=session_id,
                     operator=operator,
                 )
-                if not authorized:
-                    self._write_json(handler, HTTPStatus.FORBIDDEN, authorization_payload)
-                    return
-                authorization = authorization_payload.get("authorization")
-                if isinstance(authorization, dict) and isinstance(authorization.get("task_id"), str):
-                    self._wait_until_task_inactive(authorization["task_id"])
-                execution_authorization_payload = (
-                    authorization_payload.get(
-                        "execution_authorization"
-                    )
-                )
-                execution_authorization = (
-                    ExecutionAuthorization.from_dict(
-                        execution_authorization_payload
-                    )
-                    if isinstance(
-                        execution_authorization_payload,
-                        dict,
-                    )
-                    else None
-                )
-                original_command = (
-                    str(authorization.get("command") or "")
-                    if isinstance(authorization, dict)
-                    else ""
-                )
-                structured_task = (
-                    dict(authorization["structured_task"])
-                    if isinstance(authorization, dict)
-                    and isinstance(
-                        authorization.get("structured_task"),
-                        dict,
-                    )
-                    else None
-                )
-                if (
-                    structured_task is not None
-                    and execution_authorization is not None
-                ):
-                    structured_task["execution_authorization"] = (
-                        execution_authorization.to_dict()
-                    )
-                result = self.submit_agent(
-                    original_command,
-                    session_id=session_id,
-                    operator=operator,
-                    structured_task=structured_task,
-                    execution_authorization=execution_authorization,
-                )
-                if authorization_payload.get("status") == "approved" and result.get("task_id"):
-                    self._append_event(
-                        task_id=result["task_id"],
-                        session_id=session_id,
-                        type="authorization.approved",
-                        payload=authorization_payload,
-                    )
+                status = str(result.get("status") or "denied")
+                if status in {"denied", "expired", "blocked"}:
+                    response_status = HTTPStatus.FORBIDDEN
+                elif status == "busy":
+                    response_status = HTTPStatus.CONFLICT
+                else:
+                    response_status = _submission_status(result)
                 self._write_json(
                     handler,
-                    _submission_status(result),
+                    response_status,
                     result,
                 )
                 return
@@ -2792,8 +3264,6 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Path to the authoritative SQLite runtime database.",
     )
-    parser.add_argument("--skills-dir", default=None)
-    parser.add_argument("--no-workspace-skills", action="store_true", default=None)
     parser.add_argument("--session-id", default=None)
     parser.add_argument("--max-active-execution-tasks", type=int, default=None)
     parser.add_argument("--available-sensor", action="append", default=None)
@@ -2856,7 +3326,6 @@ def main(argv: list[str] | None = None) -> int:
             "robot_gateway_event_path": args.event_path,
             "robot_gateway_task_queue_path": args.task_queue_path,
             "robot_gateway_runtime_state_path": args.runtime_state_path,
-            "robot_gateway_workspace_skills_dir": args.skills_dir,
             "robot_gateway_dry_run": False if args.real_run else None,
             "robot_gateway_available_sensors": args.available_sensor,
             "robot_gateway_default_session_id": args.session_id,
@@ -2883,9 +3352,6 @@ def main(argv: list[str] | None = None) -> int:
             "robot_gateway_embodied_memory_path": args.embodied_memory_path,
             "robot_gateway_embodied_memory_index": args.embodied_memory_index,
             "robot_gateway_embodied_runtime_mode": args.embodied_runtime_mode,
-            "robot_gateway_move_base_tools_enabled": None,
-            "robot_gateway_move_base_real_mutation_enabled": None,
-            "robot_gateway_move_base_real_mutable_parameters": None,
         },
     )
 
@@ -2909,9 +3375,6 @@ def _run_robot_gateway(
     robot_workspace_root = (
         Path("data") / "robot" / "agent-workspace"
     ).resolve(strict=False)
-    workspace_skills_dir = merged.get("robot_gateway_workspace_skills_dir", "skills")
-    if args.no_workspace_skills:
-        workspace_skills_dir = None
     sensors = merged.get("robot_gateway_available_sensors") or ()
     extension_paths = merged.get("plugin_paths") or ("extensions",)
     if isinstance(extension_paths, str):
@@ -2933,7 +3396,6 @@ def _run_robot_gateway(
             event_path=str(merged.get("robot_gateway_event_path", "memory/fireclaw-gateway-events.jsonl")),
             task_queue_path=str(merged.get("robot_gateway_task_queue_path", "memory/fireclaw-gateway-tasks.jsonl")),
             runtime_state_path=merged.get("robot_gateway_runtime_state_path"),
-            workspace_skills_dir=None if workspace_skills_dir is None else str(workspace_skills_dir),
             dry_run=bool(merged.get("robot_gateway_dry_run", True)),
             available_sensors=tuple(str(sensor) for sensor in sensors),
             default_session_id=str(merged.get("robot_gateway_default_session_id", "default")),
@@ -2968,19 +3430,6 @@ def _run_robot_gateway(
                 for plugin_id, config in plugin_configs.items()
                 if isinstance(config, dict)
             },
-            move_base_navigation_tools_enabled=bool(
-                merged.get("robot_gateway_move_base_tools_enabled", True)
-            ),
-            move_base_real_mutation_enabled=bool(
-                merged.get("robot_gateway_move_base_real_mutation_enabled", False)
-            ),
-            move_base_real_mutable_parameters=tuple(
-                str(item)
-                for item in (
-                    merged.get("robot_gateway_move_base_real_mutable_parameters")
-                    or ()
-                )
-            ),
             robot_profile_path=merged.get("robot_gateway_profile_path"),
             embodied_memory_path=merged.get("robot_gateway_embodied_memory_path"),
             embodied_memory_index_path=merged.get("robot_gateway_embodied_memory_index"),

@@ -90,7 +90,7 @@ def test_mission_agent_submits_explicit_subtask_to_registered_robot():
             RobotRegistryEntry(
                 robot_id="robot-1",
                 base_url="http://robot-1.local:8765",
-                capabilities=("search_for_victims",),
+                capabilities=("victim_search",),
             )
         ]
     )
@@ -143,7 +143,7 @@ def test_mission_agent_records_validator_allow_decision_before_dispatch():
             RobotRegistryEntry(
                 robot_id="robot-1",
                 base_url="http://robot-1.local:8765",
-                capabilities=("search_for_victims",),
+                capabilities=("victim_search",),
             )
         ]
     )
@@ -154,7 +154,7 @@ def test_mission_agent_records_validator_allow_decision_before_dispatch():
         available_robots=[
             {
                 "robot_id": "robot-1",
-                "capabilities": ["search_for_victims"],
+                "capabilities": ["victim_search"],
                 "enabled": True,
                 "zone": None,
             }
@@ -186,7 +186,7 @@ def test_mission_agent_records_validator_allow_decision_before_dispatch():
                     robot_id="robot-1",
                     command="去2楼搜索受困人员",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),
@@ -218,7 +218,7 @@ def test_mission_agent_records_validator_block_decision_without_dispatching():
             RobotRegistryEntry(
                 robot_id="robot-1",
                 base_url="http://robot-1.local:8765",
-                capabilities=("search_for_victims",),
+                capabilities=("victim_search",),
             )
         ]
     )
@@ -229,7 +229,7 @@ def test_mission_agent_records_validator_block_decision_without_dispatching():
         available_robots=[
             {
                 "robot_id": "robot-1",
-                "capabilities": ["search_for_victims"],
+                "capabilities": ["victim_search"],
                 "enabled": True,
                 "zone": None,
             }
@@ -254,7 +254,7 @@ def test_mission_agent_records_validator_block_decision_without_dispatching():
                     robot_id="robot-1",
                     command="去2楼搜索受困人员",
                     floor=0,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),
@@ -287,7 +287,7 @@ def test_mission_agent_blocks_allowed_plan_when_audit_sink_fails():
             RobotRegistryEntry(
                 robot_id="robot-1",
                 base_url="http://robot-1.local:8765",
-                capabilities=("search_for_victims",),
+                capabilities=("victim_search",),
             )
         ]
     )
@@ -305,7 +305,7 @@ def test_mission_agent_blocks_allowed_plan_when_audit_sink_fails():
                     robot_id="robot-1",
                     command="去2楼搜索受困人员",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),
@@ -600,16 +600,16 @@ class FakeMissionPlanner:
 
 def test_mission_agent_plan_and_submit_creates_subtasks_from_plan():
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     plan = MissionPlan(
         intent="search",
         command="去二楼和三楼搜索受困人员",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -665,7 +665,7 @@ def test_mission_agent_plan_and_submit_returns_clarify_from_planner():
 def test_plan_and_submit_dispatches_primitive_fallback_on_clarify():
     """When planner returns 'clarify' but a robot has primitive skills, dispatch a primitive_composition task."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -676,7 +676,7 @@ def test_plan_and_submit_dispatches_primitive_fallback_on_clarify():
         registry=registry,
         subagent_client=client,
         planner=planner,
-        primitive_skills_by_robot={"r1": ("navigate_to_floor", "search_area")},
+        primitive_skills_by_robot={"r1": ("navigate_to_waypoint", "search_area")},
     )
 
     result = mission.plan_and_submit("导航到 x=2 y=0", session_id="m1")
@@ -688,20 +688,20 @@ def test_plan_and_submit_dispatches_primitive_fallback_on_clarify():
     assert submitted_entry.robot_id == "r1"
     structured_task = submitted_kwargs.get("structured_task", {})
     assert structured_task.get("task_type") == "primitive_composition"
-    assert "navigate_to_floor" in structured_task.get("allowed_skills", [])
+    assert "navigate_to_waypoint" in structured_task.get("allowed_skills", [])
     assert "search_area" in structured_task.get("allowed_skills", [])
 
     # Round-trip: the structured_task should survive from_dict → envelope construction
     task = StructuredRobotTask.from_dict(structured_task)
     envelope = envelope_from_structured_task(task, fallback_robot_id="r1")
-    assert "navigate_to_floor" in envelope.allowed_skills
+    assert "navigate_to_waypoint" in envelope.allowed_skills
     assert "search_area" in envelope.allowed_skills
 
 
 def test_plan_and_submit_primitive_fallback_blocked_for_high_risk_command():
     """High-risk commands should be blocked even when primitive skills exist."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -712,7 +712,7 @@ def test_plan_and_submit_primitive_fallback_blocked_for_high_risk_command():
         registry=registry,
         subagent_client=client,
         planner=planner,
-        primitive_skills_by_robot={"r1": ("navigate_to_floor",)},
+        primitive_skills_by_robot={"r1": ("navigate_to_waypoint",)},
     )
 
     result = mission.plan_and_submit("去三楼灭火", session_id="m1")
@@ -929,8 +929,8 @@ def test_mission_agent_check_fleet_presence_updates_registry():
 
 def test_mission_agent_plan_and_submit_skips_offline_robots():
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     client.presence_results["r2"] = {
@@ -942,8 +942,8 @@ def test_mission_agent_plan_and_submit_skips_offline_robots():
         intent="search",
         command="去二楼和三楼搜索受困人员",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -966,16 +966,16 @@ def test_mission_agent_plan_and_submit_skips_offline_robots():
 
 def test_mission_agent_records_outcome_on_plan_and_submit(tmp_path):
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     plan = MissionPlan(
         intent="search",
         command="去二楼和三楼搜索受困人员",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1635,8 +1635,8 @@ def test_mission_agent_check_fleet_presence_marks_non_stale_offline():
 def test_mission_agent_plan_and_submit_excludes_stale_robots():
     registry = RobotRegistry(
         [
-            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-            RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+            RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
         ],
         heartbeat_timeout_seconds=30.0,
     )
@@ -1652,8 +1652,8 @@ def test_mission_agent_plan_and_submit_excludes_stale_robots():
         intent="search",
         command="去二楼和三楼搜索受困人员",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1677,7 +1677,7 @@ def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
     from unittest.mock import patch, MagicMock
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
@@ -1686,7 +1686,7 @@ def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1724,16 +1724,16 @@ def test_plan_and_submit_uses_scheduler_by_default(tmp_path):
 def test_plan_and_submit_preserves_direct_iteration_when_scheduler_disabled():
     """Test that plan_and_submit(use_scheduler=False) preserves direct iteration."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     plan = MissionPlan(
         intent="search",
         command="去二楼和三楼搜索受困人员",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1756,14 +1756,14 @@ def test_plan_and_submit_scheduler_result_includes_failure_decisions():
     from unittest.mock import patch, MagicMock
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     plan = MissionPlan(
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1806,7 +1806,7 @@ def test_plan_and_submit_scheduler_result_includes_failure_decisions():
 def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_path):
     """plan_and_submit should retrieve memories and corrections and pass them in context."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -1849,7 +1849,7 @@ def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_pat
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1880,7 +1880,7 @@ def test_plan_and_submit_populates_context_with_memories_and_corrections(tmp_pat
 def test_plan_and_submit_uses_ranked_memory_retriever_when_configured(tmp_path):
     """MissionAgent should feed ranked retriever results into planner context."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -1919,7 +1919,7 @@ def test_plan_and_submit_uses_ranked_memory_retriever_when_configured(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1955,14 +1955,14 @@ def test_plan_and_submit_uses_ranked_memory_retriever_when_configured(tmp_path):
 def test_plan_and_submit_empty_context_when_no_memory_configured():
     """When mission_memory is None, context should have empty memories and corrections."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     plan = MissionPlan(
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -1987,7 +1987,7 @@ def test_plan_and_submit_empty_context_when_no_memory_configured():
 def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
     """Secrets in memory content should be redacted before passing to planner."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -2005,7 +2005,7 @@ def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(
@@ -2036,7 +2036,7 @@ def test_plan_and_submit_redacts_secrets_in_context(tmp_path):
 def test_plan_and_submit_applies_provider_context_hook(tmp_path):
     """Plugin enrich_context items that reference verifiable records are admitted."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -2091,7 +2091,7 @@ def test_plan_and_submit_applies_provider_context_hook(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims"),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search"),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
@@ -2116,7 +2116,7 @@ def test_plan_and_submit_applies_provider_context_hook(tmp_path):
 def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
     """Non-dict plugin enrich_context items are dropped by the Builder."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     runtime = PluginRuntime()
@@ -2134,7 +2134,7 @@ def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims"),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search"),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
@@ -2159,7 +2159,7 @@ def test_plan_and_submit_drops_non_dict_plugin_memories(tmp_path):
 
 def test_plan_and_submit_projects_subtask_lifecycle_records(tmp_path):
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     task_registry = JsonlTaskRegistryStore(tmp_path / "task_registry.jsonl")
@@ -2168,7 +2168,7 @@ def test_plan_and_submit_projects_subtask_lifecycle_records(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims"),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search"),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
@@ -2203,7 +2203,7 @@ def test_plan_and_submit_projects_subtask_lifecycle_records(tmp_path):
 def test_plan_and_submit_applies_memory_filter_hook(tmp_path):
     """Memory filter hook should be able to reduce the memory set."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -2246,7 +2246,7 @@ def test_plan_and_submit_applies_memory_filter_hook(tmp_path):
     )
     plan = MissionPlan(
         intent="search", command="去二楼搜索",
-        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search")],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
     mission = MissionAgent(
@@ -2266,7 +2266,7 @@ def test_plan_and_submit_applies_memory_filter_hook(tmp_path):
 def test_plan_and_submit_applies_memory_rerank_hook(tmp_path):
     """Memory rerank hook should be able to reorder the memory set."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -2309,7 +2309,7 @@ def test_plan_and_submit_applies_memory_rerank_hook(tmp_path):
     )
     plan = MissionPlan(
         intent="search", command="去二楼搜索",
-        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search")],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
     mission = MissionAgent(
@@ -2330,7 +2330,7 @@ def test_plan_and_submit_applies_memory_rerank_hook(tmp_path):
 def test_memory_hooks_not_called_when_no_memories(tmp_path):
     """Memory hooks should not be invoked when the memory list is empty."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     called = []
@@ -2343,7 +2343,7 @@ def test_memory_hooks_not_called_when_no_memories(tmp_path):
     )
     plan = MissionPlan(
         intent="search", command="去二楼搜索",
-        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search")],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
     mission = MissionAgent(
@@ -2364,7 +2364,7 @@ def test_mission_agent_auto_wires_subagent_registry_to_client(tmp_path):
     MissionAgent should wire registry into the default RobotSubagentClient."""
     from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     subagent_registry = JsonlSubagentRegistry(tmp_path / "subagents.jsonl")
     mission = MissionAgent(registry=registry, subagent_registry=subagent_registry)
@@ -2414,8 +2414,8 @@ def test_submit_subtask_projects_into_task_registry(tmp_path):
 
 def test_plan_and_submit_projects_task_flow_record(tmp_path):
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     task_flow_store = JsonlTaskFlowRegistryStore(tmp_path / "flows.jsonl")
@@ -2423,8 +2423,8 @@ def test_plan_and_submit_projects_task_flow_record(tmp_path):
         intent="search",
         command="去二楼和三楼搜索受困人员",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索", floor=3, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
@@ -2453,7 +2453,7 @@ def test_plan_and_submit_scheduler_path_writes_task_flow_record(tmp_path):
     from unittest.mock import patch, MagicMock
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     task_flow_store = JsonlTaskFlowRegistryStore(tmp_path / "flows.jsonl")
@@ -2461,7 +2461,7 @@ def test_plan_and_submit_scheduler_path_writes_task_flow_record(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
@@ -2502,14 +2502,14 @@ def test_plan_and_submit_scheduler_path_writes_task_flow_record(tmp_path):
 
 def test_plan_and_submit_task_flow_not_written_when_store_none(tmp_path):
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     plan = MissionPlan(
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
@@ -2531,7 +2531,7 @@ def test_primitive_fallback_structured_task_validates_after_round_trip():
         "command": "导航到 x=2 y=0",
         "target": {},
         "required_skills": [],
-        "allowed_skills": ["navigate_to_floor", "report_status"],
+        "allowed_skills": ["navigate_to_waypoint", "publish_operator_update"],
         "risk_level": "low",
         "constraints": {"source": "mission_primitive_fallback"},
     }
@@ -2582,7 +2582,7 @@ def _seed_record_with_metadata(
 def test_retrieve_planner_context_returns_tuple(tmp_path):
     """_retrieve_planner_context() still returns (memories, corrections) tuple."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -2612,7 +2612,7 @@ def test_retrieve_planner_context_returns_tuple(tmp_path):
 def test_retrieve_planner_context_returns_current_mission_corrections(tmp_path):
     """Current mission/runtime corrections are returned by _retrieve_planner_context."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -2653,7 +2653,7 @@ def test_builder_source_exception_does_not_block_planning(tmp_path):
     from fireclaw_core.memory.planner_memory_context import PlannerMemoryContextBuilder
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     audit_sink = FakeAuditSink()
@@ -2691,7 +2691,7 @@ def test_builder_source_exception_does_not_block_planning(tmp_path):
                     robot_id="r1",
                     command="去2楼搜索",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),
@@ -2721,7 +2721,7 @@ def test_builder_source_exception_does_not_block_planning(tmp_path):
 def test_raw_plugin_enrichment_not_appended_after_builder(tmp_path):
     """Raw plugin enrich_context memory is not appended after Builder validation."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     memory_store = MissionMemoryStore(tmp_path / "memory.jsonl")
@@ -2750,7 +2750,7 @@ def test_raw_plugin_enrichment_not_appended_after_builder(tmp_path):
     )
     plan = MissionPlan(
         intent="search", command="去二楼搜索",
-        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="search_for_victims")],
+        subtasks=[MissionSubtask(robot_id="r1", command="去2楼搜索", floor=2, capability_required="victim_search")],
     )
     planner = FakeMissionPlanner(MissionPlanningResult(status="planned", message="ok", intent="search", plan=plan))
     agent = MissionAgent(
@@ -2774,7 +2774,7 @@ def test_raw_plugin_enrichment_not_appended_after_builder(tmp_path):
 def test_audit_record_receives_memory_context_decision_before_validator(tmp_path):
     """Planner audit record receives exactly one memory_context decision before the validator decision."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     audit_sink = FakeAuditSink()
@@ -2801,7 +2801,7 @@ def test_audit_record_receives_memory_context_decision_before_validator(tmp_path
                     robot_id="r1",
                     command="去2楼搜索",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),
@@ -2832,7 +2832,7 @@ def test_audit_record_receives_memory_context_decision_before_validator(tmp_path
 def test_memory_context_decision_contains_counts_not_content(tmp_path):
     """The memory_context decision contains counts and warning codes, not memory content or exception messages."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     audit_sink = FakeAuditSink()
@@ -2867,7 +2867,7 @@ def test_memory_context_decision_contains_counts_not_content(tmp_path):
                     robot_id="r1",
                     command="去2楼搜索",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),
@@ -2904,7 +2904,7 @@ def test_memory_degradation_does_not_block_planning(tmp_path):
     from fireclaw_core.memory.planner_memory_context import PlannerMemoryContextBuilder
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     audit_sink = FakeAuditSink()
@@ -2939,7 +2939,7 @@ def test_memory_degradation_does_not_block_planning(tmp_path):
                     robot_id="r1",
                     command="去2楼搜索",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),

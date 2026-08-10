@@ -9,8 +9,8 @@ def _robots(entries):
 def test_mission_planner_parses_multi_floor_command():
     planner = MissionPlanner()
     robots = _robots([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
 
     result = planner.plan("去二楼和三楼搜索受困人员", context=robots)
@@ -19,13 +19,13 @@ def test_mission_planner_parses_multi_floor_command():
     assert result.intent == "search"
     floors = [s.floor for s in result.plan.subtasks]
     assert sorted(floors) == [2, 3]
-    assert all(s.capability_required == "search_for_victims" for s in result.plan.subtasks)
+    assert all(s.capability_required == "victim_search" for s in result.plan.subtasks)
 
 
 def test_mission_planner_parses_single_floor_command():
     planner = MissionPlanner()
     robots = _robots([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
 
     result = planner.plan("去二楼搜索受困人员", context=robots)
@@ -39,7 +39,7 @@ def test_mission_planner_parses_single_floor_command():
 def test_mission_planner_clarifies_when_no_floor_specified():
     planner = MissionPlanner()
     robots = _robots([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
 
     result = planner.plan("搜索整栋楼", context=robots)
@@ -54,7 +54,7 @@ def test_mission_planner_uses_single_floor_pose_target():
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
 
@@ -100,8 +100,8 @@ def test_mission_planner_treats_planned_motion_as_patrol():
 def test_mission_planner_assigns_different_robots_when_enough():
     planner = MissionPlanner()
     robots = _robots([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
 
     result = planner.plan("去二楼和三楼搜索受困人员", context=robots)
@@ -116,7 +116,7 @@ def test_mission_planner_assigns_different_robots_when_enough():
 def test_mission_planner_reuses_robot_sequentially_when_not_enough():
     planner = MissionPlanner()
     robots = _robots([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
 
     result = planner.plan("去二楼和三楼搜索受困人员", context=robots)
@@ -139,13 +139,13 @@ def test_mission_planner_clarifies_when_no_capable_robot():
     result = planner.plan("去二楼搜索受困人员", context=robots)
 
     assert result.status == "clarify"
-    assert "search_for_victims" in result.message
+    assert "victim_search" in result.message
 
 
 def test_mission_planner_excludes_disabled_robots():
     planner = MissionPlanner()
     robots = _robots([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",), enabled=False),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",), enabled=False),
     ])
 
     result = planner.plan("去二楼搜索受困人员", context=robots)

@@ -1,68 +1,96 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from fireclaw_core.agent.agent import FireClawAgent
 from fireclaw_core.agent.robot import DryRunRobotAdapter
 from fireclaw_core.agent.robot_tools import (
     build_robot_skill_tools,
     local_plan_from_direct_tool_calls,
 )
-from fireclaw_core.execution.skills import create_default_skill_registry
 
 
-def test_build_robot_skill_tools_filters_and_preserves_input_schema() -> None:
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
 
+
+def _navigation_registry():
+    return FireClawAgent(
+        robot=DryRunRobotAdapter(robot_id="debug-robot-1"),
+        extension_paths=(EXTENSIONS,),
+        plugin_services={"adapter": "dry-run"},
+    ).registry
+
+
+def test_build_robot_skill_tools_filters_plugin_catalog_and_preserves_schema(
+) -> None:
     tools = build_robot_skill_tools(
-        registry,
-        exposed_skill_names=("navigate_to_floor", "report_status"),
+        _navigation_registry(),
+        exposed_skill_names=("navigate_to_point",),
     )
 
-    names = [tool["function"]["name"] for tool in tools]
-    assert names == ["navigate_to_floor", "report_status"]
-    nav = tools[0]["function"]
-    assert nav["parameters"]["properties"]["floor"]["type"] == "integer"
-    assert nav["parameters"]["required"] == ["floor"]
+    assert [tool["function"]["name"] for tool in tools] == [
+        "navigate_to_point"
+    ]
+    navigation = tools[0]["function"]
+    assert navigation["parameters"]["properties"]["x"]["type"] == "number"
+    assert navigation["parameters"]["properties"]["frame_id"]["type"] == (
+        "string"
+    )
+    assert navigation["parameters"]["required"] == ["x", "y"]
     assert tools[0]["x-fireclaw"]["idempotent"] is True
 
 
 def test_local_plan_from_direct_tool_calls_preserves_order() -> None:
     calls = [
-        {"name": "navigate_to_floor", "arguments": {"floor": 2}},
-        {"name": "report_status", "arguments": {"floor": 2}},
+        {"name": "inspect_local_hazard", "arguments": {"radius": 2.0}},
+        {
+            "name": "navigate_to_point",
+            "arguments": {
+                "x": 2.0,
+                "y": 1.5,
+                "yaw": 0.0,
+                "frame_id": "map",
+            },
+        },
     ]
 
-    plan = local_plan_from_direct_tool_calls(calls, intent="search")
+    plan = local_plan_from_direct_tool_calls(calls, intent="approach_target")
 
-    assert plan.intent == "search"
-    assert [step.skill_name for step in plan.steps] == ["navigate_to_floor", "report_status"]
-    assert plan.steps[0].inputs == {"floor": 2}
+    assert plan.intent == "approach_target"
+    assert [step.skill_name for step in plan.steps] == [
+        "inspect_local_hazard",
+        "navigate_to_point",
+    ]
+    assert plan.steps[0].inputs == {"radius": 2.0}
 
 
 def test_local_plan_from_direct_tool_calls_handles_empty_list() -> None:
-    plan = local_plan_from_direct_tool_calls([], intent="search")
+    plan = local_plan_from_direct_tool_calls([], intent="navigate")
 
-    assert plan.intent == "search"
+    assert plan.intent == "navigate"
     assert plan.steps == []
 
 
 def test_local_plan_from_direct_tool_calls_handles_missing_arguments() -> None:
     calls = [
-        {"name": "navigate_to_floor"},
-        {"name": "report_status", "arguments": None},
+        {"name": "inspect_local_hazard"},
+        {"name": "navigate_to_point", "arguments": None},
     ]
 
-    plan = local_plan_from_direct_tool_calls(calls, intent="search")
+    plan = local_plan_from_direct_tool_calls(calls, intent="approach_target")
 
-    assert [step.skill_name for step in plan.steps] == ["navigate_to_floor", "report_status"]
+    assert [step.skill_name for step in plan.steps] == [
+        "inspect_local_hazard",
+        "navigate_to_point",
+    ]
     assert plan.steps[0].inputs == {}
     assert plan.steps[1].inputs == {}
 
 
 def test_build_robot_skill_tools_returns_empty_for_empty_exposed() -> None:
-    from fireclaw_core.agent.robot import DryRunRobotAdapter
-    from fireclaw_core.execution.skills import create_default_skill_registry
-
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
-
-    tools = build_robot_skill_tools(registry, exposed_skill_names=())
+    tools = build_robot_skill_tools(
+        _navigation_registry(),
+        exposed_skill_names=(),
+    )
 
     assert tools == []

@@ -27,12 +27,12 @@ def _registry() -> RobotRegistry:
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
         RobotRegistryEntry(
             robot_id="robot-b",
             base_url="http://robot-b.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
 
@@ -94,7 +94,7 @@ def _plan_arguments(*, robot_id: str = "robot-b", floor: int = 2) -> dict:
                 "robot_id": robot_id,
                 "command": "去二楼搜索受困人员",
                 "floor": floor,
-                "capability_required": "search_for_victims",
+                "capability_required": "victim_search",
                 "execution_group": 0,
             }
         ],
@@ -115,7 +115,7 @@ def _graph_arguments() -> dict:
                     "floor": 2,
                     "area_id": "second_floor",
                 },
-                "capability_required": "search_for_victims",
+                "capability_required": "victim_search",
                 "completion_goal": "二楼搜索完成并上报受困人员位置",
                 "depends_on": [],
                 "execution_mode": "parallel",
@@ -433,7 +433,7 @@ def test_llm_policy_can_request_observation_only_after_belief_inspection() -> No
                     "floor": 2,
                     "area_id": "west-stairs",
                 },
-                "capability_required": "search_for_victims",
+                "capability_required": "victim_search",
                 "required_sensor": "thermal_camera",
                 "reason": "Confirm west stair passability.",
             },
@@ -634,8 +634,8 @@ def test_explicit_llm_clarification_cannot_trigger_primitive_fallback() -> None:
         subagent_client=client,
         planner=LLMMissionPlanner(provider=provider, model_id="test-model"),
         primitive_skills_by_robot={
-            "robot-a": ("navigate_to_floor",),
-            "robot-b": ("navigate_to_floor",),
+            "robot-a": ("navigate_to_waypoint",),
+            "robot-b": ("navigate_to_waypoint",),
         },
     )
 

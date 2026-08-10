@@ -72,14 +72,22 @@ def register(api: PluginApi):
             ),
             domain="perception",
             safety_class="sensor_operation",
+            timeout_seconds=30.0,
+            cancellation_ack_timeout_seconds=2.0,
             required_sensors=("lidar",),
         )
     )
 ```
 
 `PhysicalToolSpec` 的 handler 属于插件。核心只把它转换为内部生命周期对象，
-不再通过 `getattr(robot, "scan_area")` 查找同名 Adapter 方法。旧的同名方法绑定
-仍保留为迁移兼容路径，但新增插件不得依赖它。
+不再通过 `getattr(robot, "scan_area")` 查找同名 Adapter 方法。该回退路径已经
+删除；缺少 Plugin handler 时注册或执行必须 fail closed。
+
+`timeout_seconds` 是宿主用 monotonic clock 强制的 action deadline；
+`cancellation_ack_timeout_seconds` 是取消后等待物理 Runtime 确认停止的窗口。
+handler 通过 `lifecycle["cancellation_requested"]()` 读取统一信号，并在确认
+底层动作停止后返回 `cancellation_acknowledged=true`、`runtime_stopped=true`。
+未确认停止会被宿主归一化为 `lost`，而不是安全的 `cancelled`。
 
 ## 依赖安装
 
@@ -95,5 +103,6 @@ ROS、机器人 SDK 或算法依赖由 Plugin 自己声明，例如导航 Plugin
 ## 兼容性
 
 旧的第一方调用仍可以直接传入内部 `AgentTool`，用于迁移期间的兼容。新的
-Manifest Plugin 应只使用 `fireclaw_plugin_sdk`。`fireclaw_core.navigation`
-中的旧 move_base 注册函数也只是兼容入口，新的代码应通过 manifest 加载插件。
+Manifest Plugin 应只使用 `fireclaw_plugin_sdk`。旧的 core navigation 注册模块
+已经删除；move_base 只能通过 `extensions/navigation-move-base` 的 manifest 和
+Plugin 入口加载。

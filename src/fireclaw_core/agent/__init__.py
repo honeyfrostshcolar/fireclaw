@@ -42,10 +42,6 @@ _EXPORTS = {
         "fireclaw_core.agent.tool_runtime",
         "AgentToolRuntime",
     ),
-    "register_agent_tool": (
-        "fireclaw_core.agent.tool_runtime",
-        "register_agent_tool",
-    ),
 }
 
 __all__ = list(_EXPORTS)

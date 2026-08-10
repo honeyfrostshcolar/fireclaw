@@ -329,6 +329,22 @@ class SqliteAuthoritativeRuntimeStore:
         )
         return _object(rows[0]["payload_json"]) if rows else None
 
+    def pending_authorization_request_for_task(
+        self,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        rows = self.read(
+            """
+            SELECT payload_json
+            FROM authorization_requests
+            WHERE task_id = ? AND status = 'pending'
+            ORDER BY rowid DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        )
+        return _object(rows[0]["payload_json"]) if rows else None
+
     def resolve_authorization_request(
         self,
         request_id: str,

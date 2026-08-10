@@ -178,7 +178,9 @@ service、action、电机、水炮、机械臂或其他硬件接口。
 
 - `FireClawAgent`
 - 本地 planner 和 safety gate
-- legacy 可执行 Tool manifest (`*.skill.json`) loading；
+- manifest-first Plugin discovery，以及公开 typed Tool / physical Tool
+  contract；进程 Tool 必须由 Plugin 注册并经过 deployment policy 与
+  `ComputerSandbox`；
 - 参考 OpenClaw `defineToolPlugin/registerTool` 的声明式
   `PhysicalSkillPlugin` 和通用 `SkillRegistry.register_plugin()` legacy
   compatibility API，用于原子 Tool；
@@ -190,7 +192,8 @@ service、action、电机、水炮、机械臂或其他硬件接口。
   tool schema、provider 调用、取消、错误分类和基础 tool-call 校验；
 - 插件驱动的 tool schema、任务目标绑定、防篡改、安全分类、资源、
   完成证据和操作员投影；
-- 无按技能名分支的 `RobotActionRuntime` / Adapter action registry；
+- 只调度显式 Plugin handler、无按 Tool 名分支且无 Adapter 方法回退的
+  `RobotActionRuntime`；
 - SQLite WAL 权威运行时存储、版本化任务写入和事务内 task/event 提交；
 - 绑定具体命令、结构化任务、机器人和 skill 输入哈希的短期签名执行授权；
 - 参考 OpenClaw 有序 tool policy 的统一 capability policy pipeline，同时负责
@@ -204,33 +207,30 @@ service、action、电机、水炮、机械臂或其他硬件接口。
 - 面向更多消防任务的机器人本地 planner；
 - 更多真实机器人能力的 typed Tool contracts 和完整 Skills；
 - 生产部署中由外部认证系统签发的 actor identity 和 scope claims；
-- 第三方物理插件的发现、签名、沙箱和独立进程加载；
+- 第三方物理 Plugin 的签名和独立进程隔离；
 - success evidence 元数据到通用完成验证器的完整接线。
 
 ### 6. Robot Adapter and ROS Integration Layer
 
 职责：
 
-- 隔离 ROS、simulator、SDK、perception、navigation、manipulation、communication、actuation API；
-- 把 FireClaw action 渲染为机器人特定 payload；
-- 在 live transport 前强制显式配置；
-- 传播 feedback、timeout、cancellation。
+- core `RobotAdapter` 只负责状态、环境观测和 emergency stop；
+- 每个领域 Plugin 自己负责 ROS/SDK 转换、feedback、timeout、cancel 和终态映射；
+- 在 live transport 前强制显式 deployment 与 Plugin 配置。
 
 当前实现：
 
-- `Ros1RobotAdapter`
-- `Ros1Transport`
-- `ros1_config`
-- `ros1_template`
-- mock、simulator、dry-run、ROS1 adapter modes
+- 用于状态、sensor discovery 和 emergency stop 的 `Ros1RobotAdapter`；
+- 作为 core transport 基础设施的 `Ros1Transport`、`ros1_config` 和
+  `ros1_template`；
+- Navigation Plugin 自己的 `Ros1MoveBaseBackend`；
+- mock、simulator、dry-run 和 ROS1 Adapter modes。
 
 缺失：
 
-- live ROS master smoke tests；
-- 超出 dictionary payload 的真实 ROS message construction/introspection；
-- ROS2 adapter 的真实实现；
-- long-lived multi-action client registry；
-- 面向部署的 robot config examples。
+- 当前架构的 Gazebo 与实机验收记录；
+- 跨所有 Plugin Adapter 的完整物理 deadline 强制；
+- 真实 ROS2 core Adapter 与 Nav2 Plugin。
 
 ### 7. Memory and Audit Layer
 

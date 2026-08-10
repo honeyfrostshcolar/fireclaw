@@ -32,7 +32,7 @@ def _node(
         node_id=node_id,
         robot_id=robot_id,
         command=command or f"execute {node_id}",
-        capability_required="search_for_victims",
+        capability_required="victim_search",
         target=MissionTarget(frame_id="building", floor=2),
         depends_on=depends_on,
         preconditions=(
@@ -40,7 +40,7 @@ def _node(
             MissionCondition(
                 kind="robot_has_capability",
                 subject=robot_id,
-                details={"capability": "search_for_victims"},
+                details={"capability": "victim_search"},
             ),
         ),
         expected_effects=(f"task_completed:{node_id}",),

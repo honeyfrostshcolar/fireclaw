@@ -13,19 +13,19 @@ class MinimalRos2Adapter:
     mode: str = "ros2"
     dry_run: bool = True
 
-    def navigate_to_floor(self, floor: int, **kwargs: Any) -> Any:
+    def navigate_to_waypoint(self, floor: int, **kwargs: Any) -> Any:
         return {"ok": True, "floor": floor}
 
-    def search_for_victims(self, floor: int, **kwargs: Any) -> Any:
+    def victim_search(self, floor: int, **kwargs: Any) -> Any:
         return {"ok": True, "victims": 0}
 
-    def assess_victim(self, floor: int, **kwargs: Any) -> Any:
+    def inspect_casualty(self, floor: int, **kwargs: Any) -> Any:
         return {"ok": True}
 
-    def report_status(self, floor: int, **kwargs: Any) -> Any:
+    def publish_operator_update(self, floor: int, **kwargs: Any) -> Any:
         return {"ok": True}
 
-    def return_to_safe_zone(self, **kwargs: Any) -> Any:
+    def return_to_origin(self, **kwargs: Any) -> Any:
         return {"ok": True}
 
     def emergency_stop(self, reason: str | None = None, **kwargs: Any) -> Any:
@@ -63,7 +63,7 @@ def test_ros2_protocol_has_required_methods():
     adapter = MinimalRos2Adapter()
     assert adapter.init_node("test") is None
     assert adapter.shutdown_node() is None
-    assert adapter.navigate_to_floor(2) == {"ok": True, "floor": 2}
+    assert adapter.navigate_to_waypoint(2) == {"ok": True, "floor": 2}
     assert adapter.emergency_stop("test") == {"ok": True, "reason": "test"}
 
 

@@ -19,7 +19,7 @@ class FakeSubagentClient:
 
 def test_doctor_healthy_fleet():
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims", "emergency_stop")),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search", "emergency_stop")),
         RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("firefight", "emergency_stop")),
     ])
     client = FakeSubagentClient()
@@ -37,7 +37,7 @@ def test_doctor_healthy_fleet():
 
 def test_doctor_detects_unreachable_robot():
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("firefight",)),
     ])
     client = FakeSubagentClient()
@@ -88,7 +88,7 @@ def test_doctor_warns_on_empty_registry():
 
 def test_doctor_reports_disabled_robots():
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",), enabled=False),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",), enabled=False),
     ])
     client = FakeSubagentClient()
     doctor = FleetDoctor(registry=registry, subagent_client=client)
@@ -122,9 +122,9 @@ def test_finding_to_dict():
 
 def test_onboarding_reports_enrolled_and_enabled_counts():
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("firefight",)),
-        RobotRegistryEntry(robot_id="r3", base_url="http://r3:8765", capabilities=("search_for_victims",), enabled=False),
+        RobotRegistryEntry(robot_id="r3", base_url="http://r3:8765", capabilities=("victim_search",), enabled=False),
     ])
     client = FakeSubagentClient()
     doctor = FleetDoctor(registry=registry, subagent_client=client)
@@ -140,7 +140,7 @@ def test_onboarding_reports_enrolled_and_enabled_counts():
 
 def test_onboarding_reports_stale_heartbeats():
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("firefight",)),
     ], heartbeat_timeout_seconds=60.0)
     # r1 was seen long ago -> stale
@@ -160,7 +160,7 @@ def test_onboarding_reports_stale_heartbeats():
 def test_onboarding_warns_missing_emergency_stop_capability():
     """Fleet with no robot declaring emergency_stop capability triggers a warning."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     doctor = FleetDoctor(registry=registry, subagent_client=client)
@@ -176,11 +176,11 @@ def test_onboarding_warns_missing_emergency_stop_capability():
 def test_onboarding_reports_missing_ros1_remaps():
     """Robets with capabilities but no matching ROS1 remaps are flagged."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims", "spray_water")),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search", "spray_water")),
     ])
     client = FakeSubagentClient()
-    # Only search_for_victims is remapped
-    ros1_config = {"search_for_victims": "nav"}
+    # Only victim_search is remapped
+    ros1_config = {"victim_search": "nav"}
     doctor = FleetDoctor(registry=registry, subagent_client=client, ros1_skill_remapping=ros1_config)
 
     findings = doctor.diagnose()
@@ -193,7 +193,7 @@ def test_onboarding_reports_missing_ros1_remaps():
 def test_onboarding_reports_unresolved_approval_relay():
     """If approval_relay is configured but no channel metadata exists, warn."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     doctor = FleetDoctor(
@@ -215,11 +215,11 @@ def test_onboarding_clean_fleet_has_no_warnings():
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims", "emergency_stop"),
+            capabilities=("victim_search", "emergency_stop"),
         ),
     ])
     client = FakeSubagentClient()
-    ros1_config = {"search_for_victims": "nav", "emergency_stop": "estop"}
+    ros1_config = {"victim_search": "nav", "emergency_stop": "estop"}
     doctor = FleetDoctor(
         registry=registry,
         subagent_client=client,
@@ -246,7 +246,7 @@ def test_fleet_doctor_reports_lifecycle_maintenance_warnings(tmp_path):
     from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
 
@@ -295,7 +295,7 @@ def test_fleet_doctor_lifecycle_ok_when_registries_healthy(tmp_path):
     from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
 
@@ -337,7 +337,7 @@ def test_fleet_doctor_lifecycle_ok_when_registries_healthy(tmp_path):
 def test_fleet_doctor_no_lifecycle_section_without_registries():
     """Fleet doctor should not include lifecycle section when registries not provided."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
 

@@ -13,6 +13,7 @@ from fireclaw_plugin_sdk import PluginApi, ToolSpec
 
 
 _MAX_FILE_CHARS = 200_000
+SANDBOX_SERVICE = "fireclaw.agent-tools.computer.sandbox"
 
 
 def _tools(sandbox: Any) -> tuple[ToolSpec, ...]:
@@ -112,7 +113,7 @@ def _tools(sandbox: Any) -> tuple[ToolSpec, ...]:
 
 
 def register(api: PluginApi) -> None:
-    sandbox = api.services.get("computer_sandbox")
+    sandbox = api.services.get(SANDBOX_SERVICE)
     if sandbox is None or not bool(api.config.get("enabled", True)):
         return
     for tool in _tools(sandbox):

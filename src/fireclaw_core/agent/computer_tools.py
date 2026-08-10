@@ -4,13 +4,11 @@ from dataclasses import dataclass, field
 import hashlib
 import os
 from pathlib import Path
-import re
-import shutil
 import stat
 import subprocess
 import tempfile
 import threading
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from fireclaw_core.agent.docker_sandbox import (
     DockerSandboxRuntime,
@@ -19,19 +17,9 @@ from fireclaw_core.agent.docker_sandbox import (
 from fireclaw_core.infra.path_security import (
     validate_sandbox_workspace_root,
 )
-from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.policy.deployment import SandboxProfile
-
-if TYPE_CHECKING:
-    from fireclaw_core.agent.tool_runtime import AgentTool
-
-
-COMPUTER_TOOL_PLUGIN_ID = "fireclaw.agent-tools.computer"
 _MAX_FILE_CHARS = 200_000
 _MAX_LIST_ENTRIES = 2_000
-_MAX_STAGED_SKILL_FILES = 256
-_MAX_STAGED_SKILL_FILE_BYTES = 2 * 1024 * 1024
-_MAX_STAGED_SKILL_TOTAL_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -349,131 +337,6 @@ class ComputerSandbox:
             "image_identity": image_identity.to_dict(),
         }
 
-    def stage_skill(
-        self,
-        source_dir: str | Path,
-        *,
-        skill_name: str,
-    ) -> str:
-        """Copy a legacy manifest directory into the sandbox workspace."""
-
-        source = Path(source_dir)
-        if source.is_symlink():
-            raise ValueError("Legacy skill source directory must not be a symlink.")
-        source = source.resolve(strict=True)
-        if not source.is_dir():
-            raise ValueError("Legacy skill source must be a directory.")
-        try:
-            self.root.resolve().relative_to(source)
-        except ValueError:
-            pass
-        else:
-            raise ValueError(
-                "Legacy skill source must not contain the sandbox workspace."
-            )
-
-        files: list[tuple[Path, Path, bytes, int]] = []
-        total_bytes = 0
-        for current_root, directories, filenames in os.walk(
-            source,
-            followlinks=False,
-        ):
-            current = Path(current_root)
-            for directory in directories:
-                if (current / directory).is_symlink():
-                    raise ValueError(
-                        "Legacy skill directories must not contain symlinks."
-                    )
-            for filename in sorted(filenames):
-                path = current / filename
-                if path.is_symlink():
-                    raise ValueError(
-                        "Legacy skill directories must not contain symlinks."
-                    )
-                if not path.is_file():
-                    raise ValueError(
-                        "Legacy skill directories may contain only regular files."
-                    )
-                raw = _read_regular_file_limited(
-                    path,
-                    max_bytes=_MAX_STAGED_SKILL_FILE_BYTES,
-                    description="Legacy skill file",
-                )
-                total_bytes += len(raw)
-                if total_bytes > _MAX_STAGED_SKILL_TOTAL_BYTES:
-                    raise ValueError(
-                        "Legacy skill directory exceeds the staging size limit."
-                    )
-                files.append(
-                    (
-                        path,
-                        path.relative_to(source),
-                        raw,
-                        path.stat().st_mode & 0o777,
-                    )
-                )
-                if len(files) > _MAX_STAGED_SKILL_FILES:
-                    raise ValueError(
-                        "Legacy skill directory exceeds the staging file limit."
-                    )
-
-        digest = hashlib.sha256()
-        for _, relative, raw, mode in sorted(
-            files,
-            key=lambda item: item[1].as_posix(),
-        ):
-            digest.update(relative.as_posix().encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(str(mode).encode("ascii"))
-            digest.update(b"\0")
-            digest.update(raw)
-        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", skill_name).strip(".-")
-        safe_name = safe_name or "legacy-skill"
-        relative_destination = (
-            Path(".fireclaw")
-            / "legacy-skills"
-            / f"{safe_name}-{digest.hexdigest()[:16]}"
-        )
-        destination = self._resolve(
-            relative_destination.as_posix(),
-            must_exist=False,
-            allow_internal=True,
-        )
-        with self._workspace_lock:
-            if destination.exists():
-                if not destination.is_dir() or destination.is_symlink():
-                    raise ValueError(
-                        "Legacy skill staging destination is not a regular "
-                        "directory."
-                    )
-                return relative_destination.as_posix()
-            self._validate_workspace_quota(
-                additional_bytes=total_bytes,
-                additional_files=len(files),
-            )
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = Path(
-                tempfile.mkdtemp(
-                    prefix=f".{safe_name}-",
-                    dir=destination.parent,
-                )
-            )
-            try:
-                for _, relative, raw, mode in files:
-                    target = temporary / relative
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(raw)
-                    target.chmod(mode)
-                try:
-                    os.replace(temporary, destination)
-                except OSError:
-                    if not destination.is_dir():
-                        raise
-            finally:
-                if temporary.exists():
-                    shutil.rmtree(temporary)
-        return relative_destination.as_posix()
-
     def _resolve(
         self,
         relative: str,
@@ -654,76 +517,6 @@ def _read_regular_file_limited(
         return b"".join(chunks)
     finally:
         os.close(descriptor)
-
-
-def register_computer_tool_plugin(
-    host: FireClawPluginHost,
-    sandbox: ComputerSandbox,
-    *,
-    plugin_id: str = COMPUTER_TOOL_PLUGIN_ID,
-) -> None:
-    """Compatibility wrapper for the historical in-core registration API.
-
-    Canonical registration is now ``extensions/computer-tools`` discovered by
-    the generic extension loader.  This wrapper only adapts the public Plugin
-    provider for older callers and does not own Tool schemas.
-    """
-
-    tools = computer_agent_tools(sandbox)
-
-    def register(api) -> None:
-        for tool in tools:
-            api.register_tool(
-                tool,
-                metadata={
-                    "tool_class": "agent_tool",
-                    "effect": tool.effect,
-                    "roles": list(tool.roles),
-                    "modes": list(tool.modes),
-                    "requires_sandbox": tool.requires_sandbox,
-                },
-            )
-
-    host.activate(
-        plugin_id,
-        register,
-        name="Restricted computer tools",
-        description=(
-            "Workspace-scoped file tools and Docker-only process execution."
-        ),
-        source="builtin_agent_tool_plugin",
-        trust_level="builtin",
-    )
-
-
-def computer_agent_tools(sandbox: ComputerSandbox) -> tuple[Any, ...]:
-    """Compatibility projection of the provider-owned ToolSpecs."""
-
-    from fireclaw_core.plugin.sdk_adapter import normalize_registered_tool
-
-    provider_path = (
-        Path(__file__).resolve().parents[3]
-        / "extensions"
-        / "computer-tools"
-        / "plugin"
-        / "entrypoint.py"
-    )
-    import importlib.util
-    import sys
-
-    module_name = "fireclaw_computer_tools_provider"
-    module = sys.modules.get(module_name)
-    if module is None:
-        spec = importlib.util.spec_from_file_location(module_name, provider_path)
-        if spec is None or spec.loader is None:
-            raise ImportError("computer-tools extension provider is unavailable")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-    return tuple(
-        normalize_registered_tool(value)
-        for value in module._tools(sandbox)
-    )
 
 
 def _validated_argv(value: Any) -> list[str]:

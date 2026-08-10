@@ -17,22 +17,12 @@ from fireclaw_core.context.manager import (
     ModelAwareContextManager,
     TokenCounter,
 )
-from fireclaw_core.execution.builtin_physical_skills import (
-    get_builtin_physical_skill,
-    supplemental_physical_skill_names,
-)
 from fireclaw_core.execution.skill_plugin import PhysicalSkillPlugin
 from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
 from fireclaw_core.provider.provider_runtime import ProviderRuntime
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.policy.capability import evaluate_delegation_policy
 from fireclaw_core.task.task_contract import StructuredRobotTask, planning_result_from_structured_task
-
-def _safe_supplemental_skills() -> tuple[str, ...]:
-    """Resolve Plugin-owned supplemental Tools only when a task is built."""
-
-    return supplemental_physical_skill_names()
-
 
 @dataclass(frozen=True)
 class RobotAgentTaskEnvelope:
@@ -72,9 +62,7 @@ def envelope_from_structured_task(
     fallback_robot_id: str,
 ) -> RobotAgentTaskEnvelope:
     base_allowed = task.allowed_skills if task.allowed_skills else task.required_skills
-    allowed_skills = list(
-        dict.fromkeys([*base_allowed, *_safe_supplemental_skills()])
-    )
+    allowed_skills = list(dict.fromkeys(base_allowed))
     return RobotAgentTaskEnvelope(
         task_id=task.task_id,
         mission_id=task.mission_id,
@@ -137,7 +125,7 @@ class RobotAgentPolicy:
 
     Checks (in priority order):
     1. Every planned skill must be in ``envelope.allowed_skills``.
-    2. Floor-targeting skills must use the envelope's expected floor.
+    2. Plugin-declared protected inputs must match the task target.
     3. All ``envelope.required_skills`` must appear in the plan.
     4. High/critical risk levels require operator approval.
 
@@ -233,7 +221,7 @@ def _physical_plugin(
     skill_catalog: Any | None,
 ) -> PhysicalSkillPlugin | None:
     if skill_catalog is None:
-        return get_builtin_physical_skill(skill_name)
+        return None
     getter = getattr(skill_catalog, "get", None)
     if not callable(getter):
         return None
@@ -628,6 +616,19 @@ class RobotAgentRuntime:
     ) -> None:
         self._planner = planner
         self._policy = policy or RobotAgentPolicy()
+
+    def bind_skill_catalog(self, skill_catalog: Any) -> None:
+        """Bind the current Plugin-projected physical Tool catalog.
+
+        Gateway constructs the Robot Agent runtime before it constructs the
+        per-task Agent and loads its extensions.  Binding at task start keeps
+        both deterministic input projection and policy validation aligned with
+        that Agent's actual Plugin contributions.
+        """
+
+        self._policy.skill_catalog = skill_catalog
+        if hasattr(self._planner, "skill_catalog"):
+            self._planner.skill_catalog = skill_catalog
 
     def plan_structured_task(
         self,

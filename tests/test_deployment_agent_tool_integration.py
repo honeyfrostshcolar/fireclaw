@@ -3,7 +3,6 @@ from unittest.mock import MagicMock
 
 from fireclaw_core.agent.computer_tools import (
     ComputerSandbox,
-    register_computer_tool_plugin,
 )
 from fireclaw_core.agent.robot_deliberation import (
     LLMRobotAgentDecisionPolicy,
@@ -22,6 +21,7 @@ from fireclaw_core.mission.mission_planner import MissionPlannerContext
 from fireclaw_core.mission.mission_state import MissionStateSnapshotBuilder
 from fireclaw_core.planner.llm_planner import LLMMissionPlanner
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
 from fireclaw_core.policy.deployment import (
     DeploymentProfile,
     SandboxProfile,
@@ -34,6 +34,7 @@ from fireclaw_core.provider.provider import (
 from fireclaw_core.task.task_contract import StructuredRobotTask
 
 _TEST_IMAGE_ID = "sha256:" + ("a" * 64)
+_EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
 
 
 class SequencePolicy:
@@ -207,7 +208,7 @@ def test_mission_react_loop_receives_computer_output_as_advisory(
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         )
     ])
     snapshot = MissionStateSnapshotBuilder(registry=registry).build(
@@ -228,7 +229,14 @@ def test_mission_react_loop_receives_computer_output_as_advisory(
         encoding="utf-8",
     )
     host = FireClawPluginHost()
-    register_computer_tool_plugin(host, sandbox)
+    load_fireclaw_extensions(
+        host,
+        (_EXTENSIONS / "computer-tools",),
+        mode="simulation",
+        role="robot_agent",
+        services={"fireclaw.agent-tools.computer.sandbox": sandbox},
+        strict=True,
+    )
     tool_runtime = AgentToolRuntime(
         plugin_host=host,
         profile=profile,
@@ -249,7 +257,7 @@ def test_mission_react_loop_receives_computer_output_as_advisory(
                                 "frame_id": "map",
                                 "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0},
                         },
-                        "capability_required": "search_for_victims",
+                        "capability_required": "victim_search",
                         "execution_group": 0,
                     }
                 ],

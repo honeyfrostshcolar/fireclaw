@@ -31,12 +31,8 @@ DEFAULT_ROBOTS_TEMPLATE = {
             "robot_id": "robot-1",
             "base_url": "http://localhost:8765",
             "capabilities": [
-                "navigate",
-                "search_for_victims",
+                "navigation",
                 "patrol",
-                "firefight",
-                "recon",
-                "transport",
             ],
         }
     ]

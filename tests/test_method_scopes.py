@@ -203,7 +203,6 @@ class TestGatewayScopeEnforcement:
                 adapter="dry-run",
                 port=0,
                 memory_path=str(tmp_path / "memory.jsonl"),
-                workspace_skills_dir=None,
             )
         )
         gateway.start()

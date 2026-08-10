@@ -3,8 +3,10 @@
 ## Scope
 
 This document defines the trusted lifecycle boundary for FireClaw
-`computer_exec` and legacy executable Tool manifests. It complements the
-deployment Tool policy and workspace path security policy.
+`computer_exec` and other Plugin-contributed process Tools admitted by the
+deployment policy. It complements the deployment Tool policy and workspace
+path security policy. The former standalone executable-Tool manifest loader
+has been removed.
 
 ## OpenClaw Analogue
 

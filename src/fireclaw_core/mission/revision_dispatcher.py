@@ -19,6 +19,7 @@ ACTIVE_NODE_STATUSES = frozenset({
     "received",
     "planned",
     "running",
+    "awaiting_confirmation",
     "cancel_requested",
 })
 VALID_NODE_RUNTIME_STATUSES = frozenset({
@@ -28,6 +29,7 @@ VALID_NODE_RUNTIME_STATUSES = frozenset({
     "received",
     "planned",
     "running",
+    "awaiting_confirmation",
     "succeeded",
     "completed",
     "carried",

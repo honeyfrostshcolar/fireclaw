@@ -87,6 +87,12 @@ def project_task_state(events: list[dict[str, Any]]) -> dict[str, Any]:
             task.started_at = task.started_at or timestamp
         elif event_type == "task.planned":
             _set_nonterminal_task_status(task, "planned")
+        elif event_type == "task.awaiting_confirmation":
+            _set_nonterminal_task_status(task, "awaiting_confirmation")
+        elif event_type == "task.resume_scheduled":
+            _set_nonterminal_task_status(task, "accepted")
+        elif event_type == "task.resume_started":
+            _set_nonterminal_task_status(task, "running")
         elif event_type == "safety.decided":
             _apply_safety_status(task, payload)
         elif event_type == "skill.started":

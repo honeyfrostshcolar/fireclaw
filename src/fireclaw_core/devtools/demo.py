@@ -6,6 +6,7 @@ from typing import Any
 
 from fireclaw_core.gateway.control import operator_from_payload
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
 
 def run_rescue_demo(
@@ -27,8 +28,12 @@ def run_rescue_demo(
             memory_path=memory_path,
             event_path=event_path,
             task_queue_path=task_queue_path,
-            workspace_skills_dir=None,
             default_session_id=session_id,
+            deployment_profile=DeploymentProfile(
+                mode="simulation",
+                role="robot_agent",
+                sandbox=SandboxProfile(),
+            ),
         )
     )
     operator = operator_from_payload(

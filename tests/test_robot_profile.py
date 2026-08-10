@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fireclaw_core.agent.agent import FireClawAgent
 from fireclaw_core.agent.robot import DryRunRobotAdapter
 from fireclaw_core.agent.robot_profile import (
     RobotCapabilityProfile,
@@ -9,9 +10,19 @@ from fireclaw_core.agent.robot_profile import (
     load_robot_capability_profiles,
     validate_robot_capability_profile,
 )
-from fireclaw_core.execution.skills import create_default_skill_registry
-from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
+from fireclaw_core.execution.skills import Skill
 from fireclaw_core.sensors.discovery import DiscoveryFingerprint
+
+
+EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
+
+
+def _navigation_registry(robot_id: str = "debug-robot-1"):
+    return FireClawAgent(
+        robot=DryRunRobotAdapter(robot_id=robot_id),
+        extension_paths=(EXTENSIONS,),
+        plugin_services={"adapter": "dry-run"},
+    ).registry
 
 
 def test_load_robot_capability_profile_from_toml(tmp_path: Path) -> None:
@@ -24,9 +35,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
 data_dir = "data/robots/debug-robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -39,9 +50,9 @@ llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"
         adapter="ros1",
         ros1_config="examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims", "report_status"),
-        llm_exposed_skills=("navigate_to_floor", "search_for_victims", "report_status"),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
     )
 
 
@@ -54,9 +65,9 @@ id = "debug-robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/debug-robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -68,7 +79,7 @@ llm_exposed_skills = ["navigate_to_floor"]
     assert profile.to_robot_registry_entry() == {
         "robot_id": "debug-robot-1",
         "base_url": "http://127.0.0.1:8765",
-        "capabilities": ["search_for_victims"],
+        "capabilities": ["navigation"],
         "enabled": True,
     }
 
@@ -80,11 +91,11 @@ def test_profile_validation_rejects_unknown_enabled_skill() -> None:
         adapter="simulator",
         ros1_config=None,
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "unknown_skill"),
-        llm_exposed_skills=("navigate_to_floor",),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point", "unknown_skill"),
+        llm_exposed_skills=("navigate_to_point",),
     )
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+    registry = _navigation_registry()
 
     errors = validate_robot_capability_profile(profile, registry)
 
@@ -98,34 +109,33 @@ def test_profile_validation_rejects_llm_exposed_skill_not_in_enabled_skills() ->
         adapter="simulator",
         ros1_config=None,
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims"),
-        llm_exposed_skills=("navigate_to_floor", "assess_victim"),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point", "inspect_local_hazard"),
     )
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+    registry = _navigation_registry()
 
     errors = validate_robot_capability_profile(profile, registry)
 
-    assert "LLM-exposed skill 'assess_victim' is not in enabled_skills" in errors
+    assert "LLM-exposed skill 'inspect_local_hazard' is not in enabled_skills" in errors
 
 
-def test_profile_validation_rejects_ros1_skill_without_remap() -> None:
+def test_profile_validation_rejects_ros1_without_adapter_config() -> None:
     profile = RobotCapabilityProfile(
         robot_id="debug-robot-1",
         base_url="http://127.0.0.1:8765",
         adapter="ros1",
-        ros1_config="examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
+        ros1_config=None,
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "assess_victim"),
-        llm_exposed_skills=("navigate_to_floor", "assess_victim"),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
     )
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
-    ros1_config = load_ros1_adapter_config(profile.ros1_config)
+    registry = _navigation_registry()
 
-    errors = validate_robot_capability_profile(profile, registry, ros1_config=ros1_config)
+    errors = validate_robot_capability_profile(profile, registry)
 
-    assert "enabled skill 'assess_victim' has no ROS1 remap" in errors
+    assert "ros1 profile requires robot.ros1_config" in errors
 
 
 def test_profile_validation_accepts_gazebo_profile() -> None:
@@ -135,14 +145,13 @@ def test_profile_validation_accepts_gazebo_profile() -> None:
         adapter="ros1",
         ros1_config="examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_point", "search_for_victims", "report_status", "return_to_safe_zone"),
-        llm_exposed_skills=("navigate_to_point", "search_for_victims", "report_status", "return_to_safe_zone"),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
     )
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
-    ros1_config = load_ros1_adapter_config(profile.ros1_config)
+    registry = _navigation_registry()
 
-    errors = validate_robot_capability_profile(profile, registry, ros1_config=ros1_config)
+    errors = validate_robot_capability_profile(profile, registry)
 
     assert errors == []
 
@@ -156,12 +165,12 @@ id = "debug-robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/debug-robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [capability_skill_chains]
-search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]
+navigation = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -169,7 +178,7 @@ search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"
     profile = load_robot_capability_profile(profile_path)
 
     assert profile.capability_skill_chains == {
-        "search_for_victims": ("navigate_to_floor", "search_for_victims", "report_status"),
+        "navigation": ("navigate_to_point",),
     }
 
 
@@ -180,18 +189,21 @@ def test_profile_validation_rejects_skill_chain_outside_enabled_skills() -> None
         adapter="simulator",
         ros1_config=None,
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims"),
-        llm_exposed_skills=("navigate_to_floor", "search_for_victims"),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
         capability_skill_chains={
-            "search_for_victims": ("navigate_to_floor", "disabled_skill"),
+            "navigation": ("navigate_to_point", "disabled_skill"),
         },
     )
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+    registry = _navigation_registry()
 
     errors = validate_robot_capability_profile(profile, registry)
 
-    assert "skill chain 'search_for_victims' references non-enabled skill 'disabled_skill'" in errors
+    assert (
+        "skill chain 'navigation' references non-enabled skill "
+        "'disabled_skill'"
+    ) in errors
 
 
 def test_profile_validation_rejects_skill_chain_capability_not_in_capabilities() -> None:
@@ -201,14 +213,14 @@ def test_profile_validation_rejects_skill_chain_capability_not_in_capabilities()
         adapter="simulator",
         ros1_config=None,
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims"),
-        llm_exposed_skills=("navigate_to_floor", "search_for_victims"),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
         capability_skill_chains={
-            "unknown_capability": ("navigate_to_floor",),
+            "unknown_capability": ("navigate_to_point",),
         },
     )
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="debug-robot-1"))
+    registry = _navigation_registry()
 
     errors = validate_robot_capability_profile(profile, registry)
 
@@ -217,13 +229,12 @@ def test_profile_validation_rejects_skill_chain_capability_not_in_capabilities()
 
 def test_example_gazebo_turtlebot3_profile_loads_and_validates() -> None:
     profile = load_robot_capability_profile("examples/robot_profiles/gazebo_turtlebot3.toml")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id=profile.robot_id))
-    ros1_config = load_ros1_adapter_config(profile.ros1_config)
+    registry = _navigation_registry(profile.robot_id)
 
     assert profile.robot_id == "gazebo_turtlebot3"
     assert profile.adapter == "ros1"
     assert "navigate_to_point" in profile.llm_exposed_skills
-    assert validate_robot_capability_profile(profile, registry, ros1_config=ros1_config) == []
+    assert validate_robot_capability_profile(profile, registry) == []
 
 
 def test_robot_profile_loads_sensor_discovery_rules(tmp_path: Path) -> None:
@@ -236,9 +247,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.sensor_discovery]
 enabled = true
@@ -272,9 +283,9 @@ id = "robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -295,9 +306,9 @@ id = "robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [[robot.sensor_discovery.rules]]
 message_type = "sensor_msgs/Image"
@@ -319,9 +330,9 @@ id = "{robot_id}"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/{robot_id}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip()
 
     first = tmp_path / "r1.toml"
@@ -344,9 +355,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.discovery_fingerprint]
 source = "ros1"
@@ -378,9 +389,9 @@ id = "robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -400,9 +411,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.discovery_fingerprint]
 source = ""
@@ -427,9 +438,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [[robot.sensor_discovery.rules]]
 topic_pattern = "/camera/image_raw"
@@ -460,21 +471,21 @@ id = "r1"
 base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 data_dir = "data/robots/r1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-primitive_skills = ["navigate_to_floor", "report_status"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
+primitive_skills = ["navigate_to_point"]
 
 [capability_skill_chains]
-search_for_victims = ["navigate_to_floor", "search_for_victims", "report_status"]
+navigation = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
 
     profile = load_robot_capability_profile(profile_path)
 
-    assert profile.primitive_skills == ("navigate_to_floor", "report_status")
-    assert "search_for_victims" in profile.capabilities
+    assert profile.primitive_skills == ("navigate_to_point",)
+    assert "navigation" in profile.capabilities
 
 
 def test_robot_profile_primitive_skills_defaults_to_empty_tuple(tmp_path: Path) -> None:
@@ -486,9 +497,9 @@ id = "r1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/r1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -508,9 +519,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "ros1.yaml"
 data_dir = "data/robots/robot-1"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.discovery_fingerprint]
 source = "ros1"
@@ -530,11 +541,8 @@ confirmed_at = "2026-06-15T12:00:00+08:00"
 
 def test_profile_rejects_unknown_primitive_skill():
     from dataclasses import replace
-    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile, validate_robot_capability_profile
-    from fireclaw_core.execution.skills import create_default_skill_registry
-    from fireclaw_core.agent.robot import DryRunRobotAdapter
 
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="test-robot"))
+    registry = _navigation_registry("test-robot")
     profile = _make_valid_profile()
     profile = replace(profile, primitive_skills=("missing_skill",))
 
@@ -545,16 +553,21 @@ def test_profile_rejects_unknown_primitive_skill():
 
 def test_profile_rejects_composite_skill_in_primitive_skills():
     from dataclasses import replace
-    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile, validate_robot_capability_profile
-    from fireclaw_core.execution.skills import create_default_skill_registry
-    from fireclaw_core.agent.robot import DryRunRobotAdapter
 
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="test-robot"))
+    registry = _navigation_registry("test-robot")
+    registry.register(
+        Skill(
+            name="navigation_acceptance",
+            description="Composite acceptance workflow projection.",
+            handler=lambda _inputs: None,
+            metadata={"kind": "composite"},
+        )
+    )
     profile = _make_valid_profile()
     profile = replace(
         profile,
-        primitive_skills=("search_for_victims",),
-        enabled_skills=tuple(dict.fromkeys([*profile.enabled_skills, "search_for_victims"])),
+        primitive_skills=("navigation_acceptance",),
+        enabled_skills=tuple(dict.fromkeys([*profile.enabled_skills, "navigation_acceptance"])),
     )
 
     errors = validate_robot_capability_profile(profile, registry)
@@ -564,36 +577,34 @@ def test_profile_rejects_composite_skill_in_primitive_skills():
 
 def test_profile_rejects_primitive_skill_not_enabled():
     from dataclasses import replace
-    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile, validate_robot_capability_profile
-    from fireclaw_core.execution.skills import create_default_skill_registry
-    from fireclaw_core.agent.robot import DryRunRobotAdapter
 
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="test-robot"))
+    registry = _navigation_registry("test-robot")
     profile = _make_valid_profile()
     profile = replace(
         profile,
-        primitive_skills=("report_status",),
-        enabled_skills=tuple(skill for skill in profile.enabled_skills if skill != "report_status"),
+        primitive_skills=("navigate_to_point",),
+        enabled_skills=(),
     )
 
     errors = validate_robot_capability_profile(profile, registry)
 
-    assert any("primitive skill 'report_status' is not in enabled_skills" in error for error in errors)
+    assert any(
+        "primitive skill 'navigate_to_point' is not in enabled_skills" in error
+        for error in errors
+    )
 
 
 def _make_valid_profile():
-    from pathlib import Path
-    from fireclaw_core.agent.robot_profile import RobotCapabilityProfile
     return RobotCapabilityProfile(
         robot_id="test-robot",
         base_url="http://localhost:8765",
-        adapter="dry_run",
+        adapter="dry-run",
         ros1_config=None,
         data_dir=Path("/tmp/test-robot"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims", "assess_victim", "report_status", "return_to_safe_zone"),
-        llm_exposed_skills=("search_for_victims",),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
         capability_skill_chains={
-            "search_for_victims": ["navigate_to_floor", "search_for_victims", "report_status"],
+            "navigation": ("navigate_to_point",),
         },
     )

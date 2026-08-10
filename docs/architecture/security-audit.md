@@ -37,8 +37,8 @@ The initial audit covers:
 - invalid or unpinned Docker sandbox profiles;
 - broad Tool selectors and simulation computer Tools without a ready sandbox;
 - Docker bridge networking for exposed computer Tools;
-- group/other-writable config, state, plugin, and legacy Tool-manifest files;
-- legacy `*.skill.json` executable manifests;
+- group/other-writable config, state, and Plugin descriptor files;
+- executable artifacts placed inside descriptor-only Plugin directories;
 - symbolic-link plugin descriptors and missing plugin install provenance.
 
 The audit never starts a Gateway, imports executable plugins, invokes a Tool,

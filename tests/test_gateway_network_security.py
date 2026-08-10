@@ -57,7 +57,6 @@ def _robot_gateway(
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
             runtime_state_path=str(tmp_path / "runtime.sqlite3"),
-            workspace_skills_dir=None,
         )
     )
 

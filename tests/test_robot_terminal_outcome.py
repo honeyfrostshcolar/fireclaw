@@ -15,7 +15,6 @@ from fireclaw_core.task.terminal_outcome import (
         ("block", "blocked"),
         ("denied", "blocked"),
         ("clarify", "escalated"),
-        ("awaiting_confirmation", "escalated"),
         ("failed", "failed"),
         ("timeout", "timed_out"),
         ("cancelled", "cancelled"),
@@ -26,13 +25,28 @@ def test_normalize_robot_task_terminal_status(raw_status, expected):
     assert normalize_robot_task_terminal_status(raw_status) == expected
 
 
-def test_terminal_outcome_selects_matching_event_type():
-    outcome = build_robot_task_terminal_outcome("awaiting_confirmation")
+def test_awaiting_confirmation_is_active_instead_of_terminal():
+    trace = {
+        "status": "awaiting_confirmation",
+        "queue_record": {"status": "awaiting_confirmation"},
+        "result": {"status": "awaiting_confirmation"},
+        "events": [{"type": "authorization.requested"}],
+    }
 
-    assert outcome.status == "escalated"
-    assert outcome.event_type == "task.escalated"
-    assert outcome.raw_status == "awaiting_confirmation"
-    assert outcome.requires_intervention is True
+    assert normalize_robot_task_terminal_status("awaiting_confirmation") is None
+    assert robot_task_terminal_status_from_trace(trace) is None
+    assert robot_task_status_from_trace(trace) == "awaiting_confirmation"
+
+
+def test_unacknowledged_cancellation_loss_overrides_sticky_cancel_request():
+    outcome = build_robot_task_terminal_outcome(
+        "lost",
+        cancellation_requested=True,
+    )
+
+    assert outcome.status == "lost"
+    assert outcome.event_type == "task.lost"
+    assert outcome.requires_intervention is False
     assert outcome.successful is False
 
 

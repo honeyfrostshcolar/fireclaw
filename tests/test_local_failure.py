@@ -47,14 +47,14 @@ def test_local_failure_reason_to_dict() -> None:
         category=FailureCategory.TIMEOUT,
         message="navigation timed out",
         retryable=True,
-        action="navigate_to_floor",
+        action="navigate_to_waypoint",
         robot_id="r1",
     )
     d = reason.to_dict()
     assert d["category"] == "timeout"
     assert d["message"] == "navigation timed out"
     assert d["retryable"] is True
-    assert d["action"] == "navigate_to_floor"
+    assert d["action"] == "navigate_to_waypoint"
     assert d["robot_id"] == "r1"
 
 
@@ -62,19 +62,19 @@ def test_local_failure_reason_from_robot_result_timeout() -> None:
     reason = LocalFailureReason.from_robot_result(
         status="failed",
         error="Connection timed out after 30s",
-        action="navigate_to_floor",
+        action="navigate_to_waypoint",
         robot_id="r1",
     )
     assert reason.category == FailureCategory.TIMEOUT
     assert reason.retryable is True
-    assert reason.action == "navigate_to_floor"
+    assert reason.action == "navigate_to_waypoint"
 
 
 def test_local_failure_reason_from_robot_result_offline() -> None:
     reason = LocalFailureReason.from_robot_result(
         status="failed",
         error="Robot offline",
-        action="search_for_victims",
+        action="victim_search",
         robot_id="r2",
     )
     assert reason.category == FailureCategory.ROBOT_OFFLINE
@@ -84,8 +84,8 @@ def test_local_failure_reason_from_robot_result_offline() -> None:
 def test_local_failure_reason_from_robot_result_not_configured() -> None:
     reason = LocalFailureReason.from_robot_result(
         status="not_configured",
-        error="ROS1 endpoint for navigate_to_floor is not configured.",
-        action="navigate_to_floor",
+        error="ROS1 endpoint for navigate_to_waypoint is not configured.",
+        action="navigate_to_waypoint",
         robot_id="r1",
     )
     assert reason.category == FailureCategory.NOT_CONFIGURED
@@ -96,7 +96,7 @@ def test_local_failure_reason_from_robot_result_cancelled() -> None:
     reason = LocalFailureReason.from_robot_result(
         status="cancelled",
         error=None,
-        action="search_for_victims",
+        action="victim_search",
         robot_id="r1",
     )
     assert reason.category == FailureCategory.CANCELLED
@@ -106,7 +106,7 @@ def test_local_failure_reason_from_robot_result_transport() -> None:
     reason = LocalFailureReason.from_robot_result(
         status="failed",
         error="Transport connection refused",
-        action="navigate_to_floor",
+        action="navigate_to_waypoint",
         robot_id="r1",
     )
     assert reason.category == FailureCategory.TRANSPORT
@@ -117,7 +117,7 @@ def test_local_failure_reason_from_robot_result_unknown() -> None:
     reason = LocalFailureReason.from_robot_result(
         status="failed",
         error=None,
-        action="assess_victim",
+        action="inspect_casualty",
         robot_id="r1",
     )
     assert reason.category == FailureCategory.ACTION_FAILED
@@ -127,7 +127,7 @@ def test_local_failure_reason_recognizes_navigation_no_path() -> None:
     reason = LocalFailureReason.from_robot_result(
         status="failed",
         error="Navigation failed: no path to target",
-        action="navigate_to_floor",
+        action="navigate_to_waypoint",
         robot_id="r1",
     )
 

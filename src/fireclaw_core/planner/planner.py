@@ -5,14 +5,6 @@ import re
 from typing import Any
 
 
-RESCUE_SKILL_SEQUENCE = (
-    "navigate_to_point",
-    "search_for_victims",
-    "assess_victim",
-    "report_status",
-    "return_to_safe_zone",
-)
-
 CHINESE_DIGITS = {
     "一": 1,
     "二": 2,
@@ -66,38 +58,24 @@ class RuleBasedPlanner:
             return direct_skill_result
 
         point = self._extract_point(command)
-        if point is not None and "救人" in command:
+        if point is not None:
             return PlanningResult(
                 status="planned",
-                message="已生成单楼层目标点救援 dry-run 计划。",
-                intent="rescue_victim",
+                message="已生成单楼层目标点导航计划。",
+                intent="point_navigation",
                 target_pose=point,
                 plan=Plan(
-                    intent="rescue_victim",
-                    steps=self._build_point_rescue_steps(point, command),
+                    intent="point_navigation",
+                    steps=[PlanStep("navigate_to_point", dict(point))],
                 ),
             )
 
-        # Compatibility path for persisted multi-floor examples. Current
-        # deployments should use an explicit point in the active map.
-        floor = self._extract_floor(command)
-        if floor is None or "救人" not in command:
-            return PlanningResult(
-                status="clarify",
-                message=(
-                    "请明确当前地图中的目标点和救援目标，"
-                    "例如：去坐标 (2.0, 1.5) 救人。"
-                ),
-            )
-
-        policy_skill = self._extract_policy_skill(command)
-        steps = self._build_rescue_steps(floor, command, policy_skill)
         return PlanningResult(
-            status="planned",
-            message="已生成救援 dry-run 计划。",
-            intent="rescue_victim",
-            target_floor=floor,
-            plan=Plan(intent="rescue_victim", steps=steps),
+            status="clarify",
+            message=(
+                "请明确当前单楼层 map 坐标系中的目标点，"
+                "例如：去坐标 (2.0, 1.5)。"
+            ),
         )
 
     def _extract_floor(self, command: str) -> int | None:
@@ -153,55 +131,3 @@ class RuleBasedPlanner:
             intent="direct_skill_invocation",
             plan=plan,
         )
-
-    def _extract_policy_skill(self, command: str) -> str | None:
-        match = re.search(
-            r"(?:导航策略用|策略用|使用|用)\s+([A-Za-z0-9_.-]+)\s*$",
-            command,
-        )
-        if not match:
-            return None
-        return match.group(1)
-
-    def _build_rescue_steps(
-        self,
-        floor: int,
-        command: str,
-        policy_skill: str | None,
-    ) -> list[PlanStep]:
-        steps: list[PlanStep] = []
-        if policy_skill:
-            steps.append(PlanStep(policy_skill, {"floor": floor, "command": command}))
-        steps.extend(
-            [
-                PlanStep("navigate_to_floor", {"floor": floor}),
-                PlanStep("search_for_victims", {"floor": floor}),
-                PlanStep("assess_victim", {"floor": floor}),
-                PlanStep("report_status", {"floor": floor}),
-                PlanStep("return_to_safe_zone", {}),
-            ]
-        )
-        return steps
-
-    def _build_point_rescue_steps(
-        self,
-        point: dict[str, Any],
-        command: str,
-    ) -> list[PlanStep]:
-        policy_skill = self._extract_policy_skill(command)
-        steps: list[PlanStep] = []
-        if policy_skill:
-            steps.append(
-                PlanStep(
-                    policy_skill,
-                    {"target": dict(point), "command": command},
-                )
-            )
-        steps.extend([
-            PlanStep("navigate_to_point", dict(point)),
-            PlanStep("search_for_victims", {}),
-            PlanStep("assess_victim", {}),
-            PlanStep("report_status", {}),
-            PlanStep("return_to_safe_zone", {}),
-        ])
-        return steps

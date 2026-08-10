@@ -6,6 +6,8 @@ from typing import Any
 
 from fireclaw_plugin_sdk import PluginApi, ToolSpec
 
+BACKEND_SERVICE = "fireclaw.agent-tools.ros1-diagnostics.backend"
+
 
 def _topic_schema(*, description: str | None = None) -> dict[str, Any]:
     schema: dict[str, Any] = {
@@ -174,7 +176,7 @@ def _tools(backend: Any) -> tuple[ToolSpec, ...]:
 
 
 def register(api: PluginApi) -> None:
-    backend = api.services.get("ros_diagnostics_backend")
+    backend = api.services.get(BACKEND_SERVICE)
     if backend is None or not bool(api.config.get("enabled", True)):
         return
     for tool in _tools(backend):

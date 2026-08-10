@@ -52,7 +52,7 @@ class SpyPlanner:
                         robot_id=available[0].robot_id,
                         command=command,
                         floor=2,
-                        capability_required="search_for_victims",
+                        capability_required="victim_search",
                         execution_group=0,
                     )
                 ],
@@ -137,7 +137,7 @@ def _make_registry(registry_path: Path) -> None:
             "robots": [{
                 "robot_id": "robot-1",
                 "base_url": "http://127.0.0.1:9999",
-                "capabilities": ["search_for_victims"],
+                "capabilities": ["victim_search"],
             }]
         }),
         encoding="utf-8",
@@ -155,7 +155,7 @@ def test_retrieve_planner_context_includes_corrections(tmp_path: Path):
     retriever = MemoryRetriever(index=index)
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("victim_search",)),
     ])
     agent = MissionAgent(
         registry=registry,
@@ -187,7 +187,7 @@ def test_retrieve_planner_context_includes_retrieved_memories(tmp_path: Path):
     retriever = MemoryRetriever(index=index)
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("victim_search",)),
     ])
     agent = MissionAgent(
         registry=registry,
@@ -219,7 +219,7 @@ def test_plan_and_submit_passes_context_to_planner(tmp_path: Path):
     retriever = MemoryRetriever(index=index)
 
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("victim_search",)),
     ])
     spy = SpyPlanner()
     agent = MissionAgent(
@@ -252,7 +252,7 @@ def test_plan_and_submit_passes_context_to_planner(tmp_path: Path):
 def test_plan_and_submit_without_memory_returns_empty_context(tmp_path: Path):
     """Without memory stores, planner context has empty memories and corrections."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="robot-1", base_url="http://127.0.0.1:9999", capabilities=("victim_search",)),
     ])
     spy = SpyPlanner()
     agent = MissionAgent(

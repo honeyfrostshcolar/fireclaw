@@ -27,9 +27,9 @@ The package is discovered from `fireclaw.plugin.json` and activated through
 atomically through the generic FireClaw Plugin Host. Gateway code does not name
 any move_base Tool or call a move_base-specific registration function.
 
-The old `fireclaw_core.navigation.move_base_plugin` import path is retained as
-a compatibility shim for existing tests and integrations; the canonical
-catalog, adapters, and Tool contracts are owned by this extension package.
+There is no `fireclaw_core.navigation` compatibility module. The catalog,
+backend, physical handler, typed Tool contracts, Skill, ROS source, and tests
+are all owned by this extension package.
 
 Simulation exposes the finite typed parameter catalog for tuning experiments.
 Real mode hides bounded mutation by default, and any explicitly enabled real
@@ -43,7 +43,22 @@ Inputs: x, y, yaw, frame_id
 Plugin action handler: navigate_to_point
 ROS action: /move_base
 ROS type: move_base_msgs/MoveBaseAction
+Execution deadline: 120 seconds (monotonic host clock)
+Cancellation acknowledgement: 2 seconds
 ```
+
+Those defaults may be overridden only by trusted Plugin deployment config via
+`navigate_timeout_seconds` and `cancellation_ack_timeout_seconds`. They are
+not `navigate_to_point` Tool inputs and therefore cannot be selected by the
+LLM or an untrusted task payload.
+
+On operator cancellation or deadline expiry, the core sends one cooperative
+cancellation signal to the Plugin handler. `Ros1MoveBaseBackend` calls
+`cancel_goal()` and waits for a confirmed actionlib terminal state. A confirmed
+operator cancellation becomes `cancelled`; a confirmed deadline cancellation
+becomes `timed_out`. Missing acknowledgement becomes `lost`, retains motion
+leases, and closes further resource admission. Stopping a Python wait/thread is
+never treated as proof that the robot stopped.
 
 ## Layout
 
@@ -52,16 +67,16 @@ ROS type: move_base_msgs/MoveBaseAction
 - `fireclaw.plugin.json`: manifest read by the generic extension scanner.
 - `plugin/entrypoint.py`: provider-owned activation and Tool registration.
 - `plugin/move_base.py`: provider-owned parameter catalog and ROS adapters.
-- `tools/`: atomic FireClaw Tool definitions or compatibility bindings.
+- `tools/`: atomic FireClaw Tool definitions and package documentation.
 - `runtime/`: optional thin integration helpers; do not duplicate `move_base`.
 - `skills/navigation/SKILL.md`: Agent navigation workflow.
-- `tests/`: ROS contract and simulation tests.
-- `config/`: optional Plugin-owned parameter overlays.
-- `launch/`: optional Plugin-owned simulation or deployment launch files.
+- `tests/`: ROS contract, simulation, and opt-in Gazebo acceptance tests.
+- `config/acceptance/`: validated, data-only acceptance scenarios.
+- `launch/fireclaw_acceptance_world.launch`: fixed trusted TurtleBot3
+  acceptance environment; it is not an LLM-callable Tool.
 
-`config/` and `launch/` are not required for the initial integration. A robot
-deployment may own its launch and navigation parameters outside FireClaw.
-Upstream package launch files remain inside `ros_ws/src/navigation/`.
+A robot deployment may still own its launch and navigation parameters outside
+FireClaw. Upstream package launch files remain inside `ros_ws/src/navigation/`.
 
 ## Runtime Ownership
 
@@ -85,6 +100,118 @@ catkin_make
 The system-installed `move_base` remains usable. Sourcing this workspace's
 `devel/setup.bash` selects the pinned source build as an overlay.
 
+## Live Gazebo Acceptance
+
+The live lane is opt-in and defaults to skipped in ordinary pytest runs. The
+trusted runner starts isolated loopback ROS/Gazebo masters, launches the fixed
+TurtleBot3 world, runs the marked test, writes a proof bundle, and cleans up
+the exact launch process it started:
+
+```bash
+FIRECLAW_PYTHON=/path/to/python \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+The default is the success scenario. Run the live Mission cancellation lane
+against a fresh world with:
+
+```bash
+FIRECLAW_PYTHON=/path/to/python \
+FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$PWD/extensions/navigation-move-base/config/acceptance/cancel.yaml" \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+Run the live physical deadline lane with:
+
+```bash
+FIRECLAW_PYTHON=/path/to/python \
+FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$PWD/extensions/navigation-move-base/config/acceptance/timeout.yaml" \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+Run the live native move_base abort lane with:
+
+```bash
+FIRECLAW_PYTHON=/path/to/python \
+FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$PWD/extensions/navigation-move-base/config/acceptance/abort.yaml" \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+Run the diagnostics-first bounded recovery lane with:
+
+```bash
+FIRECLAW_PYTHON=/path/to/python \
+FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$PWD/extensions/navigation-move-base/config/acceptance/stall-recover.yaml" \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+Run the diagnostics-first operator escalation lane with:
+
+```bash
+FIRECLAW_PYTHON=/path/to/python \
+FIRECLAW_GAZEBO_ACCEPTANCE_SCENARIO="$PWD/extensions/navigation-move-base/config/acceptance/stall-escalate.yaml" \
+  extensions/navigation-move-base/tests/acceptance/run_gazebo_acceptance.sh
+```
+
+The success scenario submits a structured task through Mission Run and the
+Robot Gateway. Because this is a non-dry physical Tool invocation, the first
+Robot task must reach `awaiting_confirmation`; the harness then uses the
+Gateway's authenticated `/confirm` control endpoint. The confirmed task must
+reach the Plugin-owned `Ros1MoveBaseBackend`, publish a `/move_base` goal and
+feedback, receive actionlib `SUCCEEDED`, stop, and finish as `completed`.
+No independent action client sends the acceptance goal.
+
+The cancel scenario follows the same authorization and Plugin-owned execution
+path, waits for live feedback and at least 0.15 m of displacement, then invokes
+`MissionRunManager.cancel()`. It requires actionlib `PREEMPTED(2)` or
+`RECALLED(8)`, explicit `cancellation_acknowledged=true` and
+`runtime_stopped=true`, a canonical `cancelled` Robot task and Mission report,
+a unique terminal event, bounded stop latency and bounded post-cancel motion.
+The Mission scheduler waits for the Robot task's real terminal state; an
+unconfirmed stop becomes `lost` instead of a synthetic cancellation.
+
+The timeout scenario does not call the Mission cancellation surface. It first
+requires live feedback and physical displacement, then lets the trusted
+3-second Plugin action deadline expire. The Runtime emits
+`action.cancel_requested` with `cancellation_reason="deadline_exceeded"`, and
+the same action/task may become `timed_out` only after actionlib reports
+`PREEMPTED(2)` or `RECALLED(8)` and the backend acknowledges that motion has
+stopped. Mission's default timeout policy aborts the remaining plan while
+preserving `timed_out`; it does not blindly retry a physical navigation goal.
+
+The abort scenario fixes the goal outside the bounds computed from the live
+`/map`, sets a trusted 2-second planner patience and disables native recovery,
+then requires the same Plugin-owned action to end as actionlib `ABORTED(4)`.
+It preserves the move_base status text and `move_base_aborted` error code at
+the action boundary, confirms the runtime is stopped, and propagates the same
+Robot task and Mission as canonical `failed`. It forbids cancellation,
+deadline, retry, reassign, Adapter fallback, and synthetic success paths.
+
+The two stall scenarios use a trusted launch-only fault injection that sets
+the live DWA `max_vel_x` and `min_vel_x` to zero. After the first real goal
+times out and move_base acknowledges `PREEMPTED(2)` or `RECALLED(8)`, the Robot
+Agent must call the read-only `navigation_diagnostics` Tool and preserve its
+evidence ID. `stall-recover` permits exactly one Plugin-owned
+`move_base_set_parameters` call, restores `max_vel_x=0.22`, retries the exact
+same goal once, and must finish `completed`. `stall-escalate` permits neither
+mutation nor retry and must finish `escalated` with
+`persistent_navigation_stall` and the same diagnostic evidence reference.
+These deterministic lanes evaluate integration policy, not LLM planning
+quality.
+
+Proof bundles are written beneath `results/gazebo-acceptance/<run-id>/` and
+include pre-confirmation and post-confirmation snapshots of the same Robot
+task trace, Plugin inventory, ROS graph, goal/feedback/status stream, pose
+evidence, JUnit, and ROS logs. Mission keeps polling that task while it is
+`awaiting_confirmation`; after `/confirm`, the same task reaches `completed`,
+an acknowledged `cancelled`, an acknowledged `timed_out`, or a native
+move_base-derived `failed` terminal and the Mission produces the matching final
+report. Cancel runs additionally write `cancellation-evidence.json`; timeout
+runs write `timeout-evidence.json`; abort runs write `abort-evidence.json`,
+`map-evidence.json`, and `navigation-parameters.json`; stall runs write
+`stall-evidence.json`, `navigation-diagnostics.json`, and before/after live
+navigation parameter snapshots.
+
 ## Initial Acceptance Criteria
 
 1. `/move_base` exposes `move_base_msgs/MoveBaseAction`.
@@ -97,3 +224,9 @@ The system-installed `move_base` remains usable. Sourcing this workspace's
    adapter.
 7. Emergency stop and `robot_motion`/`local_navigation` leases prevent new
    motion dispatch.
+8. A blocked/stalled world triggers `navigation_diagnostics`, followed by an
+   evidence-backed recovery or explicit escalation.
+9. The final task report and audit ledger preserve feedback, terminal state,
+   timeout/cancel cause, owner ID, and backend evidence.
+10. A trap Adapter proves that navigation never falls back to a domain method
+    on `RobotAdapter`.

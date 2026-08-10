@@ -25,6 +25,15 @@ RUN_ACTIVE_STATUSES = frozenset(
 RUN_TERMINAL_STATUSES = frozenset(
     {"completed", "blocked", "escalated", "failed", "timed_out", "cancelled", "lost"}
 )
+MISSION_TERMINAL_EVENT_BY_STATUS = {
+    "completed": "mission.completed",
+    "blocked": "mission.blocked",
+    "escalated": "mission.escalated",
+    "failed": "mission.failed",
+    "timed_out": "mission.timed_out",
+    "cancelled": "mission.cancelled",
+    "lost": "mission.lost",
+}
 
 
 class MissionRunControl:
@@ -359,7 +368,10 @@ class MissionRunManager:
                     },
                 )
             if run.control.is_cancel_requested() and str(result.get("status")) in {
-                "running", "planned", "accepted"
+                "running",
+                "planned",
+                "accepted",
+                "cancelled",
             }:
                 self._finish_cancelled(run, result)
                 return
@@ -383,7 +395,11 @@ class MissionRunManager:
                 recorder(run.mission_id, report)
             self._set_status(run, final_status)
             self._emit("mission.report_ready", run, report)
-            self._emit("mission.completed", run, {"status": final_status, "final_report": report})
+            self._emit(
+                MISSION_TERMINAL_EVENT_BY_STATUS[final_status],
+                run,
+                {"status": final_status, "final_report": report},
+            )
         except Exception as exc:  # pragma: no cover - defensive worker boundary
             logger.exception("Mission Run failed: %s", run.mission_id)
             run.error = f"{type(exc).__name__}: {exc}"

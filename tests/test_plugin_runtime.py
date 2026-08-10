@@ -29,8 +29,8 @@ def _raises_value_error(match: str):
 def _make_descriptor(**overrides):
     """Return a valid descriptor, optionally overriding specific fields."""
     defaults = dict(
-        plugin_id="navigate_to_floor",
-        capabilities=("navigate_to_floor", "navigation"),
+        plugin_id="navigate_to_waypoint",
+        capabilities=("navigate_to_waypoint", "navigation"),
         preconditions=("robot_online", "floor_reachable"),
         risk_level="low",
         required_sensors=(),

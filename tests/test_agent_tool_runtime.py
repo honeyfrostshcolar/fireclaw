@@ -8,19 +8,17 @@ import pytest
 
 from fireclaw_core.agent.computer_tools import (
     ComputerSandbox,
-    computer_agent_tools,
-    register_computer_tool_plugin,
 )
 from fireclaw_core.agent.tool_runtime import (
     AgentTool,
     AgentToolRuntime,
-    register_agent_tool,
 )
 from fireclaw_core.approval.execution_authorization import (
     VerifiedExecutionAuthorization,
     execution_action_hash,
 )
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
 from fireclaw_core.policy.deployment import (
     DEPLOYMENT_POLICY_ID,
     DeploymentProfile,
@@ -31,6 +29,36 @@ from fireclaw_core.infra.runtime_state import (
 )
 
 _TEST_IMAGE_ID = "sha256:" + ("a" * 64)
+_EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
+
+
+def _register_test_tool(
+    host: FireClawPluginHost,
+    tool: AgentTool,
+    *,
+    owner_plugin_id: str,
+) -> None:
+    host.activate(
+        owner_plugin_id,
+        lambda api: api.register_tool(tool),
+        trust_level="trusted",
+    )
+
+
+def _computer_tools(sandbox: ComputerSandbox) -> dict[str, AgentTool]:
+    host = FireClawPluginHost()
+    load_fireclaw_extensions(
+        host,
+        (_EXTENSIONS / "computer-tools",),
+        mode="simulation",
+        role="robot_agent",
+        services={"fireclaw.agent-tools.computer.sandbox": sandbox},
+        strict=True,
+    )
+    return {
+        item.contribution_id: item.value
+        for item in host.contributions("tool")
+    }
 
 
 class _RecordingInput:
@@ -134,7 +162,7 @@ def test_runtime_projects_agent_tools_but_not_physical_skill_objects(
     tmp_path: Path,
 ) -> None:
     host = FireClawPluginHost()
-    register_agent_tool(
+    _register_test_tool(
         host,
         AgentTool(
             name="inspect",
@@ -173,7 +201,7 @@ def test_runtime_executes_allowed_tool_and_audits_result(
 ) -> None:
     events: list[dict] = []
     host = FireClawPluginHost()
-    register_agent_tool(
+    _register_test_tool(
         host,
         AgentTool(
             name="inspect",
@@ -212,7 +240,7 @@ def test_before_tool_call_adjustment_is_revalidated(
         return arguments
 
     host = FireClawPluginHost()
-    register_agent_tool(
+    _register_test_tool(
         host,
         AgentTool(
             name="inspect",
@@ -254,7 +282,7 @@ def test_real_mutation_requires_exact_verified_authorization(
     calls: list[dict] = []
     arguments = {"path": "notes.txt", "content": "safe"}
     host = FireClawPluginHost()
-    register_agent_tool(
+    _register_test_tool(
         host,
         AgentTool(
             name="computer_write_file",
@@ -320,7 +348,7 @@ def test_real_mutation_consumes_exact_authorization_once(
     calls: list[dict] = []
     arguments = {"path": "notes.txt", "content": "safe"}
     host = FireClawPluginHost()
-    register_agent_tool(
+    _register_test_tool(
         host,
         AgentTool(
             name="computer_write_file",
@@ -392,7 +420,7 @@ def test_computer_tools_confine_files_and_use_docker_without_shell(
     factory = _RecordingDockerFactory(start_stdout="ok")
     profile = _profile(tmp_path).sandbox
     sandbox = ComputerSandbox(profile=profile, process_factory=factory)
-    tools = {tool.name: tool for tool in computer_agent_tools(sandbox)}
+    tools = _computer_tools(sandbox)
 
     with pytest.raises(ValueError, match="escapes the sandbox"):
         tools["computer_read_file"].handler({"path": "../secret"})
@@ -471,23 +499,6 @@ def test_computer_sandbox_passes_skill_input_only_to_docker_stdin(
     assert result["exit_code"] == 0
 
 
-def test_computer_sandbox_stages_regular_skill_files_and_rejects_symlinks(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "source-skill"
-    source.mkdir()
-    (source / "worker.py").write_text("print('ok')", encoding="utf-8")
-    sandbox = ComputerSandbox(profile=_profile(tmp_path).sandbox)
-
-    relative = sandbox.stage_skill(source, skill_name="safe_skill")
-
-    staged = sandbox.root / relative
-    assert (staged / "worker.py").read_text(encoding="utf-8") == "print('ok')"
-    (source / "escape").symlink_to(tmp_path / "outside")
-    with pytest.raises(ValueError, match="symlinks"):
-        sandbox.stage_skill(source, skill_name="unsafe_skill")
-
-
 def test_computer_sandbox_enforces_reserved_path_and_file_quota(
     tmp_path: Path,
 ) -> None:
@@ -540,7 +551,7 @@ def test_agent_tool_runtime_bounds_handler_time_and_result_size(
         time.sleep(0.05)
         return {"ok": True}
 
-    register_agent_tool(
+    _register_test_tool(
         host,
         AgentTool(
             name="slow",
@@ -551,7 +562,7 @@ def test_agent_tool_runtime_bounds_handler_time_and_result_size(
         ),
         owner_plugin_id="test.slow",
     )
-    register_agent_tool(
+    _register_test_tool(
         host,
         AgentTool(
             name="large",
@@ -578,7 +589,14 @@ def test_computer_plugin_registers_atomically(tmp_path: Path) -> None:
     host = FireClawPluginHost()
     sandbox = ComputerSandbox(profile=_profile(tmp_path).sandbox)
 
-    register_computer_tool_plugin(host, sandbox)
+    load_fireclaw_extensions(
+        host,
+        (_EXTENSIONS / "computer-tools",),
+        mode="simulation",
+        role="robot_agent",
+        services={"fireclaw.agent-tools.computer.sandbox": sandbox},
+        strict=True,
+    )
 
     names = {
         contribution.contribution_id

@@ -489,12 +489,17 @@ def build_constrained_active_observation_tool(
         and isinstance(belief.get("belief_id"), str)
         and belief["belief_id"] in exposed_ids
     })
+    allowed_capabilities = frozenset(
+        context.active_observation_capabilities
+        if context.active_observation_capabilities is not None
+        else ACTIVE_OBSERVATION_CAPABILITIES
+    )
     capabilities = sorted({
         capability
         for robot in context.available_robots
         if robot.enabled
         for capability in robot.capabilities
-        if capability in ACTIVE_OBSERVATION_CAPABILITIES
+        if capability in allowed_capabilities
     })
     if not unresolved_ids or not capabilities:
         return None

@@ -61,7 +61,7 @@ def _task(*, risk_level="low"):
         task_type="search",
         command="去二楼搜索",
         target={"floor": 2},
-        required_skills=["navigate_to_floor", "search_for_victims"],
+        required_skills=["navigate_to_waypoint", "victim_search"],
         risk_level=risk_level,
     )
 
@@ -91,7 +91,7 @@ def _single_skill_task():
         task_type="navigate",
         command="去二楼",
         target={"floor": 2},
-        required_skills=["navigate_to_floor"],
+        required_skills=["navigate_to_waypoint"],
         risk_level="low",
     )
 
@@ -102,13 +102,13 @@ def test_robot_deliberation_returns_skill_results_to_policy():
             RobotAgentDecision(
                 operation="execute_skill",
                 message="navigate",
-                tool_name="navigate_to_floor",
+                tool_name="navigate_to_waypoint",
                 inputs={"floor": 2},
             ),
             RobotAgentDecision(
                 operation="execute_skill",
                 message="search",
-                tool_name="search_for_victims",
+                tool_name="victim_search",
                 inputs={"floor": 2},
             ),
             RobotAgentDecision(
@@ -126,11 +126,11 @@ def test_robot_deliberation_returns_skill_results_to_policy():
     )
 
     assert result.status == "completed"
-    assert policy.requests[1].observations[0].tool_name == "navigate_to_floor"
+    assert policy.requests[1].observations[0].tool_name == "navigate_to_waypoint"
     assert policy.requests[1].observations[0].status == "succeeded"
     assert result.result["succeeded_skills"] == [
-        "navigate_to_floor",
-        "search_for_victims",
+        "navigate_to_waypoint",
+        "victim_search",
     ]
 
 
@@ -140,19 +140,19 @@ def test_robot_deliberation_can_recover_after_failed_skill():
             RobotAgentDecision(
                 operation="execute_skill",
                 message="try navigation",
-                tool_name="navigate_to_floor",
+                tool_name="navigate_to_waypoint",
                 inputs={"floor": 2},
             ),
             RobotAgentDecision(
                 operation="execute_skill",
                 message="retry after refreshed state",
-                tool_name="navigate_to_floor",
+                tool_name="navigate_to_waypoint",
                 inputs={"floor": 2},
             ),
             RobotAgentDecision(
                 operation="execute_skill",
                 message="search",
-                tool_name="search_for_victims",
+                tool_name="victim_search",
                 inputs={"floor": 2},
             ),
             RobotAgentDecision(operation="complete", message="done"),
@@ -199,6 +199,37 @@ def test_robot_deliberation_can_recover_after_failed_skill():
     assert policy.requests[1].observations[0].reason_code == "target_unreachable"
 
 
+def test_robot_deliberation_escalation_preserves_evidence_references():
+    policy = SequencePolicy(
+        [
+            RobotAgentDecision(
+                operation="escalate",
+                message="Navigation remains stalled after bounded diagnostics.",
+                reason_code="persistent_navigation_stall",
+                evidence_ids=("ros1:diagnostic:123", "action:timed-out:456"),
+            )
+        ]
+    )
+
+    result = RobotAgentDeliberationRuntime(policy=policy).run(
+        _single_skill_task(),
+        fallback_robot_id="robot-1",
+        context_provider=lambda: {},
+        execute_skill=_success,
+    )
+
+    assert result.status == "escalated"
+    assert result.reason_code == "persistent_navigation_stall"
+    assert result.result == {
+        "status": "escalated",
+        "reason_code": "persistent_navigation_stall",
+        "evidence_ids": [
+            "ros1:diagnostic:123",
+            "action:timed-out:456",
+        ],
+    }
+
+
 def test_robot_deliberation_rejects_premature_completion():
     policy = SequencePolicy(
         [
@@ -239,7 +270,7 @@ def test_robot_deliberation_blocks_skill_outside_task_envelope():
     task = StructuredRobotTask(
         **{
             **task.to_dict(),
-            "allowed_skills": ["navigate_to_floor", "search_for_victims"],
+            "allowed_skills": ["navigate_to_waypoint", "victim_search"],
         }
     )
 
@@ -260,7 +291,7 @@ def test_robot_deliberation_escalates_high_risk_action():
             RobotAgentDecision(
                 operation="execute_skill",
                 message="navigate",
-                tool_name="navigate_to_floor",
+                tool_name="navigate_to_waypoint",
                 inputs={"floor": 2},
             )
         ]
@@ -283,13 +314,13 @@ def test_robot_deliberation_cannot_reason_past_safety_gate_block():
             RobotAgentDecision(
                 operation="execute_skill",
                 message="navigate",
-                tool_name="navigate_to_floor",
+                tool_name="navigate_to_waypoint",
                 inputs={"floor": 2},
             ),
             RobotAgentDecision(
                 operation="execute_skill",
                 message="try another action",
-                tool_name="search_for_victims",
+                tool_name="victim_search",
                 inputs={"floor": 2},
             ),
         ]
@@ -311,6 +342,38 @@ def test_robot_deliberation_cannot_reason_past_safety_gate_block():
     assert len(policy.requests) == 1
 
 
+def test_robot_deliberation_preserves_physical_confirmation_boundary():
+    policy = SequencePolicy(
+        [
+            RobotAgentDecision(
+                operation="execute_skill",
+                message="navigate",
+                tool_name="navigate_to_waypoint",
+                inputs={"floor": 2},
+            )
+        ]
+    )
+
+    result = RobotAgentDeliberationRuntime(policy=policy).run(
+        _single_skill_task(),
+        fallback_robot_id="robot-1",
+        context_provider=lambda: {},
+        execute_skill=lambda step: {
+            "status": "awaiting_confirmation",
+            "safety": {"status": "require_confirmation"},
+            "execution": {"status": "failed", "steps": []},
+        },
+    )
+
+    assert result.status == "escalated"
+    assert result.reason_code == "safety_gate_terminal"
+    assert result.observations[-1].status == "approval_required"
+    assert result.observations[-1].output["status"] == (
+        "awaiting_confirmation"
+    )
+    assert len(policy.requests) == 1
+
+
 def test_robot_deliberation_reconciles_finished_skill_without_replay(
     tmp_path,
 ):
@@ -327,7 +390,7 @@ def test_robot_deliberation_reconciles_finished_skill_without_replay(
                 RobotAgentDecision(
                     operation="execute_skill",
                     message="navigate",
-                    tool_name="navigate_to_floor",
+                    tool_name="navigate_to_waypoint",
                     inputs={"floor": 2},
                 ),
             ]),
@@ -355,7 +418,7 @@ def test_robot_deliberation_reconciles_finished_skill_without_replay(
 
     assert result.status == "completed"
     assert replayed == []
-    assert result.result["succeeded_skills"] == ["navigate_to_floor"]
+    assert result.result["succeeded_skills"] == ["navigate_to_waypoint"]
     assert result.observations[0].status == "succeeded"
     assert store.latest("robot:robot-1:task:task-resume").status == (
         "completed"
@@ -373,7 +436,7 @@ def test_robot_deliberation_escalates_unknown_physical_outcome(
                 RobotAgentDecision(
                     operation="execute_skill",
                     message="navigate",
-                    tool_name="navigate_to_floor",
+                    tool_name="navigate_to_waypoint",
                     inputs={"floor": 2},
                 ),
             ]),
@@ -420,7 +483,7 @@ def test_llm_robot_agent_policy_returns_one_skill_decision():
             tool_calls=[
                 ToolCall(
                     id="call-1",
-                    name="navigate_to_floor",
+                    name="navigate_to_waypoint",
                     arguments={"floor": 2},
                 )
             ],
@@ -434,7 +497,7 @@ def test_llm_robot_agent_policy_returns_one_skill_decision():
         {
             "type": "function",
             "function": {
-                "name": "navigate_to_floor",
+                "name": "navigate_to_waypoint",
                 "description": "Navigate.",
                 "parameters": {
                     "type": "object",
@@ -448,7 +511,7 @@ def test_llm_robot_agent_policy_returns_one_skill_decision():
     decision = LLMRobotAgentDecisionPolicy(runtime).decide(request)
 
     assert decision.operation == "execute_skill"
-    assert decision.tool_name == "navigate_to_floor"
+    assert decision.tool_name == "navigate_to_waypoint"
     assert decision.inputs == {"floor": 2}
     tool_names = [
         item["function"]["name"] for item in runtime.calls[0]["tools"]
@@ -464,7 +527,7 @@ def test_llm_robot_agent_policy_rejects_multiple_operations_in_one_turn():
             tool_calls=[
                 ToolCall(
                     id="call-1",
-                    name="navigate_to_floor",
+                    name="navigate_to_waypoint",
                     arguments={"floor": 2},
                 ),
                 ToolCall(
@@ -483,7 +546,7 @@ def test_llm_robot_agent_policy_rejects_multiple_operations_in_one_turn():
         {
             "type": "function",
             "function": {
-                "name": "navigate_to_floor",
+                "name": "navigate_to_waypoint",
                 "description": "Navigate.",
                 "parameters": {"type": "object", "properties": {}},
             },
@@ -508,12 +571,12 @@ def _policy_request():
             task_type="search",
             target={"floor": 2},
             allowed_skills=[
-                "navigate_to_floor",
-                "search_for_victims",
+                "navigate_to_waypoint",
+                "victim_search",
             ],
             required_skills=[
-                "navigate_to_floor",
-                "search_for_victims",
+                "navigate_to_waypoint",
+                "victim_search",
             ],
             constraints={},
             risk_level="low",

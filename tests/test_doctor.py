@@ -16,7 +16,6 @@ def test_run_doctor_warns_for_mock_ros1_but_passes_control_boundaries(tmp_path):
         robot_id="doctor-ros1",
         memory_path=str(tmp_path / "memory" / "runs.jsonl"),
         event_path=str(tmp_path / "events" / "events.jsonl"),
-        skills_dir=str(tmp_path / "missing-skills"),
     )
 
     assert report["status"] == "warn"
@@ -24,9 +23,7 @@ def test_run_doctor_warns_for_mock_ros1_but_passes_control_boundaries(tmp_path):
     assert _check(report, "adapter")["details"]["mode"] == "mock_ros1"
     assert _check(report, "memory_path")["status"] == "pass"
     assert _check(report, "event_path")["status"] == "pass"
-    assert _check(report, "workspace_skills")["status"] == "pass"
     assert _check(report, "emergency_stop_hook")["status"] == "pass"
-    assert _check(report, "action_feedback_boundary")["status"] == "pass"
     assert _check(report, "security_audit")["status"] == "pass"
 
 
@@ -51,7 +48,6 @@ allowed_hosts = ["mission.example"]
         adapter="dry-run",
         memory_path=str(tmp_path / "memory.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         security_config_path=str(config_path),
     )
 
@@ -67,15 +63,6 @@ def test_run_doctor_ros1_adapter_reports_readiness(tmp_path):
         json.dumps(
             {
                 "robot_id": "doctor-ros1-ready",
-                "endpoints": {
-                    "navigate_to_floor": {
-                        "interface": "action",
-                        "name": "/fireclaw/nav",
-                        "type": "fireclaw_msgs/NavigateFloorAction",
-                        "cancel_supported": True,
-                        "feedback_supported": True,
-                    }
-                },
                 "emergency_stop": {
                     "interface": "service",
                     "name": "/fireclaw/estop",
@@ -91,7 +78,6 @@ def test_run_doctor_ros1_adapter_reports_readiness(tmp_path):
         robot_id="doctor-ros1-ready",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=str(tmp_path / "missing-skills"),
         ros1_config_path=str(config_path),
     )
 
@@ -102,38 +88,6 @@ def test_run_doctor_ros1_adapter_reports_readiness(tmp_path):
     details = adapter_check["details"]
     assert details["ros1_config_loaded"] is True
     assert details["emergency_stop_configured"] is True
-    assert details["action_feedback_supported"] is True
-    assert details["action_cancel_supported"] is True
-
-
-def test_run_doctor_fails_invalid_workspace_skill_manifest(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    (skills_dir / "bad.skill.json").write_text(
-        json.dumps(
-            {
-                "name": "bad",
-                "description": "Invalid runtime.",
-                "runtime": "external_conda",
-                "command": ["python", "bad.py"],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    report = run_doctor(
-        adapter="dry-run",
-        robot_id="doctor-dry",
-        memory_path=str(tmp_path / "memory.jsonl"),
-        event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=str(skills_dir),
-    )
-
-    assert report["status"] == "fail"
-    skill_check = _check(report, "workspace_skills")
-    assert skill_check["status"] == "fail"
-    assert skill_check["details"]["error_count"] == 1
-    assert skill_check["details"]["errors"][0]["path"].endswith("bad.skill.json")
 
 
 def test_run_doctor_checks_ros1_config_readiness(tmp_path):
@@ -142,15 +96,6 @@ def test_run_doctor_checks_ros1_config_readiness(tmp_path):
         json.dumps(
             {
                 "robot_id": "doctor-real-ros1",
-                "endpoints": {
-                    "navigate_to_floor": {
-                        "interface": "action",
-                        "name": "/fireclaw/doctor-real-ros1/navigation",
-                        "type": "fireclaw_msgs/NavigateFloorAction",
-                        "cancel_supported": True,
-                        "feedback_supported": True,
-                    }
-                },
                 "emergency_stop": {
                     "interface": "service",
                     "name": "/fireclaw/doctor-real-ros1/emergency_stop",
@@ -166,17 +111,15 @@ def test_run_doctor_checks_ros1_config_readiness(tmp_path):
         robot_id="ignored",
         memory_path=str(tmp_path / "memory.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=str(tmp_path / "missing-skills"),
         ros1_config_path=str(config_path),
     )
 
-    assert report["status"] == "warn"
+    assert report["status"] == "pass"
     assert _check(report, "adapter")["details"]["mode"] == "ros1"
     ros1_config = _check(report, "ros1_config")
-    assert ros1_config["status"] == "warn"
+    assert ros1_config["status"] == "pass"
     assert ros1_config["details"]["robot_id"] == "doctor-real-ros1"
-    assert ros1_config["details"]["configured_actions"] == ["navigate_to_floor"]
-    assert "search_for_victims" in ros1_config["details"]["missing_actions"]
+    assert ros1_config["details"]["emergency_stop_configured"] is True
 
 
 def test_run_doctor_fails_ros1_without_config_path(tmp_path):
@@ -185,63 +128,11 @@ def test_run_doctor_fails_ros1_without_config_path(tmp_path):
         robot_id="doctor-real-ros1",
         memory_path=str(tmp_path / "memory.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=str(tmp_path / "missing-skills"),
     )
 
     assert report["status"] == "fail"
     assert _check(report, "adapter")["status"] == "fail"
     assert _check(report, "ros1_config")["status"] == "fail"
-
-
-def test_run_doctor_reports_workspace_skills_missing_ros1_remap(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    (skills_dir / "spray_water.skill.json").write_text(
-        json.dumps(
-            {
-                "name": "spray_water",
-                "description": "Spray water at a target.",
-                "runtime": "subprocess",
-                "command": ["python", "-c", "print('{}')"],
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"target_id": {"type": "string"}},
-                    "required": ["target_id"],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    config_path = tmp_path / "ros1.yaml"
-    config_path.write_text(
-        """
-robot_id: doctor-real-ros1
-remap:
-  navigate_to_floor:
-    profile: move_base
-    name: /move_base
-  unknown_policy:
-    profile: string_topic
-    name: /fireclaw/unknown_policy
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    report = run_doctor(
-        adapter="ros1",
-        robot_id="ignored",
-        memory_path=str(tmp_path / "memory.jsonl"),
-        event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=str(skills_dir),
-        ros1_config_path=str(config_path),
-    )
-
-    ros1_config = _check(report, "ros1_config")
-    assert ros1_config["status"] == "warn"
-    assert ros1_config["details"]["custom_actions"] == ["unknown_policy"]
-    assert ros1_config["details"]["workspace_skill_names"] == ["spray_water"]
-    assert ros1_config["details"]["workspace_skills_missing_remap"] == ["spray_water"]
-    assert ros1_config["details"]["unknown_remap_actions"] == ["unknown_policy"]
 
 
 def test_doctor_module_cli_outputs_json_report(tmp_path):
@@ -258,8 +149,6 @@ def test_doctor_module_cli_outputs_json_report(tmp_path):
             str(tmp_path / "memory.jsonl"),
             "--event-path",
             str(tmp_path / "events.jsonl"),
-            "--skills-dir",
-            str(tmp_path / "missing-skills"),
         ],
         check=True,
         cwd=".",
@@ -304,7 +193,6 @@ def test_doctor_reports_stale_queue_records(tmp_path):
         robot_id="doctor-fix",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         task_queue_path=str(queue_path),
     )
 
@@ -325,7 +213,6 @@ def test_doctor_fix_marks_stale_lost(tmp_path):
         robot_id="doctor-fix",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         task_queue_path=str(queue_path),
         fix=True,
     )
@@ -349,7 +236,6 @@ def test_doctor_dry_run_does_not_mutate(tmp_path):
         robot_id="doctor-fix",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         task_queue_path=str(queue_path),
         fix=False,
     )
@@ -370,7 +256,6 @@ def test_doctor_reports_missing_memory_index(tmp_path):
         robot_id="doctor-fix",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         memory_index_path=str(index_path),
     )
 
@@ -390,7 +275,6 @@ def test_doctor_reports_invalid_plugin_descriptor(tmp_path):
         robot_id="doctor-fix",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         plugin_dir=str(plugin_dir),
     )
 
@@ -412,7 +296,6 @@ def test_doctor_fix_returns_repair_count(tmp_path):
         robot_id="doctor-fix",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         task_queue_path=str(queue_path),
         fix=True,
     )
@@ -461,7 +344,6 @@ def test_doctor_memory_eval_skipped_without_fixture(tmp_path):
         robot_id="doctor-eval",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
     )
 
     eval_check = _check(report, "memory_eval")
@@ -482,7 +364,6 @@ def test_doctor_memory_eval_skipped_without_index(tmp_path):
         robot_id="doctor-eval",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         memory_eval_fixture=str(fixture_path),
     )
 
@@ -504,7 +385,6 @@ def test_doctor_memory_eval_warns_missing_index(tmp_path):
         robot_id="doctor-eval",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         memory_index_path=str(tmp_path / "missing" / "index.sqlite"),
         memory_eval_fixture=str(fixture_path),
     )
@@ -523,7 +403,6 @@ def test_doctor_memory_eval_warns_missing_fixture(tmp_path):
         robot_id="doctor-eval",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         memory_index_path=str(index_path),
         memory_eval_fixture=str(tmp_path / "missing_cases.json"),
     )
@@ -547,7 +426,6 @@ def test_doctor_memory_eval_passes_when_threshold_met(tmp_path):
         robot_id="doctor-eval",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         memory_index_path=str(index_path),
         memory_eval_fixture=str(fixture_path),
         memory_eval_threshold=0.5,
@@ -576,7 +454,6 @@ def test_doctor_memory_eval_warns_when_threshold_not_met(tmp_path):
         robot_id="doctor-eval",
         memory_path=str(tmp_path / "mem.jsonl"),
         event_path=str(tmp_path / "events.jsonl"),
-        skills_dir=None,
         memory_index_path=str(index_path),
         memory_eval_fixture=str(fixture_path),
         memory_eval_threshold=0.5,

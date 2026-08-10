@@ -143,7 +143,6 @@ def main() -> int:
         default=[],
         help="Plugin descriptor directory to audit. Repeat as needed.",
     )
-    security_audit.add_argument("--skills-dir", default=None)
     security_audit.add_argument(
         "--deep",
         action="store_true",
@@ -338,7 +337,6 @@ def main() -> int:
             config_path=args.config,
             runtime_root=args.runtime_root,
             plugin_dirs=args.plugin_dir,
-            skills_dir=args.skills_dir,
             deep=args.deep,
         )
         _print_json(report.to_dict())

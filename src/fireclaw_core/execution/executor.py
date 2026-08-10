@@ -32,6 +32,14 @@ CapabilityPolicyCheck = Callable[
     CapabilityPolicyDecision,
 ]
 
+_PROPAGATED_PHYSICAL_TERMINALS = frozenset({
+    "blocked",
+    "escalated",
+    "timed_out",
+    "cancelled",
+    "lost",
+})
+
 
 @dataclass(frozen=True)
 class StepAttemptResult:
@@ -241,6 +249,7 @@ class PlanExecutor:
                     or "fireclaw-executor"
                 )
                 leases = ()
+                attempt_result: RobotActionResult | None = None
                 try:
                     if self._resource_lease_manager is not None and resource_names:
                         leases = self._resource_lease_manager.acquire(
@@ -318,6 +327,7 @@ class PlanExecutor:
                         step.inputs,
                         cancellation_requested=self._cancellation_requested,
                     )
+                    attempt_result = result
                 except ResourceLeaseConflict as exc:
                     return self._resource_blocked_result(
                         step_results=step_results,
@@ -332,27 +342,48 @@ class PlanExecutor:
                         leases
                         and self._resource_lease_manager is not None
                     ):
-                        released = self._resource_lease_manager.release(
-                            robot_id=self._robot_id or "unknown-robot",
-                            owner_id=lease_owner,
-                            operation_id=step_operation_id,
-                            resource_names=tuple(resource_names),
-                            generations={
-                                lease.resource_name: lease.generation
-                                for lease in leases
-                            },
+                        release_safe = not (
+                            attempt_result is not None
+                            and attempt_result.data.get(
+                                "resource_release_safe"
+                            )
+                            is False
                         )
-                        self._emit(
-                            "resource.released",
-                            {
-                                "skill_name": step.skill_name,
-                                "operation_id": step_operation_id,
-                                "resource_names": list(resource_names),
-                                "released_count": released,
-                            },
-                        )
+                        if release_safe:
+                            released = self._resource_lease_manager.release(
+                                robot_id=self._robot_id or "unknown-robot",
+                                owner_id=lease_owner,
+                                operation_id=step_operation_id,
+                                resource_names=tuple(resource_names),
+                                generations={
+                                    lease.resource_name: lease.generation
+                                    for lease in leases
+                                },
+                            )
+                            self._emit(
+                                "resource.released",
+                                {
+                                    "skill_name": step.skill_name,
+                                    "operation_id": step_operation_id,
+                                    "resource_names": list(resource_names),
+                                    "released_count": released,
+                                },
+                            )
+                        else:
+                            self._retain_unsafe_action_leases(
+                                skill=skill,
+                                operation_id=step_operation_id,
+                                resource_names=tuple(resource_names),
+                                leases=leases,
+                            )
                 output = self._result_to_output(result)
-                attempt_status = result.status if result.status == "cancelled" else "succeeded" if result.ok else "failed"
+                attempt_status = (
+                    result.status
+                    if result.status in _PROPAGATED_PHYSICAL_TERMINALS
+                    else "succeeded"
+                    if result.ok
+                    else "failed"
+                )
                 self._emit(
                     "skill.attempted",
                     {
@@ -375,7 +406,57 @@ class PlanExecutor:
                 )
                 if result.ok:
                     break
-                if result.status == "cancelled" or self._cancellation_requested():
+                if result.status in _PROPAGATED_PHYSICAL_TERMINALS:
+                    failure_category = f"physical_action_{result.status}"
+                    operator_action = (
+                        "stop_and_escalate"
+                        if result.status == "lost"
+                        else "inspect_and_recover"
+                        if result.status in {"timed_out", "escalated"}
+                        else "wait_or_escalate"
+                    )
+                    self._emit(
+                        "skill.failed",
+                        {
+                            "skill_name": step.skill_name,
+                            "inputs": step.inputs,
+                            "status": result.status,
+                            "output": output,
+                            "error": result.error,
+                            "attempt_count": len(attempts),
+                            "failure_category": failure_category,
+                            "operator_action": operator_action,
+                        },
+                    )
+                    step_results.append(
+                        StepExecutionResult(
+                            skill_name=step.skill_name,
+                            inputs=step.inputs,
+                            status=result.status,
+                            output=output,
+                            error=result.error,
+                            attempt_count=len(attempts),
+                            attempts=attempts,
+                            failure_category=failure_category,
+                            operator_action=operator_action,
+                            skill_domain=skill.domain,
+                            safety_class=(
+                                skill.physical_plugin.safety_class
+                                if skill.physical_plugin is not None
+                                else None
+                            ),
+                            action_binding=(
+                                skill.physical_plugin.action
+                                if skill.physical_plugin is not None
+                                else None
+                            ),
+                        )
+                    )
+                    return ExecutionResult(
+                        status=result.status,
+                        steps=step_results,
+                    )
+                if self._cancellation_requested():
                     return ExecutionResult(status="cancelled", steps=step_results)
                 decision = self._failure_policy.decide(skill=skill, attempt_number=attempt_number)
                 if decision.action == "retry":
@@ -560,6 +641,55 @@ class PlanExecutor:
             **result.data,
         }
 
+    def _retain_unsafe_action_leases(
+        self,
+        *,
+        skill: Skill,
+        operation_id: str,
+        resource_names: tuple[str, ...],
+        leases: tuple[Any, ...],
+    ) -> None:
+        reason = "physical_runtime_stop_unconfirmed"
+        close_admission = getattr(
+            self._resource_lease_manager,
+            "close_admission",
+            None,
+        )
+        admission_closed = False
+        if callable(close_admission):
+            try:
+                close_admission(
+                    reason=reason,
+                    task_id=(
+                        self._subtask_id
+                        or self._mission_id
+                        or operation_id
+                    ),
+                    closed_at=datetime.now(timezone.utc).isoformat(),
+                )
+                admission_closed = True
+            except Exception as exc:
+                self._emit(
+                    "resource.fence_failed",
+                    {
+                        "skill_name": skill.name,
+                        "operation_id": operation_id,
+                        "reason": reason,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        self._emit(
+            "resource.retained",
+            {
+                "skill_name": skill.name,
+                "operation_id": operation_id,
+                "resource_names": list(resource_names),
+                "reason": reason,
+                "admission_closed": admission_closed,
+                "leases": [lease.to_dict() for lease in leases],
+            },
+        )
+
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         self._record_skill_memory(event_type, payload)
         if self._event_sink is not None:
@@ -624,6 +754,10 @@ def _skill_lifecycle_phase(event_type: str, payload: dict[str, Any]) -> str | No
         return "start"
     if event_type == "skill.succeeded":
         return "result"
+    if event_type == "skill.failed" and payload.get("status") == "timed_out":
+        return "timeout"
+    if event_type == "skill.failed" and payload.get("status") == "cancelled":
+        return "cancellation"
     if event_type == "skill.failed":
         return "failure"
     if event_type != "skill.attempted":

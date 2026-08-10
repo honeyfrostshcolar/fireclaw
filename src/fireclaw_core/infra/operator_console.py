@@ -103,8 +103,6 @@ def main() -> int:
     parser.add_argument("--session-id", default="operator")
     parser.add_argument("--memory-path", default="memory/fireclaw-operator-memory.jsonl")
     parser.add_argument("--event-path", default="memory/fireclaw-operator-events.jsonl")
-    parser.add_argument("--skills-dir", default="skills")
-    parser.add_argument("--no-workspace-skills", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--real-run", action="store_true")
     args = parser.parse_args()
@@ -115,7 +113,6 @@ def main() -> int:
             robot_id=args.robot_id,
             memory_path=args.memory_path,
             event_path=args.event_path,
-            workspace_skills_dir=None if args.no_workspace_skills else args.skills_dir,
             dry_run=not args.real_run,
             default_session_id=args.session_id,
         )

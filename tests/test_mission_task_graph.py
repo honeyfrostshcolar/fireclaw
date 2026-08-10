@@ -22,12 +22,12 @@ def _registry() -> RobotRegistry:
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims", "recon"),
+            capabilities=("victim_search", "recon"),
         ),
         RobotRegistryEntry(
             robot_id="robot-b",
             base_url="http://robot-b.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
 
@@ -45,7 +45,7 @@ def _node(
         node_id=node_id,
         robot_id=robot_id,
         command="搜索二楼受困人员",
-        capability_required="search_for_victims",
+        capability_required="victim_search",
         target=MissionTarget(frame_id="building", floor=2),
         depends_on=depends_on,
         preconditions=(
@@ -53,7 +53,7 @@ def _node(
             MissionCondition(
                 kind="robot_has_capability",
                 subject=robot_id,
-                details={"capability": "search_for_victims"},
+                details={"capability": "victim_search"},
             ),
         ),
         expected_effects=(f"task_completed:{node_id}",),
@@ -91,14 +91,14 @@ def test_legacy_plan_projects_execution_groups_to_dependencies() -> None:
                 robot_id="robot-a",
                 command="去二楼搜索受困人员",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 execution_group=0,
             ),
             MissionSubtask(
                 robot_id="robot-a",
                 command="去三楼搜索受困人员",
                 floor=3,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 execution_group=1,
             ),
         ],
@@ -200,14 +200,14 @@ def test_legacy_plan_validator_blocks_parallel_reuse_of_one_robot() -> None:
                 robot_id="robot-a",
                 command="去二楼搜索受困人员",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 execution_group=0,
             ),
             MissionSubtask(
                 robot_id="robot-a",
                 command="去三楼搜索受困人员",
                 floor=3,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 execution_group=0,
             ),
         ],
@@ -235,7 +235,7 @@ def test_mission_agent_returns_the_validated_task_graph() -> None:
                             robot_id="robot-a",
                             command="去二楼搜索受困人员",
                             floor=2,
-                            capability_required="search_for_victims",
+                            capability_required="victim_search",
                         )
                     ],
                 ),

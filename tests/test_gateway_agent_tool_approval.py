@@ -64,7 +64,6 @@ def _gateway(tmp_path: Path) -> FireClawGateway:
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
             runtime_state_path=str(tmp_path / "runtime.sqlite3"),
-            workspace_skills_dir=None,
             dry_run=True,
             robot_agent_enabled=True,
             deployment_profile=profile,
@@ -149,12 +148,10 @@ def test_gateway_resumes_agent_tool_with_one_time_exact_authorization(
 
     resumed_task = _task()
     resumed_task["execution_authorization"] = authorization.to_dict()
-    second_task_id = "runtime-task-2"
-    _prepare_task(gateway, second_task_id)
     completed = gateway._execute_agent_task(
         command="write an approved diagnostic artifact",
         session_id="mission-1",
-        task_id=second_task_id,
+        task_id=first_task_id,
         record_received=False,
         operator=_operator(),
         structured_task=resumed_task,
@@ -162,6 +159,16 @@ def test_gateway_resumes_agent_tool_with_one_time_exact_authorization(
     )
 
     assert completed["status"] == "completed"
+    assert completed["task_id"] == first_task_id
+    assert [
+        record.task_id for record in gateway.task_queue.list_records()
+    ] == [first_task_id]
+    event_types = [
+        event["type"]
+        for event in gateway.events.events_for_task(first_task_id)
+    ]
+    assert "task.escalated" not in event_types
+    assert event_types.count("task.completed") == 1
     assert (
         gateway.computer_sandbox.root / "approved.txt"
     ).read_text(encoding="utf-8") == "approved once"

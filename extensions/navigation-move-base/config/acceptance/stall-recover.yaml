@@ -1,0 +1,88 @@
+schema_version: fireclaw.gazebo-acceptance/v1
+scenario_id: turtlebot3-move-base-stall-recover
+scenario_type: stall_recover
+description: >-
+  A fixed single-floor navigation goal starts with trusted zero DWA forward
+  velocity bounds. The Robot Agent must observe a safely timed-out real
+  move_base action, run bounded navigation_diagnostics, apply one bounded
+  Plugin-owned parameter recovery, retry the exact goal once, and succeed.
+seed: 0
+
+robot:
+  id: gazebo_turtlebot3
+  model: burger
+  initial_pose:
+    frame_id: map
+    x: -2.0
+    y: -0.5
+    yaw: 0.0
+
+mission:
+  command: "导航测试到地图坐标 (-1.25, -0.5)，受阻时先诊断，只允许一次有界恢复"
+  capability: patrol
+  required_tool: navigate_to_point
+
+goal:
+  frame_id: map
+  x: -1.25
+  y: -0.5
+  yaw: 0.0
+
+expected:
+  plugin_owner: fireclaw.navigation.move-base
+  backend_class: Ros1MoveBaseBackend
+  action_name: /move_base
+  mission_authorization_status: awaiting_confirmation
+  mission_authorization_raw_status: awaiting_confirmation
+  terminal_status: completed
+  actionlib_terminal_statuses: [2, 3, 8]
+
+assertions:
+  minimum_displacement_m: 0.35
+  initial_position_tolerance_m: 0.20
+  initial_yaw_tolerance_rad: 0.35
+  position_tolerance_m: 0.25
+  yaw_tolerance_rad: 0.35
+  stopped_linear_velocity_mps: 0.02
+  stopped_angular_velocity_rps: 0.05
+  require_feedback: true
+
+stall:
+  execution_timeout_seconds: 8.0
+  diagnostics_timeout_seconds: 1.0
+  minimum_feedback_count: 5
+  maximum_stall_displacement_m: 0.10
+  terminal_timeout_seconds: 45.0
+  stalled_parameters:
+    max_vel_x: 0.0
+    min_vel_x: 0.0
+  recovery_parameters:
+    max_vel_x: 0.22
+    min_vel_x: 0.0
+  maximum_recovery_attempts: 1
+  first_actionlib_terminal_statuses: [2, 8]
+  final_actionlib_terminal_statuses: [3]
+  required_diagnostic_finding_codes:
+    - navigation_action_failed
+
+timeouts:
+  ros_readiness_seconds: 90.0
+  navigation_seconds: 30.0
+  mission_seconds: 90.0
+  stopped_seconds: 5.0
+
+readiness:
+  action_server: /move_base
+  topics:
+    - /clock
+    - /scan
+    - /odom
+  transforms:
+    - [map, base_link]
+
+assets:
+  launch: extensions/navigation-move-base/launch/fireclaw_acceptance_world.launch
+  world: robots/turtlebot3_burger/ros_ws/src/turtlebot3_simulations/turtlebot3_gazebo/worlds/turtlebot3_world.world
+  map: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.yaml
+  map_image: robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.pgm
+  ros1_config: examples/ros1_configs/gazebo_turtlebot3_move_base.yaml

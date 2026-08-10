@@ -439,6 +439,42 @@ def test_subagent_client_records_to_registry_when_configured(tmp_path):
     assert updated.status == "cancelled"
 
 
+def test_subagent_client_does_not_treat_cancel_request_as_terminal(tmp_path):
+    from fireclaw_core.agent.robot_registry import RobotRegistryEntry
+    from fireclaw_core.subagent.subagent_client import RobotSubagentClient
+
+    registry = JsonlSubagentRegistry(tmp_path / "subagent_registry.jsonl")
+    client = RobotSubagentClient(registry=registry)
+    entry = RobotRegistryEntry(
+        robot_id="robot-test",
+        base_url="http://localhost:9999",
+    )
+    with patch.object(
+        client,
+        "_request_json",
+        return_value={"task_id": "remote-task-1", "status": "accepted"},
+    ):
+        client.submit_task(
+            entry,
+            command="导航到入口",
+            mission={"mission_id": "mission-cancel"},
+        )
+
+    with patch.object(
+        client,
+        "_request_json",
+        return_value={
+            "task_id": "remote-task-1",
+            "status": "cancel_requested",
+        },
+    ):
+        client.cancel_task(entry, "remote-task-1")
+
+    record = registry.get_by_child_task_id("remote-task-1")
+    assert record is not None
+    assert record.status == "cancel_requested"
+
+
 def test_subagent_client_no_registry_is_noop():
     """Without a registry, client methods still work normally."""
     from fireclaw_core.agent.robot_registry import RobotRegistryEntry

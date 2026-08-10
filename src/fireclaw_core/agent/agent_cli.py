@@ -12,31 +12,6 @@ from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot
 from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
 
-def _dispatch_robot_action(
-    robot,
-    action: str,
-    inputs: dict,
-    *,
-    feedback_sink=None,
-    cancellation_requested=None,
-):
-    from fireclaw_core.execution.action_runtime import invoke_robot_action_handler
-
-    handler = getattr(robot, str(action), None)
-    if not callable(handler):
-        return {
-            "status": "blocked",
-            "error": f"legacy robot action {action!r} is unavailable",
-            "action": str(action),
-        }
-    return invoke_robot_action_handler(
-        handler,
-        dict(inputs),
-        feedback_sink=feedback_sink,
-        cancellation_requested=cancellation_requested,
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw dry-run agent.")
     parser.add_argument(
@@ -65,35 +40,22 @@ def main() -> int:
         help="Path to the JSONL task queue used by --demo rescue.",
     )
     parser.add_argument(
-        "--skills-dir",
-        default="skills",
-        help="Directory containing workspace *.skill.json manifests.",
-    )
-    parser.add_argument(
-        "--no-workspace-skills",
-        action="store_true",
-        help="Disable loading workspace skills from --skills-dir.",
-    )
-    parser.add_argument(
-        "--legacy-skill-sandbox-image",
+        "--computer-sandbox-image",
         default=None,
-        help=(
-            "Docker image used for simulation-only legacy *.skill.json "
-            "process Tools. Without this option they fail closed."
-        ),
+        help="Docker image used by the computer-tools Plugin.",
     )
     parser.add_argument(
-        "--legacy-skill-sandbox-image-digest",
+        "--computer-sandbox-image-digest",
         default=None,
         help=(
             "Immutable Docker image ID (sha256:...) that must match "
-            "--legacy-skill-sandbox-image before execution."
+            "--computer-sandbox-image before execution."
         ),
     )
     parser.add_argument(
-        "--legacy-skill-sandbox-root",
-        default="data/fireclaw-sandbox/legacy-agent-cli",
-        help="Host workspace mounted into the legacy process sandbox.",
+        "--computer-sandbox-root",
+        default="data/fireclaw-sandbox/agent-cli",
+        help="Host workspace mounted into the computer-tools sandbox.",
     )
     parser.add_argument(
         "--robot-id",
@@ -149,50 +111,39 @@ def main() -> int:
     if args.adapter == "ros1" and available_sensors is None:
         available_sensors = set()
     deployment_profile = None
-    workspace_skill_executor = None
-    if args.legacy_skill_sandbox_image:
-        if not args.legacy_skill_sandbox_image_digest:
+    computer_sandbox = None
+    if args.computer_sandbox_image:
+        if not args.computer_sandbox_image_digest:
             parser.error(
-                "--legacy-skill-sandbox-image requires "
-                "--legacy-skill-sandbox-image-digest"
+                "--computer-sandbox-image requires "
+                "--computer-sandbox-image-digest"
             )
         deployment_profile = DeploymentProfile(
             mode="real" if args.real_run else "simulation",
             role="robot_agent",
             sandbox=SandboxProfile(
                 enabled=True,
-                image=args.legacy_skill_sandbox_image,
-                image_digest=args.legacy_skill_sandbox_image_digest,
+                image=args.computer_sandbox_image,
+                image_digest=args.computer_sandbox_image_digest,
                 network="none",
-                workspace_root=Path(args.legacy_skill_sandbox_root),
+                workspace_root=Path(args.computer_sandbox_root),
             ),
         )
-        workspace_skill_executor = ComputerSandbox(
+        computer_sandbox = ComputerSandbox(
             deployment_profile.sandbox
         )
 
     agent = FireClawAgent(
         robot=robot,
         memory=JsonlMemoryStore(args.memory_path),
-        workspace_skills_dir=None if args.no_workspace_skills else args.skills_dir,
         dry_run=not args.real_run,
         available_sensors=available_sensors,
         session_id=args.session_id,
         deployment_profile=deployment_profile,
-        workspace_skill_executor=workspace_skill_executor,
         extension_paths=("extensions",),
         plugin_services={
             "adapter": args.adapter,
-            "robot": robot,
-            "computer_sandbox": workspace_skill_executor,
-            "robot_action_dispatch": (
-                lambda action, inputs, **kwargs: _dispatch_robot_action(
-                    robot,
-                    action,
-                    inputs,
-                    **kwargs,
-                )
-            ),
+            "fireclaw.agent-tools.computer.sandbox": computer_sandbox,
         },
     )
     result = agent.run(args.command)

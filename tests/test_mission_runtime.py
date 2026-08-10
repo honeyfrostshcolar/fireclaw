@@ -26,7 +26,7 @@ def _write_robot_registry(path: Path, entries: list[dict]) -> None:
 def test_build_mission_agent_wires_persistent_runtime_stores(tmp_path: Path):
     registry_path = tmp_path / "robots.json"
     _write_robot_registry(registry_path, [
-        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["search_for_victims"]},
+        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["victim_search"]},
     ])
     paths = MissionRuntimePaths(
         robot_registry=registry_path,
@@ -98,7 +98,7 @@ def test_runtime_startup_automatically_resumes_dispatch_checkpoint(
         {
             "robot_id": "r1",
             "base_url": "http://r1:8765",
-            "capabilities": ["search_for_victims"],
+            "capabilities": ["victim_search"],
         },
     ])
     mission_registry_path = tmp_path / "missions.jsonl"
@@ -117,7 +117,7 @@ def test_runtime_startup_automatically_resumes_dispatch_checkpoint(
                 robot_id="r1",
                 command="search floor 2",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
             ),
         ],
     )
@@ -152,7 +152,7 @@ def _mission_planning_audit_record(command="去二楼搜索"):
     return MissionPlanningAuditRecord(
         command=command,
         available_robots=[
-            {"robot_id": "r1", "capabilities": ["search_for_victims"], "enabled": True, "zone": None}
+            {"robot_id": "r1", "capabilities": ["victim_search"], "enabled": True, "zone": None}
         ],
         tool_schema={"type": "function"},
         llm_tool_call={"id": "call-1", "name": "create_mission_plan", "arguments": {"intent": "search"}},
@@ -173,7 +173,7 @@ def _mission_planning_audit_record(command="去二楼搜索"):
 def test_build_mission_agent_wires_mission_planning_audit_sink(tmp_path: Path):
     registry_path = tmp_path / "robots.json"
     _write_robot_registry(registry_path, [
-        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["search_for_victims"]},
+        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["victim_search"]},
     ])
     paths = MissionRuntimePaths(
         robot_registry=registry_path,
@@ -190,7 +190,7 @@ def test_build_mission_agent_wires_mission_planning_audit_sink(tmp_path: Path):
 def test_runtime_mission_agent_persists_planning_audit_on_plan_and_submit(tmp_path: Path):
     registry_path = tmp_path / "robots.json"
     _write_robot_registry(registry_path, [
-        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["search_for_victims"]},
+        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["victim_search"]},
     ])
     planner = MagicMock()
     planner.plan.return_value = MissionPlanningResult(
@@ -205,7 +205,7 @@ def test_runtime_mission_agent_persists_planning_audit_on_plan_and_submit(tmp_pa
                     robot_id="r1",
                     command="去2楼搜索受困人员",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),
@@ -233,7 +233,7 @@ def test_build_mission_agent_wires_planner_memory_context_builder(tmp_path: Path
     when embodied_runtime_mode is configured with lifecycle paths."""
     registry_path = tmp_path / "robots.json"
     _write_robot_registry(registry_path, [
-        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["search_for_victims"]},
+        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["victim_search"]},
     ])
     paths = MissionRuntimePaths(
         robot_registry=registry_path,
@@ -268,7 +268,7 @@ def test_build_mission_agent_wires_builder_without_embodied_mode(tmp_path: Path)
     """Legacy runtime mode still receives a Builder, but with no facade or lifecycle."""
     registry_path = tmp_path / "robots.json"
     _write_robot_registry(registry_path, [
-        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["search_for_victims"]},
+        {"robot_id": "r1", "base_url": "http://r1:8765", "capabilities": ["victim_search"]},
     ])
     paths = MissionRuntimePaths(
         robot_registry=registry_path,
@@ -347,7 +347,7 @@ def test_external_knowledge_rag_reaches_mission_planner_context(tmp_path: Path):
         {
             "robot_id": "r1",
             "base_url": "http://r1:8765",
-            "capabilities": ["search_for_victims"],
+            "capabilities": ["victim_search"],
         },
     ])
     records_path = tmp_path / "knowledge-records.jsonl"
@@ -386,7 +386,7 @@ def test_external_knowledge_rag_reaches_mission_planner_context(tmp_path: Path):
                     robot_id="r1",
                     command="search",
                     floor=2,
-                    capability_required="search_for_victims",
+                    capability_required="victim_search",
                 )
             ],
         ),

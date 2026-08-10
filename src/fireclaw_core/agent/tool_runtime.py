@@ -756,34 +756,6 @@ class AgentToolRuntime:
                 }
             )
         return result
-
-
-def register_agent_tool(
-    host: FireClawPluginHost,
-    tool: AgentTool,
-    *,
-    owner_plugin_id: str,
-    source: str = "agent_tool",
-) -> None:
-    host.activate(
-        owner_plugin_id,
-        lambda api: api.register_tool(
-            tool,
-            metadata={
-                "tool_class": "agent_tool",
-                "effect": tool.effect,
-                "roles": list(tool.roles),
-                "modes": list(tool.modes),
-                "requires_sandbox": tool.requires_sandbox,
-            },
-        ),
-        name=tool.name,
-        description=tool.description,
-        source=source,
-        trust_level="trusted",
-    )
-
-
 def _authorization_allows(
     authorization: VerifiedExecutionAuthorization | None,
     tool_name: str,

@@ -1,24 +1,37 @@
-from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
+from pathlib import Path
+
+from fireclaw_core.execution.action_runtime import RegisteredActionBackend, RobotActionRuntime
 from fireclaw_core.execution.executor import PlanExecutor
 from fireclaw_core.planner.planner import Plan, PlanStep, RuleBasedPlanner
 from fireclaw_core.agent.robot import DryRunRobotAdapter, RobotActionResult
 from fireclaw_core.execution.skills import Skill, SkillRegistry, create_default_skill_registry
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 
 
-class CancellationCapturingRobot(DryRunRobotAdapter):
-    def __init__(self):
-        super().__init__(robot_id="robot-cancel")
-        self.cancellation_requested = None
+EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
 
-    def navigate_to_floor(self, floor, feedback_sink=None, cancellation_requested=None):
-        self.cancellation_requested = cancellation_requested
-        return super().navigate_to_floor(floor)
+
+def _navigation_registry(robot: DryRunRobotAdapter) -> SkillRegistry:
+    host = FireClawPluginHost()
+    load_fireclaw_extensions(
+        host,
+        (EXTENSIONS,),
+        mode="simulation",
+        role="robot_agent",
+        services={"adapter": "dry-run"},
+    )
+    return create_default_skill_registry(
+        robot,
+        action_runtime=RobotActionRuntime(
+            backend=RegisteredActionBackend(robot),
+        ),
+        plugin_host=host,
+    )
 
 
 def test_default_registry_exposes_typed_point_navigation_skill():
-    registry = create_default_skill_registry(
-        DryRunRobotAdapter(robot_id="robot-point")
-    )
+    registry = _navigation_registry(DryRunRobotAdapter(robot_id="robot-point"))
 
     skill = registry.get("navigate_to_point")
 
@@ -26,13 +39,13 @@ def test_default_registry_exposes_typed_point_navigation_skill():
     assert skill.input_schema["required"] == ["x", "y"]
     assert skill.preconditions == ["robot_online", "target_point_reachable"]
     assert skill.metadata["spatial_scope"] == "single_floor_2d"
-    assert registry.get("navigate_to_floor").metadata["legacy"] is True
+    assert registry.get("navigate_to_waypoint") is None
 
 
 def test_executor_emits_live_events_for_successful_steps():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    planning_result = RuleBasedPlanner().plan("去坐标 (2.0, 1.5)")
     robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
     events = []
 
     result = PlanExecutor(registry, event_sink=lambda event_type, payload: events.append((event_type, payload))).execute(
@@ -45,30 +58,20 @@ def test_executor_emits_live_events_for_successful_steps():
         "skill.attempted",
         "skill.succeeded",
     ]
-    assert events[0][1]["skill_name"] == "navigate_to_floor"
-    assert events[0][1]["inputs"] == {"floor": 2}
+    assert events[0][1]["skill_name"] == "navigate_to_point"
+    assert events[0][1]["inputs"] == {
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.0,
+        "frame_id": "map",
+    }
     assert events[1][1]["attempt_number"] == 1
     assert events[1][1]["status"] == "succeeded"
-    assert events[1][1]["output"]["action"] == "navigate_to_floor"
+    assert events[1][1]["output"]["action"] == "navigate_to_point"
     assert events[2][1]["status"] == "succeeded"
-    assert [event_type for event_type, _payload in events].count("skill.started") == 5
-    assert [event_type for event_type, _payload in events].count("skill.attempted") == 5
-    assert [event_type for event_type, _payload in events].count("skill.succeeded") == 5
-
-
-def test_executor_passes_cancellation_callback_to_default_robot_skill_runtime():
-    robot = CancellationCapturingRobot()
-    registry = create_default_skill_registry(
-        robot,
-        action_runtime=RobotActionRuntime(backend=RobotAdapterActionBackend(robot)),
-    )
-    callback = lambda: False
-    plan = Plan(intent="direct_skill_invocation", steps=[PlanStep("navigate_to_floor", {"floor": 2})])
-
-    result = PlanExecutor(registry, cancellation_requested=callback).execute(plan)
-
-    assert result.status == "succeeded"
-    assert robot.cancellation_requested is callback
+    assert [event_type for event_type, _payload in events].count("skill.started") == 1
+    assert [event_type for event_type, _payload in events].count("skill.attempted") == 1
+    assert [event_type for event_type, _payload in events].count("skill.succeeded") == 1
 
 
 def test_executor_emits_retry_and_terminal_failure_events():
@@ -123,35 +126,24 @@ def test_executor_emits_retry_and_terminal_failure_events():
     assert events[3][1]["operator_action"] == "escalate"
 
 
-def test_executor_runs_minimal_rescue_plan_with_dry_run_actions():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
+def test_executor_runs_single_floor_point_navigation_from_plugin():
+    planning_result = RuleBasedPlanner().plan("去坐标 (3.0, -1.5)")
     robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
 
     result = PlanExecutor(registry).execute(planning_result.plan)
 
     assert result.status == "succeeded"
-    assert [step.skill_name for step in result.steps] == [
-        "navigate_to_floor",
-        "search_for_victims",
-        "assess_victim",
-        "report_status",
-        "return_to_safe_zone",
-    ]
+    assert [step.skill_name for step in result.steps] == ["navigate_to_point"]
     assert all(step.status == "succeeded" for step in result.steps)
-    assert robot.actions == [
-        {"action": "navigate_to_floor", "floor": 2, "dry_run": True},
-        {"action": "search_for_victims", "floor": 2, "dry_run": True},
-        {"action": "assess_victim", "floor": 2, "dry_run": True},
-        {"action": "report_status", "floor": 2, "dry_run": True},
-        {"action": "return_to_safe_zone", "dry_run": True},
-    ]
+    assert result.steps[0].output["goal_reached"] is True
+    assert result.steps[0].output["frame_id"] == "map"
 
 
 def test_executor_records_attempt_history_for_successful_steps():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    planning_result = RuleBasedPlanner().plan("去坐标 (2.0, 1.0)")
     robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
 
     result = PlanExecutor(registry).execute(planning_result.plan)
 
@@ -162,41 +154,128 @@ def test_executor_records_attempt_history_for_successful_steps():
     assert len(first_step.attempts) == 1
     assert first_step.attempts[0].attempt_number == 1
     assert first_step.attempts[0].status == "succeeded"
-    assert first_step.attempts[0].output["mode"] == "dry_run"
+    assert first_step.attempts[0].output["goal_reached"] is True
     assert first_step.attempts[0].error is None
 
 
 def test_executor_stops_when_skill_fails():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    robot = DryRunRobotAdapter(robot_id="robot-1", fail_actions={"search_for_victims"})
-    registry = create_default_skill_registry(robot)
+    calls = []
 
-    result = PlanExecutor(registry).execute(planning_result.plan)
+    def result(action: str, *, ok: bool) -> RobotActionResult:
+        calls.append(action)
+        return RobotActionResult(
+            ok=ok,
+            status="succeeded" if ok else "failed",
+            robot_id="robot-1",
+            mode="test",
+            action=action,
+            dry_run=True,
+            data={},
+            timestamp="2026-06-01T00:00:00+00:00",
+            error=None if ok else f"{action} failed",
+        )
 
-    assert result.status == "failed"
-    assert [step.skill_name for step in result.steps] == [
-        "navigate_to_floor",
-        "search_for_victims",
-    ]
-    assert result.steps[-1].status == "failed"
-    assert "search_for_victims" in result.steps[-1].error
+    registry = SkillRegistry(
+        skills={
+            "first": Skill("first", "First.", lambda _inputs: result("first", ok=True)),
+            "second": Skill("second", "Second.", lambda _inputs: result("second", ok=False)),
+            "third": Skill("third", "Third.", lambda _inputs: result("third", ok=True)),
+        }
+    )
+    plan = Plan(
+        intent="executor_failure",
+        steps=[PlanStep("first", {}), PlanStep("second", {}), PlanStep("third", {})],
+    )
+
+    execution = PlanExecutor(registry).execute(plan)
+
+    assert execution.status == "failed"
+    assert [step.skill_name for step in execution.steps] == ["first", "second"]
+    assert execution.steps[-1].status == "failed"
+    assert calls == ["first", "second"]
 
 
 def test_executor_cooperatively_cancels_between_steps():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    calls = []
+
+    def succeed(action: str) -> RobotActionResult:
+        calls.append(action)
+        return RobotActionResult(
+            ok=True,
+            status="succeeded",
+            robot_id="robot-1",
+            mode="test",
+            action=action,
+            dry_run=True,
+            data={},
+            timestamp="2026-06-01T00:00:00+00:00",
+        )
+
+    registry = SkillRegistry(
+        skills={
+            "first": Skill("first", "First.", lambda _inputs: succeed("first")),
+            "second": Skill("second", "Second.", lambda _inputs: succeed("second")),
+        }
+    )
+    plan = Plan(
+        intent="executor_cancellation",
+        steps=[PlanStep("first", {}), PlanStep("second", {})],
+    )
     checks = {"count": 0}
 
     def cancellation_requested():
         checks["count"] += 1
-        return checks["count"] >= 3
+        return checks["count"] >= 2
 
-    result = PlanExecutor(registry, cancellation_requested=cancellation_requested).execute(planning_result.plan)
+    result = PlanExecutor(
+        registry,
+        cancellation_requested=cancellation_requested,
+    ).execute(plan)
 
     assert result.status == "cancelled"
-    assert [step.skill_name for step in result.steps] == ["navigate_to_floor"]
-    assert robot.actions == [{"action": "navigate_to_floor", "floor": 2, "dry_run": True}]
+    assert [step.skill_name for step in result.steps] == ["first"]
+    assert calls == ["first"]
+
+
+def test_executor_preserves_timed_out_terminal_status():
+    def timed_out(_inputs):
+        return RobotActionResult(
+            ok=False,
+            status="timed_out",
+            robot_id="robot-1",
+            mode="test",
+            action="slow_physical_action",
+            dry_run=False,
+            data={
+                "cancellation_acknowledged": True,
+                "runtime_stopped": True,
+                "resource_release_safe": True,
+            },
+            timestamp="2026-08-09T00:00:00+00:00",
+            error="Physical action deadline exceeded.",
+        )
+
+    registry = SkillRegistry(
+        skills={
+            "slow_physical_action": Skill(
+                "slow_physical_action",
+                "A bounded physical action.",
+                timed_out,
+            )
+        }
+    )
+
+    execution = PlanExecutor(registry).execute(
+        Plan(
+            intent="timeout_contract",
+            steps=[PlanStep("slow_physical_action", {})],
+        )
+    )
+
+    assert execution.status == "timed_out"
+    assert execution.steps[0].status == "timed_out"
+    assert execution.steps[0].attempts[0].status == "timed_out"
+    assert execution.steps[0].output["runtime_stopped"] is True
 
 
 def test_executor_retries_retryable_skill_until_it_succeeds():
@@ -295,35 +374,31 @@ def test_executor_escalates_when_retryable_skill_exhausts_attempts():
     assert [attempt.status for attempt in result.steps[0].attempts] == ["failed", "failed"]
 
 
-def test_default_skills_declare_in_process_runtime_metadata():
+def test_plugin_projected_skills_declare_in_process_runtime_metadata():
     robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
 
     assert {skill.runtime for skill in registry.skills.values()} == {"in_process"}
     assert all(skill.dry_run_only for skill in registry.skills.values())
 
 
-def test_default_skills_declare_input_schema_metadata():
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+def test_navigation_plugin_declares_input_schema_metadata():
+    registry = _navigation_registry(DryRunRobotAdapter(robot_id="robot-1"))
     metadata = {skill["name"]: skill for skill in registry.list_metadata()}
 
-    assert metadata["navigate_to_floor"]["input_schema"]["required"] == ["floor"]
-    assert metadata["navigate_to_floor"]["input_schema"]["properties"]["floor"]["type"] == "integer"
-    assert metadata["return_to_safe_zone"]["input_schema"] == {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": False,
-    }
+    assert metadata["navigate_to_point"]["input_schema"]["required"] == ["x", "y"]
+    assert metadata["navigate_to_point"]["input_schema"]["properties"]["x"]["type"] == "number"
+    assert metadata["navigate_to_point"]["metadata"]["plugin_id"] == "fireclaw.navigation.move-base"
 
 
-def test_default_skills_declare_low_risk_metadata():
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+def test_navigation_plugin_declares_motion_safety_metadata():
+    registry = _navigation_registry(DryRunRobotAdapter(robot_id="robot-1"))
 
-    metadata = registry.list_metadata()
+    metadata = registry.list_metadata()[0]
 
-    risk_levels = {skill["risk_level"] for skill in metadata}
-    assert "low" in risk_levels
-    assert "medium" in risk_levels  # return_to_safe_zone
+    assert metadata["domain"] == "navigation"
+    assert metadata["physical_plugin"]["safety_class"] == "motion"
+    assert metadata["physical_plugin"]["plugin_id"] == "fireclaw.navigation.move-base"
 
 
 def test_skill_registry_lists_execution_and_safety_metadata():
@@ -433,38 +508,13 @@ class FakeRobotAdapter:
     def __init__(self):
         self.calls = []
 
-    def navigate_to_floor(self, floor):
-        self.calls.append(("navigate_to_floor", floor))
-        return RobotActionResult(
-            ok=True,
-            status="succeeded",
-            robot_id=self.robot_id,
-            mode=self.mode,
-            action="navigate_to_floor",
-            dry_run=True,
-            data={"floor": floor},
-            timestamp="2026-06-01T00:00:00+00:00",
-        )
-
-    def search_for_victims(self, floor):
-        raise AssertionError("not used in this test")
-
-    def assess_victim(self, floor):
-        raise AssertionError("not used in this test")
-
-    def report_status(self, floor):
-        raise AssertionError("not used in this test")
-
-    def return_to_safe_zone(self):
-        raise AssertionError("not used in this test")
+    def navigate_to_point(self, **_kwargs):
+        raise AssertionError("Adapter domain methods must never be reflected.")
 
 
-def test_default_skill_registry_accepts_robot_adapter_protocol():
+def test_default_skill_registry_never_reflects_adapter_domain_methods():
     robot = FakeRobotAdapter()
     registry = create_default_skill_registry(robot)
 
-    result = registry.get("navigate_to_floor").run({"floor": 2})
-
-    assert result.ok is True
-    assert result.mode == "fake"
-    assert robot.calls == [("navigate_to_floor", 2)]
+    assert registry.get("navigate_to_point") is None
+    assert robot.calls == []

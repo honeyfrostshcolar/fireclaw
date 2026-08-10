@@ -79,6 +79,10 @@ ROBOT_TASK_BLOCKED_TOOL: dict[str, Any] = {
             "properties": {
                 "reason": {"type": "string"},
                 "reason_code": {"type": "string"},
+                "evidence_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
             },
             "required": ["reason", "reason_code"],
         },
@@ -98,6 +102,10 @@ ROBOT_TASK_ESCALATE_TOOL: dict[str, Any] = {
             "properties": {
                 "reason": {"type": "string"},
                 "reason_code": {"type": "string"},
+                "evidence_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
             },
             "required": ["reason", "reason_code"],
         },
@@ -424,6 +432,11 @@ class LLMRobotAgentDecisionPolicy:
                 reason_code=str(
                     call.arguments.get("reason_code") or "robot_task_blocked"
                 ),
+                evidence_ids=tuple(
+                    str(item)
+                    for item in call.arguments.get("evidence_ids", [])
+                    if isinstance(item, str) and item
+                ),
                 context_manifest=manifest,
             )
         if call.name == "escalate_robot_task":
@@ -436,6 +449,11 @@ class LLMRobotAgentDecisionPolicy:
                 reason_code=str(
                     call.arguments.get("reason_code")
                     or "robot_task_escalation"
+                ),
+                evidence_ids=tuple(
+                    str(item)
+                    for item in call.arguments.get("evidence_ids", [])
+                    if isinstance(item, str) and item
                 ),
                 context_manifest=manifest,
             )
@@ -587,6 +605,11 @@ class RobotAgentDeliberationRuntime:
         self.limits = limits or RobotAgentDeliberationLimits()
         self.checkpoint_store = checkpoint_store
 
+    def bind_skill_catalog(self, skill_catalog: Any) -> None:
+        """Bind the task Agent's Plugin-projected physical Tool catalog."""
+
+        self.action_policy.skill_catalog = skill_catalog
+
     def run(
         self,
         task: StructuredRobotTask,
@@ -721,12 +744,16 @@ class RobotAgentDeliberationRuntime:
                 iteration=turn.iteration,
                 operation=decision.operation,
                 status=(
-                    "succeeded"
-                    if successful
-                    else str(
-                        execution_status
-                        or output.get("status")
-                        or "failed"
+                    "approval_required"
+                    if safety_status == "require_confirmation"
+                    else (
+                        "succeeded"
+                        if successful
+                        else str(
+                            execution_status
+                            or output.get("status")
+                            or "failed"
+                        )
                     )
                 ),
                 message=decision.message,
@@ -983,15 +1010,28 @@ class RobotAgentDeliberationRuntime:
                     operation=decision.operation,
                     message=decision.message,
                     reason_code=decision.reason_code or "robot_task_blocked",
+                    result={
+                        "status": "blocked",
+                        "reason_code": (
+                            decision.reason_code or "robot_task_blocked"
+                        ),
+                        "evidence_ids": list(decision.evidence_ids),
+                    },
                 )
             if decision.operation == "escalate":
+                reason_code = (
+                    decision.reason_code or "robot_task_escalation"
+                )
                 return AgentLoopTransition(
                     status="escalated",
                     operation=decision.operation,
                     message=decision.message,
-                    reason_code=(
-                        decision.reason_code or "robot_task_escalation"
-                    ),
+                    reason_code=reason_code,
+                    result={
+                        "status": "escalated",
+                        "reason_code": reason_code,
+                        "evidence_ids": list(decision.evidence_ids),
+                    },
                 )
             return AgentLoopTransition(
                 status="blocked",

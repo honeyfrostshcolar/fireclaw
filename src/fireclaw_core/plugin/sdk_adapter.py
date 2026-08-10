@@ -113,6 +113,9 @@ def normalize_registered_physical_capability(value: Any) -> Any:
         max_attempts=value.max_attempts,
         idempotent=value.idempotent,
         timeout_seconds=value.timeout_seconds,
+        cancellation_ack_timeout_seconds=(
+            value.cancellation_ack_timeout_seconds
+        ),
         required_sensors=tuple(value.required_sensors),
         sensor_alternatives={
             str(sensor): tuple(alternatives)

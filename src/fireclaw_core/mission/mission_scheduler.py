@@ -67,7 +67,7 @@ class MissionFailurePolicy:
     on_lost: str = "abort"
     on_block: str = "escalate"
     on_escalated: str = "escalate"
-    on_timed_out: str = "retry"
+    on_timed_out: str = "abort"
     max_retries: int = 1
     max_reassigns: int = 1
 
@@ -91,6 +91,7 @@ class MissionSchedulerConfig:
     poll_interval_seconds: float = 0.1
     group_timeout_seconds: float = 300.0
     revision_cancel_timeout_seconds: float = 5.0
+    operator_cancel_settle_timeout_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -759,6 +760,21 @@ class MissionScheduler:
             group_results.append(group_result)
 
             if _run_control_cancelled(run_control):
+                if any(
+                    terminal.get("status") == "lost"
+                    for terminal in group_terminal
+                ):
+                    return {
+                        "status": "lost",
+                        "message": (
+                            "Mission cancellation was requested, but one or "
+                            "more Robot tasks did not confirm a safe terminal "
+                            "state."
+                        ),
+                        "mission_id": mission_id,
+                        "group_results": group_results,
+                        "failure_decisions": failure_decisions,
+                    }
                 return {
                     "status": "cancelled",
                     "message": "Mission Run was cancelled by operator request.",
@@ -767,11 +783,19 @@ class MissionScheduler:
                     "failure_decisions": failure_decisions,
                 }
 
-            # Check for abort decision
+            # Preserve the authoritative Robot terminal cause when policy
+            # stops the Mission. "abort" is a control decision, not a new
+            # runtime outcome that may erase timed_out/lost evidence.
             if any(d.get("decision") == "abort" for d in failure_decisions):
+                terminal_status = _aborted_group_terminal_status(
+                    group_terminal
+                )
                 return {
-                    "status": "aborted",
-                    "message": f"Mission aborted due to failure policy.",
+                    "status": terminal_status,
+                    "message": (
+                        "Mission stopped by failure policy after Robot "
+                        f"terminal outcome {terminal_status}."
+                    ),
                     "mission_id": mission_id,
                     "group_results": group_results,
                     "failure_decisions": failure_decisions,
@@ -2618,17 +2642,21 @@ class MissionScheduler:
                             "robot_id": robot_id,
                             "task_id": task_id,
                             "status": status,
-                            "decision": "skipped",
+                            "decision": "abort",
+                            "requested_decision": "reassign",
                             "reason": "no_alternative_robot",
                         })
+                        return []
                 else:
                     failure_decisions.append({
                         "robot_id": robot_id,
                         "task_id": task_id,
                         "status": status,
-                        "decision": "skipped",
+                        "decision": "abort",
+                        "requested_decision": "reassign",
                         "reason": "max_reassigns_exceeded",
                     })
+                    return []
 
             elif decision == "escalate":
                 failure_decisions.append({
@@ -2704,26 +2732,24 @@ class MissionScheduler:
         if not attempts:
             return []
         deadline = time.monotonic() + self.config.group_timeout_seconds
+        cancellation_deadline: float | None = None
         execution_keys = {
             (attempt.subtask.robot_id, attempt.task_id)
             for attempt in attempts
         }
 
         while time.monotonic() < deadline:
-            if _run_control_cancelled(run_control):
-                try:
-                    trace = self.mission_agent.mission_trace(mission_id)
-                except Exception as exc:
-                    return _lost_attempt_states(attempts, exc)
-                observed = [
-                    s for s in trace.get("subtasks", [])
-                    if (s.get("robot_id"), s.get("task_id")) in execution_keys
-                ]
-                return _cancelled_attempt_states(attempts, observed)
+            cancellation_requested = _run_control_cancelled(run_control)
             try:
                 trace = self.mission_agent.mission_trace(mission_id)
             except Exception as exc:
-                return _lost_attempt_states(attempts, exc)
+                lost_states = _lost_attempt_states(attempts, exc)
+                if cancellation_requested:
+                    self._mark_mission_subtasks_terminal(
+                        mission_id,
+                        lost_states,
+                    )
+                return lost_states
             observed = [
                 s for s in trace.get("subtasks", [])
                 if (s.get("robot_id"), s.get("task_id")) in execution_keys
@@ -2732,6 +2758,31 @@ class MissionScheduler:
                 s for s in observed
                 if s.get("status") in TERMINAL_SUBTASK_STATUSES
             ]
+            cancellation_requested = (
+                cancellation_requested
+                or _run_control_cancelled(run_control)
+            )
+            if cancellation_requested:
+                if len(terminal) >= len(execution_keys):
+                    return terminal
+                now = time.monotonic()
+                if cancellation_deadline is None:
+                    cancellation_deadline = now + max(
+                        0.01,
+                        self.config.operator_cancel_settle_timeout_seconds,
+                    )
+                if now >= cancellation_deadline:
+                    lost_states = _cancel_unconfirmed_attempt_states(
+                        attempts,
+                        observed,
+                    )
+                    self._mark_mission_subtasks_terminal(
+                        mission_id,
+                        lost_states,
+                    )
+                    return lost_states
+                time.sleep(self.config.poll_interval_seconds)
+                continue
             if any(
                 _contains_invalidation_event(item)
                 for item in observed
@@ -2746,10 +2797,21 @@ class MissionScheduler:
             trace = self.mission_agent.mission_trace(mission_id)
         except Exception as exc:
             return _lost_attempt_states(attempts, exc)
-        return [
+        observed = [
             s for s in trace.get("subtasks", [])
             if (s.get("robot_id"), s.get("task_id")) in execution_keys
         ]
+        if _run_control_cancelled(run_control):
+            lost_states = _cancel_unconfirmed_attempt_states(
+                attempts,
+                observed,
+            )
+            self._mark_mission_subtasks_terminal(
+                mission_id,
+                lost_states,
+            )
+            return lost_states
+        return observed
 
     @staticmethod
     def _submitted_attempt(
@@ -2817,6 +2879,19 @@ def _run_control_cancelled(run_control: Any | None) -> bool:
         return True
 
 
+def _aborted_group_terminal_status(
+    terminal_states: list[dict[str, Any]],
+) -> str:
+    statuses = {
+        normalize_robot_task_terminal_status(item.get("status"))
+        for item in terminal_states
+    }
+    for status in ("lost", "timed_out", "escalated", "blocked", "failed"):
+        if status in statuses:
+            return status
+    return "failed"
+
+
 def _wait_for_run_control(run_control: Any | None) -> bool:
     if run_control is None:
         return True
@@ -2829,7 +2904,7 @@ def _wait_for_run_control(run_control: Any | None) -> bool:
     return not _run_control_cancelled(run_control)
 
 
-def _cancelled_attempt_states(
+def _cancel_unconfirmed_attempt_states(
     attempts: list[_SubmittedAttempt],
     observed: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -2842,13 +2917,26 @@ def _cancelled_attempt_states(
         key = (attempt.subtask.robot_id, attempt.task_id)
         item = dict(by_key.get(key, {}))
         if item.get("status") not in TERMINAL_SUBTASK_STATUSES:
+            last_observed_status = item.get("status")
+            error = (
+                "Robot task did not confirm a terminal state after "
+                "operator cancellation."
+            )
             item.update(
                 {
                     "robot_id": attempt.subtask.robot_id,
                     "task_id": attempt.task_id,
                     "node_id": attempt.node_id,
-                    "status": "cancelled",
-                    "error": "Mission Run cancelled by operator request.",
+                    "status": "lost",
+                    "error": error,
+                    "result": {
+                        "status": "lost",
+                        "cancellation_acknowledged": False,
+                        "runtime_stopped": False,
+                        "resource_release_safe": False,
+                        "last_observed_status": last_observed_status,
+                        "error": error,
+                    },
                 }
             )
         result.append(item)

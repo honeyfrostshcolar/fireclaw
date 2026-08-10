@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from fireclaw_core.plugin.plugin_host import (
@@ -8,6 +10,7 @@ from fireclaw_core.plugin.plugin_host import (
 )
 from fireclaw_core.agent.agent import FireClawAgent
 from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
 from fireclaw_core.plugin.plugin_runtime import PluginRuntime
 
 
@@ -117,7 +120,7 @@ def test_plugin_host_rejects_unsupported_api_without_partial_state() -> None:
     )
 
 
-def test_legacy_registries_project_into_one_shared_host() -> None:
+def test_explicit_extension_and_descriptor_registries_share_one_host() -> None:
     host = FireClawPluginHost()
     runtime = PluginRuntime(host)
     runtime.register_descriptor(
@@ -137,6 +140,14 @@ def test_legacy_registries_project_into_one_shared_host() -> None:
         plugin_id="fireclaw.test.context",
         callback=lambda payload: payload,
     )
+    report = load_fireclaw_extensions(
+        host,
+        (Path(__file__).resolve().parents[1] / "extensions",),
+        mode="simulation",
+        role="robot_agent",
+        services={"adapter": "dry-run"},
+    )
+    assert report.ok
 
     agent = FireClawAgent(plugin_host=host)
 

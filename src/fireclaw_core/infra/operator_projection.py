@@ -2,11 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from fireclaw_core.execution.builtin_physical_skills import (
-    get_builtin_physical_skill,
-)
-
-
 class OperatorEventProjector:
     def __init__(self, *, skill_catalog: Any | None = None) -> None:
         self._skill_catalog = skill_catalog
@@ -21,7 +16,7 @@ class OperatorEventProjector:
             command = _text(payload.get("command"), "未知任务")
             return f"已接收任务：{command}。"
         if event_type == "task.planned":
-            return "正在规划救援任务。"
+            return "正在规划机器人任务。"
         if event_type == "safety.decided":
             return self._project_safety(payload)
         if event_type == "confirmation.pending":
@@ -90,7 +85,7 @@ class OperatorEventProjector:
 
     def _physical_plugin(self, skill_name: str):
         if self._skill_catalog is None:
-            return get_builtin_physical_skill(skill_name)
+            return None
         getter = getattr(self._skill_catalog, "get", None)
         if not callable(getter):
             return None

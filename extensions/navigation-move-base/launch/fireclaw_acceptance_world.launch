@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<!--
+  Trusted, fixed TurtleBot3 Burger bringup for FireClaw acceptance tests.
+
+  This file is launched by an operator-side test runner. It is never exposed
+  as an Agent Tool and accepts no LLM-provided world, map, topic, or plugin
+  arguments.
+-->
+<launch>
+  <arg name="gui" default="false"/>
+  <arg name="seed" default="0"/>
+  <arg name="model" default="burger"/>
+  <arg name="initial_x" default="-2.0"/>
+  <arg name="initial_y" default="-0.5"/>
+  <arg name="initial_yaw" default="0.0"/>
+  <arg name="planner_patience" default="5.0"/>
+  <arg name="recovery_behavior_enabled" default="true"/>
+  <arg name="inject_stall" default="false"/>
+
+  <arg name="world_file"
+       default="$(find turtlebot3_gazebo)/worlds/turtlebot3_world.world"/>
+  <arg name="map_file"
+       default="$(find turtlebot3_navigation)/maps/map.yaml"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_file)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="headless" value="false"/>
+    <arg name="debug" value="false"/>
+    <arg name="server_required" value="true"/>
+    <arg name="extra_gazebo_args" value="--seed $(arg seed)"/>
+  </include>
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro"/>
+  <node pkg="gazebo_ros"
+        type="spawn_model"
+        name="spawn_fireclaw_acceptance_robot"
+        output="screen"
+        args="-urdf -model turtlebot3_$(arg model) -x $(arg initial_x) -y $(arg initial_y) -Y $(arg initial_yaw) -param robot_description"/>
+
+  <include file="$(find turtlebot3_bringup)/launch/turtlebot3_remote.launch">
+    <arg name="model" value="$(arg model)"/>
+  </include>
+
+  <node pkg="map_server"
+        type="map_server"
+        name="map_server"
+        output="screen"
+        args="$(arg map_file)"/>
+
+  <include file="$(find turtlebot3_navigation)/launch/amcl.launch">
+    <arg name="initial_pose_x" value="$(arg initial_x)"/>
+    <arg name="initial_pose_y" value="$(arg initial_y)"/>
+    <arg name="initial_pose_a" value="$(arg initial_yaw)"/>
+  </include>
+
+  <include file="$(find turtlebot3_navigation)/launch/move_base.launch">
+    <arg name="model" value="$(arg model)"/>
+    <arg name="move_forward_only" value="false"/>
+  </include>
+
+  <!--
+    The trusted runner uses these bounded overrides only for deterministic
+    failure acceptance. They are fixed launch inputs, never Agent-provided ROS
+    parameter names or values.
+  -->
+  <param name="/move_base/planner_patience"
+         value="$(arg planner_patience)"
+         type="double"/>
+  <param name="/move_base/recovery_behavior_enabled"
+         value="$(arg recovery_behavior_enabled)"
+         type="bool"/>
+
+  <!--
+    The two stall lanes deliberately remove forward motion authority from the
+    local planner while leaving ROS, sensing, TF and move_base alive.  Only the
+    trusted runner may enable this fixed fault; the Robot Agent cannot select
+    arbitrary parameter names at launch time.
+  -->
+  <group if="$(arg inject_stall)">
+    <param name="/move_base/DWAPlannerROS/max_vel_x"
+           value="0.0"
+           type="double"/>
+    <param name="/move_base/DWAPlannerROS/min_vel_x"
+           value="0.0"
+           type="double"/>
+  </group>
+</launch>

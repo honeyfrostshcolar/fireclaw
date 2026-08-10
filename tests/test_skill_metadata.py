@@ -1,151 +1,80 @@
-"""Phase 2 tests: richer skill metadata and typed output contracts."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from fireclaw_core.agent.robot import DryRunRobotAdapter
-from fireclaw_core.execution.skills import (
-    ASSESS_OUTPUT_SCHEMA,
-    NAVIGATE_OUTPUT_SCHEMA,
-    REPORT_OUTPUT_SCHEMA,
-    SEARCH_OUTPUT_SCHEMA,
-    Skill,
-    SkillRegistry,
-    create_default_skill_registry,
-    create_subprocess_skill,
-)
+from fireclaw_core.execution.skills import Skill, create_default_skill_registry
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 
 
-def test_skill_has_output_schema_field() -> None:
-    skill = Skill(
-        name="test",
-        description="test skill",
-        handler=lambda inputs: None,
-        output_schema=NAVIGATE_OUTPUT_SCHEMA,
+OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {"value": {"type": "string"}},
+    "required": ["value"],
+}
+EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
+
+
+def _navigation_registry():
+    host = FireClawPluginHost()
+    load_fireclaw_extensions(
+        host,
+        (EXTENSIONS / "navigation-move-base",),
+        mode="simulation",
+        role="robot_agent",
+        services={"adapter": "dry-run"},
+        strict=True,
     )
-    assert skill.output_schema == NAVIGATE_OUTPUT_SCHEMA
+    return create_default_skill_registry(
+        DryRunRobotAdapter(robot_id="r1"),
+        plugin_host=host,
+    )
 
 
-def test_skill_has_domain_field() -> None:
+def test_skill_exposes_typed_execution_metadata() -> None:
     skill = Skill(
         name="test",
         description="test skill",
         handler=lambda inputs: None,
+        output_schema=OUTPUT_SCHEMA,
         domain="perception",
-    )
-    assert skill.domain == "perception"
-
-
-def test_skill_has_preconditions_field() -> None:
-    skill = Skill(
-        name="test",
-        description="test skill",
-        handler=lambda inputs: None,
         preconditions=["robot_online", "camera_available"],
-    )
-    assert "robot_online" in skill.preconditions
-    assert "camera_available" in skill.preconditions
-
-
-def test_skill_has_degraded_mode_policy_field() -> None:
-    skill = Skill(
-        name="test",
-        description="test skill",
-        handler=lambda inputs: None,
         degraded_mode_policy="retry",
     )
+
+    assert skill.output_schema == OUTPUT_SCHEMA
+    assert skill.domain == "perception"
+    assert skill.preconditions == ["robot_online", "camera_available"]
     assert skill.degraded_mode_policy == "retry"
 
 
-def test_skill_defaults() -> None:
+def test_skill_metadata_defaults_are_generic() -> None:
     skill = Skill(name="t", description="d", handler=lambda inputs: None)
+
     assert skill.output_schema == {"type": "object", "additionalProperties": True}
-    assert skill.domain == "navigation"
     assert skill.preconditions == []
     assert skill.degraded_mode_policy is None
 
 
-def test_default_registry_skills_have_typed_metadata() -> None:
-    robot = DryRunRobotAdapter(robot_id="r1")
-    registry = create_default_skill_registry(robot)
+def test_manifest_loaded_navigation_has_typed_metadata() -> None:
+    registry = _navigation_registry()
+    navigation = registry.get("navigate_to_point")
 
-    nav = registry.get("navigate_to_floor")
-    assert nav is not None
-    assert nav.output_schema == NAVIGATE_OUTPUT_SCHEMA
-    assert nav.domain == "navigation"
-    assert "robot_online" in nav.preconditions
-    assert nav.degraded_mode_policy == "retry"
-    assert nav.idempotent is True
-    assert nav.allow_real_robot is True
-
-    search = registry.get("search_for_victims")
-    assert search is not None
-    assert search.output_schema == SEARCH_OUTPUT_SCHEMA
-    assert search.domain == "perception"
-    assert "camera_available" in search.preconditions
-
-    assess = registry.get("assess_victim")
-    assert assess is not None
-    assert assess.output_schema == ASSESS_OUTPUT_SCHEMA
-    assert assess.domain == "perception"
-    assert assess.degraded_mode_policy == "skip"
-
-    report = registry.get("report_status")
-    assert report is not None
-    assert report.output_schema == REPORT_OUTPUT_SCHEMA
-    assert report.domain == "communication"
-
-    ret = registry.get("return_to_safe_zone")
-    assert ret is not None
-    assert ret.domain == "safety"
-    assert ret.degraded_mode_policy == "abort"
-    assert ret.risk_level == "medium"
+    assert navigation is not None
+    assert navigation.domain == "navigation"
+    assert navigation.required_sensors == ["lidar"]
+    assert navigation.preconditions == ["robot_online", "target_point_reachable"]
+    assert navigation.degraded_mode_policy == "retry"
+    assert navigation.metadata["plugin_id"] == "fireclaw.navigation.move-base"
+    assert navigation.metadata["kind"] == "primitive"
+    assert navigation.metadata["primitive_capability"] == "navigation"
 
 
-def test_list_metadata_includes_new_fields() -> None:
-    robot = DryRunRobotAdapter(robot_id="r1")
-    registry = create_default_skill_registry(robot)
-    metadata = registry.list_metadata()
+def test_registry_metadata_contains_plugin_contract_fields() -> None:
+    metadata = _navigation_registry().list_metadata()
+    navigation = next(item for item in metadata if item["name"] == "navigate_to_point")
 
-    nav_meta = next(m for m in metadata if m["name"] == "navigate_to_floor")
-    assert "output_schema" in nav_meta
-    assert "domain" in nav_meta
-    assert "preconditions" in nav_meta
-    assert "degraded_mode_policy" in nav_meta
-    assert nav_meta["domain"] == "navigation"
-
-
-def test_create_subprocess_skill_with_new_fields(legacy_skill_executor) -> None:
-    skill = create_subprocess_skill(
-        name="ext_scan",
-        description="External scan",
-        command=["echo", "ok"],
-        executor=legacy_skill_executor,
-        output_schema=SEARCH_OUTPUT_SCHEMA,
-        domain="perception",
-        preconditions=["robot_online"],
-        degraded_mode_policy="fallback",
-    )
-    assert skill.output_schema == SEARCH_OUTPUT_SCHEMA
-    assert skill.domain == "perception"
-    assert skill.preconditions == ["robot_online"]
-    assert skill.degraded_mode_policy == "fallback"
-
-
-def test_navigation_skill_requires_lidar() -> None:
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="r1"))
-
-    assert registry.get("navigate_to_floor").required_sensors == ["lidar"]
-
-
-def test_default_skill_registry_marks_primitive_and_composite_skills() -> None:
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="r1"))
-
-    navigate = registry.get("navigate_to_floor")
-    search = registry.get("search_for_victims")
-
-    assert navigate is not None
-    assert search is not None
-    assert navigate.metadata["kind"] == "primitive"
-    assert navigate.metadata["primitive_capability"] == "navigation"
-    assert navigate.metadata["input_schema"]["required"] == ["floor"]
-    assert search.metadata["kind"] == "composite"
-    assert search.metadata["primitive_capability"] == "perception"
+    assert navigation["domain"] == "navigation"
+    assert navigation["input_schema"]["required"] == ["x", "y"]
+    assert navigation["degraded_mode_policy"] == "retry"

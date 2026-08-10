@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fireclaw_core.agent.robot import DryRunRobotAdapter
 from fireclaw_core.approval.execution_authorization import (
@@ -14,6 +15,8 @@ from fireclaw_core.execution.skills import (
     create_default_skill_registry,
 )
 from fireclaw_core.planner.planner import Plan, PlanStep
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
+from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.policy.capability import (
     CapabilityActor,
     CapabilityPolicyContext,
@@ -30,6 +33,19 @@ def _actor() -> CapabilityActor:
         scopes=frozenset({"task.submit"}),
         source="gateway",
     )
+
+
+def _navigation_registry(robot: DryRunRobotAdapter) -> SkillRegistry:
+    host = FireClawPluginHost()
+    report = load_fireclaw_extensions(
+        host,
+        (Path(__file__).resolve().parents[1] / "extensions",),
+        mode="simulation",
+        role="robot_agent",
+        services={"adapter": "dry-run"},
+    )
+    assert report.ok
+    return create_default_skill_registry(robot, plugin_host=host)
 
 
 def _runtime_state(
@@ -55,7 +71,7 @@ def _context(**overrides) -> CapabilityPolicyContext:
         "task_id": "task-1",
         "delegated_operator_id": "operator-1",
         "allowed_skills": frozenset(
-            {"navigate_to_point", "search_for_victims"}
+            {"navigate_to_point", "victim_search"}
         ),
         "target": {
             "pose": {"x": 2.0, "y": 3.0, "yaw": 0.0},
@@ -73,7 +89,13 @@ def test_planning_projection_records_each_exclusion_layer():
         robot_id="robot-a",
         available_sensors={"lidar", "thermal_camera"},
     )
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
+    registry.register(
+        Skill("internal_inspection", "Internal test Tool.", lambda _inputs: None)  # type: ignore[arg-type]
+    )
+    registry.register(
+        Skill("operator_report", "Report test Tool.", lambda _inputs: None)  # type: ignore[arg-type]
+    )
     pipeline = CapabilityPolicyPipeline(
         plugin_host=registry.host,
         registry=registry,
@@ -84,8 +106,8 @@ def test_planning_projection_records_each_exclusion_layer():
         enabled_skills=frozenset(
             {
                 "navigate_to_point",
-                "search_for_victims",
-                "report_status",
+                "internal_inspection",
+                "operator_report",
             }
         ),
         llm_exposed_skills=frozenset({"navigate_to_point"}),
@@ -95,10 +117,15 @@ def test_planning_projection_records_each_exclusion_layer():
     projection = pipeline.project(
         {
             "navigate_to_point",
-            "search_for_victims",
-            "report_status",
+            "internal_inspection",
+            "operator_report",
         },
-        context=_context(robot_profile=profile),
+        context=_context(
+            robot_profile=profile,
+            allowed_skills=frozenset(
+                {"navigate_to_point", "internal_inspection"}
+            ),
+        ),
     )
 
     assert projection.after == ("navigate_to_point",)
@@ -107,10 +134,10 @@ def test_planning_projection_records_each_exclusion_layer():
         for decision in projection.decisions
     }
     assert decisions["navigate_to_point"].status == "allow"
-    assert decisions["search_for_victims"].reason_code == (
+    assert decisions["internal_inspection"].reason_code == (
         "skill_not_exposed_to_llm"
     )
-    assert decisions["report_status"].reason_code == (
+    assert decisions["operator_report"].reason_code == (
         "skill_outside_task_delegation"
     )
     plugin_stage = next(
@@ -128,7 +155,7 @@ def test_execution_policy_rejects_protected_target_rewrite():
         robot_id="robot-a",
         available_sensors={"lidar"},
     )
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
     pipeline = CapabilityPolicyPipeline(
         plugin_host=registry.host,
         registry=registry,
@@ -159,7 +186,7 @@ def test_execution_policy_rechecks_exact_authorized_inputs():
         robot_id="robot-a",
         available_sensors={"lidar"},
     )
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
     pipeline = CapabilityPolicyPipeline(
         plugin_host=registry.host,
         registry=registry,
@@ -220,7 +247,7 @@ def test_execution_policy_rejects_expired_authorization():
         robot_id="robot-a",
         available_sensors={"lidar"},
     )
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
     pipeline = CapabilityPolicyPipeline(
         plugin_host=registry.host,
         registry=registry,
@@ -310,7 +337,7 @@ def test_identity_scope_is_part_of_every_capability_decision():
         robot_id="robot-a",
         available_sensors={"lidar"},
     )
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry(robot)
     pipeline = CapabilityPolicyPipeline(
         plugin_host=registry.host,
         registry=registry,

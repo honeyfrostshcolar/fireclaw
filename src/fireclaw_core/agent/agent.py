@@ -13,8 +13,7 @@ from fireclaw_core.approval.execution_authorization import (
     authorized_action,
     execution_scope_hash,
 )
-from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
-from fireclaw_core.execution.runtime import SandboxedSkillExecutor
+from fireclaw_core.execution.action_runtime import RegisteredActionBackend, RobotActionRuntime
 from fireclaw_core.execution.execution_event_producer import (
     RobotExecutionEventProducer,
 )
@@ -34,7 +33,6 @@ from fireclaw_core.agent.robot import DryRunRobotAdapter, RobotAdapter
 from fireclaw_core.safety.safety import SafetyDecision, SafetyGate
 from fireclaw_core.execution.skills import create_default_skill_registry
 from fireclaw_core.task.task_contract import StructuredRobotTask, planning_result_from_structured_task
-from fireclaw_core.infra.workspace_skills import WorkspaceSkillLoadError, load_workspace_skills
 from fireclaw_core.context.manager import StructuredSemanticCompactor
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.plugin.extension_loader import (
@@ -89,7 +87,6 @@ class FireClawAgent:
         *,
         robot: RobotAdapter | None = None,
         memory: MemoryStore | None = None,
-        workspace_skills_dir: str | Path | None = None,
         dry_run: bool = True,
         available_sensors: set[str] | None = None,
         session_id: str = "default",
@@ -112,7 +109,6 @@ class FireClawAgent:
         capability_actor: CapabilityActor | Any | None = None,
         robot_profile: Any | None = None,
         deployment_profile: DeploymentProfile | None = None,
-        workspace_skill_executor: SandboxedSkillExecutor | None = None,
         extension_paths: Sequence[str | Path] | None = None,
         plugin_configs: Mapping[str, Mapping[str, Any]] | None = None,
         plugin_services: Mapping[str, Any] | None = None,
@@ -157,10 +153,7 @@ class FireClawAgent:
             robot_profile
         )
         action_runtime = RobotActionRuntime(
-            backend=RobotAdapterActionBackend(
-                self.robot,
-                auto_register_legacy_actions=False,
-            ),
+            backend=RegisteredActionBackend(self.robot),
             event_sink=event_sink,
             task_id=task_id,
         )
@@ -192,15 +185,6 @@ class FireClawAgent:
             plugin_host=self.plugin_host,
         )
         self.bind_plugin_physical_capabilities(replace=False)
-        self.skill_load_errors: list[WorkspaceSkillLoadError] = []
-        if workspace_skills_dir is not None:
-            workspace_result = load_workspace_skills(
-                workspace_skills_dir,
-                plugin_host=self.plugin_host,
-                deployment_profile=deployment_profile,
-                sandbox_executor=workspace_skill_executor,
-            )
-            self.skill_load_errors = workspace_result.errors
         self.capability_policy = CapabilityPolicyPipeline(
             plugin_host=self.plugin_host,
             registry=self.registry,
@@ -837,6 +821,16 @@ class FireClawAgent:
         latest_step = (
             step_executions[-1].payload if step_executions else None
         )
+        pending_plan = None
+        if status == "awaiting_confirmation" and isinstance(
+            latest_step,
+            dict,
+        ):
+            latest_planning = latest_step.get("planning")
+            if isinstance(latest_planning, dict):
+                candidate_plan = latest_planning.get("plan")
+                if isinstance(candidate_plan, dict):
+                    pending_plan = dict(candidate_plan)
         result = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "command": command,
@@ -848,7 +842,7 @@ class FireClawAgent:
                 "message": loop_result.message,
                 "intent": structured_task.task_type,
                 "target_floor": structured_task.target.get("floor"),
-                "plan": None,
+                "plan": pending_plan,
             },
             "safety": (
                 latest_step.get("safety")
@@ -1053,12 +1047,13 @@ class FireClawAgent:
         if safety_decision.status in {"clarify", "block", "require_confirmation"}:
             return "; ".join(safety_decision.reasons)
         if execution_result is not None and execution_result.status == "succeeded":
-            return "FireClaw dry-run rescue plan completed."
+            return "FireClaw execution plan completed."
         if execution_result is not None and execution_result.status == "cancelled":
             return "任务已取消。"
         if (
             execution_result is not None
-            and execution_result.status == "failed"
+            and execution_result.status
+            in {"blocked", "escalated", "failed", "timed_out", "lost"}
             and execution_result.steps
             and execution_result.steps[-1].error
         ):
@@ -1183,7 +1178,6 @@ class FireClawAgent:
             "safety": None,
             "execution": None,
             "skills": skills,
-            "skill_load_errors": [asdict(error) for error in self.skill_load_errors],
             "memory_error": None,
         }
 

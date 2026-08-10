@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from fireclaw_core.agent.robot import (
-    AdapterCapabilities,
     EnvironmentState,
     RobotActionResult,
     RobotState,
@@ -16,8 +15,8 @@ from fireclaw_core.agent.robot_agent import (
     RobotLocalPlanStep,
 )
 from fireclaw_core.execution.action_runtime import (
+    RegisteredActionBackend,
     RobotActionRuntime,
-    RobotAdapterActionBackend,
 )
 from fireclaw_core.execution.executor import PlanExecutor
 from fireclaw_core.execution.skill_plugin import (
@@ -31,6 +30,7 @@ from fireclaw_core.infra.runtime_state import (
     SqliteResourceLeaseManager,
 )
 from fireclaw_core.safety.safety import SafetyGate
+from fireclaw_core.planner.planner import Plan, PlanStep
 from fireclaw_core.task.task_contract import (
     StructuredRobotTask,
     planning_result_from_structured_task,
@@ -43,32 +43,6 @@ class BeaconRobotAdapter:
     mode: str = "dry_run"
     dry_run: bool = True
     deployed: list[dict[str, str]] = field(default_factory=list)
-
-    def deploy_beacon(self, zone: str, color: str) -> RobotActionResult:
-        self.deployed.append({"zone": zone, "color": color})
-        return RobotActionResult(
-            ok=True,
-            status="succeeded",
-            robot_id=self.robot_id,
-            mode=self.mode,
-            action="deploy_beacon",
-            dry_run=True,
-            data={"zone": zone, "color": color},
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-
-    def capabilities(self) -> AdapterCapabilities:
-        return AdapterCapabilities(
-            supported_actions={"deploy_beacon"},
-            supported_modes={"dry_run"},
-            supports_dry_run=True,
-            supports_real_execution=False,
-            supports_feedback=False,
-            supports_cancellation=False,
-            max_concurrent_actions=1,
-            required_sensors=[],
-            is_simulator=False,
-        )
 
     def get_robot_state(self) -> RobotState:
         return RobotState(
@@ -86,7 +60,24 @@ class BeaconRobotAdapter:
         return EnvironmentState(reachable_floors=[1])
 
 
-def _beacon_plugin():
+def _beacon_plugin(robot: BeaconRobotAdapter | None = None):
+    robot = robot or BeaconRobotAdapter()
+
+    def deploy(inputs, **_kwargs):
+        zone = str(inputs["zone"])
+        color = str(inputs["color"])
+        robot.deployed.append({"zone": zone, "color": color})
+        return RobotActionResult(
+            ok=True,
+            status="succeeded",
+            robot_id=robot.robot_id,
+            mode=robot.mode,
+            action="deploy_beacon",
+            dry_run=True,
+            data={"zone": zone, "color": color},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
     return define_physical_skill_plugin(
         plugin_id="test.safety-beacon",
         name="place_safety_beacon",
@@ -118,6 +109,7 @@ def _beacon_plugin():
             "zone": str(inputs["zone"]),
             "color": str(inputs["color"]),
         },
+        action_handler=deploy,
         domain="safety",
         safety_class="deployment",
         task_input_bindings=(
@@ -146,14 +138,14 @@ def _runtime():
     robot = BeaconRobotAdapter()
     events: list[tuple[str, dict]] = []
     action_runtime = RobotActionRuntime(
-        backend=RobotAdapterActionBackend(robot),
+        backend=RegisteredActionBackend(robot),
         event_sink=lambda event_type, payload: events.append(
             (event_type, payload)
         ),
     )
     registry = SkillRegistry(skills={})
     registry.register_plugin(
-        _beacon_plugin(),
+        _beacon_plugin(robot),
         robot=robot,
         action_runtime=action_runtime,
     )
@@ -317,6 +309,85 @@ def test_executor_enforces_plugin_resource_locks_across_operations(tmp_path):
     assert leases.active(robot_id=robot.robot_id) == []
     assert any(event_type == "resource.acquired" for event_type, _ in events)
     assert any(event_type == "resource.released" for event_type, _ in events)
+
+
+def test_unconfirmed_physical_stop_retains_lease_and_closes_admission(tmp_path):
+    robot = BeaconRobotAdapter()
+
+    def lose_control(_inputs, **_kwargs):
+        return RobotActionResult(
+            ok=False,
+            status="lost",
+            robot_id=robot.robot_id,
+            mode=robot.mode,
+            action="unconfirmed_motion",
+            dry_run=True,
+            data={
+                "cancellation_acknowledged": False,
+                "runtime_stopped": False,
+                "resource_release_safe": False,
+            },
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            error="Physical runtime did not confirm that motion stopped.",
+        )
+
+    plugin = define_physical_skill_plugin(
+        plugin_id="test.unconfirmed-motion",
+        name="unconfirmed_motion",
+        label="Unconfirmed motion",
+        description="Exercise the fail-safe lease retention contract.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        output_schema={"type": "object"},
+        action="unconfirmed_motion",
+        action_input_builder=lambda _robot, inputs: dict(inputs),
+        action_handler=lose_control,
+        domain="navigation",
+        safety_class="motion",
+        resource_locks=("robot_motion",),
+    )
+    events: list[tuple[str, dict]] = []
+    action_runtime = RobotActionRuntime(
+        backend=RegisteredActionBackend(robot),
+        event_sink=lambda event_type, payload: events.append(
+            (event_type, payload)
+        ),
+    )
+    registry = SkillRegistry(skills={})
+    registry.register_plugin(
+        plugin,
+        robot=robot,
+        action_runtime=action_runtime,
+    )
+    leases = SqliteResourceLeaseManager(
+        SqliteAuthoritativeRuntimeStore(tmp_path / "runtime.sqlite3")
+    )
+
+    execution = PlanExecutor(
+        registry,
+        event_sink=lambda event_type, payload: events.append(
+            (event_type, payload)
+        ),
+        robot_id=robot.robot_id,
+        subtask_id="task-unconfirmed-motion",
+        resource_lease_manager=leases,
+    ).execute(
+        Plan(
+            intent="unconfirmed_motion",
+            steps=[PlanStep("unconfirmed_motion", {})],
+        )
+    )
+
+    assert execution.status == "lost"
+    assert execution.steps[0].status == "lost"
+    assert len(leases.active(robot_id=robot.robot_id)) == 1
+    assert leases.admission_state()["closed"] is True
+    assert leases.admission_state()["reason"] == "physical_runtime_stop_unconfirmed"
+    assert any(event_type == "resource.retained" for event_type, _ in events)
+    assert not any(event_type == "resource.released" for event_type, _ in events)
 
 
 def test_plugin_operator_projection_requires_no_skill_name_branch():

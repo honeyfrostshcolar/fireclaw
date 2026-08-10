@@ -1,23 +1,42 @@
+from threading import Event
+from time import monotonic, sleep
+
 import pytest
 
-from fireclaw_core.execution.action_runtime import RobotActionRuntime, RobotAdapterActionBackend
-from fireclaw_core.agent.robot import DryRunRobotAdapter, Ros1RobotAdapter, RobotActionResult
-from fireclaw_core.ros.ros1_config import parse_ros1_adapter_config
-from fireclaw_core.ros.ros1_transport import Ros1Transport
+from fireclaw_core.execution.action_runtime import RegisteredActionBackend, RobotActionRuntime
+from fireclaw_core.agent.robot import DryRunRobotAdapter, RobotActionResult
+
+
+def _result(action: str, data: dict) -> RobotActionResult:
+    return RobotActionResult(
+        ok=True,
+        status="succeeded",
+        robot_id="robot-1",
+        mode="plugin-test",
+        action=action,
+        dry_run=True,
+        data=data,
+        timestamp="2026-08-09T00:00:00+00:00",
+    )
 
 
 def test_robot_action_runtime_emits_lifecycle_events_for_adapter_action():
     events = []
     robot = DryRunRobotAdapter(robot_id="robot-1")
+    backend = RegisteredActionBackend(robot)
+    backend.register_action(
+        "navigate_to_waypoint",
+        lambda floor: _result("navigate_to_waypoint", {"floor": floor}),
+    )
     runtime = RobotActionRuntime(
-        backend=RobotAdapterActionBackend(robot),
+        backend=backend,
         event_sink=lambda event_type, payload: events.append((event_type, payload)),
         task_id="task-1",
     )
 
     result = runtime.run(
-        skill_name="navigate_to_floor",
-        action_type="navigate_to_floor",
+        skill_name="navigate_to_waypoint",
+        action_type="navigate_to_waypoint",
         inputs={"floor": 2},
         dry_run=True,
         risk_level="low",
@@ -33,8 +52,8 @@ def test_robot_action_runtime_emits_lifecycle_events_for_adapter_action():
         "action.started",
         "action.succeeded",
     ]
-    assert events[0][1]["skill_name"] == "navigate_to_floor"
-    assert events[0][1]["action_type"] == "navigate_to_floor"
+    assert events[0][1]["skill_name"] == "navigate_to_waypoint"
+    assert events[0][1]["action_type"] == "navigate_to_waypoint"
     assert events[0][1]["inputs"] == {"floor": 2}
     assert events[0][1]["task_id"] == "task-1"
     assert events[2][1]["status"] == "succeeded"
@@ -42,8 +61,16 @@ def test_robot_action_runtime_emits_lifecycle_events_for_adapter_action():
 
 def test_robot_action_runtime_executes_single_floor_point_navigation():
     robot = DryRunRobotAdapter(robot_id="robot-1")
+    backend = RegisteredActionBackend(robot)
+    backend.register_action(
+        "navigate_to_point",
+        lambda x, y, yaw=0.0, frame_id="map": _result(
+            "navigate_to_point",
+            {"x": x, "y": y, "yaw": yaw, "frame_id": frame_id},
+        ),
+    )
     runtime = RobotActionRuntime(
-        backend=RobotAdapterActionBackend(robot),
+        backend=backend,
         task_id="task-point",
     )
 
@@ -89,8 +116,8 @@ def test_robot_action_runtime_emits_backend_feedback_events():
     )
 
     result = runtime.run(
-        skill_name="navigate_to_floor",
-        action_type="navigate_to_floor",
+        skill_name="navigate_to_waypoint",
+        action_type="navigate_to_waypoint",
         inputs={"floor": 2},
         dry_run=True,
         risk_level="low",
@@ -109,8 +136,8 @@ def test_robot_action_runtime_emits_backend_feedback_events():
     second_feedback = events[3][1]
     assert first_feedback["action_id"].startswith("action-")
     assert first_feedback["task_id"] == "task-1"
-    assert first_feedback["skill_name"] == "navigate_to_floor"
-    assert first_feedback["action_type"] == "navigate_to_floor"
+    assert first_feedback["skill_name"] == "navigate_to_waypoint"
+    assert first_feedback["action_type"] == "navigate_to_waypoint"
     assert first_feedback["inputs"] == {"floor": 2}
     assert first_feedback["progress"] == 0.25
     assert second_feedback["progress"] == 0.75
@@ -139,8 +166,8 @@ def test_robot_action_runtime_passes_cancellation_callback_to_backend():
     runtime = RobotActionRuntime(backend=backend)
 
     runtime.run(
-        skill_name="navigate_to_floor",
-        action_type="navigate_to_floor",
+        skill_name="navigate_to_waypoint",
+        action_type="navigate_to_waypoint",
         inputs={"floor": 2},
         dry_run=True,
         risk_level="low",
@@ -196,7 +223,10 @@ class CancelledBackend:
             mode="cancelled-test",
             action=action_type,
             dry_run=False,
-            data={},
+            data={
+                "cancellation_acknowledged": True,
+                "runtime_stopped": True,
+            },
             timestamp="2026-06-05T00:00:00+00:00",
             error="cancelled by ROS1 action client",
         )
@@ -211,8 +241,8 @@ def test_robot_action_runtime_emits_cancelled_events_for_backend_cancelled_resul
     )
 
     result = runtime.run(
-        skill_name="navigate_to_floor",
-        action_type="navigate_to_floor",
+        skill_name="navigate_to_waypoint",
+        action_type="navigate_to_waypoint",
         inputs={"floor": 2},
         dry_run=False,
         risk_level="low",
@@ -228,68 +258,278 @@ def test_robot_action_runtime_emits_cancelled_events_for_backend_cancelled_resul
     ]
 
 
-class FeedbackActionClient:
-    def wait_for_server(self, timeout=None):
-        return True
+def test_robot_action_runtime_cancels_before_backend_start():
+    class NeverCalledBackend:
+        called = False
 
-    def send_goal(self, goal, feedback_cb=None):
-        if feedback_cb is not None:
-            feedback_cb({"progress": 0.5, "message": "halfway"})
+        def execute(self, action_type, inputs, **_kwargs):
+            self.called = True
+            return _result(action_type, inputs)
 
-    def wait_for_result(self, timeout=None):
-        return True
-
-    def get_result(self):
-        return {"arrived": True}
-
-
-class FeedbackRos1Module:
-    def __init__(self):
-        self.action_client = FeedbackActionClient()
-
-    def create_action_client(self, name, type_name):
-        return self.action_client
-
-    def duration(self, seconds):
-        return seconds
-
-
-def test_robot_action_runtime_emits_ros1_action_feedback_events():
+    backend = NeverCalledBackend()
     events = []
-    config = parse_ros1_adapter_config(
-        {
-            "robot_id": "robot-ros1",
-            "transport": {"enabled": True},
-            "remap": {
-                "navigate_to_floor": {
-                    "profile": "move_base",
-                    "name": "/move_base",
-                    "goal_template": {"floor": "{{ floor }}"},
-                }
-            },
-        }
-    )
-    robot = Ros1RobotAdapter(
-        config=config,
-        transport=Ros1Transport(module=FeedbackRos1Module()),
-    )
     runtime = RobotActionRuntime(
-        backend=RobotAdapterActionBackend(robot),
+        backend=backend,
         event_sink=lambda event_type, payload: events.append((event_type, payload)),
-        task_id="task-1",
     )
 
     result = runtime.run(
-        skill_name="navigate_to_floor",
-        action_type="navigate_to_floor",
-        inputs={"floor": 2},
+        skill_name="physical_action",
+        action_type="physical_action",
+        inputs={},
+        dry_run=False,
+        risk_level="low",
+        timeout_seconds=1.0,
+        cancellation_requested=lambda: True,
+    )
+
+    assert backend.called is False
+    assert result.status == "cancelled"
+    assert result.data["cancellation_reason"] == "operator_cancelled"
+    assert result.data["cancellation_acknowledged"] is True
+    assert result.data["runtime_stopped"] is True
+    assert [event_type for event_type, _payload in events] == [
+        "action.requested",
+        "action.cancel_requested",
+        "action.cancelled",
+    ]
+
+
+class CooperativeCancellationBackend:
+    def __init__(self, *, report_success_after_cancel: bool = False):
+        self.started = Event()
+        self.report_success_after_cancel = report_success_after_cancel
+
+    def execute(
+        self,
+        action_type,
+        inputs,
+        feedback_sink=None,
+        cancellation_requested=None,
+    ):
+        self.started.set()
+        while not cancellation_requested():
+            sleep(0.001)
+        return RobotActionResult(
+            ok=self.report_success_after_cancel,
+            status=(
+                "succeeded" if self.report_success_after_cancel else "cancelled"
+            ),
+            robot_id="robot-1",
+            mode="cooperative-test",
+            action=action_type,
+            dry_run=False,
+            data={
+                "cancellation_acknowledged": True,
+                "runtime_stopped": True,
+            },
+            timestamp="2026-08-09T00:00:00+00:00",
+        )
+
+
+def test_robot_action_runtime_cooperatively_cancels_in_flight_action():
+    backend = CooperativeCancellationBackend()
+    events = []
+    runtime = RobotActionRuntime(
+        backend=backend,
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    result = runtime.run(
+        skill_name="physical_action",
+        action_type="physical_action",
+        inputs={},
+        dry_run=False,
+        risk_level="low",
+        timeout_seconds=1.0,
+        cancellation_ack_timeout_seconds=0.2,
+        cancellation_requested=backend.started.is_set,
+    )
+
+    assert result.status == "cancelled"
+    assert result.data["cancellation_reason"] == "operator_cancelled"
+    assert result.data["cancellation_acknowledged"] is True
+    assert result.data["runtime_stopped"] is True
+    assert [event_type for event_type, _payload in events].count(
+        "action.cancelled"
+    ) == 1
+    assert [
+        event_type
+        for event_type, _payload in events
+        if event_type.startswith("action.")
+        and event_type
+        in {
+            "action.succeeded",
+            "action.failed",
+            "action.cancelled",
+            "action.timed_out",
+            "action.lost",
+        }
+    ] == ["action.cancelled"]
+
+
+def test_robot_action_runtime_enforces_monotonic_deadline():
+    backend = CooperativeCancellationBackend()
+    events = []
+    runtime = RobotActionRuntime(
+        backend=backend,
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    started = monotonic()
+
+    result = runtime.run(
+        skill_name="physical_action",
+        action_type="physical_action",
+        inputs={},
+        dry_run=False,
+        risk_level="low",
+        timeout_seconds=0.02,
+        cancellation_ack_timeout_seconds=0.2,
+    )
+
+    assert monotonic() - started < 1.0
+    assert result.status == "timed_out"
+    assert result.data["cancellation_reason"] == "deadline_exceeded"
+    assert result.data["cancellation_acknowledged"] is True
+    assert result.data["runtime_stopped"] is True
+    assert [event_type for event_type, _payload in events][-2:] == [
+        "action.cancel_requested",
+        "action.timed_out",
+    ]
+
+
+def test_robot_action_runtime_cancel_wins_completion_race_once_requested():
+    backend = CooperativeCancellationBackend(report_success_after_cancel=True)
+    events = []
+    runtime = RobotActionRuntime(
+        backend=backend,
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    result = runtime.run(
+        skill_name="physical_action",
+        action_type="physical_action",
+        inputs={},
+        dry_run=False,
+        risk_level="low",
+        timeout_seconds=1.0,
+        cancellation_ack_timeout_seconds=0.2,
+        cancellation_requested=backend.started.is_set,
+    )
+
+    assert result.status == "cancelled"
+    assert result.ok is False
+    assert result.data["backend_status"] == "succeeded"
+    terminal_events = [
+        event_type
+        for event_type, _payload in events
+        if event_type
+        in {
+            "action.succeeded",
+            "action.failed",
+            "action.cancelled",
+            "action.timed_out",
+            "action.lost",
+        }
+    ]
+    assert terminal_events == ["action.cancelled"]
+
+
+def test_robot_action_runtime_marks_unacknowledged_stop_as_lost():
+    class UncooperativeBackend:
+        def __init__(self):
+            self.started = Event()
+            self.release = Event()
+            self.finished = Event()
+
+        def execute(self, action_type, inputs, **_kwargs):
+            self.started.set()
+            self.release.wait(timeout=1.0)
+            self.finished.set()
+            return _result(action_type, inputs)
+
+    backend = UncooperativeBackend()
+    events = []
+    runtime = RobotActionRuntime(
+        backend=backend,
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    started = monotonic()
+
+    result = runtime.run(
+        skill_name="physical_action",
+        action_type="physical_action",
+        inputs={},
+        dry_run=False,
+        risk_level="critical",
+        timeout_seconds=0.02,
+        cancellation_ack_timeout_seconds=0.02,
+    )
+
+    assert monotonic() - started < 1.0
+    assert result.status == "lost"
+    assert result.data["cancellation_reason"] == "deadline_exceeded"
+    assert result.data["cancellation_acknowledged"] is False
+    assert result.data["runtime_stopped"] is False
+    assert result.data["resource_release_safe"] is False
+    assert [event_type for event_type, _payload in events][-2:] == [
+        "action.cancel_requested",
+        "action.lost",
+    ]
+    terminal_count = len(events)
+    backend.release.set()
+    assert backend.finished.wait(timeout=0.2)
+    sleep(0.01)
+    assert len(events) == terminal_count
+
+
+def test_backend_cancel_without_explicit_stop_acknowledgement_is_lost():
+    class UnacknowledgedCancelledBackend:
+        def execute(self, action_type, inputs, **_kwargs):
+            return RobotActionResult(
+                ok=False,
+                status="cancelled",
+                robot_id="robot-1",
+                mode="unacknowledged-test",
+                action=action_type,
+                dry_run=False,
+                data={},
+                timestamp="2026-08-09T00:00:00+00:00",
+            )
+
+    result = RobotActionRuntime(
+        backend=UnacknowledgedCancelledBackend()
+    ).run(
+        skill_name="physical_action",
+        action_type="physical_action",
+        inputs={},
         dry_run=False,
         risk_level="low",
         timeout_seconds=None,
     )
 
-    assert result.status == "succeeded"
-    feedback_events = [payload for event_type, payload in events if event_type == "action.feedback"]
-    assert feedback_events[0]["progress"] == 0.5
-    assert feedback_events[0]["message"] == "halfway"
-    assert feedback_events[0]["task_id"] == "task-1"
+    assert result.status == "lost"
+    assert result.data["cancellation_acknowledged"] is False
+    assert result.data["runtime_stopped"] is False
+    assert result.data["resource_release_safe"] is False
+
+
+def test_registered_backend_never_reflects_same_named_adapter_method():
+    class LegacyLookingRobot(DryRunRobotAdapter):
+        called = False
+
+        def navigate_to_point(self, **_kwargs):
+            self.called = True
+            return _result("navigate_to_point", {})
+
+    robot = LegacyLookingRobot(robot_id="robot-legacy-looking")
+    backend = RegisteredActionBackend(robot)
+
+    result = backend.execute(
+        "navigate_to_point",
+        {"x": 1.0, "y": 2.0, "frame_id": "map"},
+    )
+
+    assert result.status == "failed"
+    assert "Unsupported robot action type" in (result.error or "")
+    assert robot.called is False

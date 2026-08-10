@@ -57,7 +57,7 @@ def build_planner(
                 mode=deployment_profile.mode,
                 role=deployment_profile.role,
                 services={
-                    "computer_sandbox": ComputerSandbox(
+                    "fireclaw.agent-tools.computer.sandbox": ComputerSandbox(
                         deployment_profile.sandbox
                     )
                 },

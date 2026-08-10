@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 from fireclaw_core.agent.robot import RobotActionResult, RobotAdapter
@@ -11,34 +10,22 @@ from fireclaw_core.execution.action_runtime import (
     accepts_keyword_argument,
     invoke_robot_action_handler,
 )
-from fireclaw_core.execution.builtin_physical_skills import (
-    ASSESS_OUTPUT_SCHEMA,
-    EMPTY_INPUT_SCHEMA,
-    EMPTY_OUTPUT_SCHEMA,
-    FLOOR_INPUT_SCHEMA,
-    GENERIC_INPUT_SCHEMA,
-    GENERIC_OUTPUT_SCHEMA,
-    LOCAL_CONTEXT_INPUT_SCHEMA,
-    NAVIGATE_OUTPUT_SCHEMA,
-    NAVIGATE_POINT_OUTPUT_SCHEMA,
-    POINT_INPUT_SCHEMA,
-    REPORT_OUTPUT_SCHEMA,
-    SEARCH_OUTPUT_SCHEMA,
-    iter_builtin_physical_skills,
-)
-from fireclaw_core.execution.runtime import (
-    SandboxedSkillExecutor,
-    SubprocessSkillRunner,
-)
 from fireclaw_core.execution.skill_plugin import (
     PhysicalSkillPlugin,
     validate_object_schema,
 )
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
-from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
 
 
 SkillHandler = Callable[..., RobotActionResult]
+GENERIC_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+}
+GENERIC_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+}
 RISK_LEVELS = {"low", "medium", "high", "critical"}
 SKILL_DOMAINS = {
     "navigation",
@@ -63,6 +50,7 @@ class Skill:
     failure_categories: list[str] = field(default_factory=list)
     allow_real_robot: bool = False
     timeout_seconds: float | None = None
+    cancellation_ack_timeout_seconds: float = 2.0
     input_schema: dict[str, Any] = field(
         default_factory=lambda: dict(GENERIC_INPUT_SCHEMA)
     )
@@ -230,6 +218,9 @@ class SkillRegistry:
                 "failure_categories": list(skill.failure_categories),
                 "allow_real_robot": skill.allow_real_robot,
                 "timeout_seconds": skill.timeout_seconds,
+                "cancellation_ack_timeout_seconds": (
+                    skill.cancellation_ack_timeout_seconds
+                ),
                 "input_schema": dict(skill.input_schema),
                 "risk_level": skill.risk_level,
                 "output_schema": dict(skill.output_schema),
@@ -255,41 +246,20 @@ def skill_from_physical_plugin(
 ) -> Skill:
     """Bind one trusted plugin definition to one robot adapter."""
 
-    capabilities_provider = getattr(robot, "capabilities", None)
-    capabilities = capabilities_provider() if callable(capabilities_provider) else None
-    if (
-        plugin.action_handler is None
-        and capabilities is not None
-        and plugin.action not in capabilities.supported_actions
-    ):
-        raise ValueError(
-            f"Robot adapter does not support action {plugin.action!r} "
-            f"required by plugin {plugin.plugin_id!r}"
+    def direct_action(**kwargs: Any) -> RobotActionResult:
+        feedback_sink = kwargs.pop("feedback_sink", None)
+        cancellation_requested = kwargs.pop("cancellation_requested", None)
+        raw_result = plugin.action_handler(
+            dict(kwargs),
+            feedback_sink=feedback_sink,
+            cancellation_requested=cancellation_requested,
         )
-    if plugin.action_handler is not None:
-        def direct_action(**kwargs: Any) -> RobotActionResult:
-            feedback_sink = kwargs.pop("feedback_sink", None)
-            cancellation_requested = kwargs.pop("cancellation_requested", None)
-            raw_result = plugin.action_handler(
-                dict(kwargs),
-                feedback_sink=feedback_sink,
-                cancellation_requested=cancellation_requested,
-            )
-            return _coerce_physical_action_result(
-                raw_result,
-                robot=robot,
-                action=plugin.action,
-                inputs=kwargs,
-            )
-    else:
-        # Compatibility path for pre-plugin physical adapters.  New physical
-        # Plugins must provide ``action_handler`` and never depend on a
-        # same-named method on RobotAdapter.
-        direct_action = getattr(robot, plugin.action, None)
-        if not callable(direct_action):
-            raise ValueError(
-                f"Robot adapter does not provide handler for action {plugin.action!r}"
-            )
+        return _coerce_physical_action_result(
+            raw_result,
+            robot=robot,
+            action=plugin.action,
+            inputs=kwargs,
+        )
     if action_runtime is not None:
         register_action = getattr(action_runtime.backend, "register_action", None)
         if callable(register_action):
@@ -308,6 +278,9 @@ def skill_from_physical_plugin(
                 dry_run=robot.dry_run,
                 risk_level=plugin.risk_level,
                 timeout_seconds=plugin.timeout_seconds,
+                cancellation_ack_timeout_seconds=(
+                    plugin.cancellation_ack_timeout_seconds
+                ),
                 cancellation_requested=cancellation_requested,
             )
         return invoke_robot_action_handler(
@@ -329,6 +302,9 @@ def skill_from_physical_plugin(
         failure_categories=list(plugin.failure_categories),
         allow_real_robot=plugin.allow_real_robot,
         timeout_seconds=plugin.timeout_seconds,
+        cancellation_ack_timeout_seconds=(
+            plugin.cancellation_ack_timeout_seconds
+        ),
         input_schema=dict(plugin.parameters),
         risk_level=plugin.risk_level,
         output_schema=dict(plugin.output_schema),
@@ -383,13 +359,6 @@ def create_default_skill_registry(
 ) -> SkillRegistry:
     if plugin_host is None:
         plugin_host = FireClawPluginHost()
-    # A caller that supplies an otherwise empty shared host still expects the
-    # standard first-party extensions to be activated.  This is the library
-    # compatibility path used by direct Agent construction; Gateway normally
-    # performs the same load explicitly and therefore already has physical
-    # contributions here.
-    if not plugin_host.contributions("physical_capability"):
-        _load_builtin_extension_capabilities(plugin_host, robot)
     registry = SkillRegistry(skills={}, host=plugin_host)
     for contribution in plugin_host.contributions("physical_capability"):
         plugin = contribution.value
@@ -399,132 +368,4 @@ def create_default_skill_registry(
                 robot=robot,
                 action_runtime=action_runtime,
             )
-    capabilities_provider = getattr(robot, "capabilities", None)
-    supported_actions = (
-        capabilities_provider().supported_actions
-        if callable(capabilities_provider)
-        else {
-            plugin.action
-            for plugin in iter_builtin_physical_skills()
-            if callable(getattr(robot, plugin.action, None))
-        }
-    )
-    for plugin in iter_builtin_physical_skills():
-        if plugin.action not in supported_actions:
-            continue
-        # A manifest-loaded Plugin owns the canonical physical Tool.  Do not
-        # reintroduce the legacy built-in definition under the same name.
-        if plugin_host is not None and plugin_host.get(
-            "physical_capability",
-            plugin.name,
-        ) is not None:
-            continue
-        registry.register_plugin(
-            plugin,
-            robot=robot,
-            action_runtime=action_runtime,
-        )
     return registry
-
-
-def _load_builtin_extension_capabilities(
-    host: FireClawPluginHost,
-    robot: RobotAdapter,
-) -> None:
-    """Load first-party physical Tools through the normal Plugin loader.
-
-    This keeps direct library callers compatible while making the extension
-    manifest/entrypoint path the canonical source of physical capabilities.
-    """
-
-    def dispatch(
-        action: str,
-        inputs: dict[str, Any],
-        *,
-        feedback_sink: Any = None,
-        cancellation_requested: Any = None,
-    ) -> Any:
-        handler = getattr(robot, str(action), None)
-        if not callable(handler):
-            return {
-                "status": "blocked",
-                "error": f"legacy robot action {action!r} is unavailable",
-                "action": str(action),
-            }
-        return invoke_robot_action_handler(
-            handler,
-            dict(inputs),
-            feedback_sink=feedback_sink,
-            cancellation_requested=cancellation_requested,
-        )
-
-    load_fireclaw_extensions(
-        host,
-        (Path(__file__).resolve().parents[3] / "extensions",),
-        mode="simulation" if bool(getattr(robot, "dry_run", True)) else "real",
-        role="robot_agent",
-        services={
-            "adapter": _plugin_adapter_mode(robot),
-            "robot": robot,
-            "robot_action_dispatch": dispatch,
-        },
-    )
-
-
-def _plugin_adapter_mode(robot: RobotAdapter) -> str:
-    """Normalize legacy adapter identifiers for extension providers."""
-
-    mode = str(getattr(robot, "mode", "dry-run"))
-    return {
-        "dry_run": "dry-run",
-        "mock_ros1": "mock-ros1",
-        "mock_ros2": "mock-ros2",
-    }.get(mode, mode)
-
-
-def create_subprocess_skill(
-    *,
-    name: str,
-    description: str,
-    command: list[str],
-    executor: SandboxedSkillExecutor,
-    timeout_seconds: float = 30.0,
-    cwd: str = ".",
-    dry_run_only: bool = True,
-    max_attempts: int = 1,
-    idempotent: bool = False,
-    required_sensors: list[str] | None = None,
-    failure_categories: list[str] | None = None,
-    allow_real_robot: bool = False,
-    input_schema: dict[str, Any] | None = None,
-    risk_level: str = "low",
-    output_schema: dict[str, Any] | None = None,
-    domain: str = "navigation",
-    preconditions: list[str] | None = None,
-    degraded_mode_policy: str | None = None,
-) -> Skill:
-    runner = SubprocessSkillRunner(
-        command=command,
-        executor=executor,
-        timeout_seconds=timeout_seconds,
-        cwd=cwd,
-    )
-    return Skill(
-        name=name,
-        description=description,
-        handler=runner.run,
-        runtime="sandboxed_subprocess",
-        dry_run_only=dry_run_only,
-        max_attempts=max_attempts,
-        idempotent=idempotent,
-        required_sensors=required_sensors or [],
-        failure_categories=failure_categories or [],
-        allow_real_robot=allow_real_robot,
-        timeout_seconds=float(timeout_seconds),
-        input_schema=input_schema or dict(GENERIC_INPUT_SCHEMA),
-        risk_level=risk_level,
-        output_schema=output_schema or dict(GENERIC_OUTPUT_SCHEMA),
-        domain=domain,
-        preconditions=preconditions or [],
-        degraded_mode_policy=degraded_mode_policy,
-    )

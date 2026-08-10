@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
 ROS1_CONFIG_YAML = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
 
@@ -24,9 +25,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "{ROS1_CONFIG_YAML}"
 data_dir = "{tmp_path / 'data'}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_point", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_point", "search_for_victims", "report_status"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -65,6 +66,11 @@ def test_profile_gateway_real_run_keeps_ros1_adapter_live(tmp_path: Path) -> Non
             memory_path=str(tmp_path / "mem.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
+            deployment_profile=DeploymentProfile(
+                mode="real",
+                role="robot_agent",
+                sandbox=SandboxProfile(),
+            ),
         ),
     )
 

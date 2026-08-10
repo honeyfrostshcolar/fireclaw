@@ -46,7 +46,6 @@ def test_gateway_accepts_structured_task_payload(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -56,19 +55,22 @@ def test_gateway_accepts_structured_task_payload(tmp_path):
             "POST",
             "/tasks",
             {
-                "command": "去2楼搜索受困人员",
+                "command": "导航到 map 坐标 (2.0, 1.5)",
                 "structured_task": {
                     "task_id": "structured-1",
-                    "task_type": "search",
-                    "target": {"floor": 2},
-                    "required_skills": ["navigate_to_floor", "search_for_victims", "report_status"],
+                    "task_type": "navigate",
+                    "target": {
+                        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                        "frame_id": "map",
+                    },
+                    "required_skills": ["navigate_to_point"],
                 },
             },
         )
         trace = _wait_for_task_done(gateway.base_url, accepted["task_id"])
 
         assert trace["structured_task"]["task_id"] == "structured-1"
-        assert trace["result"]["structured_task"]["task_type"] == "search"
+        assert trace["result"]["structured_task"]["task_type"] == "navigate"
     finally:
         gateway.stop()
 
@@ -82,7 +84,6 @@ def test_gateway_rejects_invalid_structured_task_payload(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
         )
     )
     gateway.start()
@@ -93,11 +94,14 @@ def test_gateway_rejects_invalid_structured_task_payload(tmp_path):
                 "POST",
                 "/tasks",
                 {
-                    "command": "去2楼搜索受困人员",
+                    "command": "导航到 map 坐标 (2.0, 1.5)",
                     "structured_task": {
                         "task_id": "bad-structured-task",
-                        "task_type": "search",
-                        "target": {"floor": 2},
+                        "task_type": "navigate",
+                        "target": {
+                            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                            "frame_id": "map",
+                        },
                         "required_skills": [],
                     },
                 },
@@ -123,7 +127,6 @@ def test_gateway_accepts_primitive_composition_allowed_skills(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="deterministic",
         )
@@ -139,9 +142,15 @@ def test_gateway_accepts_primitive_composition_allowed_skills(tmp_path):
                 "structured_task": {
                     "task_id": "primitive-allowed-1",
                     "task_type": "primitive_composition",
-                    "target": {},
+                    "target": {
+                        "pose": {"x": 2.0, "y": 0.0, "yaw": 0.0},
+                        "frame_id": "map",
+                    },
                     "required_skills": [],
-                    "allowed_skills": ["navigate_to_floor", "report_status"],
+                    "allowed_skills": [
+                        "navigate_to_point",
+                        "move_base_navigation_status",
+                    ],
                     "robot_id": "debug-robot-1",
                 },
             },
@@ -149,7 +158,10 @@ def test_gateway_accepts_primitive_composition_allowed_skills(tmp_path):
         trace = _json_request(gateway.base_url, "GET", f"/tasks/{accepted['task_id']}")
 
         assert accepted["status"] == "accepted"
-        assert trace["structured_task"]["allowed_skills"] == ["navigate_to_floor", "report_status"]
+        assert trace["structured_task"]["allowed_skills"] == [
+            "navigate_to_point",
+            "move_base_navigation_status",
+        ]
     finally:
         gateway.stop()
 
@@ -164,7 +176,6 @@ def test_gateway_rejects_non_list_allowed_skills(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="deterministic",
         )
@@ -181,9 +192,12 @@ def test_gateway_rejects_non_list_allowed_skills(tmp_path):
                     "structured_task": {
                         "task_id": "primitive-allowed-bad",
                         "task_type": "primitive_composition",
-                        "target": {},
+                        "target": {
+                            "pose": {"x": 2.0, "y": 0.0, "yaw": 0.0},
+                            "frame_id": "map",
+                        },
                         "required_skills": [],
-                        "allowed_skills": "navigate_to_floor",
+                        "allowed_skills": "navigate_to_point",
                         "robot_id": "debug-robot-1",
                     },
                 },
@@ -208,7 +222,6 @@ def test_gateway_robot_agent_mode_emits_robot_agent_events(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="deterministic",
         )
@@ -220,18 +233,19 @@ def test_gateway_robot_agent_mode_emits_robot_agent_events(tmp_path):
             "POST",
             "/tasks",
             {
-                "command": "去坐标 (2.0, 1.5) 搜索受困人员",
+                "command": "导航到 map 坐标 (2.0, 1.5)",
                 "structured_task": {
                     "task_id": "structured-robot-agent-1",
-                    "task_type": "search",
+                    "task_type": "navigate",
                     "target": {
                         "pose": {
                             "x": 2.0,
                             "y": 1.5,
-                            "frame_id": "map",
-                        }
+                            "yaw": 0.0,
+                        },
+                        "frame_id": "map",
                     },
-                    "required_skills": ["navigate_to_point", "report_status"],
+                    "required_skills": ["navigate_to_point"],
                 },
             },
         )
@@ -245,7 +259,7 @@ def test_gateway_robot_agent_mode_emits_robot_agent_events(tmp_path):
         gateway.stop()
 
 
-def test_gateway_robot_agent_deliberation_executes_one_skill_per_turn(
+def test_gateway_robot_agent_deliberation_executes_one_operation_per_turn(
     tmp_path,
 ):
     from fireclaw_core.agent.robot_deliberation import (
@@ -261,25 +275,26 @@ def test_gateway_robot_agent_deliberation_executes_one_skill_per_turn(
             self.requests.append(request)
             if not request.observations:
                 return RobotAgentDecision(
+                    operation="execute_agent_tool",
+                    message="inspect navigation state",
+                    tool_name="move_base_navigation_status",
+                    inputs={},
+                )
+            if len(request.observations) == 1:
+                return RobotAgentDecision(
                     operation="execute_skill",
                     message="navigate",
                     tool_name="navigate_to_point",
                     inputs={
                         "x": 2.0,
                         "y": 1.5,
+                        "yaw": 0.0,
                         "frame_id": "map",
                     },
                 )
-            if len(request.observations) == 1:
-                return RobotAgentDecision(
-                    operation="execute_skill",
-                    message="search",
-                    tool_name="search_for_victims",
-                    inputs={},
-                )
             return RobotAgentDecision(
                 operation="complete",
-                message="search complete",
+                message="navigation complete",
             )
 
     policy = Policy()
@@ -292,7 +307,6 @@ def test_gateway_robot_agent_deliberation_executes_one_skill_per_turn(
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="deterministic",
         )
@@ -307,21 +321,19 @@ def test_gateway_robot_agent_deliberation_executes_one_skill_per_turn(
             "POST",
             "/tasks",
             {
-                "command": "去坐标 (2.0, 1.5) 搜索受困人员",
+                "command": "导航到 map 坐标 (2.0, 1.5)",
                 "structured_task": {
                     "task_id": "robot-deliberation-1",
-                    "task_type": "search",
+                    "task_type": "navigate",
                     "target": {
                         "pose": {
                             "x": 2.0,
                             "y": 1.5,
-                            "frame_id": "map",
-                        }
+                            "yaw": 0.0,
+                        },
+                        "frame_id": "map",
                     },
-                    "required_skills": [
-                        "navigate_to_point",
-                        "search_for_victims",
-                    ],
+                    "required_skills": ["navigate_to_point"],
                 },
             },
         )
@@ -339,14 +351,14 @@ def test_gateway_robot_agent_deliberation_executes_one_skill_per_turn(
     result = trace["result"]
     assert result["status"] == "completed"
     assert result["execution"]["status"] == "succeeded"
-    assert [
-        item["skill_name"] for item in result["execution"]["steps"]
-    ] == ["navigate_to_point", "search_for_victims"]
+    assert [item["skill_name"] for item in result["execution"]["steps"]] == [
+        "navigate_to_point"
+    ]
     assert len(policy.requests) == 3
-    assert (
-        policy.requests[1].observations[0].tool_name
-        == "navigate_to_point"
+    assert policy.requests[1].observations[0].tool_name == (
+        "move_base_navigation_status"
     )
+    assert policy.requests[2].observations[1].tool_name == "navigate_to_point"
     event_types = [event["type"] for event in events]
     assert "robot_agent.deliberation_started" in event_types
     assert "robot_agent.observation" in event_types
@@ -361,10 +373,12 @@ def test_gateway_robot_agent_context_includes_skill_tools(tmp_path):
             captured_context.update(context)
             from fireclaw_core.agent.robot_agent import RobotLocalPlan, RobotLocalPlanStep
             return RobotLocalPlan(
-                intent="search",
+                intent="navigate",
                 steps=[
-                    RobotLocalPlanStep("navigate_to_floor", {"floor": 2}),
-                    RobotLocalPlanStep("report_status", {"floor": 2}),
+                    RobotLocalPlanStep(
+                        "navigate_to_point",
+                        {"x": 2.0, "y": 1.5, "yaw": 0.0, "frame_id": "map"},
+                    ),
                 ],
             )
 
@@ -379,7 +393,6 @@ def test_gateway_robot_agent_context_includes_skill_tools(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="deterministic",
         )
@@ -392,12 +405,15 @@ def test_gateway_robot_agent_context_includes_skill_tools(tmp_path):
             "POST",
             "/tasks",
             {
-                "command": "去二楼救人",
+                "command": "导航到 map 坐标 (2.0, 1.5)",
                 "structured_task": {
                     "task_id": "task-1",
-                    "task_type": "search",
-                    "target": {"floor": 2},
-                    "required_skills": ["navigate_to_floor", "report_status"],
+                    "task_type": "navigate",
+                    "target": {
+                        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                        "frame_id": "map",
+                    },
+                    "required_skills": ["navigate_to_point"],
                 },
             },
         )
@@ -406,17 +422,16 @@ def test_gateway_robot_agent_context_includes_skill_tools(tmp_path):
         gateway.stop()
 
     names = [tool["function"]["name"] for tool in captured_context["skill_tools"]]
-    assert "navigate_to_floor" in names
-    assert "report_status" in names
-    assert "return_to_safe_zone" in names
+    assert names == ["navigate_to_point"]
+    agent_tool_names = {
+        tool["function"]["name"] for tool in captured_context["agent_tools"]
+    }
+    assert "move_base_navigation_status" in agent_tool_names
     metadata_names = [m["name"] for m in captured_context["skill_metadata"]]
-    assert "navigate_to_floor" in metadata_names
+    assert metadata_names == ["navigate_to_point"]
     policy_manifest = captured_context["capability_policy"]
     assert policy_manifest["policy_id"] == "fireclaw.capability-policy:v1"
-    assert "navigate_to_floor" in policy_manifest["after"]
-    assert "report_status" in policy_manifest["after"]
-    assert "assess_victim" in policy_manifest["before"]
-    assert "assess_victim" not in policy_manifest["after"]
+    assert policy_manifest["after"] == ["navigate_to_point"]
 
 
 def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
@@ -428,7 +443,6 @@ def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="deterministic",
         )
@@ -440,12 +454,15 @@ def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
             "POST",
             "/tasks",
             {
-                "command": "去2楼搜索受困人员",
+                "command": "导航到 map 坐标 (2.0, 1.5)",
                 "structured_task": {
                     "task_id": "structured-robot-agent-high-risk",
-                    "task_type": "search",
-                    "target": {"floor": 2},
-                    "required_skills": ["navigate_to_floor", "report_status"],
+                    "task_type": "navigate",
+                    "target": {
+                        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                        "frame_id": "map",
+                    },
+                    "required_skills": ["navigate_to_point"],
                     "risk_level": "high",
                 },
             },
@@ -460,16 +477,16 @@ def test_gateway_robot_agent_mode_falls_back_for_high_risk_task(tmp_path):
 
 
 def test_gateway_robot_agent_respects_profile_exposed_skills(tmp_path):
-    """When a profile is loaded, only profile's llm_exposed_skills are exposed to LLM."""
+    """A profile can keep a Plugin Tool enabled without exposing it to the LLM."""
     captured_context = {}
 
     class CapturingPlanner:
         def plan(self, envelope, *, context, cancellation_requested=None):
             captured_context.update(context)
-            from fireclaw_core.agent.robot_agent import RobotLocalPlan, RobotLocalPlanStep
+            from fireclaw_core.agent.robot_agent import RobotLocalPlan
             return RobotLocalPlan(
-                intent="search",
-                steps=[RobotLocalPlanStep("navigate_to_floor", {"floor": 2})],
+                intent="navigate",
+                steps=[],
             )
 
     from fireclaw_core.agent.robot_agent import RobotAgentRuntime
@@ -484,21 +501,20 @@ def test_gateway_robot_agent_respects_profile_exposed_skills(tmp_path):
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             robot_agent_planner="deterministic",
         )
     )
-    # Set a profile that only exposes navigate_to_floor
+    # Keep the Plugin-owned physical Tool enabled, but do not expose it to the LLM.
     gateway.robot_profile = RobotCapabilityProfile(
         robot_id="debug-robot-1",
         base_url="http://127.0.0.1:8765",
         adapter="simulator",
         ros1_config=None,
         data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims", "report_status"),
-        llm_exposed_skills=("navigate_to_floor",),  # Only navigate_to_floor exposed
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=(),
     )
     gateway.robot_agent_runtime = RobotAgentRuntime(planner=CapturingPlanner())
     gateway.start()
@@ -508,12 +524,15 @@ def test_gateway_robot_agent_respects_profile_exposed_skills(tmp_path):
             "POST",
             "/tasks",
             {
-                "command": "去二楼救人",
+                "command": "导航到 map 坐标 (2.0, 1.5)",
                 "structured_task": {
                     "task_id": "task-1",
-                    "task_type": "search",
-                    "target": {"floor": 2},
-                    "required_skills": ["navigate_to_floor", "report_status"],
+                    "task_type": "navigate",
+                    "target": {
+                        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                        "frame_id": "map",
+                    },
+                    "required_skills": ["navigate_to_point"],
                 },
             },
         )
@@ -521,15 +540,13 @@ def test_gateway_robot_agent_respects_profile_exposed_skills(tmp_path):
     finally:
         gateway.stop()
 
-    # report_status is not in profile's llm_exposed_skills, so it should not appear
     names = [tool["function"]["name"] for tool in captured_context["skill_tools"]]
-    assert "navigate_to_floor" in names
-    assert "report_status" not in names  # Constrained by profile
+    assert names == []
     excluded = {
         decision["skill_name"]: decision
         for decision in captured_context["capability_policy"]["excluded"]
     }
-    assert excluded["report_status"]["reason_code"] == (
+    assert excluded["navigate_to_point"]["reason_code"] == (
         "skill_not_exposed_to_llm"
     )
 
@@ -539,7 +556,6 @@ def test_robot_agent_context_uses_runtime_verified_sensors(tmp_path):
         port=0,
         robot_agent_enabled=True,
         memory_path=str(tmp_path / "memory.jsonl"),
-        workspace_skills_dir=None,
     ))
     gateway.robot.available_sensors = []
 

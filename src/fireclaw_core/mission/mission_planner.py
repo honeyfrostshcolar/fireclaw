@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 import re
 from typing import TYPE_CHECKING, Any, Protocol
@@ -97,6 +98,7 @@ class MissionPlannerContext:
     operator_corrections: list[dict[str, Any]] = field(default_factory=list)
     external_knowledge: list[dict[str, Any]] = field(default_factory=list)
     tool_exposed_belief_ids: tuple[str, ...] | None = None
+    active_observation_capabilities: tuple[str, ...] | None = None
 
 
 # --- Protocol ---
@@ -108,14 +110,14 @@ class MissionPlannerProtocol(Protocol):
 
 # --- Intent and capability mapping ---
 
-_INTENT_PATTERNS: list[tuple[str, str, str]] = [
+DEFAULT_INTENT_PATTERNS: tuple[tuple[str, str, str], ...] = (
     # (pattern, intent, required_capability)
-    (r"搜索|搜救|寻找受困|查找受困", "search", "search_for_victims"),
+    (r"搜索|搜救|寻找受困|查找受困", "search", "victim_search"),
     (r"巡逻|巡查|巡检|规划运动|导航测试|简单移动", "patrol", "patrol"),
     (r"灭火|扑灭|压制火势", "firefight", "firefight"),
     (r"侦察|探查|侦查", "recon", "recon"),
     (r"运送|搬运|送物资", "transport", "transport"),
-]
+)
 
 
 def _extract_floors(command: str) -> list[int]:
@@ -147,9 +149,12 @@ def _extract_points(command: str) -> list[dict[str, float]]:
     return points
 
 
-def _detect_intent(command: str) -> tuple[str, str] | None:
+def _detect_intent(
+    command: str,
+    patterns: Sequence[tuple[str, str, str]] = DEFAULT_INTENT_PATTERNS,
+) -> tuple[str, str] | None:
     """Return (intent, capability_required) or None if no intent matched."""
-    for pattern, intent, capability in _INTENT_PATTERNS:
+    for pattern, intent, capability in patterns:
         if re.search(pattern, command):
             return intent, capability
     return None
@@ -171,10 +176,19 @@ def _floor_command(floor: int, intent: str) -> str:
 # --- Planner ---
 
 class MissionPlanner:
-    """Deterministic planner for single-floor targets and legacy floor tasks."""
+    """Deterministic fallback over declared robot capability names."""
+
+    def __init__(
+        self,
+        *,
+        intent_patterns: Sequence[tuple[str, str, str]] | None = None,
+    ) -> None:
+        self.intent_patterns = tuple(
+            intent_patterns or DEFAULT_INTENT_PATTERNS
+        )
 
     def plan(self, command: str, context: MissionPlannerContext | None = None) -> MissionPlanningResult:
-        intent_match = _detect_intent(command)
+        intent_match = _detect_intent(command, self.intent_patterns)
         if intent_match is None:
             return MissionPlanningResult(
                 status="clarify",

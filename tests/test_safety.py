@@ -1,11 +1,25 @@
+from pathlib import Path
+
+from fireclaw_core.agent.agent import FireClawAgent
 from fireclaw_core.approval.execution_authorization import (
     VerifiedExecutionAuthorization,
 )
 from fireclaw_core.planner.planner import RuleBasedPlanner
-from fireclaw_core.agent.robot import DryRunRobotAdapter, EnvironmentState, RobotState
+from fireclaw_core.agent.robot import DryRunRobotAdapter, RobotState
 from fireclaw_core.safety.safety import SafetyGate
 from fireclaw_core.agent.robot import RobotActionResult
-from fireclaw_core.execution.skills import Skill, SkillRegistry, create_default_skill_registry
+from fireclaw_core.execution.skills import Skill, SkillRegistry
+
+
+EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
+
+
+def _navigation_registry(robot_id: str = "robot-1"):
+    return FireClawAgent(
+        robot=DryRunRobotAdapter(robot_id=robot_id),
+        extension_paths=(EXTENSIONS,),
+        plugin_services={"adapter": "dry-run"},
+    ).registry
 
 
 def _verified_authorization() -> VerifiedExecutionAuthorization:
@@ -33,9 +47,9 @@ def _successful_result():
 
 
 def test_safety_allows_valid_dry_run_plan():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    planning_result = RuleBasedPlanner().plan("导航到坐标 (2.0, 1.5)")
     robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    registry = _navigation_registry()
 
     decision = SafetyGate().evaluate(
         planning_result,
@@ -49,13 +63,13 @@ def test_safety_allows_valid_dry_run_plan():
 
 
 def test_safety_blocks_missing_skill_before_execution():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
+    planning_result = RuleBasedPlanner().plan("导航到坐标 (2.0, 1.5)")
     registry = SkillRegistry(skills={})
 
     decision = SafetyGate().evaluate(planning_result, registry, dry_run=True)
 
     assert decision.status == "block"
-    assert "Missing skill: navigate_to_floor" in decision.reasons
+    assert "Missing skill: navigate_to_point" in decision.reasons
 
 
 def test_safety_blocks_skill_when_required_sensor_is_missing():
@@ -103,7 +117,7 @@ def test_safety_allows_skill_when_required_sensor_is_available():
 
 def test_safety_clarifies_unparsed_command():
     planning_result = RuleBasedPlanner().plan("随便看看")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    registry = SkillRegistry(skills={})
 
     decision = SafetyGate().evaluate(planning_result, registry, dry_run=True)
 
@@ -112,26 +126,42 @@ def test_safety_clarifies_unparsed_command():
 
 
 def test_safety_blocks_non_dry_run_mode():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    planning_result = RuleBasedPlanner().plan("运行 simulation_only_motion")
+    registry = SkillRegistry(
+        skills={
+            "simulation_only_motion": Skill(
+                name="simulation_only_motion",
+                description="Simulation-only motion fixture.",
+                handler=lambda inputs: _successful_result(),
+            )
+        }
+    )
 
     decision = SafetyGate().evaluate(
         planning_result,
         registry,
         dry_run=False,
         execution_authorization=_verified_authorization(),
-        available_sensors=set(robot.available_sensors),
     )
 
     assert decision.status == "block"
-    # Default skills have dry_run_only=True, so they're blocked for real robot
-    assert any("not allowed for real robot" in r for r in decision.reasons)
+    assert decision.reasons == [
+        "Skill is not allowed for real robot execution: "
+        "simulation_only_motion"
+    ]
 
 
 def test_safety_blocks_non_dry_run_direct_skill_invocation():
-    planning_result = RuleBasedPlanner().plan("运行 navigate_to_floor")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    planning_result = RuleBasedPlanner().plan("运行 simulation_only_inspection")
+    registry = SkillRegistry(
+        skills={
+            "simulation_only_inspection": Skill(
+                name="simulation_only_inspection",
+                description="Simulation-only inspection fixture.",
+                handler=lambda inputs: _successful_result(),
+            )
+        }
+    )
 
     decision = SafetyGate().evaluate(
         planning_result,
@@ -142,7 +172,10 @@ def test_safety_blocks_non_dry_run_direct_skill_invocation():
     )
 
     assert decision.status == "block"
-    assert decision.reasons == ["Skill is not allowed for real robot execution: navigate_to_floor"]
+    assert decision.reasons == [
+        "Skill is not allowed for real robot execution: "
+        "simulation_only_inspection"
+    ]
 
 
 def test_safety_blocks_retryable_skill_without_idempotency():
@@ -297,8 +330,8 @@ def test_safety_allows_confirmed_real_robot_skill():
 
 
 def test_safety_blocks_when_robot_is_offline():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    planning_result = RuleBasedPlanner().plan("导航到坐标 (2.0, 1.5)")
+    registry = _navigation_registry()
     robot_state = RobotState(
         robot_id="robot-1",
         mode="simulator",
@@ -322,8 +355,8 @@ def test_safety_blocks_when_robot_is_offline():
 
 
 def test_safety_blocks_when_robot_battery_is_too_low():
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    planning_result = RuleBasedPlanner().plan("导航到坐标 (2.0, 1.5)")
+    registry = _navigation_registry()
     robot_state = RobotState(
         robot_id="robot-1",
         mode="simulator",
@@ -346,26 +379,34 @@ def test_safety_blocks_when_robot_battery_is_too_low():
     assert decision.reasons == ["Robot robot-1 battery is too low: 9.0%."]
 
 
-def test_safety_blocks_unreachable_target_floor_from_environment_state():
+def test_safety_clarifies_floor_only_command_in_point_navigation_core():
     planning_result = RuleBasedPlanner().plan("去五楼救人")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
-    environment_state = EnvironmentState(reachable_floors=[1, 2, 3], victims_by_floor={2: 1})
+    registry = _navigation_registry()
 
     decision = SafetyGate().evaluate(
         planning_result,
         registry,
         dry_run=True,
-        environment_state=environment_state,
     )
 
-    assert decision.status == "block"
-    assert decision.reasons == ["Target floor is not reachable: 5"]
+    assert decision.status == "clarify"
+    assert "map 坐标系中的目标点" in decision.reasons[0]
 
 
-def test_safety_blocks_search_when_rgb_camera_is_only_degraded() -> None:
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+def test_safety_blocks_visual_inspection_when_rgb_camera_is_degraded() -> None:
+    planning_result = RuleBasedPlanner().plan("运行 visual_inspection")
+    registry = SkillRegistry(
+        skills={
+            "visual_inspection": Skill(
+                name="visual_inspection",
+                description="Inspect the local scene using RGB imagery.",
+                handler=lambda inputs: _successful_result(),
+                required_sensors=["rgb_camera"],
+                dry_run_only=False,
+                allow_real_robot=True,
+            )
+        }
+    )
     robot_state = RobotState(
         robot_id="robot-1",
         mode="ros1",
@@ -397,17 +438,18 @@ def test_safety_blocks_search_when_rgb_camera_is_only_degraded() -> None:
         registry,
         dry_run=False,
         robot_state=robot_state,
-        environment_state=EnvironmentState(reachable_floors=[2]),
     )
 
     assert decision.status == "block"
-    assert "Skill search_for_victims requires unavailable sensor: rgb_camera" in decision.reasons
+    assert (
+        "Skill visual_inspection requires unavailable sensor: rgb_camera"
+        in decision.reasons
+    )
 
 
 def test_safety_blocks_navigation_when_lidar_health_is_invalid() -> None:
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    robot = DryRunRobotAdapter(robot_id="robot-1")
-    registry = create_default_skill_registry(robot)
+    planning_result = RuleBasedPlanner().plan("导航到坐标 (2.0, 1.5)")
+    registry = _navigation_registry()
     robot_state = RobotState(
         robot_id="robot-1",
         mode="ros1",
@@ -440,22 +482,23 @@ def test_safety_blocks_navigation_when_lidar_health_is_invalid() -> None:
         registry,
         dry_run=False,
         robot_state=robot_state,
-        environment_state=EnvironmentState(reachable_floors=[2]),
         execution_authorization=_verified_authorization(),
     )
 
     assert decision.status == "block"
-    assert "Skill navigate_to_floor requires lidar, but health is invalid: no finite ranges" in decision.reasons
+    assert (
+        "Skill navigate_to_point requires lidar, but health is invalid: "
+        "no finite ranges"
+    ) in decision.reasons
 
 
 def test_safety_requires_confirmation_when_imu_health_is_unknown_for_navigation() -> None:
-    planning_result = RuleBasedPlanner().plan("运行 navigate_to_floor")
-    robot = DryRunRobotAdapter(robot_id="robot-1")
+    planning_result = RuleBasedPlanner().plan("运行 stabilized_motion")
     registry = SkillRegistry(
         skills={
-            "navigate_to_floor": Skill(
-                name="navigate_to_floor",
-                description="Navigate robot to a target floor.",
+            "stabilized_motion": Skill(
+                name="stabilized_motion",
+                description="Run a motion primitive requiring IMU health.",
                 handler=lambda inputs: _successful_result(),
                 required_sensors=["imu"],
                 allow_real_robot=True,
@@ -499,16 +542,19 @@ def test_safety_requires_confirmation_when_imu_health_is_unknown_for_navigation(
     )
 
     assert decision.status == "require_confirmation"
-    assert "Skill navigate_to_floor requires imu, but health is unknown: observation age is unknown" in decision.reasons
+    assert (
+        "Skill stabilized_motion requires imu, but health is unknown: "
+        "observation age is unknown"
+    ) in decision.reasons
 
 
 def test_safety_warns_for_unknown_lidar_health_in_dry_run() -> None:
-    planning_result = RuleBasedPlanner().plan("运行 navigate_to_floor")
+    planning_result = RuleBasedPlanner().plan("运行 local_motion")
     registry = SkillRegistry(
         skills={
-            "navigate_to_floor": Skill(
-                name="navigate_to_floor",
-                description="Navigate robot to a target floor.",
+            "local_motion": Skill(
+                name="local_motion",
+                description="Run a local motion primitive.",
                 handler=lambda inputs: _successful_result(),
                 required_sensors=["lidar"],
                 dry_run_only=True,
@@ -551,12 +597,15 @@ def test_safety_warns_for_unknown_lidar_health_in_dry_run() -> None:
     )
 
     assert decision.status == "allow"
-    assert "Skill navigate_to_floor requires lidar, but health is unknown: observation age is unknown" in decision.warnings
+    assert (
+        "Skill local_motion requires lidar, but health is unknown: "
+        "observation age is unknown"
+    ) in decision.warnings
 
 
 def test_safety_uses_backend_verified_sensors_from_robot_state() -> None:
-    planning_result = RuleBasedPlanner().plan("去二楼救人")
-    registry = create_default_skill_registry(DryRunRobotAdapter(robot_id="robot-1"))
+    planning_result = RuleBasedPlanner().plan("导航到坐标 (2.0, 1.5)")
+    registry = _navigation_registry()
     robot_state = RobotState(
         robot_id="robot-1",
         mode="simulator",
@@ -578,7 +627,6 @@ def test_safety_uses_backend_verified_sensors_from_robot_state() -> None:
         registry,
         dry_run=True,
         robot_state=robot_state,
-        environment_state=EnvironmentState(reachable_floors=[2]),
     )
 
     assert decision.status == "allow"

@@ -72,6 +72,35 @@ class _Agent:
         return {"status": "cancel_requested", "mission_id": mission_id}
 
 
+class _TimedOutAgent(_Agent):
+    def plan_and_submit(self, command: str, **kwargs):
+        self.started.set()
+        return {
+            "status": "timed_out",
+            "mission_id": kwargs["session_id"],
+            "subtask_results": [
+                {"robot_id": "robot-1", "status": "timed_out"}
+            ],
+        }
+
+    def mission_trace(self, mission_id: str):
+        return {
+            "mission_id": mission_id,
+            "status": "failed",
+            "subtasks": [{
+                "robot_id": "robot-1",
+                "task_id": "task-1",
+                "status": "timed_out",
+                "result": {
+                    "status": "timed_out",
+                    "cancellation_reason": "deadline_exceeded",
+                    "cancellation_acknowledged": True,
+                    "runtime_stopped": True,
+                },
+            }],
+        }
+
+
 def _wait_for(manager: MissionRunManager, mission_id: str, status: str) -> dict:
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
@@ -123,7 +152,13 @@ def test_pause_resume_and_correction_are_auditable():
 
 def test_cancel_sets_control_and_requests_robot_cancellation():
     agent = _Agent(delay=1.0)
-    manager = MissionRunManager(agent)
+    events: list[str] = []
+    manager = MissionRunManager(
+        agent,
+        event_sink=lambda event_type, _mission_id, _payload: events.append(
+            event_type
+        ),
+    )
     manager.submit("导航到入口", mission_id="m-3")
     assert agent.started.wait(timeout=1)
 
@@ -131,6 +166,30 @@ def test_cancel_sets_control_and_requests_robot_cancellation():
     assert cancelled["status"] == "cancel_requested"
     assert agent.cancel_calls == ["m-3"]
     assert _wait_for(manager, "m-3", "cancelled")["final_report"]["status"] == "cancelled"
+    assert "mission.cancel_requested" in events
+    assert "mission.cancelled" in events
+    assert "mission.completed" not in events
+
+
+def test_timeout_emits_canonical_mission_terminal_event():
+    agent = _TimedOutAgent()
+    events: list[str] = []
+    manager = MissionRunManager(
+        agent,
+        event_sink=lambda event_type, _mission_id, _payload: events.append(
+            event_type
+        ),
+    )
+
+    manager.submit("导航到入口", mission_id="m-timeout")
+    result = _wait_for(manager, "m-timeout", "timed_out")
+
+    assert result["result"]["status"] == "timed_out"
+    assert result["final_report"]["status"] == "timed_out"
+    assert "mission.report_ready" in events
+    assert "mission.timed_out" in events
+    assert "mission.completed" not in events
+    assert "mission.cancelled" not in events
 
 
 def test_mission_registry_persists_final_report(tmp_path):

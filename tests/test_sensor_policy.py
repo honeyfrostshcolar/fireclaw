@@ -3,7 +3,7 @@ from fireclaw_core.safety.sensor_policy import evaluate_sensor_policy
 
 def test_policy_allows_healthy_required_sensor() -> None:
     decision = evaluate_sensor_policy(
-        skill_name="search_for_victims",
+        skill_name="victim_search",
         sensor="rgb_camera",
         health_status="healthy",
         mode="ros1",
@@ -17,7 +17,7 @@ def test_policy_allows_healthy_required_sensor() -> None:
 
 def test_policy_blocks_victim_search_when_rgb_camera_degraded_without_alternative() -> None:
     decision = evaluate_sensor_policy(
-        skill_name="search_for_victims",
+        skill_name="victim_search",
         sensor="rgb_camera",
         health_status="degraded",
         health_reason="payload is empty",
@@ -29,12 +29,12 @@ def test_policy_blocks_victim_search_when_rgb_camera_degraded_without_alternativ
     )
 
     assert decision.action == "block"
-    assert decision.reason == "Skill search_for_victims requires rgb_camera, but health is degraded: payload is empty"
+    assert decision.reason == "Skill victim_search requires rgb_camera, but health is degraded: payload is empty"
 
 
 def test_policy_escalates_victim_search_when_rgb_camera_degraded_but_thermal_verified() -> None:
     decision = evaluate_sensor_policy(
-        skill_name="search_for_victims",
+        skill_name="victim_search",
         sensor="rgb_camera",
         health_status="degraded",
         health_reason="payload is empty",
@@ -46,7 +46,7 @@ def test_policy_escalates_victim_search_when_rgb_camera_degraded_but_thermal_ver
     )
 
     assert decision.action == "escalate"
-    assert decision.reason == "Skill search_for_victims requires rgb_camera, but thermal_camera is the only verified victim-search sensor."
+    assert decision.reason == "Skill victim_search requires rgb_camera, but thermal_camera is the only verified victim-search sensor."
 
 
 def test_policy_blocks_gas_detector_failures_for_real_execution() -> None:
@@ -67,7 +67,7 @@ def test_policy_blocks_gas_detector_failures_for_real_execution() -> None:
 
 def test_policy_blocks_lidar_failures_for_real_navigation() -> None:
     decision = evaluate_sensor_policy(
-        skill_name="navigate_to_floor",
+        skill_name="navigate_to_waypoint",
         sensor="lidar",
         health_status="invalid",
         health_reason="no finite ranges",
@@ -78,12 +78,12 @@ def test_policy_blocks_lidar_failures_for_real_navigation() -> None:
     )
 
     assert decision.action == "block"
-    assert decision.reason == "Skill navigate_to_floor requires lidar, but health is invalid: no finite ranges"
+    assert decision.reason == "Skill navigate_to_waypoint requires lidar, but health is invalid: no finite ranges"
 
 
 def test_policy_warns_for_unknown_sensor_health_in_dry_run() -> None:
     decision = evaluate_sensor_policy(
-        skill_name="navigate_to_floor",
+        skill_name="navigate_to_waypoint",
         sensor="lidar",
         health_status="unknown",
         health_reason="observation age is unknown",
@@ -93,12 +93,12 @@ def test_policy_warns_for_unknown_sensor_health_in_dry_run() -> None:
     )
 
     assert decision.action == "warn"
-    assert decision.reason == "Skill navigate_to_floor requires lidar, but health is unknown: observation age is unknown"
+    assert decision.reason == "Skill navigate_to_waypoint requires lidar, but health is unknown: observation age is unknown"
 
 
 def test_policy_escalates_unknown_sensor_health_for_real_execution() -> None:
     decision = evaluate_sensor_policy(
-        skill_name="navigate_to_floor",
+        skill_name="navigate_to_waypoint",
         sensor="imu",
         health_status="unknown",
         health_reason="observation age is unknown",
@@ -108,4 +108,4 @@ def test_policy_escalates_unknown_sensor_health_for_real_execution() -> None:
     )
 
     assert decision.action == "escalate"
-    assert decision.reason == "Skill navigate_to_floor requires imu, but health is unknown: observation age is unknown"
+    assert decision.reason == "Skill navigate_to_waypoint requires imu, but health is unknown: observation age is unknown"

@@ -108,8 +108,8 @@ class TaskTypeRegistry:
 DEFAULT_TASK_TYPE_DEFINITIONS = (
     TaskTypeDefinition(
         task_type="victim_search",
-        allowed_capabilities=("search_for_victims",),
-        success_skills=("search_for_victims",),
+        allowed_capabilities=("victim_search",),
+        success_skills=("victim_search",),
         result_evidence_kind="victim_search_result",
         result_criteria={
             "victims_found": {"operator": "gte", "value": 0},
@@ -122,15 +122,14 @@ DEFAULT_TASK_TYPE_DEFINITIONS = (
         task_type="navigation",
         allowed_capabilities=(
             "navigate",
+            "navigation",
             "navigate_to_point",
             "navigate_to_pose",
-            "navigate_to_floor",
         ),
         success_skills=(
             "navigate",
             "navigate_to_point",
             "navigate_to_pose",
-            "navigate_to_floor",
         ),
         default_timeout_seconds=120.0,
         recovery_policy="replan",
@@ -489,8 +488,7 @@ def _extract_observations(
                 )
             )
         if (
-            skill_name == "search_for_victims"
-            and isinstance(data.get("victims_found"), int)
+            isinstance(data.get("victims_found"), int)
             and not isinstance(data.get("victims_found"), bool)
         ):
             observations.append(

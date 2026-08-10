@@ -13,7 +13,6 @@ from typing import Any
 from fireclaw_plugin_sdk import PluginApi
 
 from .move_base import (
-    AdapterDispatchMoveBaseBackend,
     InMemoryMoveBaseBackend,
     MoveBaseParameterPolicy,
     Ros1MoveBaseBackend,
@@ -22,27 +21,25 @@ from .move_base import (
 )
 
 
-def _config(api: PluginApi, key: str, legacy_key: str, default: Any) -> Any:
-    """Read provider config, retaining old Gateway keys during migration."""
-
-    value = api.config.get(key)
-    if value is not None:
-        return value
-    gateway_config = api.services.get("gateway_config")
-    return getattr(gateway_config, legacy_key, default)
+BACKEND_SERVICE = "fireclaw.navigation.move-base.backend"
 
 
 def _backend(api: PluginApi) -> Any | None:
-    injected = api.services.get("move_base_navigation_backend")
+    # A deployment or acceptance harness may inject a namespaced backend
+    # through the host's generic service bag. FireClaw core does not know this
+    # key and never supplies a navigation-specific fallback.
+    injected = api.services.get(BACKEND_SERVICE)
     if injected is not None:
         return injected
     adapter = str(api.services.get("adapter") or "")
     if adapter == "ros1":
         return Ros1MoveBaseBackend()
-    if adapter in {"dry-run", "simulator", "mock-ros1", "mock-ros2"}:
-        dispatcher = api.services.get("robot_action_dispatch")
-        if callable(dispatcher):
-            return AdapterDispatchMoveBaseBackend(dispatcher)
+    if api.mode == "simulation" and adapter in {
+        "dry-run",
+        "simulator",
+        "mock-ros1",
+        "mock-ros2",
+    }:
         return InMemoryMoveBaseBackend()
     return None
 
@@ -50,14 +47,7 @@ def _backend(api: PluginApi) -> Any | None:
 def register(api: PluginApi) -> None:
     """Register the extension's six typed move_base Agent Tools."""
 
-    if not bool(
-        _config(
-            api,
-            "enabled",
-            "move_base_navigation_tools_enabled",
-            True,
-        )
-    ):
+    if not bool(api.config.get("enabled", True)):
         return
     backend = _backend(api)
     if backend is None:
@@ -65,22 +55,25 @@ def register(api: PluginApi) -> None:
 
     # Physical motion is contributed by the Navigation Plugin itself.  The
     # core only projects this contract through its generic lifecycle/safety
-    # runtime; it does not require Ros1RobotAdapter.navigate_to_point().
+    # runtime; no domain action method is required on RobotAdapter.
     if api.role == "robot_agent" and callable(
         getattr(backend, "navigate_to_point", None)
     ):
-        for physical_tool in move_base_navigation_physical_tools(backend):
+        for physical_tool in move_base_navigation_physical_tools(
+            backend,
+            timeout_seconds=api.config.get(
+                "navigate_timeout_seconds",
+                120.0,
+            ),
+            cancellation_ack_timeout_seconds=api.config.get(
+                "cancellation_ack_timeout_seconds",
+                2.0,
+            ),
+        ):
             api.register_physical_tool(physical_tool)
 
-    real_mutation_enabled = bool(
-        _config(api, "real_mutation_enabled", "move_base_real_mutation_enabled", False)
-    )
-    raw_allowlist = _config(
-        api,
-        "real_mutable_parameters",
-        "move_base_real_mutable_parameters",
-        (),
-    )
+    real_mutation_enabled = bool(api.config.get("real_mutation_enabled", False))
+    raw_allowlist = api.config.get("real_mutable_parameters", ())
     if isinstance(raw_allowlist, str):
         real_mutable_parameters: tuple[str, ...] = (raw_allowlist,)
     elif isinstance(raw_allowlist, Sequence):

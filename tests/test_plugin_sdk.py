@@ -5,8 +5,8 @@ from pathlib import Path
 from fireclaw_core.agent.robot import DryRunRobotAdapter
 from fireclaw_core.agent.tool_runtime import AgentTool, AgentToolRuntime
 from fireclaw_core.execution.action_runtime import (
+    RegisteredActionBackend,
     RobotActionRuntime,
-    RobotAdapterActionBackend,
 )
 from fireclaw_core.execution.skills import SkillRegistry
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
@@ -98,6 +98,8 @@ def test_public_physical_tool_uses_plugin_handler_without_adapter_method() -> No
                     "data": {"fixture": arguments["fixture"]},
                 },
                 dry_run_only=True,
+                timeout_seconds=10.0,
+                cancellation_ack_timeout_seconds=0.5,
             )
         ),
         trust_level="trusted",
@@ -106,7 +108,7 @@ def test_public_physical_tool_uses_plugin_handler_without_adapter_method() -> No
     contribution = host.get("physical_capability", "inspect_fixture")
     assert contribution is not None
     robot = DryRunRobotAdapter(robot_id="physical-sdk-test")
-    runtime = RobotActionRuntime(backend=RobotAdapterActionBackend(robot))
+    runtime = RobotActionRuntime(backend=RegisteredActionBackend(robot))
     registry = SkillRegistry(skills={}, host=host)
     skill = registry.register_plugin(
         contribution.value,
@@ -118,6 +120,9 @@ def test_public_physical_tool_uses_plugin_handler_without_adapter_method() -> No
     assert result.ok is True
     assert result.action == "inspect_fixture_action"
     assert result.data["fixture"] == "door-a"
+    assert skill.timeout_seconds == 10.0
+    assert skill.cancellation_ack_timeout_seconds == 0.5
+    assert skill.metadata["cancellation_ack_timeout_seconds"] == 0.5
 
 
 def test_public_physical_tool_cannot_forge_plugin_owner() -> None:

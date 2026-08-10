@@ -8,12 +8,6 @@ from typing import Any
 from fireclaw_core.approval.execution_authorization import (
     ExecutionAuthorization,
 )
-from fireclaw_core.execution.builtin_physical_skills import (
-    auto_skills_for_target,
-    get_builtin_physical_skill,
-    skill_chain_for_capability,
-    task_type_for_capability,
-)
 from fireclaw_core.execution.skill_plugin import PhysicalSkillPlugin
 from fireclaw_core.mission.mission_planner import MissionSubtask
 from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
@@ -106,15 +100,20 @@ def structured_task_from_mission_subtask(
     operator_id: str | None = None,
     task_id: str | None = None,
     capability_skill_chains: dict[str, list[str]] | None = None,
+    skill_catalog: Any | None = None,
     memory_lineage: MemoryLineage | None = None,
 ) -> StructuredRobotTask:
     task_type = (
         subtask.task_type
-        or _task_type_from_capability(subtask.capability_required)
+        or _task_type_from_capability(
+            subtask.capability_required,
+            skill_catalog=skill_catalog,
+        )
     )
     required_skills = skills_from_capability(
         subtask.capability_required,
         capability_skill_chains=capability_skill_chains,
+        skill_catalog=skill_catalog,
     )
     target = (
         dict(subtask.target)
@@ -125,7 +124,7 @@ def structured_task_from_mission_subtask(
             else {}
         )
     )
-    for skill_name in reversed(auto_skills_for_target(target)):
+    for skill_name in reversed(_auto_skills_for_target(target, skill_catalog)):
         if skill_name not in required_skills:
             required_skills.insert(0, skill_name)
     return StructuredRobotTask(
@@ -286,22 +285,29 @@ def planning_result_from_structured_task(
     )
 
 
-def _task_type_from_capability(capability: str) -> str:
-    return task_type_for_capability(capability)
+def _task_type_from_capability(
+    capability: str,
+    *,
+    skill_catalog: Any | None = None,
+) -> str:
+    resolver = getattr(skill_catalog, "task_type_for_capability", None)
+    if callable(resolver):
+        return str(resolver(capability))
+    return capability
 
 
 def skills_from_capability(
     capability: str,
     *,
     capability_skill_chains: dict[str, list[str]] | None = None,
+    skill_catalog: Any | None = None,
 ) -> list[str]:
     if capability_skill_chains is not None and capability in capability_skill_chains:
         return list(capability_skill_chains[capability])
-    return _skills_from_capability(capability)
-
-
-def _skills_from_capability(capability: str) -> list[str]:
-    return skill_chain_for_capability(capability)
+    resolver = getattr(skill_catalog, "skill_chain_for_capability", None)
+    if callable(resolver):
+        return list(resolver(capability))
+    return [capability]
 
 
 def _optional_str(value: Any) -> str | None:
@@ -316,7 +322,7 @@ def _physical_plugin(
     skill_catalog: Any | None,
 ) -> PhysicalSkillPlugin | None:
     if skill_catalog is None:
-        return get_builtin_physical_skill(skill_name)
+        return None
     getter = getattr(skill_catalog, "get", None)
     if not callable(getter):
         return None
@@ -325,3 +331,13 @@ def _physical_plugin(
         return value
     plugin = getattr(value, "physical_plugin", None)
     return plugin if isinstance(plugin, PhysicalSkillPlugin) else None
+
+
+def _auto_skills_for_target(
+    target: dict[str, Any],
+    skill_catalog: Any | None,
+) -> list[str]:
+    resolver = getattr(skill_catalog, "auto_skills_for_target", None)
+    if callable(resolver):
+        return list(resolver(target))
+    return []

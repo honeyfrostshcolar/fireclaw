@@ -17,14 +17,17 @@ def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_state(tmp_p
     assert result["operator"]["role"] == "operator"
     assert result["control"]["status"] == "allow"
     assert result["robot_state"]["mode"] == "mock_ros1"
-    assert result["result"]["execution"]["steps"][0]["output"]["ros1_name"] == "/fireclaw/demo-ros1/navigation"
+    output = result["result"]["execution"]["steps"][0]["output"]
+    assert output["goal_reached"] is True
+    assert output["frame_id"] == "map"
+    assert "ros1_name" not in output
     assert "operator.identified" in result["event_types"]
     assert "control.decision" in result["event_types"]
     assert "action.requested" in result["event_types"]
     assert "action.succeeded" in result["event_types"]
     assert result["state"]["task"]["status"] == "completed"
-    assert result["state"]["task"]["action_count"] == 5
-    assert len(result["state"]["actions"]) == 5
+    assert result["state"]["task"]["action_count"] == 1
+    assert len(result["state"]["actions"]) == 1
     assert result["action_events"][0]["payload"]["action_type"] == "navigate_to_point"
 
 
@@ -38,13 +41,12 @@ def test_run_rescue_demo_returns_gateway_trace_with_mock_ros1_action_feedback(tm
 
     assert "action.feedback" in result["event_types"]
     feedback_events = [event for event in result["action_events"] if event["type"] == "action.feedback"]
-    assert len(feedback_events) >= 2
-    assert feedback_events[0]["payload"]["progress"] == 0.25
-    assert feedback_events[-1]["payload"]["progress"] == 0.75
+    assert len(feedback_events) == 1
+    assert feedback_events[0]["payload"]["progress"] == 1.0
     navigate_state = next(
         action
         for action in result["state"]["actions"]
         if action["action_type"] == "navigate_to_point"
     )
-    assert navigate_state["feedback_count"] == 2
-    assert navigate_state["last_feedback"]["message"] == "approaching target point"
+    assert navigate_state["feedback_count"] == 1
+    assert navigate_state["last_feedback"]["message"] == "navigation goal reached"

@@ -92,8 +92,8 @@ execution. The provider owns its Tool schemas, Runtime/ROS adapter, Skill
 workflow, and plugin-specific configuration. Core code passes opaque
 manifest-keyed configuration and generic services; it does not add a new
 Gateway branch for each Plugin. `extensions/navigation-move-base` is the first
-package using this contract. Its old `fireclaw_core.navigation.move_base_plugin`
-path is now only a compatibility shim.
+package using this contract. The former core navigation registration module
+has been removed.
 
 Native Python extensions should use the public `fireclaw_plugin_sdk.ToolSpec`
 contract. The extension entrypoint contributes a host-neutral Tool description;
@@ -108,18 +108,19 @@ ownership, and runtime activation. It is still an in-process trusted boundary;
 third-party package signatures and a general isolated Plugin process remain
 future hardening work.
 
-The old APIs are compatibility projections:
+Some Python class names remain compatibility projections over the one Plugin
+Host ownership table:
 
-- `PluginRuntime` projects descriptors and callable hooks;
-- `PhysicalSkillCatalog` projects unbound physical capabilities;
-- `SkillRegistry` projects executable tools bound to the current Adapter;
-- `load_workspace_skills(..., plugin_host=...)` contributes legacy process
-  Tools only after deployment policy allows `effect=process` with
-  `requires_sandbox=true`; execution uses the shared `ComputerSandbox`.
+- `PhysicalSkillPlugin` is the legacy-named internal form of a physical Tool
+  contribution;
+- `SkillRegistry` is the legacy-named executable Tool projection for one
+  Robot Agent;
+- `PluginRuntime` projects descriptor and hook contributions represented by
+  the unified Host.
 
-Passing the same host makes these views share one ownership and conflict
-table. Existing callers can migrate incrementally without maintaining a
-second authoritative registry.
+The former workspace executable-Tool loader and its separate manifest path
+have been removed. Process Tools must now be contributed by a Plugin and pass
+the normal deployment policy and sandbox boundary.
 
 ## Shared Agent Turn
 
@@ -168,10 +169,8 @@ model-call behavior.
 
 ## Current Boundaries
 
-- Third-party package signatures and a general isolated plugin process are not
-  implemented. Untrusted executable contributions therefore fail closed;
-  legacy executable manifests are admitted only through Docker-backed Tool
-  wrappers.
+- Third-party package signatures and a general isolated Plugin process are not
+  implemented. Untrusted executable contributions therefore fail closed.
 - Harness selection is explicit injection; provider/model compatibility
   probing is not yet a fleet-wide policy.
 - Tool permission provenance is enforced through the unified capability

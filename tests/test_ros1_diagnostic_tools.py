@@ -4,9 +4,6 @@ import sys
 import threading
 from pathlib import Path
 
-from fireclaw_core.agent.ros_diagnostic_tools import (
-    register_ros1_diagnostic_tool_plugin,
-)
 from fireclaw_core.agent.robot_deliberation import (
     RobotAgentDecision,
     RobotAgentDeliberationRuntime,
@@ -14,6 +11,7 @@ from fireclaw_core.agent.robot_deliberation import (
 from fireclaw_core.agent.tool_runtime import AgentToolRuntime
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
+from fireclaw_core.plugin.extension_loader import load_fireclaw_extensions
 from fireclaw_core.policy.deployment import (
     DeploymentProfile,
     SandboxProfile,
@@ -29,6 +27,9 @@ from fireclaw_core.ros.ros1_diagnostics import (
     SubprocessRos1CommandRunner,
 )
 from fireclaw_core.task.task_contract import StructuredRobotTask
+
+
+_EXTENSIONS = Path(__file__).resolve().parents[1] / "extensions"
 
 
 class RecordingRunner:
@@ -80,7 +81,16 @@ def _runtime(
     role: str = "robot_agent",
 ) -> AgentToolRuntime:
     host = FireClawPluginHost()
-    register_ros1_diagnostic_tool_plugin(host, backend)
+    load_fireclaw_extensions(
+        host,
+        (_EXTENSIONS / "ros1-diagnostics",),
+        mode="simulation",
+        role=role,
+        services={
+            "fireclaw.agent-tools.ros1-diagnostics.backend": backend,
+        },
+        strict=True,
+    )
     return AgentToolRuntime(
         plugin_host=host,
         profile=DeploymentProfile(
@@ -154,7 +164,6 @@ angle_min: -1.0
             robot_agent_checkpoint_path=str(
                 tmp_path / "checkpoints.jsonl"
             ),
-            workspace_skills_dir=None,
             robot_agent_enabled=True,
             deployment_profile=profile,
         ),

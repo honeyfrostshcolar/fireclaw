@@ -24,38 +24,6 @@ class Ros2AdapterProtocol(Protocol):
     mode: str  # "ros2"
     dry_run: bool
 
-    def navigate_to_point(
-        self,
-        x: float,
-        y: float,
-        yaw: float = 0.0,
-        frame_id: str = "map",
-        **kwargs: Any,
-    ) -> Any:
-        """Navigate within the current map to a 2D target point."""
-        ...
-
-    # Legacy extension point for future multi-floor deployments.
-    def navigate_to_floor(self, floor: int, **kwargs: Any) -> Any:
-        """Navigate robot to specified floor."""
-        ...
-
-    def search_for_victims(self, floor: int, **kwargs: Any) -> Any:
-        """Search for victims on specified floor."""
-        ...
-
-    def assess_victim(self, floor: int, **kwargs: Any) -> Any:
-        """Assess victim condition on specified floor."""
-        ...
-
-    def report_status(self, floor: int, **kwargs: Any) -> Any:
-        """Report robot status."""
-        ...
-
-    def return_to_safe_zone(self, **kwargs: Any) -> Any:
-        """Return robot to safe zone."""
-        ...
-
     def emergency_stop(self, reason: str | None = None, **kwargs: Any) -> Any:
         """Emergency stop robot."""
         ...
@@ -66,10 +34,6 @@ class Ros2AdapterProtocol(Protocol):
 
     def get_environment_state(self) -> Any:
         """Get current environment state snapshot."""
-        ...
-
-    def capabilities(self) -> Any:
-        """Get adapter capabilities."""
         ...
 
     def init_node(self, node_name: str) -> None:

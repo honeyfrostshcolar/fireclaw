@@ -5,17 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-# Compatibility endpoint names for the legacy ROS1 adapter configuration.
-# Plugin-owned physical Tools provide their own runtime endpoint contract and
-# are not imported while this low-level config module is initializing.
-ROS1_ACTION_NAMES = (
-    "navigate_to_floor",
-    "search_for_victims",
-    "assess_victim",
-    "report_status",
-    "return_to_safe_zone",
-    "emergency_stop",
-)
 ROS1_INTERFACES = ("topic", "service", "action")
 DEFAULT_ROS1_DIAGNOSTIC_TOPIC_ALLOWLIST = (
     "/scan",
@@ -48,28 +37,6 @@ DEFAULT_ROS1_DIAGNOSTIC_FRAME_ALLOWLIST = (
     "camera_*",
 )
 DEFAULT_ROS1_DIAGNOSTIC_ACTION_ALLOWLIST = ("/move_base",)
-ROS1_ENDPOINT_PROFILES: dict[str, dict[str, Any]] = {
-    "move_base": {
-        "interface": "action",
-        "type": "move_base_msgs/MoveBaseAction",
-        "cancel_supported": True,
-        "feedback_supported": True,
-    },
-    "trigger_service": {
-        "interface": "service",
-        "type": "std_srvs/Trigger",
-        "cancel_supported": False,
-        "feedback_supported": False,
-    },
-    "string_topic": {
-        "interface": "topic",
-        "type": "std_msgs/String",
-        "cancel_supported": False,
-        "feedback_supported": False,
-    },
-}
-
-
 @dataclass(frozen=True)
 class Ros1EndpointConfig:
     interface: str
@@ -87,11 +54,6 @@ class Ros1EmergencyStopConfig:
     interface: str
     name: str
     type: str
-
-
-@dataclass(frozen=True)
-class Ros1TimeoutConfig:
-    default_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -123,10 +85,7 @@ class Ros1DiagnosticsConfig:
 class Ros1AdapterConfig:
     robot_id: str
     namespace: str | None = None
-    endpoints: dict[str, Ros1EndpointConfig] = field(default_factory=dict)
     emergency_stop: Ros1EmergencyStopConfig | None = None
-    timeouts: Ros1TimeoutConfig = field(default_factory=Ros1TimeoutConfig)
-    targets: dict[str, Any] = field(default_factory=dict)
     transport: Ros1TransportConfig = field(default_factory=Ros1TransportConfig)
     diagnostics: Ros1DiagnosticsConfig = field(
         default_factory=Ros1DiagnosticsConfig
@@ -154,75 +113,39 @@ def parse_ros1_adapter_config(raw: dict[str, Any]) -> Ros1AdapterConfig:
     if namespace is not None and not isinstance(namespace, str):
         raise ValueError("namespace must be a string when provided.")
 
-    endpoints_raw = raw.get("remap", raw.get("endpoints", {}))
-    if not isinstance(endpoints_raw, dict):
-        raise ValueError("endpoints/remap must be an object.")
-    endpoints_source = dict(endpoints_raw)
-    emergency_stop_from_remap = endpoints_source.pop("emergency_stop", None)
-    endpoints = {
-        action_name: _parse_endpoint_config(action_name, endpoint_raw)
-        for action_name, endpoint_raw in endpoints_source.items()
-    }
+    if "endpoints" in raw or "remap" in raw or "targets" in raw:
+        raise ValueError(
+            "ROS1 adapter domain endpoints were removed; configure runtime "
+            "endpoints in the owning Plugin instead."
+        )
 
     emergency_stop = None
-    emergency_stop_raw = raw.get("emergency_stop", emergency_stop_from_remap)
+    emergency_stop_raw = raw.get("emergency_stop")
     if emergency_stop_raw is not None:
         emergency_stop = _parse_emergency_stop_config(emergency_stop_raw)
 
-    timeouts_raw = raw.get("timeouts", {})
-    if not isinstance(timeouts_raw, dict):
-        raise ValueError("timeouts must be an object.")
-    timeouts = Ros1TimeoutConfig(default_seconds=float(timeouts_raw.get("default_seconds", 30.0)))
-    if timeouts.default_seconds <= 0:
-        raise ValueError("timeouts.default_seconds must be greater than zero.")
-    targets = raw.get("targets", {})
-    if not isinstance(targets, dict):
-        raise ValueError("targets must be an object.")
     transport = _parse_transport_config(raw.get("transport", {}))
     diagnostics = _parse_diagnostics_config(raw.get("diagnostics", {}))
 
     return Ros1AdapterConfig(
         robot_id=robot_id,
         namespace=namespace,
-        endpoints=endpoints,
         emergency_stop=emergency_stop,
-        timeouts=timeouts,
-        targets=targets,
         transport=transport,
         diagnostics=diagnostics,
-    )
-
-
-def _parse_endpoint_config(action_name: str, raw: Any) -> Ros1EndpointConfig:
-    if not isinstance(raw, dict):
-        raise ValueError(f"{action_name} endpoint must be an object.")
-    expanded = _expand_endpoint_profile(action_name, raw)
-    interface = _required_string(expanded, "interface", prefix=action_name)
-    if interface not in ROS1_INTERFACES:
-        raise ValueError(f"{action_name}.interface must be one of {', '.join(ROS1_INTERFACES)}.")
-    return Ros1EndpointConfig(
-        interface=interface,
-        name=_required_string(expanded, "name", prefix=action_name),
-        type=_required_string(expanded, "type", prefix=action_name),
-        cancel_supported=bool(expanded.get("cancel_supported", False)),
-        feedback_supported=bool(expanded.get("feedback_supported", False)),
-        profile=expanded.get("profile"),
-        goal_template=_optional_mapping(expanded, "goal_template", prefix=action_name),
-        request_template=_optional_mapping(expanded, "request_template", prefix=action_name),
     )
 
 
 def _parse_emergency_stop_config(raw: Any) -> Ros1EmergencyStopConfig:
     if not isinstance(raw, dict):
         raise ValueError("emergency_stop must be an object.")
-    expanded = _expand_endpoint_profile("emergency_stop", raw)
-    interface = _required_string(expanded, "interface", prefix="emergency_stop")
+    interface = _required_string(raw, "interface", prefix="emergency_stop")
     if interface not in ROS1_INTERFACES:
         raise ValueError(f"emergency_stop.interface must be one of {', '.join(ROS1_INTERFACES)}.")
     return Ros1EmergencyStopConfig(
         interface=interface,
-        name=_required_string(expanded, "name", prefix="emergency_stop"),
-        type=_required_string(expanded, "type", prefix="emergency_stop"),
+        name=_required_string(raw, "name", prefix="emergency_stop"),
+        type=_required_string(raw, "type", prefix="emergency_stop"),
     )
 
 
@@ -304,24 +227,6 @@ def _diagnostic_string_tuple(
             f"diagnostics.{key} must contain non-empty strings."
         )
     return tuple(item.strip() for item in value)
-
-
-def _expand_endpoint_profile(action_name: str, raw: dict[str, Any]) -> dict[str, Any]:
-    profile = raw.get("profile")
-    if profile is None:
-        return dict(raw)
-    if not isinstance(profile, str) or not profile:
-        raise ValueError(f"{action_name}.profile must be a non-empty string.")
-    if profile not in ROS1_ENDPOINT_PROFILES:
-        raise ValueError(f"{action_name}.profile is unknown: {profile}")
-    return {**ROS1_ENDPOINT_PROFILES[profile], **raw}
-
-
-def _optional_mapping(raw: dict[str, Any], key: str, *, prefix: str) -> dict[str, Any]:
-    value = raw.get(key, {})
-    if not isinstance(value, dict):
-        raise ValueError(f"{prefix}.{key} must be an object.")
-    return value
 
 
 def _required_string(raw: dict[str, Any], key: str, *, prefix: str | None = None) -> str:

@@ -11,7 +11,6 @@ else:
     import tomli as tomllib  # type: ignore[no-redef]
 
 from fireclaw_core.execution.skills import SkillRegistry
-from fireclaw_core.ros.ros1_config import Ros1AdapterConfig
 from fireclaw_core.sensors.discovery import DiscoveryFingerprint, SensorMappingRule
 
 
@@ -214,8 +213,6 @@ def _discovery_fingerprint(robot: dict[str, Any]) -> DiscoveryFingerprint | None
 def validate_robot_capability_profile(
     profile: RobotCapabilityProfile,
     registry: SkillRegistry,
-    *,
-    ros1_config: Ros1AdapterConfig | None = None,
 ) -> list[str]:
     errors: list[str] = []
     registered = registry.names()
@@ -227,12 +224,7 @@ def validate_robot_capability_profile(
             errors.append(f"LLM-exposed skill {skill_name!r} is not in enabled_skills")
     if profile.adapter == "ros1":
         if profile.ros1_config is None:
-            errors.append("ros1 profile requires robot.ros1_config; ROS1 remap validation skipped")
-        if ros1_config is not None:
-            remapped = set(ros1_config.endpoints)
-            for skill_name in profile.enabled_skills:
-                if skill_name not in remapped:
-                    errors.append(f"enabled skill {skill_name!r} has no ROS1 remap")
+            errors.append("ros1 profile requires robot.ros1_config")
     if not profile.capabilities:
         errors.append("profile must declare at least one capability")
     enabled_set = set(profile.enabled_skills)

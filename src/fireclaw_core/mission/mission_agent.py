@@ -146,6 +146,7 @@ class MissionAgent:
         ) = None,
         mission_plan_revision_coordinator: MissionPlanRevisionCoordinator | None = None,
         active_observation_limits: MissionActiveObservationLimits | None = None,
+        mission_observation_compiler: MissionObservationCompiler | None = None,
         consolidation_coordinator: Any | None = None,
         working_memory_hydration_report: Any | None = None,
     ) -> None:
@@ -223,8 +224,9 @@ class MissionAgent:
         self.active_observation_limits = (
             active_observation_limits or MissionActiveObservationLimits()
         )
-        self.mission_observation_compiler = MissionObservationCompiler(
-            registry
+        self.mission_observation_compiler = (
+            mission_observation_compiler
+            or MissionObservationCompiler(registry)
         )
         self._latest_mission_state_refs: dict[str, tuple[int, str]] = {}
         self._active_task_graphs: dict[str, MissionTaskGraph] = {}
@@ -2476,8 +2478,6 @@ class MissionAgent:
 
 
 def _capability_from_entry(entry: RobotRegistryEntry) -> str:
-    if "search_for_victims" in entry.capabilities:
-        return "search_for_victims"
     return entry.capabilities[0] if entry.capabilities else "unknown"
 
 

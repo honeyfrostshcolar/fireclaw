@@ -11,8 +11,8 @@ from fireclaw_core.plugin.plugin_descriptor import FireClawPluginDescriptor
 def _make_descriptor(**overrides):
     """Return a valid descriptor, optionally overriding specific fields."""
     defaults = dict(
-        plugin_id="navigate_to_floor",
-        capabilities=("navigate_to_floor", "navigation"),
+        plugin_id="navigate_to_waypoint",
+        capabilities=("navigate_to_waypoint", "navigation"),
         preconditions=("robot_online", "floor_reachable"),
         risk_level="low",
         required_sensors=(),
@@ -30,8 +30,8 @@ def _make_descriptor(**overrides):
 class TestConstruction:
     def test_minimal_valid_descriptor(self):
         desc = _make_descriptor()
-        assert desc.plugin_id == "navigate_to_floor"
-        assert desc.capabilities == ("navigate_to_floor", "navigation")
+        assert desc.plugin_id == "navigate_to_waypoint"
+        assert desc.capabilities == ("navigate_to_waypoint", "navigation")
         assert desc.preconditions == ("robot_online", "floor_reachable")
         assert desc.risk_level == "low"
         assert desc.required_sensors == ()

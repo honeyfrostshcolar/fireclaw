@@ -137,9 +137,10 @@ class RobotSubagentClient:
         if self.registry is not None:
             record = self.registry.get_by_child_task_id(task_id)
             if record is not None:
+                status = str(result.get("status") or "cancel_requested")
                 self.registry.update(
                     record.run_id,
-                    status="cancelled",
+                    status=status,
                     updated_at=datetime.now(timezone.utc).isoformat(),
                 )
 

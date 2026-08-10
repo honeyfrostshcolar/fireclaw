@@ -54,7 +54,7 @@ def _make_tool_call_response(
                 "robot_id": "r1",
                 "command": "去2楼搜索受困人员",
                 "floor": 2,
-                "capability_required": "search_for_victims",
+                "capability_required": "victim_search",
                 "execution_group": 0,
             }
         ]
@@ -123,7 +123,7 @@ def test_mission_plan_tool_schema_has_required_fields():
 
 def test_constrained_mission_plan_tool_adds_robot_id_enum_without_mutating_base_tool():
     ctx = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("patrol",)),
     )
 
@@ -144,7 +144,7 @@ def test_build_system_prompt_includes_robots():
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims", "recon"),
+            capabilities=("victim_search", "recon"),
             zone="zone-a",
             enabled=True,
         ),
@@ -160,7 +160,7 @@ def test_build_system_prompt_includes_robots():
     prompt = build_system_prompt(ctx)
 
     assert "r1" in prompt
-    assert "search_for_victims" in prompt
+    assert "victim_search" in prompt
     assert "recon" in prompt
     assert "zone-a" in prompt
     assert "r2" in prompt
@@ -231,7 +231,7 @@ def test_constrained_graph_tool_limits_assumption_knowledge_references():
 def test_llm_planner_returns_plan_from_tool_call():
     """When LLM returns a valid tool call, the planner should return a MissionPlan."""
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     provider = _make_provider(_make_tool_call_response())
     planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
@@ -244,7 +244,7 @@ def test_llm_planner_returns_plan_from_tool_call():
     assert len(result.plan.subtasks) == 1
     assert result.plan.subtasks[0].robot_id == "r1"
     assert result.plan.subtasks[0].floor == 2
-    assert result.plan.subtasks[0].capability_required == "search_for_victims"
+    assert result.plan.subtasks[0].capability_required == "victim_search"
 
 
 def test_llm_planner_records_valid_external_knowledge_references():
@@ -253,7 +253,7 @@ def test_llm_planner_records_valid_external_knowledge_references():
             RobotRegistryEntry(
                 robot_id="r1",
                 base_url="http://r1:8765",
-                capabilities=("search_for_victims",),
+                capabilities=("victim_search",),
             )
         ],
         external_knowledge=[{"knowledge_id": "guide-1", "excerpt": "search"}],
@@ -279,7 +279,7 @@ def test_llm_planner_rejects_unknown_external_knowledge_reference():
             RobotRegistryEntry(
                 robot_id="r1",
                 base_url="http://r1:8765",
-                capabilities=("search_for_victims",),
+                capabilities=("victim_search",),
             )
         ],
         external_knowledge=[{"knowledge_id": "guide-1", "excerpt": "search"}],
@@ -321,7 +321,7 @@ def test_llm_planner_uses_constrained_schema_for_provider_call():
         RobotRegistryEntry(
             robot_id="gazebo_turtlebot3",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     )
     provider = _make_provider(_make_tool_call_response(
@@ -330,7 +330,7 @@ def test_llm_planner_uses_constrained_schema_for_provider_call():
                 "robot_id": "gazebo_turtlebot3",
                 "command": "去2楼搜索受困人员",
                 "floor": 2,
-                "capability_required": "search_for_victims",
+                "capability_required": "victim_search",
                 "execution_group": 0,
             }
         ]
@@ -350,7 +350,7 @@ def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
         RobotRegistryEntry(
             robot_id="gazebo_turtlebot3",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     )
     provider = _make_provider(_make_tool_call_response(
@@ -359,7 +359,7 @@ def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
                 "robot_id": "robot_001",
                 "command": "去2楼搜索受困人员",
                 "floor": 2,
-                "capability_required": "search_for_victims",
+                "capability_required": "victim_search",
                 "execution_group": 0,
             }
         ]
@@ -382,7 +382,7 @@ def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
                     "robot_id": "robot_001",
                     "command": "去2楼搜索受困人员",
                     "floor": 2,
-                    "capability_required": "search_for_victims",
+                    "capability_required": "victim_search",
                     "execution_group": 0,
                 }
             ],
@@ -395,7 +395,7 @@ def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
 
 def test_llm_planner_records_parser_allow_for_valid_plan():
     ctx = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     provider = _make_provider(_make_tool_call_response())
     planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
@@ -414,7 +414,7 @@ def test_llm_planner_records_parser_allow_for_valid_plan():
 def test_llm_planner_uses_provider_runtime_when_configured():
     """ProviderRuntime should be the planner's main completion path when provided."""
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     legacy_provider = _make_provider(_make_text_only_response())
     runtime_provider = _make_provider(_make_tool_call_response())
@@ -435,7 +435,7 @@ def test_llm_planner_uses_provider_runtime_when_configured():
 
 def test_llm_planner_can_be_constructed_with_provider_runtime_only():
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     runtime_provider = _make_provider(_make_tool_call_response())
     planner = LLMMissionPlanner(
@@ -453,7 +453,7 @@ def test_llm_planner_can_be_constructed_with_provider_runtime_only():
 def test_llm_planner_returns_error_when_no_tool_call():
     """When LLM returns text only (no tool calls), the planner should return an error."""
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     provider = _make_provider(_make_text_only_response())
     planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
@@ -470,7 +470,7 @@ def test_llm_planner_returns_error_when_no_tool_call():
 def test_llm_planner_returns_error_on_provider_timeout():
     """ProviderTimeoutError should produce a user-facing error result."""
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     provider = MagicMock()
     provider.chat_completion.side_effect = ProviderTimeoutError("Connection timed out")
@@ -488,7 +488,7 @@ def test_llm_planner_returns_error_on_provider_timeout():
 def test_llm_planner_returns_error_on_provider_api_error():
     """ProviderAPIError should produce a user-facing error result."""
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     provider = MagicMock()
     provider.chat_completion.side_effect = ProviderAPIError(status_code=500, message="Internal Server Error")
@@ -506,7 +506,7 @@ def test_llm_planner_returns_error_on_provider_api_error():
 def test_llm_planner_validates_robot_id():
     """Tool call referencing a nonexistent robot_id should return an error."""
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     provider = _make_provider(
         _make_tool_call_response(
@@ -515,7 +515,7 @@ def test_llm_planner_validates_robot_id():
                     "robot_id": "nonexistent_robot",
                     "command": "去2楼搜索受困人员",
                     "floor": 2,
-                    "capability_required": "search_for_victims",
+                    "capability_required": "victim_search",
                     "execution_group": 0,
                 }
             ]
@@ -535,7 +535,7 @@ def test_llm_planner_validates_robot_id():
 def test_llm_planner_records_trace():
     """When trace_store is configured, each plan() call should record a trace."""
     robots = _make_context(
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     )
     provider = _make_provider(_make_tool_call_response())
     trace_store = MagicMock()
@@ -557,7 +557,7 @@ def test_build_system_prompt_includes_corrections():
     """System prompt should include operator corrections."""
     ctx = MissionPlannerContext(
         available_robots=[
-            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         ],
         operator_corrections=[
             {
@@ -580,7 +580,7 @@ def test_build_system_prompt_includes_memories():
     """System prompt should include retrieved memories."""
     ctx = MissionPlannerContext(
         available_robots=[
-            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         ],
         retrieved_memories=[
             {
@@ -605,7 +605,7 @@ def test_build_system_prompt_omits_empty_sections():
     """When no memories or corrections, those sections should not appear."""
     ctx = MissionPlannerContext(
         available_robots=[
-            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         ],
     )
 
@@ -619,7 +619,7 @@ def test_build_system_prompt_includes_both_memories_and_corrections():
     """System prompt should include both memories and corrections when present."""
     ctx = MissionPlannerContext(
         available_robots=[
-            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+            RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
         ],
         retrieved_memories=[
             {"mission_id": "m1", "content": {"command": "巡逻", "status": "succeeded"}},

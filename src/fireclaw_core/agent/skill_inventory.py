@@ -41,8 +41,7 @@ def build_robot_skill_inventory(
             "description": f"Composite capability {capability}",
             "input_schema": {
                 "type": "object",
-                "properties": {"floor": {"type": "integer", "minimum": 1}},
-                "required": ["floor"],
+                "additionalProperties": True,
             },
             "available": all(
                 step in primitive_skills or registry.get(step) is not None

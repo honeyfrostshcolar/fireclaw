@@ -73,7 +73,6 @@ memory_path = "data/debug-sim/robot-memory.jsonl"
 event_path = "data/debug-sim/robot-events.jsonl"
 task_queue_path = "data/debug-sim/robot-tasks.jsonl"
 runtime_state_path = "data/debug-sim/robot-runtime.sqlite3"
-workspace_skills_dir = "skills"
 dry_run = true
 available_sensors = ["thermal_camera"]
 
@@ -97,7 +96,6 @@ planner = "llm"
         cfg["robot_gateway_runtime_state_path"]
         == "data/debug-sim/robot-runtime.sqlite3"
     )
-    assert cfg["robot_gateway_workspace_skills_dir"] == "skills"
     assert cfg["robot_gateway_dry_run"] is True
     assert cfg["robot_gateway_available_sensors"] == ["thermal_camera"]
     assert cfg["robot_agent_provider_base_url"] == "https://example.invalid/v1"

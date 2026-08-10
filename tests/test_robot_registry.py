@@ -15,7 +15,7 @@ def test_load_robot_registry_parses_entries(tmp_path):
                     {
                         "robot_id": "robot-1",
                         "base_url": "http://127.0.0.1:8765",
-                        "capabilities": ["navigate", "search_for_victims"],
+                        "capabilities": ["navigate", "victim_search"],
                         "zone": "building-a",
                     },
                     {
@@ -34,7 +34,7 @@ def test_load_robot_registry_parses_entries(tmp_path):
     assert registry.get("robot-1") == RobotRegistryEntry(
         robot_id="robot-1",
         base_url="http://127.0.0.1:8765",
-        capabilities=("navigate", "search_for_victims"),
+        capabilities=("navigate", "victim_search"),
         zone="building-a",
         enabled=True,
     )
@@ -206,9 +206,9 @@ def test_robot_registry_from_profiles_uses_profile_registry_entries() -> None:
         adapter="ros1",
         ros1_config="examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
         data_dir=Path("data/robots/gazebo_turtlebot3"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor", "search_for_victims", "report_status"),
-        llm_exposed_skills=("navigate_to_floor", "search_for_victims", "report_status"),
+        capabilities=("victim_search",),
+        enabled_skills=("navigate_to_waypoint", "victim_search", "publish_operator_update"),
+        llm_exposed_skills=("navigate_to_waypoint", "victim_search", "publish_operator_update"),
     )
 
     registry = robot_registry_from_profiles([profile])
@@ -216,7 +216,7 @@ def test_robot_registry_from_profiles_uses_profile_registry_entries() -> None:
     entry = registry.get("gazebo_turtlebot3")
     assert entry is not None
     assert entry.base_url == "http://127.0.0.1:8765"
-    assert entry.capabilities == ("search_for_victims",)
+    assert entry.capabilities == ("victim_search",)
 
 
 def test_robot_registry_from_profiles_respects_enabled_flag() -> None:
@@ -229,9 +229,9 @@ def test_robot_registry_from_profiles_respects_enabled_flag() -> None:
         adapter="simulator",
         ros1_config=None,
         data_dir=Path("data/robots/disabled-bot"),
-        capabilities=("search_for_victims",),
-        enabled_skills=("navigate_to_floor",),
-        llm_exposed_skills=("navigate_to_floor",),
+        capabilities=("victim_search",),
+        enabled_skills=("navigate_to_waypoint",),
+        llm_exposed_skills=("navigate_to_waypoint",),
         enabled=False,
     )
 

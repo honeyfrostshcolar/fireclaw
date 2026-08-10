@@ -75,16 +75,14 @@ class PhysicalSkillPlugin:
     action_input_builder: ActionInputBuilder
     domain: str
     safety_class: str
-    # New Plugin-owned physical Tools provide this handler directly.  The
-    # optional field keeps old RobotAdapter method bindings working while the
-    # migration is completed.
-    action_handler: PhysicalActionHandler | None = None
+    action_handler: PhysicalActionHandler
     risk_level: str = "low"
     dry_run_only: bool = True
     allow_real_robot: bool = False
     max_attempts: int = 1
     idempotent: bool = False
     timeout_seconds: float | None = None
+    cancellation_ack_timeout_seconds: float = 2.0
     required_sensors: tuple[str, ...] = ()
     sensor_alternatives: dict[str, tuple[str, ...]] = field(default_factory=dict)
     failure_categories: tuple[str, ...] = ()
@@ -124,6 +122,27 @@ class PhysicalSkillPlugin:
         if self.max_attempts > 1 and not self.idempotent:
             raise ValueError(
                 "physical skill plugin must be idempotent when max_attempts > 1"
+            )
+        if self.timeout_seconds is not None and (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not isfinite(float(self.timeout_seconds))
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError("physical skill plugin timeout must be positive")
+        if (
+            isinstance(self.cancellation_ack_timeout_seconds, bool)
+            or not isinstance(
+                self.cancellation_ack_timeout_seconds,
+                (int, float),
+            )
+            or not isfinite(float(self.cancellation_ack_timeout_seconds))
+            or self.cancellation_ack_timeout_seconds <= 0
+            or self.cancellation_ack_timeout_seconds > 30.0
+        ):
+            raise ValueError(
+                "physical skill plugin cancellation acknowledgement timeout "
+                "must be between 0 and 30 seconds"
             )
         binding_names = [binding.input_name for binding in self.task_input_bindings]
         if len(binding_names) != len(set(binding_names)):
@@ -198,6 +217,10 @@ class PhysicalSkillPlugin:
             "domain": self.domain,
             "safety_class": self.safety_class,
             "risk_level": self.risk_level,
+            "timeout_seconds": self.timeout_seconds,
+            "cancellation_ack_timeout_seconds": (
+                self.cancellation_ack_timeout_seconds
+            ),
             "required_sensors": list(self.required_sensors),
             "sensor_alternatives": {
                 sensor: list(alternatives)
@@ -244,7 +267,7 @@ class PhysicalSkillCatalog:
             lambda api: api.register_physical_capability(plugin),
             name=plugin.label,
             description=plugin.description,
-            source="builtin_physical_skill",
+            source="physical_tool_projection",
             trust_level="trusted",
         )
 

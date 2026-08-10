@@ -17,9 +17,9 @@ id = "profile-robot"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims", "report_status"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 """.strip(),
         encoding="utf-8",
     )
@@ -66,7 +66,7 @@ id = "bad-robot"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "data/robots/bad-robot"
-capabilities = ["search_for_victims"]
+capabilities = ["navigation"]
 enabled_skills = ["missing_skill"]
 llm_exposed_skills = ["missing_skill"]
 """.strip(),
@@ -80,7 +80,6 @@ llm_exposed_skills = ["missing_skill"]
             memory_path=str(tmp_path / "mem.jsonl"),
             event_path=str(tmp_path / "ev.jsonl"),
             task_queue_path=str(tmp_path / "tq.jsonl"),
-            workspace_skills_dir=None,
         ))
 
 
@@ -94,7 +93,7 @@ id = "bad-robot"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "{data_dir}"
-capabilities = ["search_for_victims"]
+capabilities = ["navigation"]
 enabled_skills = ["missing_skill"]
 llm_exposed_skills = ["missing_skill"]
 """.strip(),
@@ -102,7 +101,7 @@ llm_exposed_skills = ["missing_skill"]
     )
 
     with pytest.raises(ValueError, match="enabled skill 'missing_skill' is not registered"):
-        FireClawGateway(GatewayConfig(port=0, robot_profile_path=str(profile_path), workspace_skills_dir=None))
+        FireClawGateway(GatewayConfig(port=0, robot_profile_path=str(profile_path)))
 
     assert not (data_dir / "memory.jsonl").exists()
     assert not (data_dir / "events.jsonl").exists()
@@ -117,11 +116,6 @@ def test_profile_gateway_attaches_ros1_sensor_discovery(tmp_path: Path) -> None:
 robot_id: robot-1
 transport:
   enabled: false
-endpoints:
-  navigate_to_floor:
-    interface: action
-    name: /move_base
-    type: move_base_msgs/MoveBaseAction
 """.strip(),
         encoding="utf-8",
     )
@@ -133,9 +127,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "{ros1_path}"
 data_dir = "{tmp_path / "robot-data"}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.sensor_discovery]
 enabled = true
@@ -157,11 +151,6 @@ def test_profile_gateway_passes_discovery_fingerprint_to_ros1_discovery(tmp_path
 robot_id: robot-1
 transport:
   enabled: false
-endpoints:
-  navigate_to_floor:
-    interface: action
-    name: /move_base
-    type: move_base_msgs/MoveBaseAction
 """.strip(),
         encoding="utf-8",
     )
@@ -173,9 +162,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "{ros1_path}"
 data_dir = "{tmp_path / "robot-data"}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.sensor_discovery]
 enabled = true
@@ -205,11 +194,6 @@ def test_profile_gateway_attaches_sensor_discovery_backend_wrapper(tmp_path: Pat
 robot_id: robot-1
 transport:
   enabled: false
-endpoints:
-  navigate_to_floor:
-    interface: action
-    name: /move_base
-    type: move_base_msgs/MoveBaseAction
 """.strip(),
         encoding="utf-8",
     )
@@ -221,9 +205,9 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = "{ros1_path}"
 data_dir = "{tmp_path / "robot-data"}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor"]
-llm_exposed_skills = ["navigate_to_floor"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.sensor_discovery]
 enabled = true
@@ -249,9 +233,9 @@ id = "robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "simulator"
 data_dir = "{tmp_path / "robot-data"}"
-capabilities = ["search_for_victims"]
-enabled_skills = ["navigate_to_floor", "search_for_victims"]
-llm_exposed_skills = ["navigate_to_floor", "search_for_victims"]
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
 
 [robot.sensor_discovery]
 enabled = true

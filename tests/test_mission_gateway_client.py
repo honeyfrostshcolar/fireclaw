@@ -398,7 +398,6 @@ class TestSSECursorReplayGateway:
             memory_path=f"{tmpdir}/mem.jsonl",
             event_path=f"{tmpdir}/events.jsonl",
             task_queue_path=f"{tmpdir}/tasks.jsonl",
-            workspace_skills_dir=None,
         )
         gw = FireClawGateway(config)
         gw.start()
@@ -450,7 +449,6 @@ class TestSSECursorReplayGateway:
             memory_path=f"{tmpdir}/mem.jsonl",
             event_path=f"{tmpdir}/events.jsonl",
             task_queue_path=f"{tmpdir}/tasks.jsonl",
-            workspace_skills_dir=None,
         )
         gw = FireClawGateway(config)
         gw.start()
@@ -505,7 +503,6 @@ class TestSSECursorReplayGateway:
             memory_path=f"{tmpdir}/mem.jsonl",
             event_path=f"{tmpdir}/events.jsonl",
             task_queue_path=f"{tmpdir}/tasks.jsonl",
-            workspace_skills_dir=None,
         )
         gw = FireClawGateway(config)
         gw.start()

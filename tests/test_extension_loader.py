@@ -214,6 +214,7 @@ def test_navigation_extension_is_discovered_without_gateway_registration_code() 
 
 def test_navigation_plugin_owns_manifest_keyed_mutation_config() -> None:
     host = FireClawPluginHost()
+    backend = object()
 
     report = load_fireclaw_extensions(
         host,
@@ -226,7 +227,7 @@ def test_navigation_plugin_owns_manifest_keyed_mutation_config() -> None:
                 "real_mutable_parameters": ["dwa/max_vel_x"],
             }
         },
-        services={"adapter": "dry-run", "gateway_config": None},
+        services={"fireclaw.navigation.move-base.backend": backend},
     )
 
     assert report.ok

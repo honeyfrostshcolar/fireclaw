@@ -20,11 +20,11 @@ def _write_config(path: Path) -> None:
         """{
   "robot_id": "robot-ros1",
   "skill_remap": {
-    "navigate_to_floor": {
+    "navigate_to_waypoint": {
       "interface": "action",
       "name": "/move_base",
       "type": "move_base_msgs/MoveBaseAction",
-      "action": "navigate_to_floor",
+      "action": "navigate_to_waypoint",
       "payload": {"target_pose": {"header": {"frame_id": "map"}}}
     }
   }

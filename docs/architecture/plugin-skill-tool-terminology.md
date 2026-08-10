@@ -104,8 +104,9 @@ move_base Navigation Plugin
 │   ├── 导航、监控、取消和恢复流程
 │   └── 堵塞、超时和状态不确定时的处理规则
 ├── navigate_to_point Tool
-├── get_navigation_status Tool
-├── cancel_navigation Tool
+├── move_base_navigation_status Tool
+├── move_base_cancel_navigation Tool
+├── move_base_clear_costmaps Tool
 ├── Plugin-owned ROS/SDK Adapter
 └── move_base Runtime
 ```
@@ -150,8 +151,6 @@ skills/
 | `Skill` | executable Tool definition |
 | `SkillRegistry` | executable Tool registry/projection |
 | `PhysicalSkillPlugin` | physical Tool contribution definition |
-| `*.skill.json` | external executable Tool manifest |
-| `workspace_skills_dir` | legacy external Tool-manifest directory |
 | `skill.started/succeeded/failed` | legacy physical Tool lifecycle event |
 | `required_skills/allowed_skills` | legacy task Tool allow/require lists |
 
@@ -159,9 +158,10 @@ skills/
 版本升级逐步修正，不能直接全局重命名并破坏已有 checkpoint、任务合同、配置
 和审计日志。
 
-`*.skill.json` 的兼容不包含宿主命令执行权。该格式只能声明仿真模式下、
-必须进入 `ComputerSandbox` 的 process Tool；真实机器人 Tool 必须由 Plugin
-注册，并通过受信任 Adapter 连接算法或 ROS Runtime。
+旧的 executable manifest 与 workspace Tool loader 已经删除。可执行 Tool 必须
+由带 `fireclaw.plugin.json` 的 Plugin 注册；进程类 Tool 还必须进入受策略约束的
+`ComputerSandbox`。真实机器人 Tool 必须由受信任 Plugin handler 连接 Adapter
+或 ROS/SDK Runtime。
 
 在迁移完成前：
 

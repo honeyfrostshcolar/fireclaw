@@ -57,7 +57,7 @@ def test_skill_metadata_to_tool_schema_uses_declared_input_schema():
 
     schema = skill_metadata_to_tool_schema(
         {
-            "name": "navigate_to_floor",
+            "name": "navigate_to_waypoint",
             "description": "Navigate.",
             "input_schema": input_schema,
         }

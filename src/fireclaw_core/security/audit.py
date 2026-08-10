@@ -94,7 +94,6 @@ def run_security_audit(
     config: Mapping[str, Any] | None = None,
     runtime_root: str | Path | None = None,
     plugin_dirs: Sequence[str | Path] = (),
-    skills_dir: str | Path | None = None,
     environ: Mapping[str, str] | None = None,
     deep: bool = False,
 ) -> SecurityAuditReport:
@@ -192,19 +191,6 @@ def run_security_audit(
     _audit_deployment_profiles(loaded, resolved_root, findings)
     _audit_storage_paths(loaded, resolved_root, findings)
 
-    configured_skills = (
-        skills_dir
-        if skills_dir is not None
-        else loaded.get("robot_gateway_workspace_skills_dir")
-    )
-    if configured_skills is not None:
-        _audit_legacy_skill_directory(
-            _resolve_path(configured_skills, resolved_root),
-            mode=str(
-                _mapping(loaded.get("deployment")).get("mode") or "real"
-            ),
-            findings=findings,
-        )
     for plugin_dir in plugin_dirs:
         _audit_plugin_directory(
             _resolve_path(plugin_dir, resolved_root),
@@ -590,57 +576,6 @@ def _audit_storage_paths(
             )
 
 
-def _audit_legacy_skill_directory(
-    directory: Path,
-    *,
-    mode: str,
-    findings: list[SecurityAuditFinding],
-) -> None:
-    if not directory.exists():
-        return
-    for manifest in sorted(directory.rglob("*.skill.json")):
-        if manifest.is_symlink():
-            findings.append(
-                _finding(
-                    "legacy_skill.symlink_manifest",
-                    "critical",
-                    "Legacy executable Tool manifest is a symbolic link",
-                    str(manifest),
-                    "Replace it with a reviewed regular file inside the configured Skill directory.",
-                    path=str(manifest),
-                )
-            )
-            continue
-        file_mode = stat.S_IMODE(manifest.stat().st_mode)
-        if file_mode & 0o022:
-            findings.append(
-                _finding(
-                    "legacy_skill.manifest_writable_by_others",
-                    "critical",
-                    "Legacy executable Tool manifest is writable by group or others",
-                    f"{manifest} has mode {file_mode:04o}.",
-                    "Restrict manifest ownership and write permission.",
-                    path=str(manifest),
-                    mode=f"{file_mode:04o}",
-                )
-            )
-        findings.append(
-            _finding(
-                "legacy_skill.executable_manifest_present",
-                "warn" if mode == "simulation" else "info",
-                "Legacy executable Tool manifest is present",
-                (
-                    "Simulation policy may admit this manifest only through the Docker sandbox."
-                    if mode == "simulation"
-                    else "Real deployment policy blocks its process effect."
-                ),
-                "Migrate executable capabilities to a reviewed Plugin, typed Tool, and trusted Adapter boundary.",
-                path=str(manifest),
-                deployment_mode=mode,
-            )
-        )
-
-
 def _audit_plugin_directory(
     directory: Path,
     findings: list[SecurityAuditFinding],
@@ -847,7 +782,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--runtime-root", default=None)
     parser.add_argument("--plugin-dir", action="append", default=[])
-    parser.add_argument("--skills-dir", default=None)
     parser.add_argument(
         "--deep",
         action="store_true",
@@ -863,7 +797,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_path=args.config,
         runtime_root=args.runtime_root,
         plugin_dirs=args.plugin_dir,
-        skills_dir=args.skills_dir,
         deep=args.deep,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))

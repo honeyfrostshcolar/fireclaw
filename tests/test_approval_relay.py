@@ -51,7 +51,7 @@ class FakePlanner:
                 subtasks=[
                     MissionSubtask(
                         robot_id=available_ids[0], command=command,
-                        floor=2, capability_required="search_for_victims",
+                        floor=2, capability_required="victim_search",
                         execution_group=0,
                     )
                 ],
@@ -63,7 +63,7 @@ def _make_registry() -> RobotRegistry:
     return RobotRegistry([
         RobotRegistryEntry(
             robot_id="robot-1", base_url="http://robot-1.local:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
 

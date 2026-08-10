@@ -309,7 +309,6 @@ def test_robot_gateway_listener_uses_verified_https(
             memory_path=str(tmp_path / "memory.jsonl"),
             event_path=str(tmp_path / "events.jsonl"),
             task_queue_path=str(tmp_path / "tasks.jsonl"),
-            workspace_skills_dir=None,
             tls=tls_server,
         )
     )

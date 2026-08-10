@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from importlib import import_module
 from math import cos, isfinite, sin
 from threading import RLock
+from time import monotonic
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from fireclaw_plugin_sdk import (
@@ -399,8 +400,21 @@ class InMemoryMoveBaseBackend:
         if callable(feedback_sink):
             feedback_sink({"progress": 1.0, "message": "navigation goal reached", **target})
         if callable(cancellation_requested) and cancellation_requested():
-            return {"status": "cancelled", "cancelled": True, **target}
-        return {"status": "succeeded", "goal_reached": True, **target}
+            return {
+                "status": "cancelled",
+                "cancelled": True,
+                "cancellation_acknowledged": True,
+                "runtime_stopped": True,
+                "resource_release_safe": True,
+                **target,
+            }
+        return {
+            "status": "succeeded",
+            "goal_reached": True,
+            "runtime_stopped": True,
+            "resource_release_safe": True,
+            **target,
+        }
 
     def get_parameters(
         self,
@@ -437,43 +451,6 @@ class InMemoryMoveBaseBackend:
             return {"status": "succeeded", "scope": scope, "cleared": True}
 
 
-class AdapterDispatchMoveBaseBackend(InMemoryMoveBaseBackend):
-    """Compatibility backend for simulator/mock adapters.
-
-    The navigation Tool remains owned by this extension, while the injected
-    dispatcher supplies the test adapter's observable command boundary. This
-    keeps ROS/SDK details out of the core registry and lets simulation tests
-    inspect the same command record they used before Plugin migration. The
-    inherited bounded status/parameter operations remain deterministic when a
-    simulator does not expose dynamic reconfigure.
-    """
-
-    def __init__(self, dispatcher: Any) -> None:
-        super().__init__()
-        self._dispatcher = dispatcher
-
-    def navigate_to_point(
-        self,
-        x: float,
-        y: float,
-        yaw: float = 0.0,
-        frame_id: str = "map",
-        feedback_sink: Any = None,
-        cancellation_requested: Any = None,
-    ) -> Mapping[str, Any]:
-        return self._dispatcher(
-            "navigate_to_point",
-            {
-                "x": float(x),
-                "y": float(y),
-                "yaw": float(yaw),
-                "frame_id": str(frame_id),
-            },
-            feedback_sink=feedback_sink,
-            cancellation_requested=cancellation_requested,
-        )
-
-
 @dataclass
 class Ros1MoveBaseBackend:
     """Lazy ROS1 adapter for dynamic_reconfigure and move_base control.
@@ -495,6 +472,7 @@ class Ros1MoveBaseBackend:
         }
     )
     timeout_seconds: float = 2.0
+    cancellation_ack_timeout_seconds: float = 2.0
     _clients: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _action_client: Any | None = field(default=None, init=False, repr=False)
 
@@ -566,26 +544,126 @@ class Ros1MoveBaseBackend:
         client.send_goal(goal, feedback_cb=on_feedback)
         while not client.wait_for_result(rospy.Duration(0.1)):
             if callable(cancellation_requested) and cancellation_requested():
-                client.cancel_goal()
-                return {
-                    "status": "cancelled",
-                    "cancelled": True,
-                    "x": float(x),
-                    "y": float(y),
-                    "yaw": float(yaw),
-                    "frame_id": str(frame_id),
-                }
+                return self._cancel_goal_and_wait(
+                    client=client,
+                    rospy=rospy,
+                    cancellation_requested=cancellation_requested,
+                    target={
+                        "x": float(x),
+                        "y": float(y),
+                        "yaw": float(yaw),
+                        "frame_id": str(frame_id),
+                    },
+                )
         state = int(client.get_state())
         status = _ACTION_STATE_NAMES.get(state, "unknown")
-        return {
-            "status": "succeeded" if state == 3 else status,
+        try:
+            goal_status_text = str(client.get_goal_status_text() or "")
+        except Exception:
+            goal_status_text = ""
+        runtime_stopped = state in _ACTION_STOP_CONFIRMED_STATES
+        result = {
+            "status": (
+                "succeeded"
+                if state == 3
+                else "cancelled"
+                if state in {2, 8}
+                else "lost"
+                if state == 9
+                else status
+            ),
             "goal_reached": state == 3,
             "goal_state": state,
             "goal_state_name": status,
+            "goal_status_text": goal_status_text,
+            "cancellation_acknowledged": state in {2, 8},
+            "runtime_stopped": runtime_stopped,
+            "resource_release_safe": runtime_stopped,
             "x": float(x),
             "y": float(y),
             "yaw": float(yaw),
             "frame_id": str(frame_id),
+        }
+        error_code = _ACTION_FAILURE_CODES.get(state)
+        if error_code is not None:
+            result["error_code"] = error_code
+        return result
+
+    def _cancel_goal_and_wait(
+        self,
+        *,
+        client: Any,
+        rospy: Any,
+        cancellation_requested: Any,
+        target: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        client.cancel_goal()
+        deadline = _cancellation_ack_deadline(
+            cancellation_requested,
+            fallback_seconds=self.cancellation_ack_timeout_seconds,
+        )
+        reason = getattr(cancellation_requested, "reason", None)
+        return self._wait_for_cancel_acknowledgement(
+            client=client,
+            rospy=rospy,
+            deadline=deadline,
+            reason=reason,
+            acknowledged_status="cancelled",
+            target=target,
+        )
+
+    def _wait_for_cancel_acknowledgement(
+        self,
+        *,
+        client: Any,
+        rospy: Any,
+        deadline: float,
+        reason: str | None,
+        acknowledged_status: str,
+        target: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        state: int | None = None
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            if client.wait_for_result(
+                rospy.Duration(min(0.05, remaining))
+            ):
+                state = int(client.get_state())
+                acknowledged = state in _ACTION_STOP_CONFIRMED_STATES
+                return {
+                    "status": acknowledged_status if acknowledged else "lost",
+                    "cancelled": acknowledged,
+                    "cancellation_reason": reason,
+                    "cancellation_acknowledged": acknowledged,
+                    "runtime_stopped": acknowledged,
+                    "resource_release_safe": acknowledged,
+                    "goal_state": state,
+                    "goal_state_name": _ACTION_STATE_NAMES.get(
+                        state,
+                        "unknown",
+                    ),
+                    **dict(target),
+                }
+        try:
+            state = int(client.get_state())
+        except Exception:
+            state = None
+        return {
+            "status": "lost",
+            "cancelled": False,
+            "cancellation_reason": reason,
+            "cancellation_acknowledged": False,
+            "runtime_stopped": False,
+            "resource_release_safe": False,
+            "goal_state": state,
+            "goal_state_name": _ACTION_STATE_NAMES.get(
+                state,
+                "unknown",
+            ),
+            "error_code": "move_base_cancel_unacknowledged",
+            **dict(target),
         }
 
     def get_parameters(
@@ -615,7 +693,14 @@ class Ros1MoveBaseBackend:
     def cancel_navigation(self, reason: str | None = None) -> Mapping[str, Any]:
         client = self._action()
         client.cancel_all_goals()
-        return {"status": "succeeded", "cancelled": True, "reason": reason}
+        return self._wait_for_cancel_acknowledgement(
+            client=client,
+            rospy=self._rospy(),
+            deadline=monotonic() + self.cancellation_ack_timeout_seconds,
+            reason=reason,
+            acknowledged_status="succeeded",
+            target={},
+        )
 
     def clear_costmaps(self, scope: MoveBaseClearScope = "both") -> Mapping[str, Any]:
         rospy = self._rospy()
@@ -639,6 +724,41 @@ _ACTION_STATE_NAMES = {
     8: "recalled",
     9: "lost",
 }
+_ACTION_STOP_CONFIRMED_STATES = frozenset({2, 3, 4, 5, 8})
+_ACTION_FAILURE_CODES = {
+    4: "move_base_aborted",
+    5: "move_base_rejected",
+}
+
+
+def _cancellation_ack_deadline(
+    cancellation_requested: Any,
+    *,
+    fallback_seconds: float,
+) -> float:
+    remaining_provider = getattr(
+        cancellation_requested,
+        "remaining_ack_seconds",
+        None,
+    )
+    if callable(remaining_provider):
+        try:
+            remaining = float(remaining_provider())
+        except (TypeError, ValueError):
+            remaining = fallback_seconds
+        if isfinite(remaining):
+            return monotonic() + max(0.0, remaining)
+    requested_deadline = getattr(
+        cancellation_requested,
+        "cancellation_ack_deadline_monotonic",
+        None,
+    )
+    if (
+        isinstance(requested_deadline, (int, float))
+        and isfinite(float(requested_deadline))
+    ):
+        return float(requested_deadline)
+    return monotonic() + fallback_seconds
 
 
 def _dynamic_configuration_to_dict(configuration: Any) -> dict[str, Any]:
@@ -759,6 +879,9 @@ def _navigation_point_inputs(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def move_base_navigation_physical_tools(
     backend: MoveBaseNavigationBackend,
+    *,
+    timeout_seconds: float = 120.0,
+    cancellation_ack_timeout_seconds: float = 2.0,
 ) -> tuple[PhysicalToolSpec, ...]:
     """Build Plugin-owned physical navigation Tool contracts.
 
@@ -803,6 +926,10 @@ def move_base_navigation_physical_tools(
             degraded_mode_policy="retry",
             idempotent=True,
             allow_real_robot=True,
+            timeout_seconds=timeout_seconds,
+            cancellation_ack_timeout_seconds=(
+                cancellation_ack_timeout_seconds
+            ),
             task_input_bindings=(
                 TaskInputBindingSpec(
                     "x", (("pose", "x"),), required=True, coercion="float"

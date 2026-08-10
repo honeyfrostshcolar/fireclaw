@@ -45,6 +45,7 @@ _VALID_EFFECTS = frozenset(
     }
 )
 _MAX_TOOL_TIMEOUT_SECONDS = 300.0
+_MAX_PHYSICAL_CANCELLATION_ACK_SECONDS = 30.0
 _MAX_TOOL_RESULT_BYTES = 1024 * 1024
 
 
@@ -227,6 +228,7 @@ class PhysicalToolSpec:
     max_attempts: int = 1
     idempotent: bool = False
     timeout_seconds: float | None = None
+    cancellation_ack_timeout_seconds: float = 2.0
     required_sensors: tuple[str, ...] = ()
     sensor_alternatives: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     failure_categories: tuple[str, ...] = ()
@@ -280,6 +282,21 @@ class PhysicalToolSpec:
                 or self.timeout_seconds > _MAX_TOOL_TIMEOUT_SECONDS
             ):
                 raise ValueError("PhysicalToolSpec timeout is outside API limits.")
+        if (
+            isinstance(self.cancellation_ack_timeout_seconds, bool)
+            or not isinstance(
+                self.cancellation_ack_timeout_seconds,
+                (int, float),
+            )
+            or not isfinite(float(self.cancellation_ack_timeout_seconds))
+            or self.cancellation_ack_timeout_seconds <= 0
+            or self.cancellation_ack_timeout_seconds
+            > _MAX_PHYSICAL_CANCELLATION_ACK_SECONDS
+        ):
+            raise ValueError(
+                "PhysicalToolSpec cancellation acknowledgement timeout is "
+                "outside API limits."
+            )
         if not isinstance(self.metadata, Mapping):
             raise TypeError("PhysicalToolSpec metadata must be an object mapping.")
         object.__setattr__(self, "metadata", deepcopy(dict(self.metadata)))

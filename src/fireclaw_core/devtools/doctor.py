@@ -6,16 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fireclaw_core.execution.action_runtime import RobotAdapterActionBackend
 from fireclaw_core.memory.memory_eval import evaluate_retrieval, load_eval_cases
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 from fireclaw_core.memory.memory_retrieval import MemoryRetriever
-from fireclaw_core.ros.ros1_config import ROS1_ACTION_NAMES
 from fireclaw_core.ros.ros1_config import load_ros1_adapter_config
 from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot_adapter
 from fireclaw_core.task.task_queue import JsonlTaskQueue
-from fireclaw_core.infra.workspace_skills import load_workspace_skills
-from fireclaw_core.infra.workspace_skills import WorkspaceSkillLoadResult
 
 
 STATUS_ORDER = {"pass": 0, "warn": 1, "fail": 2}
@@ -35,7 +31,6 @@ def run_doctor(
     robot_id: str = "fireclaw-doctor",
     memory_path: str = "memory/fireclaw-runs.jsonl",
     event_path: str = "memory/fireclaw-events.jsonl",
-    skills_dir: str | None = "skills",
     ros1_config_path: str | None = None,
     task_queue_path: str | None = None,
     memory_index_path: str | None = None,
@@ -64,14 +59,8 @@ def run_doctor(
 
     checks.append(_path_check("memory_path", memory_path))
     checks.append(_path_check("event_path", event_path))
-    workspace_result = (
-        load_workspace_skills(skills_dir, inspect_only=True)
-        if skills_dir is not None
-        else WorkspaceSkillLoadResult(skills=[], errors=[])
-    )
-    checks.append(_workspace_skills_check(skills_dir, workspace_result))
     if adapter == "ros1":
-        checks.append(_ros1_config_check(ros1_config_path, workspace_skill_names=[skill.name for skill in workspace_result.skills]))
+        checks.append(_ros1_config_check(ros1_config_path))
 
     if robot is None:
         checks.append(
@@ -81,16 +70,8 @@ def run_doctor(
                 message="Cannot inspect emergency_stop hook without a robot adapter.",
             )
         )
-        checks.append(
-            DoctorCheck(
-                name="action_feedback_boundary",
-                status="fail",
-                message="Cannot inspect action feedback boundary without a robot adapter.",
-            )
-        )
     else:
         checks.append(_emergency_stop_hook_check(robot))
-        checks.append(_action_feedback_boundary_check(robot))
 
     # --- repair-flow checks ---
     # Memory index and plugin descriptors are always report-only.
@@ -104,7 +85,6 @@ def run_doctor(
         _security_audit_check(
             security_config_path,
             plugin_dir=plugin_dir,
-            skills_dir=skills_dir,
         )
     )
 
@@ -161,31 +141,11 @@ def _adapter_check(adapter: str, robot: Any) -> DoctorCheck:
         estop_configured = (
             config.emergency_stop is not None if config and hasattr(config, "emergency_stop") else False
         )
-        # Check if any action endpoint declares feedback/cancel support
-        endpoints = config.endpoints if config and hasattr(config, "endpoints") else {}
-        action_eps = {
-            k: ep for k, ep in endpoints.items()
-            if hasattr(ep, "interface") and ep.interface == "action"
-        }
-        action_feedback_supported = any(
-            ep.feedback_supported for ep in action_eps.values()
-            if hasattr(ep, "feedback_supported")
-        ) if action_eps else False
-        action_cancel_supported = any(
-            ep.cancel_supported for ep in action_eps.values()
-            if hasattr(ep, "cancel_supported")
-        ) if action_eps else False
         details["ros1_config_loaded"] = config_loaded
         details["emergency_stop_configured"] = estop_configured
-        details["action_feedback_supported"] = action_feedback_supported
-        details["action_cancel_supported"] = action_cancel_supported
         warnings = []
         if not estop_configured:
             warnings.append("emergency_stop endpoint missing")
-        if not action_feedback_supported and action_eps:
-            warnings.append("no action endpoint declares feedback support")
-        if not action_cancel_supported and action_eps:
-            warnings.append("no action endpoint declares cancel support")
         if warnings:
             return DoctorCheck(
                 name="adapter",
@@ -196,7 +156,7 @@ def _adapter_check(adapter: str, robot: Any) -> DoctorCheck:
         return DoctorCheck(
             name="adapter",
             status="pass",
-            message="ROS1 adapter readiness: config loaded, emergency stop, action feedback, and cancel support verified.",
+            message="ROS1 adapter readiness: config and emergency stop verified.",
             details=details,
         )
     return DoctorCheck(
@@ -230,38 +190,7 @@ def _path_check(name: str, path: str) -> DoctorCheck:
     )
 
 
-def _workspace_skills_check(skills_dir: str | None, result: WorkspaceSkillLoadResult | None = None) -> DoctorCheck:
-    if skills_dir is None:
-        return DoctorCheck(
-            name="workspace_skills",
-            status="pass",
-            message="Workspace skills disabled.",
-            details={"skills_dir": None, "skill_count": 0, "error_count": 0, "errors": []},
-        )
-    result = result or load_workspace_skills(skills_dir, inspect_only=True)
-    errors = [{"path": error.path, "message": error.message} for error in result.errors]
-    details = {
-        "skills_dir": skills_dir,
-        "skill_count": len(result.skills),
-        "error_count": len(result.errors),
-        "errors": errors,
-    }
-    if result.errors:
-        return DoctorCheck(
-            name="workspace_skills",
-            status="fail",
-            message="Workspace skill manifest errors found.",
-            details=details,
-        )
-    return DoctorCheck(
-        name="workspace_skills",
-        status="pass",
-        message="Workspace skill manifests loaded without errors.",
-        details=details,
-    )
-
-
-def _ros1_config_check(ros1_config_path: str | None, *, workspace_skill_names: list[str] | None = None) -> DoctorCheck:
+def _ros1_config_check(ros1_config_path: str | None) -> DoctorCheck:
     if ros1_config_path is None:
         return DoctorCheck(
             name="ros1_config",
@@ -278,53 +207,16 @@ def _ros1_config_check(ros1_config_path: str | None, *, workspace_skill_names: l
             message=f"Failed to load ROS1 config: {exc}",
             details={"ros1_config_path": ros1_config_path},
         )
-    configured_actions = sorted(config.endpoints)
-    missing_actions = [action for action in ROS1_ACTION_NAMES if action not in config.endpoints]
-    workspace_skill_names = sorted(workspace_skill_names or [])
-    built_in_actions = set(ROS1_ACTION_NAMES)
-    workspace_skill_set = set(workspace_skill_names)
-    custom_actions = sorted(action for action in config.endpoints if action not in built_in_actions)
-    workspace_skills_missing_remap = sorted(skill_name for skill_name in workspace_skill_names if skill_name not in config.endpoints)
-    unknown_remap_actions = sorted(
-        action for action in custom_actions if action not in workspace_skill_set
-    )
-    action_endpoints_without_feedback = sorted(
-        action
-        for action, endpoint in config.endpoints.items()
-        if endpoint.interface == "action" and not endpoint.feedback_supported
-    )
-    action_endpoints_without_cancel = sorted(
-        action
-        for action, endpoint in config.endpoints.items()
-        if endpoint.interface == "action" and not endpoint.cancel_supported
-    )
     details = {
         "ros1_config_path": ros1_config_path,
         "robot_id": config.robot_id,
         "namespace": config.namespace,
-        "configured_actions": configured_actions,
-        "custom_actions": custom_actions,
-        "missing_actions": missing_actions,
-        "workspace_skill_names": workspace_skill_names,
-        "workspace_skills_missing_remap": workspace_skills_missing_remap,
-        "unknown_remap_actions": unknown_remap_actions,
         "emergency_stop_configured": config.emergency_stop is not None,
-        "action_endpoints_without_feedback": action_endpoints_without_feedback,
-        "action_endpoints_without_cancel": action_endpoints_without_cancel,
+        "diagnostics_enabled": config.diagnostics.enabled,
     }
     warnings = []
-    if missing_actions:
-        warnings.append("some built-in robot actions have no endpoint")
     if config.emergency_stop is None:
         warnings.append("emergency_stop endpoint is missing")
-    if action_endpoints_without_feedback:
-        warnings.append("some action endpoints do not declare feedback support")
-    if action_endpoints_without_cancel:
-        warnings.append("some action endpoints do not declare cancellation support")
-    if workspace_skills_missing_remap:
-        warnings.append("some workspace skills have no ROS1 remap")
-    if unknown_remap_actions:
-        warnings.append("some custom remap actions do not match loaded workspace skills")
     if warnings:
         return DoctorCheck(
             name="ros1_config",
@@ -335,7 +227,7 @@ def _ros1_config_check(ros1_config_path: str | None, *, workspace_skill_names: l
     return DoctorCheck(
         name="ros1_config",
         status="pass",
-        message="ROS1 config declares all built-in action and emergency-stop endpoints.",
+        message="ROS1 core adapter config is valid; domain endpoints remain Plugin-owned.",
         details=details,
     )
 
@@ -352,26 +244,6 @@ def _emergency_stop_hook_check(robot: Any) -> DoctorCheck:
         name="emergency_stop_hook",
         status="fail",
         message="Robot adapter does not expose emergency_stop(reason=None).",
-        details={"mode": getattr(robot, "mode", "unknown")},
-    )
-
-
-def _action_feedback_boundary_check(robot: Any) -> DoctorCheck:
-    backend = RobotAdapterActionBackend(robot)
-    if callable(getattr(backend, "_emit_robot_feedback", None)):
-        return DoctorCheck(
-            name="action_feedback_boundary",
-            status="pass",
-            message="RobotAdapterActionBackend can route robot feedback into action.feedback events.",
-            details={
-                "mode": getattr(robot, "mode", "unknown"),
-                "robot_has_feedback_provider": callable(getattr(robot, "action_feedback", None)),
-            },
-        )
-    return DoctorCheck(
-        name="action_feedback_boundary",
-        status="fail",
-        message="RobotAdapterActionBackend feedback bridge is missing.",
         details={"mode": getattr(robot, "mode", "unknown")},
     )
 
@@ -542,7 +414,6 @@ def _security_audit_check(
     config_path: str | None,
     *,
     plugin_dir: str | None,
-    skills_dir: str | None,
 ) -> DoctorCheck:
     if config_path is None:
         return DoctorCheck(
@@ -567,7 +438,6 @@ def _security_audit_check(
     report = run_security_audit(
         config_path=config_path,
         plugin_dirs=(plugin_dir,) if plugin_dir is not None else (),
-        skills_dir=skills_dir,
     )
     status = {
         "critical": "fail",
@@ -616,8 +486,6 @@ def main() -> int:
     parser.add_argument("--robot-id", default="fireclaw-doctor")
     parser.add_argument("--memory-path", default="memory/fireclaw-runs.jsonl")
     parser.add_argument("--event-path", default="memory/fireclaw-events.jsonl")
-    parser.add_argument("--skills-dir", default="skills")
-    parser.add_argument("--no-workspace-skills", action="store_true")
     parser.add_argument("--ros1-config", default=None)
     parser.add_argument("--task-queue", default=None, help="Path to JSONL task queue file")
     parser.add_argument("--memory-index", default=None, help="Path to memory index SQLite file")
@@ -637,7 +505,6 @@ def main() -> int:
         robot_id=args.robot_id,
         memory_path=args.memory_path,
         event_path=args.event_path,
-        skills_dir=None if args.no_workspace_skills else args.skills_dir,
         ros1_config_path=args.ros1_config,
         task_queue_path=args.task_queue,
         memory_index_path=args.memory_index,

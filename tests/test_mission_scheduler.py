@@ -60,6 +60,96 @@ class FakeSubagentClient:
         }
 
 
+class WaitingThenCompletedSubagentClient(FakeSubagentClient):
+    def __init__(self):
+        super().__init__()
+        self.trace_reads = 0
+
+    def get_task_trace(self, entry, task_id):
+        self.trace_reads += 1
+        if self.trace_reads == 1:
+            return {
+                "task_id": task_id,
+                "robot_id": entry.robot_id,
+                "status": "awaiting_confirmation",
+                "queue_record": {"status": "awaiting_confirmation"},
+                "result": {"status": "awaiting_confirmation"},
+                "events": [{"type": "authorization.requested"}],
+            }
+        return {
+            "task_id": task_id,
+            "robot_id": entry.robot_id,
+            "status": "completed",
+            "queue_record": {"status": "completed"},
+            "result": {"status": "completed", "message": "done"},
+            "events": [{"type": "task.completed"}],
+        }
+
+
+class _CancellationRunControl:
+    def __init__(self) -> None:
+        self.cancel_requested = False
+
+    def wait_until_resumed(self) -> bool:
+        return True
+
+    def is_cancel_requested(self) -> bool:
+        return self.cancel_requested
+
+
+class CancellationSettlingSubagentClient(FakeSubagentClient):
+    def __init__(
+        self,
+        control: _CancellationRunControl,
+        *,
+        terminal_after_reads: int | None,
+    ) -> None:
+        super().__init__()
+        self.control = control
+        self.terminal_after_reads = terminal_after_reads
+        self.trace_reads = 0
+
+    def get_task_trace(self, entry, task_id):
+        self.trace_reads += 1
+        if self.trace_reads == 1:
+            self.control.cancel_requested = True
+            return {
+                "task_id": task_id,
+                "robot_id": entry.robot_id,
+                "status": "running",
+                "queue_record": {"status": "running"},
+                "result": {"status": "running"},
+                "events": [{"type": "action.started"}],
+            }
+        if (
+            self.terminal_after_reads is not None
+            and self.trace_reads >= self.terminal_after_reads
+        ):
+            return {
+                "task_id": task_id,
+                "robot_id": entry.robot_id,
+                "status": "cancelled",
+                "queue_record": {"status": "cancelled"},
+                "result": {
+                    "status": "cancelled",
+                    "cancellation_acknowledged": True,
+                    "runtime_stopped": True,
+                },
+                "events": [
+                    {"type": "action.cancelled"},
+                    {"type": "task.cancelled"},
+                ],
+            }
+        return {
+            "task_id": task_id,
+            "robot_id": entry.robot_id,
+            "status": "cancel_requested",
+            "queue_record": {"status": "cancel_requested"},
+            "result": {"status": "cancel_requested"},
+            "events": [{"type": "task.cancel_requested"}],
+        }
+
+
 def test_failure_policy_defaults():
     policy = MissionFailurePolicy()
     assert policy.on_failed == "reassign"
@@ -67,7 +157,7 @@ def test_failure_policy_defaults():
     assert policy.on_lost == "abort"
     assert policy.on_block == "escalate"
     assert policy.on_escalated == "escalate"
-    assert policy.on_timed_out == "retry"
+    assert policy.on_timed_out == "abort"
     assert policy.max_retries == 1
     assert policy.max_reassigns == 1
 
@@ -75,10 +165,119 @@ def test_failure_policy_defaults():
 def test_scheduler_config_has_bounded_revision_cancellation_wait():
     config = MissionSchedulerConfig()
     assert config.revision_cancel_timeout_seconds == 5.0
+    assert config.operator_cancel_settle_timeout_seconds == 5.0
+
+
+def _schedule_one_navigation_with_cancellation(
+    tmp_path,
+    *,
+    terminal_after_reads: int | None,
+    settle_timeout_seconds: float,
+):
+    control = _CancellationRunControl()
+    client = CancellationSettlingSubagentClient(
+        control,
+        terminal_after_reads=terminal_after_reads,
+    )
+    registry = RobotRegistry([
+        RobotRegistryEntry(
+            robot_id="r1",
+            base_url="http://r1:8765",
+            capabilities=("navigation",),
+        )
+    ])
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+    )
+    scheduler = MissionScheduler(
+        mission_agent=mission,
+        config=MissionSchedulerConfig(
+            poll_interval_seconds=0.001,
+            group_timeout_seconds=1.0,
+            operator_cancel_settle_timeout_seconds=settle_timeout_seconds,
+        ),
+    )
+    plan = MissionPlan(
+        intent="navigate",
+        command="导航到入口",
+        subtasks=[
+            MissionSubtask(
+                robot_id="r1",
+                command="导航到入口",
+                floor=1,
+                capability_required="navigation",
+                execution_group=0,
+            )
+        ],
+    )
+    result = scheduler.schedule(
+        plan,
+        mission_id="mission-cancel-settle",
+        run_control=control,
+    )
+    return result, mission_registry, client
+
+
+def test_operator_cancel_waits_for_confirmed_robot_terminal(tmp_path):
+    result, mission_registry, client = (
+        _schedule_one_navigation_with_cancellation(
+            tmp_path,
+            terminal_after_reads=4,
+            settle_timeout_seconds=0.2,
+        )
+    )
+
+    assert client.trace_reads >= 4
+    assert result["status"] == "cancelled"
+    terminal = result["group_results"][0]["terminal_states"][-1]
+    assert terminal["status"] == "cancelled"
+    assert terminal["result"]["cancellation_acknowledged"] is True
+    assert terminal["result"]["runtime_stopped"] is True
+    trace = mission_registry.mission_trace("mission-cancel-settle")
+    assert trace["status"] == "cancelled"
+    assert trace["subtasks"][0]["status"] == "cancelled"
+
+
+def test_operator_cancel_without_terminal_acknowledgement_becomes_lost(
+    tmp_path,
+):
+    result, mission_registry, client = (
+        _schedule_one_navigation_with_cancellation(
+            tmp_path,
+            terminal_after_reads=None,
+            settle_timeout_seconds=0.02,
+        )
+    )
+
+    assert client.trace_reads >= 2
+    assert result["status"] == "lost"
+    terminal = result["group_results"][0]["terminal_states"][-1]
+    assert terminal["status"] == "lost"
+    assert terminal["error"] == (
+        "Robot task did not confirm a terminal state after operator "
+        "cancellation."
+    )
+    assert terminal["result"]["status"] == "lost"
+    assert terminal["result"]["cancellation_acknowledged"] is False
+    assert terminal["result"]["runtime_stopped"] is False
+    assert terminal["result"]["resource_release_safe"] is False
+    assert terminal["result"]["last_observed_status"] == "cancel_requested"
+    trace = mission_registry.mission_trace("mission-cancel-settle")
+    assert trace["status"] == "failed"
+    assert trace["subtasks"][0]["status"] == "lost"
 
 
 def test_failure_policy_decision_for():
-    policy = MissionFailurePolicy(on_failed="retry", on_denied="abort", on_lost="skip", on_block="escalate")
+    policy = MissionFailurePolicy(
+        on_failed="retry",
+        on_denied="abort",
+        on_lost="skip",
+        on_block="escalate",
+        on_timed_out="retry",
+    )
     assert policy.decision_for("failed") == "retry"
     assert policy.decision_for("denied") == "abort"
     assert policy.decision_for("lost") == "skip"
@@ -89,11 +288,78 @@ def test_failure_policy_decision_for():
     assert policy.decision_for("succeeded") == "abort"  # unknown → abort
 
 
+def test_scheduler_preserves_robot_timeout_without_blind_retry(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(
+            robot_id="r1",
+            base_url="http://r1:8765",
+            capabilities=("navigation",),
+        ),
+    ])
+    client = FakeSubagentClient()
+    client.traces[("r1", "task-r1")] = {
+        "task_id": "task-r1",
+        "robot_id": "r1",
+        "status": "timed_out",
+        "result": {
+            "status": "timed_out",
+            "cancellation_reason": "deadline_exceeded",
+            "cancellation_acknowledged": True,
+            "runtime_stopped": True,
+            "resource_release_safe": True,
+        },
+        "events": [
+            {"type": "action.timed_out"},
+            {"type": "task.timed_out"},
+        ],
+    }
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+    )
+    plan = MissionPlan(
+        intent="navigate",
+        command="导航到入口",
+        subtasks=[
+            MissionSubtask(
+                robot_id="r1",
+                command="导航到入口",
+                floor=1,
+                capability_required="navigation",
+                execution_group=0,
+            ),
+        ],
+    )
+
+    result = MissionScheduler(
+        mission_agent=mission,
+        config=MissionSchedulerConfig(poll_interval_seconds=0.001),
+    ).schedule(plan, mission_id="mission-timeout")
+
+    assert result["status"] == "timed_out"
+    assert len(client.calls) == 1
+    assert result["failure_decisions"] == [
+        {
+            "robot_id": "r1",
+            "task_id": "task-r1",
+            "status": "timed_out",
+            "decision": "abort",
+        }
+    ]
+    terminal = result["group_results"][0]["terminal_states"][-1]
+    assert terminal["status"] == "timed_out"
+    trace = mission_registry.mission_trace("mission-timeout")
+    assert trace["status"] == "failed"
+    assert trace["subtasks"][0]["status"] == "timed_out"
+
+
 def test_scheduler_submits_parallel_group(tmp_path):
     """Two robots in same execution_group both get submitted."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
@@ -106,8 +372,8 @@ def test_scheduler_submits_parallel_group(tmp_path):
         intent="search",
         command="去二楼和三楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r2", command="去3楼搜索受困人员", floor=3, capability_required="victim_search", execution_group=0),
         ],
     )
     scheduler = MissionScheduler(mission_agent=mission, config=MissionSchedulerConfig(poll_interval_seconds=0.01))
@@ -121,10 +387,59 @@ def test_scheduler_submits_parallel_group(tmp_path):
     assert len(client.calls) == 2
 
 
+def test_scheduler_keeps_waiting_for_same_task_after_confirmation(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(
+            robot_id="r1",
+            base_url="http://r1:8765",
+            capabilities=("victim_search",),
+        ),
+    ])
+    client = WaitingThenCompletedSubagentClient()
+    mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=mission_registry,
+    )
+    plan = MissionPlan(
+        intent="search",
+        command="去二楼搜索",
+        subtasks=[
+            MissionSubtask(
+                robot_id="r1",
+                command="去2楼搜索受困人员",
+                floor=2,
+                capability_required="victim_search",
+                execution_group=0,
+            ),
+        ],
+    )
+    scheduler = MissionScheduler(
+        mission_agent=mission,
+        config=MissionSchedulerConfig(
+            poll_interval_seconds=0.001,
+            group_timeout_seconds=1.0,
+        ),
+    )
+
+    result = scheduler.schedule(plan, mission_id="m1", session_id="m1")
+
+    assert result["status"] == "succeeded"
+    assert len(client.calls) == 1
+    assert client.trace_reads >= 2
+    mission_record = mission_registry.get_mission("m1")
+    assert mission_record is not None
+    assert [subtask.task_id for subtask in mission_record.subtasks] == [
+        "task-r1"
+    ]
+    assert mission_record.subtasks[0].status == "completed"
+
+
 def test_scheduler_sequential_groups(tmp_path):
     """One robot reused across two execution_groups. Group 1 starts after group 0 completes."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     mission_registry = JsonlMissionRegistry(tmp_path / "missions.jsonl")
@@ -137,8 +452,8 @@ def test_scheduler_sequential_groups(tmp_path):
         intent="search",
         command="去二楼和三楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
-            MissionSubtask(robot_id="r1", command="去3楼搜索受困人员", floor=3, capability_required="search_for_victims", execution_group=1),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去3楼搜索受困人员", floor=3, capability_required="victim_search", execution_group=1),
         ],
     )
     scheduler = MissionScheduler(mission_agent=mission, config=MissionSchedulerConfig(poll_interval_seconds=0.01))
@@ -161,7 +476,7 @@ def test_scheduler_blocks_before_dispatch_when_checkpoint_fails(tmp_path):
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
     client = FakeSubagentClient()
@@ -178,7 +493,7 @@ def test_scheduler_blocks_before_dispatch_when_checkpoint_fails(tmp_path):
                 robot_id="r1",
                 command="去2楼搜索受困人员",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
             ),
         ],
     )
@@ -201,12 +516,12 @@ def test_restart_recovery_reconciles_active_task_and_dispatches_dependency(
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
         RobotRegistryEntry(
             robot_id="r2",
             base_url="http://r2:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
     client = FakeSubagentClient()
@@ -245,14 +560,14 @@ def test_restart_recovery_reconciles_active_task_and_dispatches_dependency(
                 robot_id="r1",
                 command="search floor 2",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 execution_group=0,
             ),
             MissionSubtask(
                 robot_id="r2",
                 command="search floor 3",
                 floor=3,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
                 execution_group=1,
             ),
         ],
@@ -306,7 +621,7 @@ def test_restart_recovery_dispatches_pending_node_with_stable_dedupe_key(
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
     client = FakeSubagentClient()
@@ -330,7 +645,7 @@ def test_restart_recovery_dispatches_pending_node_with_stable_dedupe_key(
                 robot_id="r1",
                 command="search floor 2",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
             ),
         ],
     )
@@ -359,7 +674,7 @@ def test_restart_recovery_blocks_unknown_active_robot_task_state(tmp_path):
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
     client = FakeSubagentClient()
@@ -396,7 +711,7 @@ def test_restart_recovery_blocks_unknown_active_robot_task_state(tmp_path):
                 robot_id="r1",
                 command="search floor 2",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
             ),
         ],
     )
@@ -438,7 +753,7 @@ def test_restart_recovery_blocks_legacy_checkpoint_without_task_graph(
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
     client = FakeSubagentClient()
@@ -503,12 +818,12 @@ def test_restart_recovery_finishes_superseded_cancellation_before_dispatch(
         RobotRegistryEntry(
             robot_id="r1",
             base_url="http://r1:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
         RobotRegistryEntry(
             robot_id="r2",
             base_url="http://r2:8765",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
         ),
     ])
     client = CancellationRecoveryClient()
@@ -545,7 +860,7 @@ def test_restart_recovery_finishes_superseded_cancellation_before_dispatch(
                 robot_id="r2",
                 command="use safe route",
                 floor=2,
-                capability_required="search_for_victims",
+                capability_required="victim_search",
             ),
         ],
     )
@@ -594,8 +909,8 @@ def test_restart_recovery_finishes_superseded_cancellation_before_dispatch(
 def test_scheduler_reassigns_failed_subtask(tmp_path):
     """When on_failed='reassign', a failed subtask is reassigned to another capable robot."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
-        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
+        RobotRegistryEntry(robot_id="r2", base_url="http://r2:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     # r1's first attempt fails
@@ -616,7 +931,7 @@ def test_scheduler_reassigns_failed_subtask(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     scheduler = MissionScheduler(
@@ -636,10 +951,75 @@ def test_scheduler_reassigns_failed_subtask(tmp_path):
     assert client.calls[1][0].robot_id == "r2"
 
 
+def test_scheduler_aborts_failed_subtask_when_no_reassign_robot_exists(tmp_path):
+    registry = RobotRegistry([
+        RobotRegistryEntry(
+            robot_id="r1",
+            base_url="http://r1:8765",
+            capabilities=("patrol",),
+        ),
+    ])
+    client = FakeSubagentClient()
+    client.traces[("r1", "task-r1")] = {
+        "task_id": "task-r1",
+        "robot_id": "r1",
+        "status": "failed",
+        "result": {
+            "status": "failed",
+            "raw_status": "aborted",
+            "message": "move_base failed to find a valid plan",
+        },
+        "events": [{"type": "task.failed"}],
+    }
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=JsonlMissionRegistry(tmp_path / "missions.jsonl"),
+    )
+    plan = MissionPlan(
+        intent="navigate",
+        command="导航到地图外目标",
+        subtasks=[
+            MissionSubtask(
+                robot_id="r1",
+                command="导航到坐标 (9.5, 9.5)",
+                floor=1,
+                capability_required="patrol",
+                execution_group=0,
+            ),
+        ],
+    )
+    scheduler = MissionScheduler(
+        mission_agent=mission,
+        config=MissionSchedulerConfig(
+            poll_interval_seconds=0.01,
+            failure_policy=MissionFailurePolicy(
+                on_failed="reassign",
+                max_reassigns=1,
+            ),
+        ),
+    )
+
+    result = scheduler.schedule(plan, mission_id="m1", session_id="m1")
+
+    assert result["status"] == "failed"
+    assert len(client.calls) == 1
+    assert result["failure_decisions"] == [
+        {
+            "robot_id": "r1",
+            "task_id": "task-r1",
+            "status": "failed",
+            "decision": "abort",
+            "requested_decision": "reassign",
+            "reason": "no_alternative_robot",
+        }
+    ]
+
+
 def test_scheduler_escalates_legacy_denied_as_canonical_blocked(tmp_path):
     """Legacy denied is projected to blocked before failure policy handling."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     client.traces[("r1", "task-r1")] = {
@@ -659,7 +1039,7 @@ def test_scheduler_escalates_legacy_denied_as_canonical_blocked(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     scheduler = MissionScheduler(
@@ -679,7 +1059,7 @@ def test_scheduler_escalates_legacy_denied_as_canonical_blocked(tmp_path):
 def test_scheduler_escalates_on_block(tmp_path):
     """When on_block='escalate', subtask is marked escalated and mission continues."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     client.traces[("r1", "task-r1")] = {
@@ -699,7 +1079,7 @@ def test_scheduler_escalates_on_block(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     scheduler = MissionScheduler(
@@ -719,7 +1099,7 @@ def test_scheduler_escalates_on_block(tmp_path):
 def test_scheduler_retries_failed_subtask(tmp_path):
     """When on_failed='retry', a failed subtask is retried on the same robot."""
     registry = RobotRegistry([
-        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("search_for_victims",)),
+        RobotRegistryEntry(robot_id="r1", base_url="http://r1:8765", capabilities=("victim_search",)),
     ])
     client = FakeSubagentClient()
     # r1's first attempt fails
@@ -740,7 +1120,7 @@ def test_scheduler_retries_failed_subtask(tmp_path):
         intent="search",
         command="去二楼搜索",
         subtasks=[
-            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="search_for_victims", execution_group=0),
+            MissionSubtask(robot_id="r1", command="去2楼搜索受困人员", floor=2, capability_required="victim_search", execution_group=0),
         ],
     )
     scheduler = MissionScheduler(

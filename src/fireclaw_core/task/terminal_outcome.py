@@ -45,6 +45,7 @@ ROBOT_TASK_ACTIVE_STATUSES = frozenset({
     "received",
     "planned",
     "running",
+    "awaiting_confirmation",
     "cancel_requested",
 })
 
@@ -73,7 +74,6 @@ _LEGACY_STATUS_ALIASES = {
     "denied": "blocked",
     "clarify": "escalated",
     "approval_required": "escalated",
-    "awaiting_confirmation": "escalated",
     "error": "failed",
     "aborted": "failed",
     "timeout": "timed_out",
@@ -110,10 +110,14 @@ def build_robot_task_terminal_outcome(
     *,
     cancellation_requested: bool = False,
 ) -> RobotTaskTerminalOutcome:
+    normalized_raw = normalize_robot_task_terminal_status(raw_status)
+    # Operator cancellation is sticky only when the physical runtime reached
+    # a trustworthy terminal state.  A lost runtime means the stop was not
+    # acknowledged and must never be rewritten as a safe cancellation.
     normalized = (
         cast(RobotTaskTerminalStatus, "cancelled")
-        if cancellation_requested
-        else normalize_robot_task_terminal_status(raw_status)
+        if cancellation_requested and normalized_raw != "lost"
+        else normalized_raw
     )
     if normalized is None:
         normalized = cast(RobotTaskTerminalStatus, "failed")

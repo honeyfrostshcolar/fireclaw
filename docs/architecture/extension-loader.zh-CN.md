@@ -98,10 +98,12 @@ FireClaw 只处理 `enabled` 和插件加载流程；`scan_topic` 的类型、�
 - `trusted` 插件当前在受信任进程内运行，适合明确安装的本地扩展；
 - `sandboxed` 插件只能贡献绑定 Docker 执行边界的 Tool；
 - 任一插件注册失败时，该插件的贡献整体回滚，不留下半套 Tool；
-- 旧 `PhysicalSkillPlugin` 和 `RobotAdapter.<action>()` 仅作为迁移兼容路径，
-  新增物理能力不得继续使用它们；
-- 旧的 `fireclaw_core.navigation.move_base_plugin` 只保留兼容导入，导航实现
-  已由 `extensions/navigation-move-base/plugin/` 所有。
+- `PhysicalSkillPlugin` 是当前内部兼容类名，其规范语义是 physical Tool
+  contribution；新增插件应通过公开 SDK 的 `PhysicalToolSpec` 注册；
+- `RobotAdapter.<domain_action>()` 回退路径已经移除；physical Tool 必须提供
+  Plugin-owned handler；
+- `fireclaw_core.navigation` 兼容模块已经删除，导航实现只存在于
+  `extensions/navigation-move-base/plugin/`。
 
 第三方签名验证和独立插件进程仍是后续安全加固项，不会改变当前 manifest /
 entrypoint 契约。

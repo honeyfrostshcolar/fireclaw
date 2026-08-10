@@ -36,4 +36,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "ros1_smoke: requires running ROS1 master (roscore + turtlesim + actionlib_tutorials)",
+    "gazebo_acceptance: requires the fixed TurtleBot3 Gazebo acceptance environment and explicit opt-in",
 ]

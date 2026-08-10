@@ -24,13 +24,13 @@ def _registry() -> RobotRegistry:
         RobotRegistryEntry(
             robot_id="robot-a",
             base_url="http://robot-a.test",
-            capabilities=("search_for_victims", "recon"),
+            capabilities=("victim_search", "recon"),
             zone="east",
         ),
         RobotRegistryEntry(
             robot_id="robot-b",
             base_url="http://robot-b.test",
-            capabilities=("search_for_victims",),
+            capabilities=("victim_search",),
             zone="west",
         ),
     ])
@@ -220,7 +220,7 @@ def test_mission_agent_versions_and_binds_state_snapshot(tmp_path) -> None:
                             robot_id="robot-a",
                             command="去二楼搜索受困人员",
                             floor=2,
-                            capability_required="search_for_victims",
+                            capability_required="victim_search",
                         )
                     ],
                 ),

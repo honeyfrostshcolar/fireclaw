@@ -16,13 +16,20 @@ chain. The LLM never turns its own request into authority.
 6. An authenticated operator with `task.confirm` approves the request.
 7. Robot Gateway atomically resolves the request and persists a signed,
    short-lived `ExecutionAuthorization`.
-8. `/confirm` submits the same structured task again with that authorization.
+8. `/confirm` resumes the original Robot task ID with the same structured task
+   and that authorization; it does not create a replacement top-level task.
 9. Robot Gateway verifies the signature, issuer, expiry, robot identity, and
    signed hashes. `AgentToolRuntime` independently recomputes the final scope
    and action hash.
 10. Immediately before the Tool handler, the runtime atomically records a
     stable one-time operation in `authorization_uses`.
 11. Only then does the handler execute.
+
+While approval is pending, the task remains non-terminal as
+`awaiting_confirmation`, has no `ended_at`, and releases its execution worker.
+The resumed worker is a new process-local attempt under the same durable task
+identity. The original requester remains the delegated execution actor, while
+the approving operator is recorded separately as `approved_by`.
 
 Changing the Tool arguments, plugin owner, Tool schema, deployment profile,
 mission/task/robot context, or hook-adjusted arguments invalidates the grant.

@@ -19,8 +19,7 @@ def _config(tmp_path):
         event_path=str(tmp_path / "events.jsonl"),
         task_queue_path=str(tmp_path / "tasks.jsonl"),
         runtime_state_path=str(tmp_path / "runtime.sqlite3"),
-        workspace_skills_dir=None,
-        dry_run=False,
+        dry_run=True,
     )
 
 
@@ -111,6 +110,27 @@ def test_gateway_persists_exact_approval_and_revalidates_after_restart(tmp_path)
         result,
     )
 
+    waiting_record = gateway.task_queue.get("runtime-task-1")
+    waiting_trace = gateway.task_trace("runtime-task-1")
+    assert waiting_record is not None
+    assert waiting_record.status == "awaiting_confirmation"
+    assert waiting_record.ended_at is None
+    assert waiting_trace["status"] == "awaiting_confirmation"
+    assert waiting_trace["result"]["status"] == "awaiting_confirmation"
+    assert not any(
+        event["type"].startswith("task.")
+        and event["type"] in {
+            "task.completed",
+            "task.blocked",
+            "task.escalated",
+            "task.failed",
+            "task.timed_out",
+            "task.cancelled",
+            "task.lost",
+        }
+        for event in waiting_trace["events"]
+    )
+
     request = gateway.runtime_state.pending_authorization_request("mission-1")
     assert request is not None
     assert request["robot_id"] == "robot-a"
@@ -162,3 +182,108 @@ def test_gateway_persists_exact_approval_and_revalidates_after_restart(tmp_path)
 
     assert verified.verified is True
     assert changed_scope.error_code == "authorization_scope_mismatch"
+
+
+def test_gateway_restart_preserves_pending_confirmation_task(tmp_path):
+    gateway = FireClawGateway(_config(tmp_path))
+    result = _awaiting_confirmation_result()
+    gateway.task_queue.create(
+        task_id="runtime-task-1",
+        session_id="mission-1",
+        command="navigate to the east corridor",
+        created_at="2026-08-10T00:00:00+00:00",
+    )
+    gateway.task_queue.update(
+        "runtime-task-1",
+        status="running",
+        started_at="2026-08-10T00:00:01+00:00",
+    )
+    gateway._record_authorization_request_if_needed(
+        task_id="runtime-task-1",
+        session_id="mission-1",
+        command="navigate to the east corridor",
+        result=result,
+        operator=_requester(),
+    )
+    gateway._record_result_events(
+        "runtime-task-1",
+        "mission-1",
+        result,
+    )
+
+    restarted = FireClawGateway(_config(tmp_path))
+    trace = restarted.task_trace("runtime-task-1")
+
+    assert trace["status"] == "awaiting_confirmation"
+    assert trace["queue_record"]["ended_at"] is None
+    assert trace["result"]["status"] == "awaiting_confirmation"
+    assert "task.lost" not in [
+        event["type"] for event in trace["events"]
+    ]
+
+
+def test_confirm_resumes_original_task_as_original_requester(
+    tmp_path,
+    monkeypatch,
+):
+    gateway = FireClawGateway(_config(tmp_path))
+    result = _awaiting_confirmation_result()
+    gateway.task_queue.create(
+        task_id="runtime-task-1",
+        session_id="mission-1",
+        command="navigate to the east corridor",
+        created_at="2026-08-10T00:00:00+00:00",
+    )
+    gateway.task_queue.update(
+        "runtime-task-1",
+        status="running",
+        started_at="2026-08-10T00:00:01+00:00",
+    )
+    gateway._record_authorization_request_if_needed(
+        task_id="runtime-task-1",
+        session_id="mission-1",
+        command="navigate to the east corridor",
+        result=result,
+        operator=_requester(),
+    )
+    gateway._record_result_events(
+        "runtime-task-1",
+        "mission-1",
+        result,
+    )
+    started = {}
+
+    def capture_worker(control, operator, *, resumed=False):
+        started.update(
+            {
+                "control": control,
+                "operator": operator,
+                "resumed": resumed,
+            }
+        )
+
+    monkeypatch.setattr(gateway, "_start_task_worker", capture_worker)
+
+    confirmed = gateway.confirm_task(
+        session_id="mission-1",
+        operator=_supervisor(),
+    )
+
+    assert confirmed["status"] == "accepted"
+    assert confirmed["task_id"] == "runtime-task-1"
+    assert started["control"].task_id == "runtime-task-1"
+    assert started["operator"].operator_id == "operator-1"
+    assert started["resumed"] is True
+    queue_record = gateway.task_queue.get("runtime-task-1")
+    assert queue_record is not None
+    assert queue_record.status == "accepted"
+    events = gateway.events.events_for_task("runtime-task-1")
+    approval = next(
+        event for event in events if event["type"] == "authorization.approved"
+    )
+    scheduled = next(
+        event for event in events if event["type"] == "task.resume_scheduled"
+    )
+    assert approval["payload"]["approved_by"]["operator_id"] == "supervisor-1"
+    assert scheduled["payload"]["requested_by"]["operator_id"] == "operator-1"
+    assert scheduled["payload"]["approved_by"]["operator_id"] == "supervisor-1"
