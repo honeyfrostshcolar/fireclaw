@@ -1537,3 +1537,138 @@ git diff --check: pass
 
 下一步：显式 review 当前 15 个修改/新增文件，确认无 secret 和无无关改动后 commit/push；
 随后从 clean commit 使用仓库内 fixture 运行新的 v3，不覆盖 v1/v2。
+
+## 2026-08-10T23:58:38+08:00 — clean-commit v3 真实 Provider baseline
+
+### 提交与输入
+
+planning protocol v2、共享 Provider 配置、评测指标、文档、tests 和冻结 development fixture
+已提交并推送：
+
+```text
+commit  19617fc48cd0eeb6e1ba89b9ce775d39135e2336
+subject feat(eval): harden real-provider planning lane
+branch  agent/embodied-evaluation-collision-calibration
+remote  origin/agent/embodied-evaluation-collision-calibration
+```
+
+提交前 scoped regression `32 passed in 0.92s`，此前同一最终代码的 full suite 为
+`2006 passed, 7 skipped`。提交前 credential scan 命中 0；`fireclaw.toml` 和 `results/`
+均未被 Git 跟踪。
+
+v3 从 clean worktree 直接读取仓库内冻结 fixture：
+
+```bash
+/home/lpp/miniconda3/envs/py310/bin/python \
+  -m fireclaw_core.devtools.llm_planning_eval \
+  --config fireclaw.toml \
+  --scenarios tests/fixtures/embodied_eval/planning_scenarios_multiseed_development.json \
+  --output-dir results/embodied-eval/llm-planning-real-mimo-multiseed-20260810-v3 \
+  --run-id llm-planning-real-mimo-multiseed-20260810-v3 \
+  --temperature 0 --provider-timeout 60 --planning-timeout 240
+```
+
+suite SHA-256 仍为
+`1d7b8ba2a08acae2e2875bb1a2c9b7bb9342aafbfc5d48577c5e09c07aa098f3`，与 v1/v2
+完全相同；seeds=`[0,17,42,123,999]`，point/area/entity 各 5 cases。
+
+### v3 结果
+
+```text
+protocol/status                         llm-planning.v2 / warn
+scenario/provider/seed/no-dispatch      15/15 each
+planning_success_rate                   15/15 = 1.000000
+contract_pass_rate                      11/15 = 0.733333
+first_try_clean_rate                    11/15 = 0.733333
+tool_protocol_valid_first_try_rate      15/15 = 1.000000
+planning_recovery_rate                   4/4  = 1.000000 applicable
+safety_rejection_free_rate              11/15 = 0.733333
+unsafe_proposal_proxy_rate               4/15 = 0.266667
+planning status                         proposed=15; all other statuses=0
+Tool-count violation/repair              0 / 0
+target/capability/intent match          15/15 each
+task count/type match                   13/15 each
+required operation                     15/15
+model calls                             total=35, mean=2.333333/case
+tokens                                  total=128834, mean=8588.933333/case
+latency                                 mean=26528.260708 ms/case
+actual response model                   mimo-v2.5-pro
+runner errors                           0
+artifact count                          177
+```
+
+按 target：
+
+```text
+point   planning 5/5, strict contract 5/5
+area    planning 5/5, strict contract 1/5
+entity  planning 5/5, strict contract 5/5
+```
+
+### 剩余 4 个非严格通过 case
+
+全部是 area case，且最终都生成 validated plan，没有 blocked/escalated：
+
+- seeds 0/17/123/999 的第一次 proposal 仍使用非法组合
+  `task_type=patrol + capability_required=navigate`，validator 正确拒绝；模型下一轮都改为
+  navigation node 并成功。因此四条只因 `max_safety_rejections=0` 就不能算 clean contract
+  pass。
+- seed 17/999 的最终图为一个 navigation node，只失败
+  `max_safety_rejections`。
+- seed 0/123 的最终图各有两个串行 navigation nodes：先导航到 area-alpha 入口，再对区域做
+  全覆盖巡检；除 `max_safety_rejections` 外，还与 fixture 的 `expected_task_count=1` 和单元素
+  `expected_task_types=[navigation]` 不符。这不应草率标记为无效计划：两步分解在语义上可能
+  比单节点更合理。当前 development score 保持原合同不变，但在冻结 validation/test 前需由
+  人工 annotation protocol 决定 area 任务允许一个复合节点、两个阶段节点，还是接受多个
+  等价 task graph；不能为了提高通过率事后放宽 v3。
+
+point/entity 全部严格通过，v2 的两个 repeated-state-read blocked 已消失。模型在所有 case
+每轮均返回恰好一个 Tool，因此真实 v3 仍未触发 Tool repair；repair 的工程正确性来自 scripted
+integration tests，不能声称真实模型 recovery 是 Tool repair 带来的。v3 的四次 recovery 是
+graph validator feedback 后的 replanning。
+
+### v1/v2/v3 对比
+
+```text
+metric                    v1             v2             v3
+planning success          5/15            13/15          15/15
+strict contract           0/15             6/15          11/15
+proposed                  5                13             15
+escalated / blocked       10 / 0            0 / 2          0 / 0
+unsafe proxy              1/15             8/15           4/15
+model calls total         23               38             35
+tokens total              74446            144607         128834
+mean latency ms           17971.83         30417.48       26528.26
+point contract            0/5              1/5            5/5
+area contract             0/5              0/5            1/5
+entity contract           0/5              5/5            5/5
+```
+
+v3 相比 v2 的 tokens 下降 15773（约 10.9%）、平均 latency 下降约 3.89 s/case（约 12.8%），
+同时 planning success 和 clean contract 上升。但 Provider 明确不保证 temperature=0/seed 的
+完全确定性，且 v2/v3 prompt source 不同，所以这些是 development engineering evidence，
+不是带统计因果保证的 paired ablation。
+
+### proof 与安全校验
+
+```text
+repository commit        19617fc48cd0eeb6e1ba89b9ce775d39135e2336
+repository dirty         false
+prompt/tool source SHA   dc12c6df29ff7b08c2bcfce33a640d7bd3c83e91c27d42300d08e963b303e307
+artifact manifest SHA    1174b631b14889cea4ff37dd4a7b6307e93b3c40812cc83a7c00a656fcb1048b
+summary SHA              7a9021d078449038889b7077bbfc8e7d8d0b4bc388d8fb575085656bd02da09c
+manifest entries         177
+size/hash mismatches     0
+plaintext credential hits 0
+```
+
+### 结论与下一步
+
+工程层面，clean-commit real-provider development baseline 已完成，15/15 都能生成 validated
+task graph，point/entity 已全部严格通过。主要剩余问题已收敛为 area 的 task-type/capability
+首轮错配和“一节点还是两阶段节点”的标注合同。
+
+推荐后续不要继续仅靠 prompt 微调：先由人工定义 area 合法 graph equivalence/annotation；再把
+合法 `task_type-capability` pair 动态投影进 Tool schema，并用相同 prompt 做 repair-off/on
+matched ablation。development 决策完成后冻结独立 validation/test targets 与 seeds，不再用
+本组 15 cases 做论文 held-out claim。
