@@ -26,6 +26,45 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run FireClaw mission-control commands.")
     subparsers = parser.add_subparsers(dest="command_name", required=True)
 
+    setup = subparsers.add_parser(
+        "setup",
+        help="Prepare a safe first-run Profile and remember it for later commands.",
+    )
+    setup.add_argument(
+        "--mode",
+        choices=["simulation", "real"],
+        default=None,
+        help="Setup mode; the interactive default is the safe simulation path.",
+    )
+    setup.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help="Validate and activate an existing Profile instead of generating one.",
+    )
+    setup.add_argument(
+        "--runtime-root",
+        type=Path,
+        default=None,
+        help="Advanced override for FIRECLAW_HOME and generated user files.",
+    )
+    setup.add_argument(
+        "--source-root",
+        type=Path,
+        default=None,
+        help="Advanced override for the FireClaw source tree containing simulation assets.",
+    )
+    setup.add_argument(
+        "--no-deploy",
+        action="store_true",
+        help="Validate and activate the Profile without preparing Runtime files.",
+    )
+    setup.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable output and never prompt.",
+    )
+
     submit = subparsers.add_parser("submit-subtask", help="Submit an explicit subtask to a Robot Agent.")
     submit.add_argument("--robot", required=True, help="Target robot_id from the robot registry.")
     submit.add_argument("--command", required=True, help="Natural-language command for the Robot Agent.")
@@ -242,6 +281,260 @@ def main() -> int:
     mission.add_argument("--tls-client-cert-file", default=None)
     mission.add_argument("--tls-client-key-file", default=None)
 
+    status = subparsers.add_parser(
+        "status",
+        help="Show actionable robot readiness, not just process liveness.",
+    )
+    status.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help="Robot/deployment Profile TOML; defaults to the Profile selected by setup.",
+    )
+    status.add_argument("--output-root", type=Path, default=None)
+    status.add_argument(
+        "--gateway",
+        default=None,
+        help="Override robot.base_url from the Profile.",
+    )
+    status.add_argument(
+        "--api-token",
+        default=None,
+        help=(
+            "Robot Gateway bearer token; defaults to "
+            "FIRECLAW_ROBOT_GATEWAY_TOKEN."
+        ),
+    )
+    status.add_argument(
+        "--server",
+        default=None,
+        help=(
+            "Override the Mission Gateway URL used for the integrated Fleet "
+            "Doctor probe; otherwise resolve it from the Profile."
+        ),
+    )
+    status.add_argument(
+        "--mission-api-token",
+        default=None,
+        help=(
+            "Mission Gateway bearer token; defaults to "
+            "FIRECLAW_GATEWAY_TOKEN."
+        ),
+    )
+    status.add_argument("--timeout", type=float, default=10.0)
+    status.add_argument(
+        "--no-runtime-check",
+        action="store_true",
+        help="Skip live Runtime probes; the result cannot be READY.",
+    )
+    status.add_argument("--tls-ca-file", default=None)
+    status.add_argument("--tls-client-cert-file", default=None)
+    status.add_argument("--tls-client-key-file", default=None)
+    status.add_argument("--mission-tls-ca-file", default=None)
+    status.add_argument("--mission-tls-client-cert-file", default=None)
+    status.add_argument("--mission-tls-client-key-file", default=None)
+    status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the complete machine-readable evidence envelope.",
+    )
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Run fleet diagnostics through the Mission Gateway.",
+    )
+    doctor.add_argument(
+        "--server",
+        default="http://127.0.0.1:8766",
+        help="Mission Gateway base URL.",
+    )
+    doctor.add_argument("--api-token", default=None)
+    doctor.add_argument("--timeout", type=float, default=10.0)
+    doctor.add_argument("--tls-ca-file", default=None)
+    doctor.add_argument("--tls-client-cert-file", default=None)
+    doctor.add_argument("--tls-client-key-file", default=None)
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the complete machine-readable diagnostic envelope.",
+    )
+
+    recover = subparsers.add_parser(
+        "recover",
+        help="Guide the two-stage resource-admission recovery protocol.",
+    )
+    recover.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help="Robot Profile TOML; defaults to the Profile selected by setup.",
+    )
+    recover.add_argument(
+        "--gateway",
+        default=None,
+        help="Override robot.base_url from the Profile.",
+    )
+    recover.add_argument("--api-token", default=None)
+    recover.add_argument("--timeout", type=float, default=15.0)
+    recover.add_argument(
+        "--reason",
+        default=None,
+        help="Operator-audited reason for requesting recovery.",
+    )
+    recover.add_argument(
+        "--request-id",
+        default=None,
+        help="Confirm an existing pending request instead of creating one.",
+    )
+    recover.add_argument(
+        "--confirmation-phrase",
+        default=None,
+        help=(
+            "Exact phrase returned by the request. Omitting it uses the "
+            "interactive prompt; there is intentionally no --yes shortcut."
+        ),
+    )
+    recover.add_argument(
+        "--request-only",
+        action="store_true",
+        help="Collect stop evidence and create a request without confirming it.",
+    )
+    recover.add_argument("--tls-ca-file", default=None)
+    recover.add_argument("--tls-client-cert-file", default=None)
+    recover.add_argument("--tls-client-key-file", default=None)
+    recover.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable output and never prompt for confirmation.",
+    )
+
+    from fireclaw_core.infra.hardware_safety_acceptance import (
+        SCENARIOS,
+        SIGNAL_STALE_TARGETS,
+    )
+
+    hardware_safety = subparsers.add_parser(
+        "hardware-safety",
+        help="Prepare and run real-robot hardware safety acceptance.",
+    )
+    hardware_safety_sub = hardware_safety.add_subparsers(
+        dest="hardware_safety_command",
+        required=True,
+    )
+    safety_preflight = hardware_safety_sub.add_parser(
+        "preflight",
+        help="Validate the Profile and live ROS contract without actuation.",
+    )
+    safety_preflight.add_argument("--profile", type=Path, required=True)
+    safety_preflight.add_argument(
+        "--offline",
+        action="store_true",
+        help="Run static preparation only; the result cannot be READY.",
+    )
+    safety_preflight.add_argument("--json", action="store_true")
+
+    safety_accept = hardware_safety_sub.add_parser(
+        "accept",
+        help="Run one operator-confirmed field acceptance scenario.",
+    )
+    safety_accept.add_argument("--profile", type=Path, required=True)
+    safety_accept.add_argument("--scenario", choices=SCENARIOS, required=True)
+    safety_accept.add_argument(
+        "--target-signal",
+        choices=SIGNAL_STALE_TARGETS,
+        default=None,
+        help=(
+            "Required for signal_stale; for actuator_motion use actuators "
+            "or independent_motion."
+        ),
+    )
+    safety_accept.add_argument("--operator-id", required=True)
+    safety_accept.add_argument("--firmware-version", required=True)
+    safety_accept.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=Path("results/hardware-safety"),
+    )
+    safety_accept.add_argument(
+        "--confirmation-phrase",
+        default=None,
+        help="Exact phrase shown by the command; there is no --yes shortcut.",
+    )
+    safety_accept.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON and never prompt for confirmation.",
+    )
+
+    safety_verify = hardware_safety_sub.add_parser(
+        "verify",
+        help="Verify the content digest and required acceptance fields.",
+    )
+    safety_verify.add_argument("--artifact", type=Path, required=True)
+    safety_verify.add_argument("--json", action="store_true")
+
+    safety_report = hardware_safety_sub.add_parser(
+        "report",
+        help="Require every scenario for one exact Profile and firmware.",
+    )
+    safety_report.add_argument("--profile", type=Path, required=True)
+    safety_report.add_argument("--firmware-version", required=True)
+    safety_report.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=Path("results/hardware-safety"),
+    )
+    safety_report.add_argument("--json", action="store_true")
+
+    from fireclaw_core.infra.fault_injection import SCENARIOS as FAULT_SCENARIOS
+
+    fault_test = subparsers.add_parser(
+        "fault-test",
+        help="Run repeatable simulation/process fault-injection acceptance.",
+    )
+    fault_test_sub = fault_test.add_subparsers(
+        dest="fault_test_command",
+        required=True,
+    )
+    fault_run = fault_test_sub.add_parser(
+        "run",
+        help="Run selected fault scenarios and write an immutable evidence bundle.",
+    )
+    fault_run.add_argument(
+        "--scenario",
+        action="append",
+        choices=tuple(FAULT_SCENARIOS),
+        default=None,
+        help="Scenario to run; repeat the flag or omit it to run all seven.",
+    )
+    fault_run.add_argument(
+        "--live-ros",
+        action="store_true",
+        help=(
+            "Start, kill, and restart an isolated local roscore for the ROS "
+            "master scenario. No robot actuation is performed."
+        ),
+    )
+    fault_run.add_argument(
+        "--repository-root",
+        type=Path,
+        default=Path.cwd(),
+        help="FireClaw repository containing the selected pytest nodes.",
+    )
+    fault_run.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=Path("results/fault-injection"),
+    )
+    fault_run.add_argument("--json", action="store_true")
+
+    fault_verify = fault_test_sub.add_parser(
+        "verify",
+        help="Verify the manifest and digests for one fault-test run.",
+    )
+    fault_verify.add_argument("--run-dir", type=Path, required=True)
+    fault_verify.add_argument("--json", action="store_true")
+
     robot_gateway = subparsers.add_parser("robot-gateway", help="Start a robot-local FireClawGateway.")
     robot_gateway.add_argument("robot_gateway_args", nargs=argparse.REMAINDER)
 
@@ -277,7 +570,143 @@ def main() -> int:
     profile_confirm.add_argument("--confirmed-by", required=True, help="Operator ID that reviewed the discovery mapping.")
     profile_confirm.add_argument("--confirmed-at", default=None, help="ISO-8601 confirmation time. Defaults to current UTC time.")
 
+    deploy = subparsers.add_parser(
+        "deploy",
+        help="Plan, apply, or inspect Plugin Runtime deployment.",
+    )
+    deploy_sub = deploy.add_subparsers(dest="deploy_command", required=True)
+    for deploy_name, deploy_help in (
+        ("plan", "Resolve providers and show the immutable deployment plan."),
+        ("apply", "Build/install selected Runtime providers and write receipts."),
+        ("status", "Verify the installed deployment and ROS readiness."),
+        (
+            "run",
+            "Supervise bringup, Robot Gateway, and Mission Gateway as one runtime.",
+        ),
+    ):
+        deploy_parser = deploy_sub.add_parser(deploy_name, help=deploy_help)
+        deploy_parser.add_argument(
+            "--profile",
+            type=Path,
+            default=None,
+            help="Robot TOML Profile; defaults to the Profile selected by setup.",
+        )
+        deploy_parser.add_argument(
+            "--output-root",
+            type=Path,
+            default=None,
+            help="Override deployment.output_root.",
+        )
+        if deploy_name == "status":
+            deploy_parser.add_argument(
+                "--no-runtime-check",
+                action="store_true",
+                help="Verify immutable install artifacts without probing the live ROS graph.",
+            )
+        if deploy_name == "run":
+            deploy_parser.add_argument(
+                "--runtime-ready-timeout",
+                type=float,
+                default=120.0,
+            )
+            deploy_parser.add_argument(
+                "--gateway-ready-timeout",
+                type=float,
+                default=30.0,
+            )
+            deploy_parser.add_argument(
+                "--mission-gateway-ready-timeout",
+                type=float,
+                default=30.0,
+            )
+            deploy_parser.add_argument(
+                "--probe-interval",
+                type=float,
+                default=1.0,
+            )
+            deploy_parser.add_argument(
+                "--readiness-monitor-interval",
+                type=float,
+                default=5.0,
+            )
+            deploy_parser.add_argument(
+                "--readiness-failure-limit",
+                type=int,
+                default=3,
+            )
+            deploy_parser.add_argument(
+                "--monitor-interval",
+                type=float,
+                default=0.25,
+            )
+            deploy_parser.add_argument(
+                "--shutdown-timeout",
+                type=float,
+                default=15.0,
+            )
+            deploy_parser.add_argument(
+                "--terminate-timeout",
+                type=float,
+                default=3.0,
+            )
+            deploy_parser.add_argument(
+                "--simulation-restarts",
+                type=int,
+                default=2,
+                help="Bounded full-stack restarts; ignored for real deployments.",
+            )
+            deploy_parser.add_argument(
+                "--restart-backoff",
+                type=float,
+                default=2.0,
+            )
+    service = deploy_sub.add_parser(
+        "service",
+        help="Manage the generated systemd user service explicitly.",
+    )
+    service_sub = service.add_subparsers(
+        dest="service_command",
+        required=True,
+    )
+    for service_name, service_help in (
+        ("render", "Show the integrity-checked generated unit."),
+        ("install", "Install, enable, and start the generated unit."),
+        ("status", "Inspect installed unit integrity and systemd state."),
+        ("start", "Start the installed managed unit."),
+        ("stop", "Stop the installed managed unit safely."),
+        ("restart", "Restart the installed managed unit."),
+        ("uninstall", "Stop, disable, and remove the managed unit."),
+    ):
+        service_parser = service_sub.add_parser(service_name, help=service_help)
+        service_parser.add_argument(
+            "--profile",
+            type=Path,
+            default=None,
+            help="Robot TOML Profile; defaults to the Profile selected by setup.",
+        )
+        service_parser.add_argument(
+            "--output-root",
+            type=Path,
+            default=None,
+            help="Override deployment.output_root.",
+        )
+        if service_name == "install":
+            service_parser.add_argument(
+                "--no-enable",
+                action="store_true",
+                help="Stage the unit without enabling it at login.",
+            )
+            service_parser.add_argument(
+                "--no-start",
+                action="store_true",
+                help="Install the unit without starting it now.",
+            )
+
     args = parser.parse_args()
+    if args.command_name == "setup":
+        from fireclaw_core.infra.user_setup import handle_setup
+
+        return handle_setup(args)
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
             args.robot,
@@ -320,6 +749,8 @@ def main() -> int:
         return _handle_memory(args)
     if args.command_name == "approval":
         return _handle_approval(args)
+    if args.command_name == "deploy":
+        return _handle_deploy(args)
     if args.command_name == "lifecycle-check":
         from fireclaw_core.lifecycle import LifecycleMaintenanceRunner
         from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
@@ -558,6 +989,34 @@ def main() -> int:
             ),
         )
         return 0
+    if args.command_name == "status":
+        from fireclaw_core.infra.operator_cli import handle_status
+
+        return handle_status(args)
+    if args.command_name == "doctor":
+        from fireclaw_core.infra.operator_cli import handle_doctor
+
+        return handle_doctor(args)
+    if args.command_name == "recover":
+        from fireclaw_core.infra.operator_cli import handle_recover
+
+        if args.request_id is not None and args.request_only:
+            parser.error("--request-id and --request-only cannot be used together")
+        if args.request_only and args.confirmation_phrase is not None:
+            parser.error(
+                "--request-only and --confirmation-phrase cannot be used together"
+            )
+        return handle_recover(args)
+    if args.command_name == "hardware-safety":
+        from fireclaw_core.infra.hardware_safety_acceptance import (
+            handle_hardware_safety,
+        )
+
+        return handle_hardware_safety(args)
+    if args.command_name == "fault-test":
+        from fireclaw_core.infra.fault_injection import handle_fault_test
+
+        return handle_fault_test(args)
     if args.command_name == "robot-gateway":
         from fireclaw_core.gateway.gateway import main as gateway_main
         return gateway_main(args.robot_gateway_args)
@@ -651,6 +1110,149 @@ def _handle_approval(args: argparse.Namespace) -> int:
 
     print(f"Error: unknown approval subcommand: {args.approval_command}", file=sys.stderr)
     return 1
+
+
+def _handle_deploy(args: argparse.Namespace) -> int:
+    from fireclaw_core.deployment import (
+        DeploymentError,
+        SystemdServiceError,
+        apply_deployment,
+        build_deployment_plan,
+        inspect_deployment_status,
+    )
+    from fireclaw_core.infra.user_setup import resolve_active_profile_path
+
+    try:
+        args.profile = resolve_active_profile_path(args.profile)
+        if args.deploy_command == "service":
+            return _handle_deploy_service(args)
+        if args.deploy_command == "plan":
+            result = build_deployment_plan(
+                args.profile,
+                output_root=args.output_root,
+            ).to_dict()
+            _print_json(result)
+            return 0
+        if args.deploy_command == "apply":
+            plan = build_deployment_plan(
+                args.profile,
+                output_root=args.output_root,
+            )
+            _print_json(apply_deployment(plan))
+            return 0
+        if args.deploy_command == "status":
+            result = inspect_deployment_status(
+                args.profile,
+                output_root=args.output_root,
+                check_runtime=not args.no_runtime_check,
+            )
+            _print_json(result)
+            if result.get("status") in {"ready", "installed"}:
+                return 0
+            if result.get("status") == "installed_not_ready":
+                return 1
+            return 2
+        if args.deploy_command == "run":
+            from fireclaw_core.deployment.supervisor import (
+                RuntimeSupervisorSettings,
+                run_runtime_supervisor,
+            )
+
+            settings = RuntimeSupervisorSettings(
+                runtime_ready_timeout_seconds=args.runtime_ready_timeout,
+                gateway_ready_timeout_seconds=args.gateway_ready_timeout,
+                mission_gateway_ready_timeout_seconds=(
+                    args.mission_gateway_ready_timeout
+                ),
+                readiness_monitor_interval_seconds=(
+                    args.readiness_monitor_interval
+                ),
+                readiness_failure_limit=args.readiness_failure_limit,
+                probe_interval_seconds=args.probe_interval,
+                monitor_interval_seconds=args.monitor_interval,
+                shutdown_timeout_seconds=args.shutdown_timeout,
+                terminate_timeout_seconds=args.terminate_timeout,
+                simulation_restart_limit=args.simulation_restarts,
+                restart_backoff_seconds=args.restart_backoff,
+            )
+            result = run_runtime_supervisor(
+                args.profile,
+                output_root=args.output_root,
+                settings=settings,
+            )
+            _print_json(result)
+            # systemd units use 78 as a non-restartable policy failure after
+            # the supervisor has exhausted its own bounded recovery budget.
+            return 0 if result.get("status") == "stopped" else 78
+    except (DeploymentError, SystemdServiceError, OSError, ValueError) as exc:
+        _print_json(
+            {
+                "status": "error",
+                "code": getattr(exc, "code", "deployment_invalid"),
+                "message": str(exc),
+                "operator_action": getattr(
+                    exc,
+                    "operator_action",
+                    "检查部署 Profile 和依赖后重试。",
+                ),
+            }
+        )
+        return 2
+    raise ValueError(f"Unknown deploy command: {args.deploy_command}")
+
+
+def _handle_deploy_service(args: argparse.Namespace) -> int:
+    from fireclaw_core.deployment import (
+        control_systemd_user_service,
+        generated_systemd_service,
+        inspect_systemd_user_service,
+        install_systemd_user_service,
+        uninstall_systemd_user_service,
+    )
+
+    if args.service_command == "render":
+        _print_json(
+            generated_systemd_service(
+                args.profile,
+                output_root=args.output_root,
+            ).to_dict()
+        )
+        return 0
+    if args.service_command == "install":
+        _print_json(
+            install_systemd_user_service(
+                args.profile,
+                output_root=args.output_root,
+                enable=not args.no_enable,
+                start=not args.no_start,
+            )
+        )
+        return 0
+    if args.service_command == "status":
+        result = inspect_systemd_user_service(
+            args.profile,
+            output_root=args.output_root,
+        )
+        _print_json(result)
+        return 0 if result.get("status") == "active" else 1
+    if args.service_command in {"start", "stop", "restart"}:
+        _print_json(
+            control_systemd_user_service(
+                args.profile,
+                args.service_command,
+                output_root=args.output_root,
+            )
+        )
+        return 0
+    if args.service_command == "uninstall":
+        _print_json(
+            uninstall_systemd_user_service(
+                args.profile,
+                output_root=args.output_root,
+            )
+        )
+        return 0
+    raise ValueError(f"Unknown service command: {args.service_command}")
 
 
 def _handle_robot_profile(args: argparse.Namespace) -> int:

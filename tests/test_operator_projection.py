@@ -85,6 +85,53 @@ def test_projector_translates_cancel_request_and_final_cancel():
 
     assert (
         projector.project({"type": "task.cancel_requested", "payload": {"task_id": "task-1"}})
-        == "已请求取消任务，等待当前步骤结束。"
+        == "已请求取消任务；机器人尚未确认终态，这不代表已经停止。"
     )
-    assert projector.project({"type": "task.cancelled", "payload": {}}) == "任务已取消。"
+    assert (
+        projector.project({"type": "task.cancelled", "payload": {}})
+        == "任务已取消；Runtime 终态已经确认。"
+    )
+
+
+def test_projector_distinguishes_timeout_from_unconfirmed_physical_stop():
+    projector = OperatorEventProjector()
+
+    message = projector.project(
+        {
+            "type": "task.lost",
+            "payload": {
+                "message": "navigation cancellation was not acknowledged",
+                "reason_code": "physical_runtime_stop_unconfirmed",
+                "result": {
+                    "steps": [
+                        {
+                            "output": {
+                                "runtime_stopped": False,
+                                "resource_release_safe": False,
+                            }
+                        }
+                    ]
+                },
+            },
+        }
+    )
+
+    assert "任务失联" in message
+    assert "是否停止尚未确认" in message
+    assert "运动资源将保持冻结" in message
+
+
+def test_projector_reports_confirmed_runtime_stop_after_timeout():
+    projector = OperatorEventProjector()
+
+    message = projector.project(
+        {
+            "type": "task.timed_out",
+            "payload": {
+                "message": "deadline exceeded",
+                "result": {"runtime_stopped": True, "resource_release_safe": True},
+            },
+        }
+    )
+
+    assert message == "任务超时：deadline exceeded；Runtime 已确认停止。"

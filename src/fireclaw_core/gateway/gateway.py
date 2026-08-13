@@ -4,14 +4,18 @@ import argparse
 from dataclasses import asdict, dataclass, field, replace
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+import errno
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+from math import isfinite
 from pathlib import Path
 from queue import Empty as QueueEmpty, Full as QueueFull, Queue
+import sqlite3
 import threading
 import time
+import secrets
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
@@ -30,6 +34,7 @@ from fireclaw_core.infra.runtime_state import (
     SqliteEventLedger,
     SqliteResourceLeaseManager,
     SqliteTaskQueue,
+    ResourceAdmissionRecoveryError,
     StaleRuntimeStateWrite,
 )
 from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent, TelemetryTracker
@@ -93,6 +98,48 @@ from fireclaw_core.policy.deployment import (
 )
 from fireclaw_core.ros.ros1_config import Ros1DiagnosticsConfig
 from fireclaw_core.ros.ros1_diagnostics import Ros1DiagnosticsBackend
+from fireclaw_plugin_sdk import (
+    HARDWARE_STOP_EVIDENCE_CLASS,
+    STOP_EVIDENCE_SERVICE_PREFIX,
+)
+
+
+_RESOURCE_RECOVERY_REQUEST_TTL_SECONDS = 300
+_STOP_EVIDENCE_MAX_VALIDITY_SECONDS = 30
+_HARDWARE_STOP_EVIDENCE_SCHEMA_VERSION = 1
+_HARDWARE_STOP_MINIMUM_SAMPLES = 3
+_HARDWARE_STOP_MINIMUM_HOLD_SECONDS = 0.75
+_HARDWARE_STOP_MAX_ACTUATOR_VELOCITY = 0.02
+_HARDWARE_STOP_MAX_LINEAR_VELOCITY = 0.02
+_HARDWARE_STOP_MAX_ANGULAR_VELOCITY = 0.05
+
+
+def _bounded_stop_number(value: Any, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite non-negative number")
+    normalized = float(value)
+    if not isfinite(normalized) or normalized < 0:
+        raise ValueError(f"{field_name} must be a finite non-negative number")
+    return normalized
+
+
+def _stop_sample_count(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
+def _unique_stop_names(value: Any, field_name: str) -> set[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{field_name} contains an invalid name")
+        names.append(item.strip())
+    if len(names) != len(set(names)):
+        raise ValueError(f"{field_name} contains duplicate names")
+    return set(names)
 
 
 def _default_robot_deployment_profile() -> DeploymentProfile:
@@ -245,10 +292,12 @@ class FireClawGateway:
         ros_diagnostics_backend: Ros1DiagnosticsBackend | None = None,
         computer_sandbox: ComputerSandbox | None = None,
         plugin_services: Mapping[str, Any] | None = None,
+        runtime_state: SqliteAuthoritativeRuntimeStore | None = None,
     ) -> None:
         self._process_working_directory = Path.cwd().resolve(strict=False)
         self.replication_security = replication_security
         self._plugin_services = dict(plugin_services or {})
+        self._gateway_plugin_host: Any | None = None
         self.robot_profile = load_gateway_robot_profile(config)
         resolved_config = resolve_gateway_config_with_profile(config, self.robot_profile)
         resolved_config = resolve_gateway_storage_namespace(resolved_config)
@@ -373,7 +422,17 @@ class FireClawGateway:
                 )
             )
         )
-        self.runtime_state = SqliteAuthoritativeRuntimeStore(
+        if runtime_state is not None:
+            expected_state_path = Path(runtime_state_path).resolve(
+                strict=False
+            )
+            supplied_state_path = runtime_state.path.resolve(strict=False)
+            if supplied_state_path != expected_state_path:
+                raise ValueError(
+                    "Injected runtime_state path must match "
+                    "GatewayConfig.runtime_state_path"
+                )
+        self.runtime_state = runtime_state or SqliteAuthoritativeRuntimeStore(
             runtime_state_path
         )
         self.events = SqliteEventLedger(
@@ -395,6 +454,9 @@ class FireClawGateway:
         self.resource_leases = SqliteResourceLeaseManager(
             self.runtime_state
         )
+        self._stop_evidence_providers = (
+            self._discover_stop_evidence_providers()
+        )
         self.execution_authorization_authority = (
             HmacExecutionAuthorizationAuthority(
                 issuer_id=f"robot-gateway:{resolved_config.robot_id}",
@@ -408,7 +470,8 @@ class FireClawGateway:
         self._thread: threading.Thread | None = None
         self._task_threads: dict[str, threading.Thread] = {}
         self._task_controls: dict[str, TaskControl] = {}
-        self._task_lock = threading.Lock()
+        self._task_lock = threading.RLock()
+        self._runtime_storage_fault: dict[str, Any] | None = None
         persisted_emergency = self.resource_leases.admission_state()
         self._emergency_stop = EmergencyStopState(
             active=bool(persisted_emergency.get("closed")),
@@ -454,6 +517,84 @@ class FireClawGateway:
         errors = validate_robot_capability_profile(self.robot_profile, registry)
         if errors:
             raise ValueError("Invalid robot profile: " + "; ".join(errors))
+        self._gateway_plugin_host = host
+
+    def _discover_stop_evidence_providers(
+        self,
+    ) -> tuple[dict[str, Any], ...]:
+        providers: dict[str, dict[str, Any]] = {}
+
+        # Services supplied by Gateway assembly are already inside the trusted
+        # host boundary. They are useful for hardware-specific witnesses and
+        # deterministic acceptance tests.
+        for service_id, service in self._plugin_services.items():
+            if not str(service_id).startswith(STOP_EVIDENCE_SERVICE_PREFIX):
+                continue
+            if not callable(getattr(service, "collect_stop_evidence", None)):
+                continue
+            providers[str(service_id)] = self._stop_evidence_descriptor(
+                service_id=str(service_id),
+                owner_plugin_id="gateway-injected",
+                service=service,
+            )
+
+        host = self._gateway_plugin_host
+        if host is None:
+            return tuple(providers[key] for key in sorted(providers))
+        records = {record.plugin_id: record for record in host.records()}
+        for contribution in host.contributions("service"):
+            service_id = str(contribution.contribution_id)
+            if not service_id.startswith(STOP_EVIDENCE_SERVICE_PREFIX):
+                continue
+            record = records.get(contribution.owner_plugin_id)
+            if record is None or record.trust_level not in {"builtin", "trusted"}:
+                continue
+            service = contribution.value
+            if not callable(getattr(service, "collect_stop_evidence", None)):
+                continue
+            providers.setdefault(
+                service_id,
+                self._stop_evidence_descriptor(
+                    service_id=service_id,
+                    owner_plugin_id=contribution.owner_plugin_id,
+                    service=service,
+                ),
+            )
+        return tuple(providers[key] for key in sorted(providers))
+
+    @staticmethod
+    def _stop_evidence_descriptor(
+        *,
+        service_id: str,
+        owner_plugin_id: str,
+        service: Any,
+    ) -> dict[str, Any]:
+        provider_id_value = getattr(service, "provider_id", None)
+        evidence_class_value = getattr(service, "evidence_class", None)
+        provider_id = (
+            provider_id_value.strip()
+            if isinstance(provider_id_value, str) and provider_id_value.strip()
+            else service_id.removeprefix(STOP_EVIDENCE_SERVICE_PREFIX)
+        )
+        evidence_class = (
+            evidence_class_value.strip()
+            if isinstance(evidence_class_value, str)
+            and evidence_class_value.strip()
+            else None
+        )
+        hardware_owned = getattr(service, "hardware_owned", None) is True
+        return {
+            "service_id": service_id,
+            "owner_plugin_id": owner_plugin_id,
+            "provider_id": provider_id,
+            "evidence_class": evidence_class,
+            "hardware_owned": hardware_owned,
+            "qualified_for_real": (
+                hardware_owned
+                and evidence_class == HARDWARE_STOP_EVIDENCE_CLASS
+            ),
+            "service": service,
+        }
 
     def _extension_services(self) -> dict[str, Any]:
         """Build the generic host service bag without naming domain Plugins."""
@@ -546,34 +687,47 @@ class FireClawGateway:
         resolved_session_id = session_id or self.config.default_session_id
         resolved_operator = operator or operator_from_payload(None)
         control_decision = ControlPolicy().evaluate(resolved_operator, "task.submit")
-        if self.resource_leases.admission_state().get("closed"):
+        try:
+            admission_state = self.resource_leases.admission_state()
+        except (sqlite3.Error, OSError) as exc:
+            return self._runtime_storage_unavailable_result(
+                exc,
+                session_id=resolved_session_id,
+            )
+        if admission_state.get("closed"):
             return {
                 "status": "blocked",
                 "session_id": resolved_session_id,
                 "message": "机器人处于急停资源冻结状态，拒绝新任务。",
-                "resource_admission": (
-                    self.resource_leases.admission_state()
-                ),
+                "resource_admission": admission_state,
             }
         started_at = datetime.now(timezone.utc).isoformat()
-        with self.runtime_state.transaction():
-            duplicate = self.task_queue.find_non_terminal_by_dedupe_key(
-                dedupe_key
-            )
-            if duplicate is not None:
-                return {
-                    "status": "duplicate",
-                    "task_id": duplicate.task_id,
-                    "session_id": duplicate.session_id,
-                    "dedupe_key": dedupe_key,
-                    "message": "任务已存在，返回现有未完成任务。",
-                }
-            self.task_queue.create(
-                task_id=task_id,
+        try:
+            with self.runtime_state.transaction():
+                duplicate = self.task_queue.find_non_terminal_by_dedupe_key(
+                    dedupe_key
+                )
+                if duplicate is not None:
+                    self._runtime_storage_fault = None
+                    return {
+                        "status": "duplicate",
+                        "task_id": duplicate.task_id,
+                        "session_id": duplicate.session_id,
+                        "dedupe_key": dedupe_key,
+                        "message": "任务已存在，返回现有未完成任务。",
+                    }
+                self.task_queue.create(
+                    task_id=task_id,
+                    session_id=resolved_session_id,
+                    command=command,
+                    created_at=started_at,
+                    dedupe_key=dedupe_key,
+                )
+        except (sqlite3.Error, OSError) as exc:
+            return self._runtime_storage_unavailable_result(
+                exc,
                 session_id=resolved_session_id,
-                command=command,
-                created_at=started_at,
-                dedupe_key=dedupe_key,
+                task_id=task_id,
             )
         if (
             execution_authorization is None
@@ -594,51 +748,67 @@ class FireClawGateway:
             structured_task=structured_task,
             execution_authorization=execution_authorization,
         )
-        with self._task_lock:
-            if len(self._task_controls) >= self.config.max_active_execution_tasks:
-                active = self._active_task_summaries_locked()
-                first_active = active[0] if active else {}
-                self.task_queue.update(
-                    task_id,
-                    status="failed",
-                    ended_at=datetime.now(timezone.utc).isoformat(),
-                    error="Gateway execution capacity is full.",
-                )
-                return {
-                    "status": "busy",
-                    "message": "机器人当前已有任务在执行，请等待当前任务结束或取消后再提交。",
-                    "active_task_id": first_active.get("task_id"),
-                    "active_tasks": active,
-                    "capacity": self._task_capacity_locked(),
-                }
-            self._task_controls[task_id] = control
-        self._append_event(
-            task_id=task_id,
-            session_id=resolved_session_id,
-            type="task.received",
-            payload={"command": command},
-        )
-        self._append_event(
-            task_id=task_id,
-            session_id=resolved_session_id,
-            type="operator.identified",
-            payload=resolved_operator.to_dict(),
-        )
-        self._append_event(
-            task_id=task_id,
-            session_id=resolved_session_id,
-            type="control.decision",
-            payload=control_decision.to_dict(),
-        )
+        try:
+            with self._task_lock:
+                if len(self._task_controls) >= self.config.max_active_execution_tasks:
+                    active = self._active_task_summaries_locked()
+                    first_active = active[0] if active else {}
+                    self.task_queue.update(
+                        task_id,
+                        status="failed",
+                        ended_at=datetime.now(timezone.utc).isoformat(),
+                        error="Gateway execution capacity is full.",
+                    )
+                    self._runtime_storage_fault = None
+                    return {
+                        "status": "busy",
+                        "message": "机器人当前已有任务在执行，请等待当前任务结束或取消后再提交。",
+                        "active_task_id": first_active.get("task_id"),
+                        "active_tasks": active,
+                        "capacity": self._task_capacity_locked(),
+                    }
+                self._task_controls[task_id] = control
+            self._append_event(
+                task_id=task_id,
+                session_id=resolved_session_id,
+                type="task.received",
+                payload={"command": command},
+            )
+            self._append_event(
+                task_id=task_id,
+                session_id=resolved_session_id,
+                type="operator.identified",
+                payload=resolved_operator.to_dict(),
+            )
+            self._append_event(
+                task_id=task_id,
+                session_id=resolved_session_id,
+                type="control.decision",
+                payload=control_decision.to_dict(),
+            )
+        except (sqlite3.Error, OSError) as exc:
+            return self._runtime_storage_unavailable_result(
+                exc,
+                session_id=resolved_session_id,
+                task_id=task_id,
+            )
         if control_decision.status != "allow":
             with self._task_lock:
                 self._task_controls.pop(task_id, None)
-            self.task_queue.update(
-                task_id,
-                status="denied",
-                ended_at=datetime.now(timezone.utc).isoformat(),
-                error="Operator is not authorized to submit tasks.",
-            )
+            try:
+                self.task_queue.update(
+                    task_id,
+                    status="denied",
+                    ended_at=datetime.now(timezone.utc).isoformat(),
+                    error="Operator is not authorized to submit tasks.",
+                )
+            except (sqlite3.Error, OSError) as exc:
+                return self._runtime_storage_unavailable_result(
+                    exc,
+                    session_id=resolved_session_id,
+                    task_id=task_id,
+                )
+            self._runtime_storage_fault = None
             return {
                 "status": "denied",
                 "task_id": task_id,
@@ -647,6 +817,7 @@ class FireClawGateway:
                 "control": control_decision.to_dict(),
             }
 
+        self._runtime_storage_fault = None
         self._start_task_worker(
             control,
             resolved_operator,
@@ -657,6 +828,70 @@ class FireClawGateway:
             "session_id": resolved_session_id,
             "message": "任务已接收，正在后台执行。",
         }
+
+    def _runtime_storage_unavailable_result(
+        self,
+        exc: sqlite3.Error | OSError,
+        *,
+        session_id: str,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Fail task admission closed when authoritative storage cannot write."""
+
+        occurred_at = datetime.now(timezone.utc).isoformat()
+        code = _runtime_storage_error_code(exc)
+        self._runtime_storage_fault = {
+            "status": "degraded",
+            "code": code,
+            "occurred_at": occurred_at,
+            "error_type": type(exc).__name__,
+        }
+        record_state = "not_created"
+        if task_id is not None:
+            with self._task_lock:
+                self._task_controls.pop(task_id, None)
+            try:
+                record = self.task_queue.get(task_id)
+            except (sqlite3.Error, OSError):
+                record = None
+                record_state = "unknown"
+            if record is not None:
+                record_state = record.status
+                if not record.is_terminal:
+                    try:
+                        self.task_queue.update(
+                            task_id,
+                            status="failed",
+                            ended_at=occurred_at,
+                            error=(
+                                "Task execution did not start because "
+                                f"runtime storage was unavailable ({code})."
+                            ),
+                        )
+                    except (sqlite3.Error, OSError, StaleRuntimeStateWrite):
+                        pass
+                    try:
+                        persisted = self.task_queue.get(task_id)
+                    except (sqlite3.Error, OSError):
+                        persisted = None
+                    record_state = (
+                        persisted.status if persisted is not None else "unknown"
+                    )
+        result: dict[str, Any] = {
+            "status": "unavailable",
+            "code": code,
+            "session_id": session_id,
+            "retryable": True,
+            "task_execution_started": False,
+            "task_record_state": record_state,
+            "message": (
+                "权威运行状态暂时不可写，任务没有启动。"
+                "修复存储后请使用相同 dedupe_key 重试。"
+            ),
+        }
+        if task_id is not None:
+            result["task_id"] = task_id
+        return result
 
     def _start_task_worker(
         self,
@@ -969,6 +1204,698 @@ class FireClawGateway:
             payload=result,
         )
         return result
+
+    def resource_admission_state(self) -> dict[str, Any]:
+        pending = self.resource_leases.pending_recovery_request(
+            robot_id=self.config.robot_id
+        )
+        if pending is not None:
+            now = datetime.now(timezone.utc)
+            try:
+                expires_at = datetime.fromisoformat(str(pending["expires_at"]))
+            except (KeyError, TypeError, ValueError):
+                expires_at = None
+            if expires_at is not None and now >= expires_at:
+                expired = self.resource_leases.expire_recovery_request(
+                    request_id=str(pending["request_id"]),
+                    expired_at=now.isoformat(),
+                )
+                if expired.get("transitioned") is True:
+                    self._append_event(
+                        task_id=str(pending["request_id"]),
+                        session_id=str(
+                            pending.get("session_id")
+                            or self.config.default_session_id
+                        ),
+                        type="resource_admission.recovery_expired",
+                        payload={
+                            "status": "expired",
+                            "request": self._public_recovery_request(expired),
+                            "reason_code": "confirmation_deadline_elapsed",
+                        },
+                    )
+                pending = None
+        return {
+            "robot_id": self.config.robot_id,
+            "admission": self.resource_leases.admission_snapshot(),
+            "active_leases": [
+                lease.to_dict()
+                for lease in self.resource_leases.active(
+                    robot_id=self.config.robot_id
+                )
+            ],
+            "pending_recovery": (
+                self._public_recovery_request(pending)
+                if pending is not None
+                else None
+            ),
+            "stop_evidence_providers": [
+                {
+                    "service_id": item["service_id"],
+                    "owner_plugin_id": item["owner_plugin_id"],
+                    "provider_id": item["provider_id"],
+                    "evidence_class": item["evidence_class"],
+                    "hardware_owned": item["hardware_owned"],
+                    "qualified_for_real": item["qualified_for_real"],
+                }
+                for item in self._stop_evidence_providers
+            ],
+        }
+
+    def request_resource_admission_recovery(
+        self,
+        *,
+        session_id: str | None = None,
+        operator: OperatorContext | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        request_id = f"recovery-{uuid4().hex}"
+        resolved_session_id = session_id or self.config.default_session_id
+        resolved_operator = operator or operator_from_payload(None)
+        control = ControlPolicy().evaluate(
+            resolved_operator,
+            "emergency.recover",
+        )
+        if control.status != "allow":
+            result = {
+                "status": "denied",
+                "request_id": request_id,
+                "session_id": resolved_session_id,
+                "message": "操作员没有权限恢复资源准入。",
+                "control": control.to_dict(),
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=resolved_session_id,
+                type="resource_admission.recovery_denied",
+                payload=result,
+            )
+            return result
+        if not isinstance(reason, str) or not reason.strip():
+            return {
+                "status": "invalid",
+                "request_id": request_id,
+                "session_id": resolved_session_id,
+                "message": "恢复请求必须说明原因。",
+                "error_code": "recovery_reason_required",
+            }
+
+        frozen = self.resource_leases.admission_snapshot()
+        if not frozen.get("closed"):
+            result = {
+                "status": "not_frozen",
+                "request_id": request_id,
+                "session_id": resolved_session_id,
+                "message": "资源准入当前未冻结。",
+                "admission": frozen,
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=resolved_session_id,
+                type="resource_admission.recovery_blocked",
+                payload=result,
+            )
+            return result
+
+        evidence = self._collect_stop_evidence(reason=reason.strip())
+        if evidence["status"] != "stopped":
+            result = {
+                "status": "blocked",
+                "request_id": request_id,
+                "session_id": resolved_session_id,
+                "message": "未取得可信且新鲜的现场停止证据，资源准入保持冻结。",
+                "error_code": "trusted_stop_evidence_unavailable",
+                "admission": frozen,
+                "stop_evidence": evidence,
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=resolved_session_id,
+                type="resource_admission.recovery_blocked",
+                payload=result,
+            )
+            return result
+
+        requested_at = datetime.now(timezone.utc)
+        expires_at = requested_at + timedelta(
+            seconds=_RESOURCE_RECOVERY_REQUEST_TTL_SECONDS
+        )
+        confirmation_phrase = (
+            f"RECOVER {self.config.robot_id} {request_id}"
+        )
+        try:
+            with self.runtime_state.transaction():
+                request = self.resource_leases.create_recovery_request(
+                    {
+                        "request_id": request_id,
+                        "robot_id": self.config.robot_id,
+                        "session_id": resolved_session_id,
+                        "reason": reason.strip(),
+                        "requested_at": requested_at.isoformat(),
+                        "expires_at": expires_at.isoformat(),
+                        "confirmation_phrase": confirmation_phrase,
+                        "requested_by": resolved_operator.to_dict(),
+                        "control": control.to_dict(),
+                        "request_stop_evidence": evidence,
+                    }
+                )
+                audit_payload = {
+                    "status": "pending_confirmation",
+                    "request": self._public_recovery_request(request),
+                    "stop_evidence": evidence,
+                }
+                self._append_event(
+                    task_id=request_id,
+                    session_id=resolved_session_id,
+                    type="resource_admission.recovery_requested",
+                    payload=audit_payload,
+                )
+        except ResourceAdmissionRecoveryError as exc:
+            result = {
+                "status": "blocked",
+                "request_id": request_id,
+                "session_id": resolved_session_id,
+                "message": str(exc),
+                "error_code": exc.code,
+                "stop_evidence": evidence,
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=resolved_session_id,
+                type="resource_admission.recovery_blocked",
+                payload=result,
+            )
+            return result
+        return {
+            "status": "pending_confirmation",
+            "request_id": request_id,
+            "session_id": resolved_session_id,
+            "robot_id": self.config.robot_id,
+            "reason": reason.strip(),
+            "requested_at": request["requested_at"],
+            "expires_at": request["expires_at"],
+            "confirmation_phrase": confirmation_phrase,
+            "frozen_admission": request["frozen_admission"],
+            "stop_evidence": evidence,
+        }
+
+    def confirm_resource_admission_recovery(
+        self,
+        *,
+        request_id: str,
+        confirmation_phrase: str,
+        operator: OperatorContext | None = None,
+    ) -> dict[str, Any]:
+        resolved_operator = operator or operator_from_payload(None)
+        control = ControlPolicy().evaluate(
+            resolved_operator,
+            "emergency.recover",
+        )
+        request = self.resource_leases.recovery_request(request_id)
+        session_id = (
+            str(request.get("session_id") or self.config.default_session_id)
+            if request is not None
+            else self.config.default_session_id
+        )
+        if control.status != "allow":
+            result = {
+                "status": "denied",
+                "request_id": request_id,
+                "message": "操作员没有权限恢复资源准入。",
+                "control": control.to_dict(),
+            }
+            self._append_event(
+                task_id=request_id or "recovery-unknown",
+                session_id=session_id,
+                type="resource_admission.recovery_denied",
+                payload=result,
+            )
+            return result
+        if request is None:
+            return {
+                "status": "not_found",
+                "request_id": request_id,
+                "message": "恢复请求不存在。",
+                "error_code": "recovery_request_not_found",
+            }
+        if request.get("status") != "pending":
+            return {
+                "status": "blocked",
+                "request_id": request_id,
+                "message": "恢复请求已不再等待确认。",
+                "error_code": "recovery_request_not_pending",
+                "request": self._public_recovery_request(request),
+            }
+        expected_phrase = str(request.get("confirmation_phrase") or "")
+        if not expected_phrase or not secrets.compare_digest(
+            confirmation_phrase,
+            expected_phrase,
+        ):
+            result = {
+                "status": "denied",
+                "request_id": request_id,
+                "message": "恢复确认短语不匹配。",
+                "error_code": "recovery_confirmation_mismatch",
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=session_id,
+                type="resource_admission.recovery_confirmation_denied",
+                payload=result,
+            )
+            return result
+
+        now = datetime.now(timezone.utc)
+        try:
+            request_expiry = datetime.fromisoformat(str(request["expires_at"]))
+        except (KeyError, TypeError, ValueError):
+            request_expiry = now
+        if now >= request_expiry:
+            self.resource_leases.expire_recovery_request(
+                request_id=request_id,
+                expired_at=now.isoformat(),
+            )
+            result = {
+                "status": "expired",
+                "request_id": request_id,
+                "message": "恢复请求已过期，请重新采集停止证据。",
+                "error_code": "recovery_request_expired",
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=session_id,
+                type="resource_admission.recovery_blocked",
+                payload=result,
+            )
+            return result
+
+        evidence = self._collect_stop_evidence(
+            reason=str(request.get("reason") or "admission recovery")
+        )
+        if evidence["status"] != "stopped":
+            result = {
+                "status": "blocked",
+                "request_id": request_id,
+                "message": "确认时未取得新的现场停止证据，资源准入保持冻结。",
+                "error_code": "trusted_stop_evidence_unavailable",
+                "stop_evidence": evidence,
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=session_id,
+                type="resource_admission.recovery_blocked",
+                payload=result,
+            )
+            return result
+
+        confirmed_at = datetime.now(timezone.utc).isoformat()
+        try:
+            with self.runtime_state.transaction():
+                recovered = self.resource_leases.recover_admission(
+                    request_id=request_id,
+                    confirmation_phrase=confirmation_phrase,
+                    confirmed_by=resolved_operator.to_dict(),
+                    confirmed_at=confirmed_at,
+                    stop_evidence=evidence,
+                )
+                result = {
+                    "status": "recovered",
+                    "request_id": request_id,
+                    "robot_id": self.config.robot_id,
+                    "confirmed_at": confirmed_at,
+                    "confirmed_by": resolved_operator.to_dict(),
+                    "admission": recovered["admission"],
+                    "stop_evidence": evidence,
+                }
+                self._append_event(
+                    task_id=request_id,
+                    session_id=session_id,
+                    type="resource_admission.recovered",
+                    payload=result,
+                )
+        except ResourceAdmissionRecoveryError as exc:
+            result = {
+                "status": "blocked",
+                "request_id": request_id,
+                "message": str(exc),
+                "error_code": exc.code,
+                "stop_evidence": evidence,
+            }
+            self._append_event(
+                task_id=request_id,
+                session_id=session_id,
+                type="resource_admission.recovery_blocked",
+                payload=result,
+            )
+            return result
+
+        self._emergency_stop = EmergencyStopState(active=False)
+        return result
+
+    def _collect_stop_evidence(
+        self,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        collected_at = datetime.now(timezone.utc)
+        reports: list[dict[str, Any]] = []
+        valid_times: list[tuple[datetime, datetime]] = []
+        for descriptor in self._stop_evidence_providers:
+            service_id = str(descriptor["service_id"])
+            try:
+                raw = descriptor["service"].collect_stop_evidence(
+                    robot_id=self.config.robot_id,
+                    reason=reason,
+                )
+                checked_at = datetime.now(timezone.utc)
+                report, observed_at, expires_at = (
+                    self._normalize_stop_evidence_report(
+                        raw,
+                        service_id=service_id,
+                        owner_plugin_id=str(descriptor["owner_plugin_id"]),
+                        provider_descriptor=descriptor,
+                        collected_at=checked_at,
+                    )
+                )
+                valid_times.append((observed_at, expires_at))
+            except Exception as exc:
+                report = {
+                    "service_id": service_id,
+                    "owner_plugin_id": descriptor["owner_plugin_id"],
+                    "status": "unknown",
+                    "error_code": "stop_evidence_provider_failed",
+                    "exception_class": type(exc).__name__,
+                }
+            reports.append(report)
+
+        with self._task_lock:
+            active_task_ids = sorted(self._task_controls)
+        active_leases = [
+            lease.to_dict()
+            for lease in self.resource_leases.active(
+                robot_id=self.config.robot_id
+            )
+        ]
+        blockers: list[str] = []
+        if not reports:
+            blockers.append("trusted_stop_evidence_provider_missing")
+        if (
+            self.config.deployment_profile.mode == "real"
+            and not any(
+                item.get("qualified_for_real") is True
+                for item in self._stop_evidence_providers
+            )
+        ):
+            blockers.append("hardware_stop_evidence_provider_missing")
+        if any(report.get("status") != "stopped" for report in reports):
+            blockers.append("runtime_stop_not_confirmed")
+        if active_task_ids:
+            blockers.append("gateway_tasks_still_active")
+        if active_leases:
+            blockers.append("resource_leases_still_active")
+
+        if valid_times:
+            observed_at = max(item[0] for item in valid_times)
+            expires_at = min(item[1] for item in valid_times)
+        else:
+            observed_at = collected_at
+            expires_at = collected_at
+        aggregate_status = "stopped" if not blockers else (
+            "moving"
+            if any(report.get("status") == "moving" for report in reports)
+            else "unknown"
+        )
+        return {
+            "status": aggregate_status,
+            "robot_id": self.config.robot_id,
+            "observed_at": observed_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "providers": reports,
+            "gateway_active_task_ids": active_task_ids,
+            "active_leases": active_leases,
+            "blockers": blockers,
+        }
+
+    def _normalize_stop_evidence_report(
+        self,
+        raw: Any,
+        *,
+        service_id: str,
+        owner_plugin_id: str,
+        provider_descriptor: Mapping[str, Any],
+        collected_at: datetime,
+    ) -> tuple[dict[str, Any], datetime, datetime]:
+        if not isinstance(raw, Mapping):
+            raise ValueError("stop evidence provider result must be an object")
+        status = str(raw.get("status") or "")
+        if status not in {"stopped", "moving", "unknown"}:
+            raise ValueError("stop evidence status is invalid")
+        if str(raw.get("robot_id") or "") != self.config.robot_id:
+            raise ValueError("stop evidence robot_id does not match")
+        if str(raw.get("provider_id") or "") != str(
+            provider_descriptor.get("provider_id") or ""
+        ):
+            raise ValueError("stop evidence provider_id does not match")
+        if str(raw.get("deployment_mode") or "") != (
+            self.config.deployment_profile.mode
+        ):
+            raise ValueError("stop evidence deployment mode does not match")
+        if (
+            self.config.deployment_profile.mode == "real"
+            and raw.get("dry_run") is not False
+        ):
+            raise ValueError("real stop evidence must not be dry-run")
+        observed_at = datetime.fromisoformat(str(raw.get("observed_at") or ""))
+        expires_at = datetime.fromisoformat(str(raw.get("expires_at") or ""))
+        if observed_at.tzinfo is None or expires_at.tzinfo is None:
+            raise ValueError("stop evidence timestamps must include a timezone")
+        if observed_at > collected_at or expires_at <= collected_at:
+            raise ValueError("stop evidence is stale or not yet valid")
+        validity_seconds = (expires_at - observed_at).total_seconds()
+        if (
+            validity_seconds <= 0
+            or validity_seconds > _STOP_EVIDENCE_MAX_VALIDITY_SECONDS
+        ):
+            raise ValueError("stop evidence validity window is invalid")
+        details = raw.get("details")
+        if not isinstance(details, Mapping):
+            raise ValueError("stop evidence details must be an object")
+        descriptor_evidence_class = provider_descriptor.get("evidence_class")
+        raw_evidence_class = raw.get("evidence_class")
+        if (
+            raw_evidence_class is not None
+            and raw_evidence_class != descriptor_evidence_class
+        ):
+            raise ValueError("stop evidence class does not match provider")
+        if self.config.deployment_profile.mode == "real":
+            if provider_descriptor.get("qualified_for_real") is not True:
+                raise ValueError(
+                    "real stop evidence must come from a hardware-owned provider"
+                )
+            if raw_evidence_class != HARDWARE_STOP_EVIDENCE_CLASS:
+                raise ValueError("real stop evidence class is invalid")
+            self._validate_real_hardware_stop_details(
+                details,
+                status=status,
+            )
+        encoded_details = json.dumps(
+            dict(details),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if len(encoded_details.encode("utf-8")) > 64 * 1024:
+            raise ValueError("stop evidence details exceed the size limit")
+        report = {
+            "service_id": service_id,
+            "owner_plugin_id": owner_plugin_id,
+            "provider_id": str(raw.get("provider_id") or service_id),
+            "evidence_class": descriptor_evidence_class,
+            "hardware_owned": provider_descriptor.get("hardware_owned") is True,
+            "qualified_for_real": (
+                provider_descriptor.get("qualified_for_real") is True
+            ),
+            "status": status,
+            "deployment_mode": raw["deployment_mode"],
+            "dry_run": raw.get("dry_run"),
+            "observed_at": observed_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "details": json.loads(encoded_details),
+        }
+        return report, observed_at, expires_at
+
+    @staticmethod
+    def _validate_real_hardware_stop_details(
+        details: Mapping[str, Any],
+        *,
+        status: str,
+    ) -> None:
+        """Reject a real ``stopped`` claim unless every hardware check passes."""
+
+        if details.get("schema_version") != _HARDWARE_STOP_EVIDENCE_SCHEMA_VERSION:
+            raise ValueError("hardware stop evidence schema is invalid")
+        blockers = details.get("blockers")
+        if not isinstance(blockers, list) or any(
+            not isinstance(item, str) or not item
+            for item in blockers
+        ):
+            raise ValueError("hardware stop evidence blockers are invalid")
+        for key in (
+            "watchdog",
+            "emergency_stop",
+            "driver",
+            "brake",
+            "actuators",
+            "independent_motion",
+        ):
+            if not isinstance(details.get(key), Mapping):
+                raise ValueError(f"hardware stop evidence {key} is invalid")
+
+        # Partial or negative reports remain useful diagnostic evidence.  Only
+        # a positive standstill claim is allowed to reopen admission.
+        if status != "stopped":
+            return
+        if blockers:
+            raise ValueError("stopped hardware evidence contains blockers")
+        if details.get("stop_reasserted") is not True:
+            raise ValueError("hardware stop was not reasserted")
+        if details.get("stop_acknowledged") is not True:
+            raise ValueError("hardware stop was not acknowledged")
+
+        watchdog = details["watchdog"]
+        if not (
+            watchdog.get("fresh") is True
+            and watchdog.get("healthy") is True
+            and watchdog.get("stop_asserted") is True
+            and _stop_sample_count(
+                watchdog.get("sample_count"),
+                "hardware watchdog sample_count",
+            )
+            >= _HARDWARE_STOP_MINIMUM_SAMPLES
+        ):
+            raise ValueError("hardware watchdog does not prove a stop")
+        emergency_stop = details["emergency_stop"]
+        if not (
+            emergency_stop.get("fresh") is True
+            and emergency_stop.get("active") is True
+            and _stop_sample_count(
+                emergency_stop.get("sample_count"),
+                "hardware emergency stop sample_count",
+            )
+            >= _HARDWARE_STOP_MINIMUM_SAMPLES
+        ):
+            raise ValueError("hardware emergency stop is not active")
+        driver = details["driver"]
+        if not (
+            driver.get("fresh") is True
+            and driver.get("enabled") is False
+            and _stop_sample_count(
+                driver.get("sample_count"),
+                "hardware driver sample_count",
+            )
+            >= _HARDWARE_STOP_MINIMUM_SAMPLES
+        ):
+            raise ValueError("hardware driver is not disabled")
+        brake = details["brake"]
+        if not isinstance(brake.get("required"), bool):
+            raise ValueError("hardware brake requirement is not explicit")
+        if brake["required"] and not (
+            brake.get("fresh") is True
+            and brake.get("engaged") is True
+            and _stop_sample_count(
+                brake.get("sample_count"),
+                "hardware brake sample_count",
+            )
+            >= _HARDWARE_STOP_MINIMUM_SAMPLES
+        ):
+            raise ValueError("hardware brake is not engaged")
+
+        hold_seconds = _bounded_stop_number(
+            details.get("hold_seconds"),
+            "hardware hold_seconds",
+        )
+        if hold_seconds < _HARDWARE_STOP_MINIMUM_HOLD_SECONDS:
+            raise ValueError("hardware stop hold window is too short")
+
+        actuators = details["actuators"]
+        expected_names = _unique_stop_names(
+            actuators.get("expected_names"),
+            "expected actuator names",
+        )
+        observed_names = _unique_stop_names(
+            actuators.get("observed_names"),
+            "observed actuator names",
+        )
+        if not expected_names or not expected_names.issubset(observed_names):
+            raise ValueError("hardware actuator inventory is incomplete")
+        if actuators.get("unclassified_names") != []:
+            raise ValueError("hardware actuator inventory has unclassified names")
+        if not (
+            actuators.get("fresh") is True
+            and actuators.get("inventory_complete") is True
+        ):
+            raise ValueError("hardware actuator state is not complete and fresh")
+        actuator_samples = _stop_sample_count(
+            actuators.get("stationary_samples"),
+            "hardware actuator stationary_samples",
+        )
+        if actuator_samples < _HARDWARE_STOP_MINIMUM_SAMPLES:
+            raise ValueError("hardware actuator samples are insufficient")
+        actuator_limit = _bounded_stop_number(
+            actuators.get("velocity_threshold"),
+            "hardware actuator velocity_threshold",
+        )
+        actuator_velocity = _bounded_stop_number(
+            actuators.get("max_abs_velocity"),
+            "hardware actuator max_abs_velocity",
+        )
+        if (
+            actuator_limit <= 0
+            or actuator_limit > _HARDWARE_STOP_MAX_ACTUATOR_VELOCITY
+            or actuator_velocity > actuator_limit
+        ):
+            raise ValueError("hardware actuator velocity is not stationary")
+
+        motion = details["independent_motion"]
+        if motion.get("fresh") is not True:
+            raise ValueError("independent motion evidence is stale")
+        motion_samples = _stop_sample_count(
+            motion.get("stationary_samples"),
+            "independent motion stationary_samples",
+        )
+        if motion_samples < _HARDWARE_STOP_MINIMUM_SAMPLES:
+            raise ValueError("independent motion samples are insufficient")
+        linear_limit = _bounded_stop_number(
+            motion.get("linear_velocity_threshold"),
+            "independent linear velocity threshold",
+        )
+        angular_limit = _bounded_stop_number(
+            motion.get("angular_velocity_threshold"),
+            "independent angular velocity threshold",
+        )
+        linear_velocity = _bounded_stop_number(
+            motion.get("max_linear_speed"),
+            "independent max linear speed",
+        )
+        angular_velocity = _bounded_stop_number(
+            motion.get("max_angular_speed"),
+            "independent max angular speed",
+        )
+        if (
+            linear_limit <= 0
+            or linear_limit > _HARDWARE_STOP_MAX_LINEAR_VELOCITY
+            or angular_limit <= 0
+            or angular_limit > _HARDWARE_STOP_MAX_ANGULAR_VELOCITY
+            or linear_velocity > linear_limit
+            or angular_velocity > angular_limit
+        ):
+            raise ValueError("independent motion evidence is not stationary")
+
+    @staticmethod
+    def _public_recovery_request(request: Mapping[str, Any]) -> dict[str, Any]:
+        public = dict(request)
+        public.pop("confirmation_phrase", None)
+        public.pop("transitioned", None)
+        return public
 
     def _cancel_all_active_tasks(self, *, reason: str | None) -> list[str]:
         with self._task_lock:
@@ -2011,6 +2938,8 @@ class FireClawGateway:
             "active_tasks": self.active_tasks(),
             "task_queue": self.task_queue.summary(),
             "emergency_stop": asdict(self._emergency_stop),
+            "resource_admission": self.resource_admission_state(),
+            "runtime_storage": self.runtime_storage_state(),
             "network_admission": self._network_guard.snapshot(),
             "runtime_paths": {
                 "process_working_directory": str(
@@ -2027,6 +2956,17 @@ class FireClawGateway:
                     )
                 ],
             },
+        }
+
+    def runtime_storage_state(self) -> dict[str, Any]:
+        if self._runtime_storage_fault is None:
+            return {
+                "status": "healthy",
+                "task_admission_allowed": True,
+            }
+        return {
+            **self._runtime_storage_fault,
+            "task_admission_allowed": False,
         }
 
     def health(self) -> dict[str, Any]:
@@ -2871,6 +3811,13 @@ class FireClawGateway:
         if parsed.path == "/state":
             self._write_json(handler, HTTPStatus.OK, self.state())
             return
+        if parsed.path == "/resource-admission":
+            self._write_json(
+                handler,
+                HTTPStatus.OK,
+                self.resource_admission_state(),
+            )
+            return
         if parsed.path == "/skills":
             self._write_json(handler, HTTPStatus.OK, self.list_skills(_first(query, "session_id")))
             return
@@ -3051,6 +3998,51 @@ class FireClawGateway:
                 status = HTTPStatus.FORBIDDEN if result["status"] == "denied" else HTTPStatus.OK
                 self._write_json(handler, status, result)
                 return
+            if parsed.path == "/resource-admission/recovery/request":
+                result = self.request_resource_admission_recovery(
+                    session_id=_payload_session(
+                        payload,
+                        self.config.default_session_id,
+                    ),
+                    operator=operator,
+                    reason=_optional_payload_string(payload, "reason"),
+                )
+                response_status = {
+                    "pending_confirmation": HTTPStatus.CREATED,
+                    "denied": HTTPStatus.FORBIDDEN,
+                    "invalid": HTTPStatus.BAD_REQUEST,
+                    "not_frozen": HTTPStatus.CONFLICT,
+                    "blocked": HTTPStatus.CONFLICT,
+                }.get(str(result.get("status")), HTTPStatus.CONFLICT)
+                self._write_json(handler, response_status, result)
+                return
+            if parsed.path == "/resource-admission/recovery/confirm":
+                request_id = _optional_payload_string(payload, "request_id")
+                confirmation_phrase = _optional_payload_string(
+                    payload,
+                    "confirmation_phrase",
+                )
+                if request_id is None or confirmation_phrase is None:
+                    self._write_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "Fields 'request_id' and 'confirmation_phrase' are required.",
+                    )
+                    return
+                result = self.confirm_resource_admission_recovery(
+                    request_id=request_id,
+                    confirmation_phrase=confirmation_phrase,
+                    operator=operator,
+                )
+                response_status = {
+                    "recovered": HTTPStatus.OK,
+                    "denied": HTTPStatus.FORBIDDEN,
+                    "expired": HTTPStatus.GONE,
+                    "not_found": HTTPStatus.NOT_FOUND,
+                    "blocked": HTTPStatus.CONFLICT,
+                }.get(str(result.get("status")), HTTPStatus.CONFLICT)
+                self._write_json(handler, response_status, result)
+                return
             if parsed.path == "/confirm":
                 session_id = _payload_session(payload, self.config.default_session_id)
                 result = self.confirm_task(
@@ -3157,7 +4149,28 @@ def _submission_status(result: dict[str, Any]) -> HTTPStatus:
         return HTTPStatus.CONFLICT
     if result.get("status") == "denied":
         return HTTPStatus.FORBIDDEN
+    if result.get("status") == "unavailable":
+        return HTTPStatus.SERVICE_UNAVAILABLE
     return HTTPStatus.ACCEPTED
+
+
+def _runtime_storage_error_code(exc: sqlite3.Error | OSError) -> str:
+    message = str(exc).lower()
+    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+        return "runtime_storage_full"
+    if "database or disk is full" in message or "disk full" in message:
+        return "runtime_storage_full"
+    if "locked" in message or "busy" in message:
+        return "runtime_database_locked"
+    if "malformed" in message or "corrupt" in message:
+        return "runtime_database_corrupt"
+    if isinstance(exc, OSError) and exc.errno in {
+        errno.EIO,
+        errno.EROFS,
+        errno.EDQUOT,
+    }:
+        return "runtime_storage_io_error"
+    return "runtime_state_unavailable"
 
 
 def _risk_level_from_confirmation(confirmation: Any) -> str:
@@ -3372,6 +4385,10 @@ def _run_robot_gateway(
     merged: dict[str, Any],
     args: argparse.Namespace,
 ) -> int:
+    def configured(key: str, default: Any) -> Any:
+        value = merged.get(key)
+        return default if value is None else value
+
     robot_workspace_root = (
         Path("data") / "robot" / "agent-workspace"
     ).resolve(strict=False)
@@ -3387,24 +4404,27 @@ def _run_robot_gateway(
         # The deployment profile is immutable for the lifetime of this
         # Gateway process; changing mode requires a restart.
         GatewayConfig(
-            host=str(merged.get("robot_gateway_host", "127.0.0.1")),
-            port=int(merged.get("robot_gateway_port", 8765)),
-            adapter=str(merged.get("robot_gateway_adapter", "dry-run")),
-            robot_id=str(merged.get("robot_gateway_robot_id", "fireclaw-gateway")),
+            host=str(configured("robot_gateway_host", "127.0.0.1")),
+            port=int(configured("robot_gateway_port", 8765)),
+            adapter=str(configured("robot_gateway_adapter", "dry-run")),
+            robot_id=str(configured("robot_gateway_robot_id", "fireclaw-gateway")),
             ros1_config_path=merged.get("robot_gateway_ros1_config"),
-            memory_path=str(merged.get("robot_gateway_memory_path", "memory/fireclaw-gateway.jsonl")),
-            event_path=str(merged.get("robot_gateway_event_path", "memory/fireclaw-gateway-events.jsonl")),
-            task_queue_path=str(merged.get("robot_gateway_task_queue_path", "memory/fireclaw-gateway-tasks.jsonl")),
+            memory_path=str(configured("robot_gateway_memory_path", "memory/fireclaw-gateway.jsonl")),
+            event_path=str(configured("robot_gateway_event_path", "memory/fireclaw-gateway-events.jsonl")),
+            task_queue_path=str(configured("robot_gateway_task_queue_path", "memory/fireclaw-gateway-tasks.jsonl")),
             runtime_state_path=merged.get("robot_gateway_runtime_state_path"),
-            dry_run=bool(merged.get("robot_gateway_dry_run", True)),
+            dry_run=bool(configured("robot_gateway_dry_run", True)),
             available_sensors=tuple(str(sensor) for sensor in sensors),
-            default_session_id=str(merged.get("robot_gateway_default_session_id", "default")),
-            max_active_execution_tasks=max(1, int(merged.get("robot_gateway_max_active_execution_tasks", 1))),
+            default_session_id=str(configured("robot_gateway_default_session_id", "default")),
+            max_active_execution_tasks=max(
+                1,
+                int(configured("robot_gateway_max_active_execution_tasks", 1)),
+            ),
             api_token=resolve_gateway_api_token(
                 merged.get("robot_gateway_api_token"),
             ),
             tls=GatewayTlsServerConfig(
-                enabled=bool(merged.get("robot_gateway_tls_enabled", False)),
+                enabled=bool(configured("robot_gateway_tls_enabled", False)),
                 cert_file=merged.get("robot_gateway_tls_cert_file"),
                 key_file=merged.get("robot_gateway_tls_key_file"),
                 ca_file=merged.get("robot_gateway_tls_ca_file"),
@@ -3418,8 +4438,8 @@ def _run_robot_gateway(
             network=gateway_network_policy_from_config(
                 merged.get("network")
             ),
-            robot_agent_enabled=bool(merged.get("robot_agent_enabled", False)),
-            robot_agent_planner=str(merged.get("robot_agent_planner", "deterministic")),
+            robot_agent_enabled=bool(configured("robot_agent_enabled", False)),
+            robot_agent_planner=str(configured("robot_agent_planner", "deterministic")),
             robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
             robot_agent_model=merged.get("robot_agent_model"),

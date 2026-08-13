@@ -57,6 +57,55 @@ class RobotSubagentClient:
     def get_state(self, entry: RobotRegistryEntry) -> dict[str, Any]:
         return self._request_json("GET", entry.base_url, "/state")
 
+    def get_health(self, entry: RobotRegistryEntry) -> dict[str, Any]:
+        """Read process liveness metadata; this is not robot readiness."""
+
+        return self._request_json("GET", entry.base_url, "/health")
+
+    def get_resource_admission(
+        self,
+        entry: RobotRegistryEntry,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            entry.base_url,
+            "/resource-admission",
+        )
+
+    def request_resource_admission_recovery(
+        self,
+        entry: RobotRegistryEntry,
+        *,
+        reason: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"reason": reason}
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return self._request_json(
+            "POST",
+            entry.base_url,
+            "/resource-admission/recovery/request",
+            payload,
+        )
+
+    def confirm_resource_admission_recovery(
+        self,
+        entry: RobotRegistryEntry,
+        *,
+        request_id: str,
+        confirmation_phrase: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            entry.base_url,
+            "/resource-admission/recovery/confirm",
+            {
+                "request_id": request_id,
+                "confirmation_phrase": confirmation_phrase,
+            },
+        )
+
     def submit_task(
         self,
         entry: RobotRegistryEntry,

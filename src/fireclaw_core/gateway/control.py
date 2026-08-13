@@ -36,6 +36,7 @@ ROLE_SCOPES: dict[str, set[str]] = {
         "task.cancel",
         "safety.override",
         "emergency.stop",
+        "emergency.recover",
         "state.read",
         "mission.submit",
         "mission.cancel",

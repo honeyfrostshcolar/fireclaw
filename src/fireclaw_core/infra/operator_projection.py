@@ -45,14 +45,14 @@ class OperatorEventProjector:
             return f"任务失败：{message}"
         if event_type == "task.timed_out":
             message = _text(payload.get("message"), "任务执行超时")
-            return f"任务超时：{message}"
+            return f"任务超时：{message}{_terminal_safety_suffix(payload)}"
         if event_type == "task.lost":
             message = _text(payload.get("message"), "机器人任务状态丢失")
-            return f"任务失联：{message}"
+            return f"任务失联：{message}{_terminal_safety_suffix(payload)}"
         if event_type == "task.cancel_requested":
-            return "已请求取消任务，等待当前步骤结束。"
+            return "已请求取消任务；机器人尚未确认终态，这不代表已经停止。"
         if event_type == "task.cancelled":
-            return "任务已取消。"
+            return "任务已取消；Runtime 终态已经确认。"
         return None
 
     def _project_safety(self, payload: dict[str, Any]) -> str | None:
@@ -114,3 +114,41 @@ def _join_reasons(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
     return ""
+
+
+def _terminal_safety_suffix(payload: dict[str, Any]) -> str:
+    reason_code = payload.get("reason_code")
+    result = payload.get("result")
+    if reason_code == "physical_runtime_stop_unconfirmed" or _contains_flag(
+        result,
+        "resource_release_safe",
+        False,
+    ):
+        return "；机器人是否停止尚未确认，运动资源将保持冻结。"
+    if _contains_flag(result, "runtime_stopped", True):
+        return "；Runtime 已确认停止。"
+    return ""
+
+
+def _contains_flag(
+    value: Any,
+    key: str,
+    expected: bool,
+    *,
+    depth: int = 0,
+) -> bool:
+    if depth > 6:
+        return False
+    if isinstance(value, dict):
+        if value.get(key) is expected:
+            return True
+        return any(
+            _contains_flag(item, key, expected, depth=depth + 1)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _contains_flag(item, key, expected, depth=depth + 1)
+            for item in value
+        )
+    return False

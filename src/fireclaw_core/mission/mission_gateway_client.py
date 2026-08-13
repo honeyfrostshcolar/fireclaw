@@ -66,6 +66,11 @@ class MissionGatewayClient:
     # Public API
     # ------------------------------------------------------------------
 
+    def get_health(self) -> dict[str, Any]:
+        """GET /health for Mission Gateway process readiness."""
+
+        return self._get("/health")
+
     def submit_mission(self, command: str, **kwargs: Any) -> dict[str, Any]:
         """POST /missions"""
         body: dict[str, Any] = {"command": command, **kwargs}

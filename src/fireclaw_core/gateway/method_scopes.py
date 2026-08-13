@@ -10,6 +10,7 @@ WRITE_SCOPE = "task.submit"
 APPROVALS_SCOPE = "mission.approve"
 PAIRING_SCOPE = "robot.pairing"
 EMERGENCY_SCOPE = "emergency.stop"
+EMERGENCY_RECOVERY_SCOPE = "emergency.recover"
 MEMORY_AUDIT_SCOPE = "memory.audit.read"
 MEMORY_LIFECYCLE_SCOPE = "memory.lifecycle.manage"
 MEMORY_DELETE_SCOPE = "memory.delete"
@@ -61,6 +62,9 @@ _register(MethodDescriptor("POST /tasks/{id}/cancel", WRITE_SCOPE, "write", "Can
 _register(MethodDescriptor("POST /confirm", APPROVALS_SCOPE, "approve", "Confirm high-risk"))
 _register(MethodDescriptor("POST /cancel", WRITE_SCOPE, "write", "Cancel via command"))
 _register(MethodDescriptor("POST /emergency-stop", EMERGENCY_SCOPE, "emergency", "Emergency stop"))
+_register(MethodDescriptor("GET /resource-admission", READ_SCOPE, "read", "Resource admission state"))
+_register(MethodDescriptor("POST /resource-admission/recovery/request", EMERGENCY_RECOVERY_SCOPE, "emergency", "Request frozen admission recovery"))
+_register(MethodDescriptor("POST /resource-admission/recovery/confirm", EMERGENCY_RECOVERY_SCOPE, "emergency", "Confirm frozen admission recovery"))
 _register(MethodDescriptor("GET /events/stream", READ_SCOPE, "read", "SSE event stream"))
 
 # Mission-level Gateway endpoints

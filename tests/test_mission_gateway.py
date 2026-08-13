@@ -713,6 +713,27 @@ def test_approval_decide_missing_request_id():
 
 
 # ---------------------------------------------------------------------------
+# Tests: GET /health
+# ---------------------------------------------------------------------------
+
+
+def test_health_reports_control_plane_without_running_fleet_diagnostics():
+    agent = _make_agent()
+    gw = _make_gateway(agent, api_token="secret")
+    base = _start_gateway(gw)
+    try:
+        status, body = _json_request(base, "GET", "/health")
+        assert status == 200
+        assert body == {
+            "schema_version": 1,
+            "status": "ok",
+            "service": "mission_gateway",
+        }
+    finally:
+        gw.stop()
+
+
+# ---------------------------------------------------------------------------
 # Tests: GET /fleet/state
 # ---------------------------------------------------------------------------
 

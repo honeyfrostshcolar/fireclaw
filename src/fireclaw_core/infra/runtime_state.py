@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -49,6 +50,14 @@ class ResourceLeaseConflict(RuntimeError):
         self.operation_id = operation_id
 
 
+class ResourceAdmissionRecoveryError(RuntimeError):
+    """Raised when a frozen resource-admission gate cannot be recovered safely."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class ResourceLease:
     robot_id: str
@@ -78,8 +87,34 @@ class SqliteAuthoritativeRuntimeStore:
     from rows committed in this database.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        busy_timeout_seconds: float = 5.0,
+        max_page_count: int | None = None,
+    ) -> None:
+        if (
+            isinstance(busy_timeout_seconds, bool)
+            or not isinstance(busy_timeout_seconds, (int, float))
+            or not math.isfinite(float(busy_timeout_seconds))
+            or float(busy_timeout_seconds) < 0
+        ):
+            raise ValueError(
+                "busy_timeout_seconds must be a finite non-negative number"
+            )
+        if (
+            max_page_count is not None
+            and (
+                isinstance(max_page_count, bool)
+                or not isinstance(max_page_count, int)
+                or max_page_count <= 0
+            )
+        ):
+            raise ValueError("max_page_count must be a positive integer")
         self.path = Path(path)
+        self.busy_timeout_seconds = float(busy_timeout_seconds)
+        self.max_page_count = max_page_count
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._audit_lock = threading.RLock()
@@ -90,12 +125,18 @@ class SqliteAuthoritativeRuntimeStore:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
             self.path,
-            timeout=5.0,
+            timeout=self.busy_timeout_seconds,
             isolation_level=None,
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute(
+            f"PRAGMA busy_timeout = {int(self.busy_timeout_seconds * 1000)}"
+        )
+        if self.max_page_count is not None:
+            connection.execute(
+                f"PRAGMA max_page_count = {self.max_page_count}"
+            )
         return connection
 
     def _initialize(self) -> None:
@@ -186,6 +227,17 @@ class SqliteAuthoritativeRuntimeStore:
                     payload_json TEXT NOT NULL,
                     revision INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS resource_admission_recovery_requests (
+                    request_id TEXT PRIMARY KEY,
+                    robot_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS resource_admission_recovery_robot_idx
+                    ON resource_admission_recovery_requests(robot_id, status);
                 CREATE TABLE IF NOT EXISTS runtime_secrets (
                     name TEXT PRIMARY KEY,
                     value BLOB NOT NULL
@@ -1069,19 +1121,434 @@ class SqliteResourceLeaseManager:
         reason: str | None,
         task_id: str,
         closed_at: str,
-    ) -> None:
-        self.store.set_flag(
-            "resource_admission",
-            {
-                "closed": True,
-                "reason": reason,
-                "task_id": task_id,
-                "closed_at": closed_at,
-            },
-        )
+    ) -> int:
+        with self.store.transaction() as connection:
+            revision = self.store.set_flag(
+                "resource_admission",
+                {
+                    "closed": True,
+                    "reason": reason,
+                    "task_id": task_id,
+                    "closed_at": closed_at,
+                },
+            )
+            self._supersede_pending_recovery_requests(
+                connection=connection,
+                superseded_at=closed_at,
+                reason="resource_admission_reclosed",
+            )
+            return revision
 
     def admission_state(self) -> dict[str, Any]:
         return self.store.get_flag("resource_admission") or {"closed": False}
+
+    def admission_snapshot(self) -> dict[str, Any]:
+        rows = self.store.read(
+            "SELECT payload_json, revision FROM runtime_flags WHERE key = ?",
+            ("resource_admission",),
+        )
+        if not rows:
+            return {"closed": False, "revision": 0}
+        return {
+            **_object(rows[0]["payload_json"]),
+            "revision": int(rows[0]["revision"]),
+        }
+
+    def create_recovery_request(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        request_id = str(payload.get("request_id") or "").strip()
+        robot_id = str(payload.get("robot_id") or "").strip()
+        requested_at = str(payload.get("requested_at") or "").strip()
+        expires_at = str(payload.get("expires_at") or "").strip()
+        confirmation_phrase = str(
+            payload.get("confirmation_phrase") or ""
+        ).strip()
+        if not all(
+            (request_id, robot_id, requested_at, expires_at, confirmation_phrase)
+        ):
+            raise ValueError("resource admission recovery identity is incomplete")
+        try:
+            requested_time = datetime.fromisoformat(requested_at)
+            expiry_time = datetime.fromisoformat(expires_at)
+        except ValueError as exc:
+            raise ValueError(
+                "resource admission recovery timestamps are invalid"
+            ) from exc
+        if (
+            requested_time.tzinfo is None
+            or expiry_time.tzinfo is None
+            or expiry_time <= requested_time
+        ):
+            raise ValueError(
+                "resource admission recovery expiry must follow its request"
+            )
+
+        with self.store.transaction() as connection:
+            flag = connection.execute(
+                """
+                SELECT payload_json, revision FROM runtime_flags
+                WHERE key = 'resource_admission'
+                """
+            ).fetchone()
+            if flag is None or not _object(flag["payload_json"]).get("closed"):
+                raise ResourceAdmissionRecoveryError(
+                    "resource_admission_not_frozen",
+                    "Resource admission is not frozen.",
+                )
+            self._supersede_pending_recovery_requests(
+                connection=connection,
+                robot_id=robot_id,
+                superseded_at=requested_at,
+                reason="newer_recovery_request",
+            )
+            request = {
+                **dict(payload),
+                "request_id": request_id,
+                "robot_id": robot_id,
+                "status": "pending",
+                "requested_at": requested_at,
+                "expires_at": expires_at,
+                "confirmation_phrase": confirmation_phrase,
+                "frozen_admission": {
+                    **_object(flag["payload_json"]),
+                    "revision": int(flag["revision"]),
+                },
+            }
+            connection.execute(
+                """
+                INSERT INTO resource_admission_recovery_requests(
+                    request_id, robot_id, status, requested_at,
+                    expires_at, payload_json, revision
+                ) VALUES (?, ?, 'pending', ?, ?, ?, 1)
+                """,
+                (
+                    request_id,
+                    robot_id,
+                    requested_at,
+                    expires_at,
+                    _json(request),
+                ),
+            )
+            return request
+
+    def recovery_request(self, request_id: str) -> dict[str, Any] | None:
+        rows = self.store.read(
+            """
+            SELECT payload_json, revision
+            FROM resource_admission_recovery_requests
+            WHERE request_id = ?
+            """,
+            (request_id,),
+        )
+        if not rows:
+            return None
+        return {
+            **_object(rows[0]["payload_json"]),
+            "revision": int(rows[0]["revision"]),
+        }
+
+    def pending_recovery_request(
+        self,
+        *,
+        robot_id: str,
+    ) -> dict[str, Any] | None:
+        rows = self.store.read(
+            """
+            SELECT payload_json, revision
+            FROM resource_admission_recovery_requests
+            WHERE robot_id = ? AND status = 'pending'
+            ORDER BY rowid DESC
+            LIMIT 1
+            """,
+            (robot_id,),
+        )
+        if not rows:
+            return None
+        return {
+            **_object(rows[0]["payload_json"]),
+            "revision": int(rows[0]["revision"]),
+        }
+
+    def expire_recovery_request(
+        self,
+        *,
+        request_id: str,
+        expired_at: str,
+    ) -> dict[str, Any]:
+        with self.store.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM resource_admission_recovery_requests
+                WHERE request_id = ?
+                """,
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                raise ResourceAdmissionRecoveryError(
+                    "recovery_request_not_found",
+                    "Resource admission recovery request was not found.",
+                )
+            payload = _object(row["payload_json"])
+            if row["status"] != "pending":
+                return {
+                    **payload,
+                    "revision": int(row["revision"]),
+                    "transitioned": False,
+                }
+            expired_time = datetime.fromisoformat(expired_at)
+            deadline = datetime.fromisoformat(str(row["expires_at"]))
+            if expired_time < deadline:
+                raise ResourceAdmissionRecoveryError(
+                    "recovery_request_not_expired",
+                    "Resource admission recovery request has not expired.",
+                )
+            self._set_recovery_request_status(
+                connection,
+                row=row,
+                payload=payload,
+                status="expired",
+                changed_at=expired_at,
+                reason="confirmation_deadline_elapsed",
+            )
+            return {
+                **payload,
+                "status": "expired",
+                "expired_at": expired_at,
+                "expired_reason": "confirmation_deadline_elapsed",
+                "revision": int(row["revision"]) + 1,
+                "transitioned": True,
+            }
+
+    def recover_admission(
+        self,
+        *,
+        request_id: str,
+        confirmation_phrase: str,
+        confirmed_by: dict[str, Any],
+        confirmed_at: str,
+        stop_evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.store.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT robot_id, status, expires_at, payload_json, revision
+                FROM resource_admission_recovery_requests
+                WHERE request_id = ?
+                """,
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                raise ResourceAdmissionRecoveryError(
+                    "recovery_request_not_found",
+                    "Resource admission recovery request was not found.",
+                )
+            if row["status"] != "pending":
+                raise ResourceAdmissionRecoveryError(
+                    "recovery_request_not_pending",
+                    "Resource admission recovery request is no longer pending.",
+                )
+            request = _object(row["payload_json"])
+            if datetime.fromisoformat(confirmed_at) >= datetime.fromisoformat(
+                str(row["expires_at"])
+            ):
+                raise ResourceAdmissionRecoveryError(
+                    "recovery_request_expired",
+                    "Resource admission recovery request has expired.",
+                )
+            expected_phrase = str(request.get("confirmation_phrase") or "")
+            if not expected_phrase or not secrets.compare_digest(
+                confirmation_phrase,
+                expected_phrase,
+            ):
+                raise ResourceAdmissionRecoveryError(
+                    "recovery_confirmation_mismatch",
+                    "Resource admission recovery confirmation does not match.",
+                )
+
+            flag = connection.execute(
+                """
+                SELECT payload_json, revision FROM runtime_flags
+                WHERE key = 'resource_admission'
+                """
+            ).fetchone()
+            frozen = request.get("frozen_admission")
+            expected_flag_revision = (
+                int(frozen.get("revision", -1))
+                if isinstance(frozen, dict)
+                else -1
+            )
+            if (
+                flag is None
+                or not _object(flag["payload_json"]).get("closed")
+                or int(flag["revision"]) != expected_flag_revision
+            ):
+                raise ResourceAdmissionRecoveryError(
+                    "resource_admission_changed",
+                    "Resource admission changed after the recovery request.",
+                )
+
+            robot_id = str(row["robot_id"])
+            active_lease = connection.execute(
+                """
+                SELECT resource_name, owner_id, operation_id
+                FROM resource_leases
+                WHERE robot_id = ? AND expires_at > ?
+                ORDER BY resource_name
+                LIMIT 1
+                """,
+                (robot_id, confirmed_at),
+            ).fetchone()
+            if active_lease is not None:
+                raise ResourceAdmissionRecoveryError(
+                    "resource_lease_still_active",
+                    "A robot resource lease is still active.",
+                )
+            self._validate_stop_evidence(
+                stop_evidence,
+                robot_id=robot_id,
+                confirmed_at=confirmed_at,
+            )
+
+            previous_flag = _object(flag["payload_json"])
+            opened = {
+                "closed": False,
+                "recovered_at": confirmed_at,
+                "recovery_request_id": request_id,
+                "recovered_by": dict(confirmed_by),
+                "previous_freeze": previous_flag,
+            }
+            flag_update = connection.execute(
+                """
+                UPDATE runtime_flags
+                SET payload_json = ?, revision = revision + 1
+                WHERE key = 'resource_admission' AND revision = ?
+                """,
+                (_json(opened), expected_flag_revision),
+            )
+            if flag_update.rowcount != 1:
+                raise ResourceAdmissionRecoveryError(
+                    "resource_admission_changed",
+                    "Resource admission changed before recovery committed.",
+                )
+
+            resolved = {
+                **request,
+                "status": "confirmed",
+                "confirmed_at": confirmed_at,
+                "confirmed_by": dict(confirmed_by),
+                "confirmation_stop_evidence": dict(stop_evidence),
+            }
+            request_update = connection.execute(
+                """
+                UPDATE resource_admission_recovery_requests
+                SET status = 'confirmed', payload_json = ?, revision = revision + 1
+                WHERE request_id = ? AND status = 'pending' AND revision = ?
+                """,
+                (_json(resolved), request_id, int(row["revision"])),
+            )
+            if request_update.rowcount != 1:
+                raise ResourceAdmissionRecoveryError(
+                    "recovery_request_changed",
+                    "Resource admission recovery request changed before commit.",
+                )
+            return {
+                **resolved,
+                "admission": {
+                    **opened,
+                    "revision": expected_flag_revision + 1,
+                },
+            }
+
+    def _validate_stop_evidence(
+        self,
+        evidence: dict[str, Any],
+        *,
+        robot_id: str,
+        confirmed_at: str,
+    ) -> None:
+        if evidence.get("status") != "stopped":
+            raise ResourceAdmissionRecoveryError(
+                "stop_evidence_not_confirmed",
+                "Trusted stop evidence does not confirm a stopped runtime.",
+            )
+        if str(evidence.get("robot_id") or "") != robot_id:
+            raise ResourceAdmissionRecoveryError(
+                "stop_evidence_robot_mismatch",
+                "Trusted stop evidence belongs to another robot.",
+            )
+        try:
+            observed_at = datetime.fromisoformat(str(evidence["observed_at"]))
+            expires_at = datetime.fromisoformat(str(evidence["expires_at"]))
+            confirmed = datetime.fromisoformat(confirmed_at)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ResourceAdmissionRecoveryError(
+                "stop_evidence_invalid",
+                "Trusted stop evidence timestamps are invalid.",
+            ) from exc
+        if observed_at > confirmed or expires_at <= confirmed:
+            raise ResourceAdmissionRecoveryError(
+                "stop_evidence_stale",
+                "Trusted stop evidence is stale or not yet valid.",
+            )
+
+    def _supersede_pending_recovery_requests(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        superseded_at: str,
+        reason: str,
+        robot_id: str | None = None,
+    ) -> None:
+        query = (
+            "SELECT * FROM resource_admission_recovery_requests "
+            "WHERE status = 'pending'"
+        )
+        parameters: tuple[Any, ...] = ()
+        if robot_id is not None:
+            query += " AND robot_id = ?"
+            parameters = (robot_id,)
+        for row in connection.execute(query, parameters).fetchall():
+            payload = _object(row["payload_json"])
+            self._set_recovery_request_status(
+                connection,
+                row=row,
+                payload=payload,
+                status="superseded",
+                changed_at=superseded_at,
+                reason=reason,
+            )
+
+    @staticmethod
+    def _set_recovery_request_status(
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        payload: dict[str, Any],
+        status: str,
+        changed_at: str,
+        reason: str,
+    ) -> None:
+        updated = {
+            **payload,
+            "status": status,
+            f"{status}_at": changed_at,
+            f"{status}_reason": reason,
+        }
+        connection.execute(
+            """
+            UPDATE resource_admission_recovery_requests
+            SET status = ?, payload_json = ?, revision = revision + 1
+            WHERE request_id = ? AND revision = ?
+            """,
+            (
+                status,
+                _json(updated),
+                str(row["request_id"]),
+                int(row["revision"]),
+            ),
+        )
 
 
 def _json(value: Any) -> str:

@@ -1,8 +1,14 @@
+import importlib
 import json
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # type: ignore[no-redef]
 
 import pytest
 
@@ -998,6 +1004,18 @@ def test_main_module_routes_to_mission_cli():
     assert completed.returncode == 0, f"stderr: {completed.stderr}"
     # The mission_cli parser description should appear
     assert "mission-control" in completed.stdout.lower() or "mission" in completed.stdout.lower()
+
+
+def test_project_console_script_targets_unified_package_entrypoint():
+    project_root = Path(__file__).resolve().parents[1]
+    with (project_root / "pyproject.toml").open("rb") as handle:
+        metadata = tomllib.load(handle)
+
+    target = metadata["project"]["scripts"]["fireclaw"]
+    module_name, function_name = target.split(":", maxsplit=1)
+
+    assert target == "fireclaw_core.__main__:main"
+    assert callable(getattr(importlib.import_module(module_name), function_name))
 
 
 def test_mission_cli_robot_profile_export_writes_robot_registry(tmp_path):

@@ -48,6 +48,21 @@ def test_admin_role_can_trigger_emergency_stop():
     assert "emergency.stop" in scopes_for_role("admin")
 
 
+def test_only_admin_role_can_recover_resource_admission():
+    policy = ControlPolicy()
+    operator = operator_from_payload(
+        {"operator_id": "operator-1", "role": "operator"}
+    )
+    supervisor = operator_from_payload(
+        {"operator_id": "supervisor-1", "role": "supervisor"}
+    )
+    admin = operator_from_payload({"operator_id": "admin-1", "role": "admin"})
+
+    assert policy.evaluate(operator, "emergency.recover").status == "deny"
+    assert policy.evaluate(supervisor, "emergency.recover").status == "deny"
+    assert policy.evaluate(admin, "emergency.recover").status == "allow"
+
+
 def test_operator_payload_defaults_to_local_operator_when_missing():
     operator = operator_from_payload(None)
 

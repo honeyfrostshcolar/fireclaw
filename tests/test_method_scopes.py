@@ -2,6 +2,7 @@ from fireclaw_core.gateway.method_scopes import (
     ADMIN_SCOPE,
     APPROVALS_SCOPE,
     EMERGENCY_SCOPE,
+    EMERGENCY_RECOVERY_SCOPE,
     PAIRING_SCOPE,
     READ_SCOPE,
     WRITE_SCOPE,
@@ -21,6 +22,7 @@ class TestScopeConstants:
         assert isinstance(APPROVALS_SCOPE, str)
         assert isinstance(PAIRING_SCOPE, str)
         assert isinstance(EMERGENCY_SCOPE, str)
+        assert isinstance(EMERGENCY_RECOVERY_SCOPE, str)
 
     def test_admin_scope_value(self):
         assert ADMIN_SCOPE == "admin"
@@ -73,6 +75,15 @@ class TestResolveRequiredScope:
     def test_emergency_stop_requires_emergency(self):
         scope = resolve_required_scope("POST /emergency-stop")
         assert scope == EMERGENCY_SCOPE
+
+    def test_resource_admission_recovery_requires_dedicated_scope(self):
+        assert resolve_required_scope(
+            "POST /resource-admission/recovery/request"
+        ) == EMERGENCY_RECOVERY_SCOPE
+        assert resolve_required_scope(
+            "POST /resource-admission/recovery/confirm"
+        ) == EMERGENCY_RECOVERY_SCOPE
+        assert resolve_required_scope("GET /resource-admission") == READ_SCOPE
 
     def test_parameterized_path_matches(self):
         scope = resolve_required_scope("GET /tasks/task-123")

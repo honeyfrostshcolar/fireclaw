@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import threading
 import time
@@ -18,11 +19,122 @@ from fireclaw_core.agent.robot_deliberation import (
     _task_contract_hash,
 )
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
+from fireclaw_core.gateway.control import operator_from_payload
 from fireclaw_core.monitoring.event_ledger import EventLedger
 from fireclaw_core.monitoring.stream_events import StreamEvent
 from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 from fireclaw_core.task.task_contract import StructuredRobotTask
 from fireclaw_core.task.task_queue import JsonlTaskQueue
+from fireclaw_plugin_sdk import (
+    HARDWARE_STOP_EVIDENCE_CLASS,
+    RUNTIME_STATIONARITY_EVIDENCE_CLASS,
+)
+
+
+STOP_EVIDENCE_SERVICE = (
+    "fireclaw.safety.stop-evidence.test-runtime-witness"
+)
+REAL_STOP_EVIDENCE_SERVICE = (
+    "fireclaw.safety.stop-evidence.test-real-hardware"
+)
+
+
+class FreshStopEvidenceProvider:
+    provider_id = "test-runtime-witness"
+
+    def __init__(self, *, status: str = "stopped") -> None:
+        self.status = status
+        self.calls: list[dict] = []
+
+    def collect_stop_evidence(self, *, robot_id: str, reason: str | None = None):
+        self.calls.append({"robot_id": robot_id, "reason": reason})
+        observed_at = datetime.now(timezone.utc)
+        return {
+            "provider_id": self.provider_id,
+            "robot_id": robot_id,
+            "status": self.status,
+            "deployment_mode": "simulation",
+            "dry_run": False,
+            "observed_at": observed_at.isoformat(),
+            "expires_at": (observed_at + timedelta(seconds=15)).isoformat(),
+            "details": {
+                "stop_reasserted": True,
+                "active_goal_count": 0,
+                "stationary_samples": 3,
+            },
+        }
+
+
+def _real_hardware_details() -> dict:
+    return {
+        "schema_version": 1,
+        "stop_reasserted": True,
+        "stop_acknowledged": True,
+        "watchdog": {
+            "fresh": True,
+            "healthy": True,
+            "stop_asserted": True,
+            "sample_count": 3,
+        },
+        "emergency_stop": {"fresh": True, "active": True, "sample_count": 3},
+        "driver": {"fresh": True, "enabled": False, "sample_count": 3},
+        "brake": {
+            "required": True,
+            "fresh": True,
+            "engaged": True,
+            "sample_count": 3,
+        },
+        "actuators": {
+            "fresh": True,
+            "inventory_complete": True,
+            "expected_names": ["left_wheel", "right_wheel"],
+            "observed_names": ["left_wheel", "right_wheel"],
+            "unclassified_names": [],
+            "stationary_samples": 3,
+            "velocity_threshold": 0.01,
+            "max_abs_velocity": 0.0,
+        },
+        "independent_motion": {
+            "fresh": True,
+            "stationary_samples": 3,
+            "linear_velocity_threshold": 0.01,
+            "angular_velocity_threshold": 0.02,
+            "max_linear_speed": 0.0,
+            "max_angular_speed": 0.0,
+        },
+        "hold_seconds": 0.8,
+        "blockers": [],
+    }
+
+
+class RealHardwareStopEvidenceProvider:
+    provider_id = "test-real-hardware"
+    evidence_class = HARDWARE_STOP_EVIDENCE_CLASS
+    hardware_owned = True
+
+    def __init__(self, *, details: dict | None = None) -> None:
+        self.details = details or _real_hardware_details()
+
+    def collect_stop_evidence(self, *, robot_id: str, reason: str | None = None):
+        del reason
+        observed_at = datetime.now(timezone.utc)
+        return {
+            "provider_id": self.provider_id,
+            "evidence_class": self.evidence_class,
+            "robot_id": robot_id,
+            "status": "stopped",
+            "deployment_mode": "real",
+            "dry_run": False,
+            "observed_at": observed_at.isoformat(),
+            "expires_at": (observed_at + timedelta(seconds=15)).isoformat(),
+            "details": self.details,
+        }
+
+
+class UnqualifiedRealStopEvidenceProvider(RealHardwareStopEvidenceProvider):
+    provider_id = "test-runtime-only"
+    evidence_class = RUNTIME_STATIONARITY_EVIDENCE_CLASS
+    hardware_owned = False
 
 
 def _json_request_with_headers(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None) -> tuple[int, dict]:
@@ -72,6 +184,18 @@ def _simulation_profile(tmp_path: Path) -> DeploymentProfile:
     workspace = tmp_path / "sandbox"
     return DeploymentProfile(
         mode="simulation",
+        role="robot_agent",
+        sandbox=SandboxProfile(
+            workspace_root=workspace,
+            allowed_workspace_roots=(workspace,),
+        ),
+    )
+
+
+def _real_profile(tmp_path: Path) -> DeploymentProfile:
+    workspace = tmp_path / "real-sandbox"
+    return DeploymentProfile(
+        mode="real",
         role="robot_agent",
         sandbox=SandboxProfile(
             workspace_root=workspace,
@@ -1302,6 +1426,302 @@ def test_gateway_ignores_payload_operator_role_for_emergency_stop(
     assert "emergency_stop.activated" in [
         event["type"] for event in recent_events["events"]
     ]
+
+
+def test_gateway_resource_admission_recovery_requires_fresh_stop_evidence_and_persists_across_restart(
+    tmp_path,
+):
+    provider = FreshStopEvidenceProvider()
+    config = GatewayConfig(
+        host="127.0.0.1",
+        port=0,
+        adapter="mock-ros1",
+        robot_id="robot-gateway",
+        memory_path=str(tmp_path / "memory.jsonl"),
+        event_path=str(tmp_path / "events.jsonl"),
+        runtime_state_path=str(tmp_path / "runtime.sqlite3"),
+        deployment_profile=_simulation_profile(tmp_path),
+    )
+    first_gateway = FireClawGateway(
+        config,
+        plugin_services={STOP_EVIDENCE_SERVICE: provider},
+    )
+    first_gateway.start()
+    try:
+        stopped = _json_request(
+            first_gateway.base_url,
+            "POST",
+            "/emergency-stop",
+            {"reason": "navigation timeout stop was unconfirmed"},
+        )
+        requested = _json_request(
+            first_gateway.base_url,
+            "POST",
+            "/resource-admission/recovery/request",
+            {
+                "session_id": "operator-a",
+                "reason": "现场已清空，申请恢复导航资源准入",
+            },
+        )
+        wrong_code, wrong = _json_error_request(
+            first_gateway.base_url,
+            "POST",
+            "/resource-admission/recovery/confirm",
+            {
+                "request_id": requested["request_id"],
+                "confirmation_phrase": "RECOVER robot-gateway wrong-request",
+            },
+        )
+        frozen = _json_request(
+            first_gateway.base_url,
+            "GET",
+            "/resource-admission",
+        )
+    finally:
+        first_gateway.stop()
+
+    assert stopped["status"] == "emergency_stopped"
+    assert requested["status"] == "pending_confirmation"
+    assert requested["stop_evidence"]["status"] == "stopped"
+    assert requested["confirmation_phrase"].startswith(
+        "RECOVER robot-gateway recovery-"
+    )
+    assert wrong_code == 403
+    assert wrong["error_code"] == "recovery_confirmation_mismatch"
+    assert frozen["admission"]["closed"] is True
+    assert frozen["pending_recovery"]["request_id"] == requested["request_id"]
+    assert "confirmation_phrase" not in frozen["pending_recovery"]
+
+    second_gateway = FireClawGateway(
+        config,
+        plugin_services={STOP_EVIDENCE_SERVICE: provider},
+    )
+    second_gateway.start()
+    try:
+        recovered = _json_request(
+            second_gateway.base_url,
+            "POST",
+            "/resource-admission/recovery/confirm",
+            {
+                "request_id": requested["request_id"],
+                "confirmation_phrase": requested["confirmation_phrase"],
+            },
+        )
+        state = _json_request(second_gateway.base_url, "GET", "/state")
+        events = _json_request(
+            second_gateway.base_url,
+            "GET",
+            f"/events?task_id={requested['request_id']}",
+        )
+    finally:
+        second_gateway.stop()
+
+    assert recovered["status"] == "recovered"
+    assert recovered["admission"]["closed"] is False
+    assert state["emergency_stop"]["active"] is False
+    assert state["resource_admission"]["admission"]["closed"] is False
+    assert len(provider.calls) == 2
+    assert [event["type"] for event in events["events"]] == [
+        "resource_admission.recovery_requested",
+        "resource_admission.recovery_confirmation_denied",
+        "resource_admission.recovered",
+    ]
+
+
+def test_gateway_resource_admission_recovery_fails_closed_without_stop_witness(
+    tmp_path,
+):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            host="127.0.0.1",
+            port=0,
+            adapter="mock-ros1",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            deployment_profile=_simulation_profile(tmp_path),
+        )
+    )
+    gateway.start()
+    try:
+        _json_request(
+            gateway.base_url,
+            "POST",
+            "/emergency-stop",
+            {"reason": "operator emergency stop"},
+        )
+        status_code, blocked = _json_error_request(
+            gateway.base_url,
+            "POST",
+            "/resource-admission/recovery/request",
+            {"reason": "request without a runtime witness"},
+        )
+        state = _json_request(
+            gateway.base_url,
+            "GET",
+            "/resource-admission",
+        )
+    finally:
+        gateway.stop()
+
+    assert status_code == 409
+    assert blocked["status"] == "blocked"
+    assert blocked["error_code"] == "trusted_stop_evidence_unavailable"
+    assert "trusted_stop_evidence_provider_missing" in blocked[
+        "stop_evidence"
+    ]["blockers"]
+    assert state["admission"]["closed"] is True
+    assert state["pending_recovery"] is None
+
+
+def test_real_gateway_accepts_only_structured_hardware_owned_stop_evidence(
+    tmp_path,
+):
+    provider = RealHardwareStopEvidenceProvider()
+    gateway = FireClawGateway(
+        GatewayConfig(
+            adapter="simulator",
+            robot_id="firebot-01",
+            dry_run=False,
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            runtime_state_path=str(tmp_path / "runtime.sqlite3"),
+            deployment_profile=_real_profile(tmp_path),
+        ),
+        plugin_services={REAL_STOP_EVIDENCE_SERVICE: provider},
+    )
+
+    state = gateway.resource_admission_state()
+    evidence = gateway._collect_stop_evidence(reason="operator recovery")
+    admin = operator_from_payload(
+        {"operator_id": "admin-1", "role": "admin"}
+    )
+    stopped = gateway.emergency_stop(
+        reason="hardware safety acceptance",
+        operator=admin,
+    )
+    requested = gateway.request_resource_admission_recovery(
+        session_id="operator-a",
+        reason="现场已核对并保持物理急停",
+        operator=admin,
+    )
+    assert requested["status"] == "pending_confirmation", requested
+    recovered = gateway.confirm_resource_admission_recovery(
+        request_id=requested["request_id"],
+        confirmation_phrase=requested["confirmation_phrase"],
+        operator=admin,
+    )
+
+    assert state["stop_evidence_providers"] == [
+        {
+            "service_id": REAL_STOP_EVIDENCE_SERVICE,
+            "owner_plugin_id": "gateway-injected",
+            "provider_id": "test-real-hardware",
+            "evidence_class": HARDWARE_STOP_EVIDENCE_CLASS,
+            "hardware_owned": True,
+            "qualified_for_real": True,
+        }
+    ]
+    assert evidence["status"] == "stopped"
+    assert evidence["blockers"] == []
+    assert evidence["providers"][0]["qualified_for_real"] is True
+    assert stopped["status"] == "emergency_stopped"
+    assert requested["status"] == "pending_confirmation"
+    assert recovered["status"] == "recovered"
+    assert recovered["admission"]["closed"] is False
+    assert gateway.resource_admission_state()["admission"]["closed"] is False
+
+
+def test_real_gateway_rejects_runtime_only_or_malformed_stopped_claims(
+    tmp_path,
+):
+    malformed_details = _real_hardware_details()
+    malformed_details["watchdog"] = {
+        "fresh": True,
+        "healthy": True,
+        "stop_asserted": False,
+    }
+    cases = (
+        (
+            UnqualifiedRealStopEvidenceProvider(),
+            "hardware_stop_evidence_provider_missing",
+        ),
+        (
+            RealHardwareStopEvidenceProvider(details=malformed_details),
+            "runtime_stop_not_confirmed",
+        ),
+    )
+    for index, (provider, expected_blocker) in enumerate(cases):
+        gateway = FireClawGateway(
+            GatewayConfig(
+                adapter="simulator",
+                robot_id="firebot-01",
+                dry_run=False,
+                memory_path=str(tmp_path / f"memory-{index}.jsonl"),
+                event_path=str(tmp_path / f"events-{index}.jsonl"),
+                runtime_state_path=str(tmp_path / f"runtime-{index}.sqlite3"),
+                deployment_profile=_real_profile(tmp_path / str(index)),
+            ),
+            plugin_services={REAL_STOP_EVIDENCE_SERVICE: provider},
+        )
+
+        evidence = gateway._collect_stop_evidence(reason="operator recovery")
+
+        assert evidence["status"] == "unknown"
+        assert expected_blocker in evidence["blockers"]
+        assert evidence["providers"][0]["status"] == "unknown"
+        assert evidence["providers"][0]["error_code"] == (
+            "stop_evidence_provider_failed"
+        )
+
+
+def test_gateway_status_lazily_expires_stale_recovery_request_once(tmp_path):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            adapter="dry-run",
+            robot_id="robot-gateway",
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            runtime_state_path=str(tmp_path / "runtime.sqlite3"),
+        )
+    )
+    now = datetime.now(timezone.utc)
+    requested_at = now - timedelta(minutes=10)
+    expires_at = now - timedelta(minutes=5)
+    gateway.resource_leases.close_admission(
+        reason="physical_runtime_stop_unconfirmed",
+        task_id="task-timeout",
+        closed_at=requested_at.isoformat(),
+    )
+    request_id = "recovery-expired"
+    gateway.resource_leases.create_recovery_request(
+        {
+            "request_id": request_id,
+            "robot_id": "robot-gateway",
+            "session_id": "operator-a",
+            "reason": "operator requested recovery",
+            "requested_at": requested_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "confirmation_phrase": (
+                "RECOVER robot-gateway recovery-expired"
+            ),
+        }
+    )
+
+    first = gateway.resource_admission_state()
+    second = gateway.resource_admission_state()
+
+    assert first["admission"]["closed"] is True
+    assert first["pending_recovery"] is None
+    assert second["pending_recovery"] is None
+    assert gateway.resource_leases.recovery_request(request_id)["status"] == (
+        "expired"
+    )
+    events = gateway.events.events_for_task(request_id)
+    assert [event["type"] for event in events] == [
+        "resource_admission.recovery_expired"
+    ]
+    assert "confirmation_phrase" not in events[0]["payload"]["request"]
 
 
 def test_gateway_events_endpoint_returns_recent_events(tmp_path):

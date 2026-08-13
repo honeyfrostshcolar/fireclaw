@@ -94,6 +94,57 @@ def test_robot_subagent_client_check_presence_offline():
     assert "error" in result
 
 
+def test_robot_subagent_client_exposes_operator_status_and_recovery_routes():
+    entry = RobotRegistryEntry(
+        robot_id="robot-1",
+        base_url="http://127.0.0.1:8765",
+    )
+    client = RobotSubagentClient()
+    calls = []
+
+    def request_json(method, base_url, path, payload=None):
+        calls.append((method, base_url, path, payload))
+        return {"status": "ok"}
+
+    client._request_json = request_json
+
+    client.get_health(entry)
+    client.get_resource_admission(entry)
+    client.request_resource_admission_recovery(
+        entry,
+        reason="operator inspected the scene",
+        session_id="operator-1",
+    )
+    client.confirm_resource_admission_recovery(
+        entry,
+        request_id="recovery-1",
+        confirmation_phrase="RECOVER robot-1 recovery-1",
+    )
+
+    assert calls == [
+        ("GET", entry.base_url, "/health", None),
+        ("GET", entry.base_url, "/resource-admission", None),
+        (
+            "POST",
+            entry.base_url,
+            "/resource-admission/recovery/request",
+            {
+                "reason": "operator inspected the scene",
+                "session_id": "operator-1",
+            },
+        ),
+        (
+            "POST",
+            entry.base_url,
+            "/resource-admission/recovery/confirm",
+            {
+                "request_id": "recovery-1",
+                "confirmation_phrase": "RECOVER robot-1 recovery-1",
+            },
+        ),
+    ]
+
+
 def test_robot_subagent_client_sends_structured_task_payload(tmp_path):
     from fireclaw_core.task.task_contract import StructuredRobotTask
 

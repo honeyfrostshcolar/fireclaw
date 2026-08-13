@@ -196,6 +196,20 @@ class MissionGateway:
     # Endpoint logic
     # ------------------------------------------------------------------
 
+    def health(self) -> dict[str, Any]:
+        """Report that the assembled Mission Gateway is accepting requests.
+
+        Fleet and robot readiness intentionally remain on ``/fleet/doctor``;
+        this endpoint proves only that the control-plane process completed
+        startup and is serving the expected API.
+        """
+
+        return {
+            "schema_version": 1,
+            "status": "ok",
+            "service": "mission_gateway",
+        }
+
     def submit_mission(
         self,
         command: str,
@@ -910,12 +924,15 @@ class MissionGateway:
 
         class MissionRequestHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
+                parsed = urlparse(self.path)
                 if not gateway._admit_request(self, method="GET"):
                     return
-                principal = gateway._authenticate_request(self)
+                principal = gateway._authenticate_request(
+                    self,
+                    allow_public_health=parsed.path == "/health",
+                )
                 if principal is None:
                     return
-                parsed = urlparse(self.path)
                 result = authorize_method(
                     f"GET {parsed.path}",
                     set(principal.gateway_scopes),
@@ -982,33 +999,42 @@ class MissionGateway:
     def _authenticate_request(
         self,
         handler: BaseHTTPRequestHandler,
+        *,
+        allow_public_health: bool = False,
     ) -> AuthenticatedGatewayPrincipal | None:
         client_host = str(handler.client_address[0])
-        rate_limit = self._network_guard.check_auth(client_host)
-        if not rate_limit.allowed:
-            body = json.dumps(
-                {"error": "Too many authentication failures."},
-                ensure_ascii=False,
-            ).encode("utf-8")
-            handler.send_response(HTTPStatus.TOO_MANY_REQUESTS)
-            handler.send_header(
-                "Retry-After",
-                str(rate_limit.retry_after_seconds),
-            )
-            handler.send_header("Content-Type", "application/json; charset=utf-8")
-            handler.send_header("Content-Length", str(len(body)))
-            handler.end_headers()
-            handler.wfile.write(body)
-            return None
+        if not allow_public_health:
+            rate_limit = self._network_guard.check_auth(client_host)
+            if not rate_limit.allowed:
+                body = json.dumps(
+                    {"error": "Too many authentication failures."},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                handler.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+                handler.send_header(
+                    "Retry-After",
+                    str(rate_limit.retry_after_seconds),
+                )
+                handler.send_header(
+                    "Content-Type",
+                    "application/json; charset=utf-8",
+                )
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+                return None
         result = authenticate_gateway_request(
             authorization_header=handler.headers.get("Authorization"),
             client_host=client_host,
             api_token=self.config.api_token,
+            allow_public_health=allow_public_health,
         )
         if result.allowed and result.principal is not None:
-            self._network_guard.reset_auth_failures(client_host)
+            if not allow_public_health:
+                self._network_guard.reset_auth_failures(client_host)
             return result.principal
-        self._network_guard.record_auth_failure(client_host)
+        if not allow_public_health:
+            self._network_guard.record_auth_failure(client_host)
         body = json.dumps({"error": "Unauthorized"}, ensure_ascii=False).encode("utf-8")
         handler.send_response(HTTPStatus.UNAUTHORIZED)
         handler.send_header("WWW-Authenticate", "Bearer")
@@ -1134,6 +1160,9 @@ class MissionGateway:
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path == "/health":
+            self._write_json(handler, HTTPStatus.OK, self.health())
+            return
         if path == "/fleet/state":
             self._write_json(handler, HTTPStatus.OK, self.fleet_state())
             return

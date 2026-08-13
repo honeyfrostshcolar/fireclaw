@@ -283,6 +283,25 @@ class TestMissionGatewayClient:
         finally:
             server.shutdown()
 
+    def test_get_health(self) -> None:
+        responses = {
+            "GET /health": {
+                "status": 200,
+                "body": {
+                    "schema_version": 1,
+                    "status": "ok",
+                    "service": "mission_gateway",
+                },
+            },
+        }
+        server, base_url, _ = _start_echo_server(responses)
+        try:
+            client = MissionGatewayClient(base_url)
+            result = client.get_health()
+            assert result["service"] == "mission_gateway"
+        finally:
+            server.shutdown()
+
     def test_get_fleet_doctor(self) -> None:
         responses = {
             "GET /fleet/doctor": {
