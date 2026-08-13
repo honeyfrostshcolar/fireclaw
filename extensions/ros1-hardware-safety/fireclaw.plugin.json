@@ -1,0 +1,104 @@
+{
+  "id": "fireclaw.safety.ros1-hardware",
+  "name": "ROS1 real-robot hardware safety witness",
+  "version": "0.1.0",
+  "description": "Reasserts a hardware-owned stop and proves watchdog, e-stop, driver, actuator and independent-motion state before frozen admission can recover.",
+  "api_version": "1",
+  "entrypoint": "plugin/entrypoint.py",
+  "trust_level": "trusted",
+  "enabled_by_default": false,
+  "capabilities": [
+    "hardware_safety",
+    "resource_admission_recovery"
+  ],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "enabled",
+      "stop",
+      "watchdog",
+      "emergency_stop",
+      "driver",
+      "brake",
+      "actuators",
+      "independent_motion"
+    ],
+    "properties": {
+      "enabled": {"const": true},
+      "observation_timeout_seconds": {"type": "number", "minimum": 0.8, "maximum": 30.0, "default": 3.0},
+      "max_signal_age_seconds": {"type": "number", "minimum": 0.05, "maximum": 5.0, "default": 0.5},
+      "hold_seconds": {"type": "number", "minimum": 0.75, "maximum": 10.0, "default": 0.75},
+      "minimum_samples": {"type": "integer", "minimum": 3, "maximum": 100, "default": 3},
+      "evidence_ttl_seconds": {"type": "number", "minimum": 1.0, "maximum": 30.0, "default": 15.0},
+      "stop": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["service", "type"],
+        "properties": {
+          "service": {"type": "string", "minLength": 1},
+          "type": {"enum": ["std_srvs/Trigger", "std_srvs/SetBool"]}
+        }
+      },
+      "watchdog": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["topic", "message_type", "healthy_field", "stop_asserted_field"],
+        "properties": {
+          "topic": {"type": "string", "minLength": 1},
+          "message_type": {"type": "string", "minLength": 1},
+          "healthy_field": {"type": "string", "minLength": 1},
+          "stop_asserted_field": {"type": "string", "minLength": 1}
+        }
+      },
+      "emergency_stop": {"$ref": "#/definitions/boolean_signal"},
+      "driver": {"$ref": "#/definitions/boolean_signal"},
+      "brake": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["required"],
+        "properties": {
+          "required": {"type": "boolean"},
+          "topic": {"type": "string", "minLength": 1},
+          "message_type": {"type": "string", "minLength": 1},
+          "engaged_field": {"type": "string", "minLength": 1}
+        }
+      },
+      "actuators": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["topic", "message_type", "expected_names"],
+        "properties": {
+          "topic": {"type": "string", "minLength": 1},
+          "message_type": {"const": "sensor_msgs/JointState"},
+          "expected_names": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "ignored_names": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "default": []},
+          "velocity_threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.02, "default": 0.01}
+        }
+      },
+      "independent_motion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["topic", "message_type"],
+        "properties": {
+          "topic": {"type": "string", "minLength": 1},
+          "message_type": {"const": "nav_msgs/Odometry"},
+          "linear_velocity_threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.02, "default": 0.01},
+          "angular_velocity_threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05, "default": 0.02}
+        }
+      }
+    },
+    "definitions": {
+      "boolean_signal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["topic", "message_type", "field"],
+        "properties": {
+          "topic": {"type": "string", "minLength": 1},
+          "message_type": {"type": "string", "minLength": 1},
+          "field": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

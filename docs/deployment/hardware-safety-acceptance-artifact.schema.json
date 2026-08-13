@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fireclaw.local/schemas/hardware-safety-acceptance-artifact.schema.json",
+  "title": "FireClaw real-robot hardware safety acceptance artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "run_id",
+    "robot_id",
+    "scenario",
+    "target_signal",
+    "actuating",
+    "profile_sha256",
+    "deployment_fingerprint",
+    "firmware_version",
+    "operator_id",
+    "attestations",
+    "started_at",
+    "finished_at",
+    "preflight",
+    "expected_blockers",
+    "evidence",
+    "passed",
+    "failure_reasons",
+    "artifact_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "kind": {"const": "fireclaw.hardware_safety_acceptance"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "robot_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "scenario": {
+      "enum": [
+        "stop_proof",
+        "watchdog_loss",
+        "emergency_stop_inactive",
+        "driver_enabled",
+        "brake_disengaged",
+        "actuator_motion",
+        "signal_stale",
+        "inventory_incomplete"
+      ]
+    },
+    "target_signal": {
+      "type": ["string", "null"],
+      "enum": [
+        null,
+        "watchdog",
+        "emergency_stop",
+        "driver",
+        "brake",
+        "actuators",
+        "independent_motion"
+      ]
+    },
+    "actuating": {"type": "boolean"},
+    "profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "deployment_fingerprint": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "firmware_version": {"type": "string", "minLength": 1},
+    "operator_id": {"type": "string", "minLength": 1},
+    "attestations": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "preflight": {"type": "object"},
+    "expected_blockers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "evidence": {"type": "object"},
+    "passed": {"type": "boolean"},
+    "failure_reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"scenario": {"const": "actuator_motion"}}},
+      "then": {
+        "properties": {
+          "target_signal": {"enum": ["actuators", "independent_motion"]},
+          "actuating": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"scenario": {"const": "signal_stale"}}},
+      "then": {
+        "properties": {
+          "target_signal": {
+            "enum": [
+              "watchdog",
+              "emergency_stop",
+              "driver",
+              "brake",
+              "actuators",
+              "independent_motion"
+            ]
+          },
+          "actuating": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"scenario": {"const": "stop_proof"}}},
+      "then": {
+        "properties": {
+          "target_signal": {"type": "null"},
+          "actuating": {"const": true}
+        }
+      },
+      "else": {"properties": {"actuating": {"const": false}}}
+    }
+  ]
+}

@@ -1,9 +1,13 @@
 # ROS1 实机 Smoke Proof
 
-更新时间：2026-08-09
+更新时间：2026-08-13
 
 本文只适用于经过现场审批的真实机器人。Gazebo acceptance 通过并不自动授权
 实机运行；现场安全观察员、独立急停和平台厂商限制仍是硬前提。
+
+在导航 smoke 之前，必须先按
+`docs/deployment/real-robot-hardware-safety-acceptance.md` 完成硬件安全验收；
+`hardware-safety report` 未达到 `PASSED` 时，不得用导航测试代替安全证明。
 
 ## 当前架构边界
 
