@@ -373,6 +373,7 @@ All dict payloads are redacted via `redact_dict()` before writing (sk-*, Bearer,
 ## 13. Pre-Deployment Verification
 
 - [ ] Full test suite passes: `.venv/bin/python -m pytest -q` (ROS1 smoke skipped by default)
+- [ ] Fault-injection matrix passes: `fireclaw fault-test run --live-ros` (see `docs/deployment/fault-injection-acceptance.md`)
 - [ ] ROS smoke tests pass (if deploying with ROS): `FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q`
 - [ ] Gateway starts without errors on target machine
 - [ ] Robot adapter connects to ROS master (if applicable)

@@ -110,7 +110,34 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 ```
 
-## 快速验证
+## 首次仿真设置
+
+普通用户从 setup 开始，不需要先手写 TOML 或理解 Robot/Mission Gateway：
+
+```bash
+fireclaw setup
+```
+
+它会生成无凭据的 TurtleBot3 Gazebo Profile、验证 ROS/Navigation Plugin、准备内容寻址 Runtime release，
+并记住当前 Profile；不会启动 Gazebo 或任何机器人动作。之后的部署与状态命令可省略 `--profile`：
+
+```bash
+fireclaw deploy status --no-runtime-check
+fireclaw deploy run
+```
+
+另开终端后可使用：
+
+```bash
+fireclaw status
+fireclaw mission
+```
+
+重复运行 setup 会安全续接并复用相同 release，不覆盖已有 Profile。实机模式不会自动生成配置、部署或
+运动，必须显式提供已经人工审查的 real Profile。详细边界见
+[`docs/getting-started/first-run-setup.md`](docs/getting-started/first-run-setup.md)。
+
+## 开发者验证
 
 运行全量测试：
 
@@ -133,6 +160,55 @@ python3 -m venv .venv
   --memory-path /tmp/fireclaw-doctor-memory.jsonl \
   --event-path /tmp/fireclaw-doctor-events.jsonl
 ```
+
+部署后的操作员 readiness、Fleet Doctor 与安全冻结恢复使用统一入口：
+
+```bash
+fireclaw deploy apply --profile fireclaw.toml
+fireclaw deploy service install --profile fireclaw.toml --no-enable --no-start
+fireclaw deploy service start --profile fireclaw.toml
+fireclaw status --profile fireclaw.toml
+fireclaw recover --profile fireclaw.toml
+fireclaw deploy service stop --profile fireclaw.toml
+```
+
+默认输出面向人类；自动化可增加 `--json`。`status` 在一个快照中聚合部署/ROS、Robot Gateway、
+安全冻结、托管服务与 Fleet Doctor，不会把 Gateway 进程存活误报为 Runtime 或机器人 ready；
+`doctor` 仍保留为只查看 Fleet Doctor 的详细入口。`recover` 也没有绕过完整操作员确认短语的快捷
+参数。部署后的日常主入口也可直接
+使用 `<output-root>/<deployment-id>/current/bin/fireclaw-runtime` 做前台调试：它与 systemd 入口共用
+同一 supervisor，负责 bringup、Robot Gateway、Mission Gateway 的顺序启动、持续 readiness、
+孤儿进程排空、逆序停止与生命周期日志；real mode 的异常退出不会自动重启，并会保持或建立资源
+准入冻结。服务安装是显式动作，`deploy apply` 不会静默修改 systemd。
+
+实机冻结恢复由默认关闭的 `fireclaw.safety.ros1-hardware` Plugin 提供。它不暴露 LLM Tool；只有
+厂商硬件 stop 获得确认，并同时取得 watchdog、物理急停、driver disable、制动策略、完整执行器
+清单和独立 odometry 的连续静止证据时，Gateway 才接受 `hardware_stop_v1` 报告。配置模板见
+`examples/deployment_profiles/navigation_robot.toml.example`；逻辑解冻不会清除物理急停或续跑
+旧任务。无真机时可先完成离线准备；现场使用以下闭环命令：
+
+```bash
+fireclaw hardware-safety preflight --profile fireclaw.toml --offline
+fireclaw hardware-safety preflight --profile fireclaw.toml
+fireclaw hardware-safety accept --profile fireclaw.toml --scenario stop_proof \
+  --operator-id operator-01 --firmware-version vendor-fw-1.2.3
+fireclaw hardware-safety report --profile fireclaw.toml \
+  --firmware-version vendor-fw-1.2.3 --artifact-dir results/hardware-safety
+```
+
+详细填写项、非致动/致动边界和必须逐项验证的故障场景见
+[`docs/deployment/real-robot-hardware-safety-acceptance.md`](docs/deployment/real-robot-hardware-safety-acceptance.md)。
+
+无真机时也可以完成软件/进程层故障矩阵。下面的命令会验证断网续播、Gateway 崩溃、私有
+`roscore` 重启、SQLite 满页、数据库锁、传感器失效和重复命令，并生成不可覆盖、可校验的证据：
+
+```bash
+fireclaw fault-test run --live-ros
+fireclaw fault-test verify --run-dir results/fault-injection/<run_id>
+```
+
+边界和每项通过条件见
+[`docs/deployment/fault-injection-acceptance.md`](docs/deployment/fault-injection-acceptance.md)。
 
 当前 ROS1 Adapter 配置只负责 core transport、急停和 diagnostics，例如：
 
@@ -279,5 +355,9 @@ Robot task 或导航 goal，而是在静止 Burger 旁通过 Gazebo 服务生成
 - [Navigation Tool flow](docs/architecture/navigation-tool-flow.zh-CN.md)
 - [Capability policy pipeline](docs/architecture/capability-policy-pipeline.md)
 - [Deployment Tool policy](docs/architecture/deployment-tool-policy.md)
+- [操作员状态、诊断与冻结恢复](docs/deployment/operator-readiness-recovery.md)
+- [ROS1 实机部署与硬件停止证据](docs/deployment/ros1-deployment-guide.md)
+- [实机硬件安全验收（无真机准备版）](docs/deployment/real-robot-hardware-safety-acceptance.md)
+- [故障注入验收](docs/deployment/fault-injection-acceptance.md)
 - [ROS diagnostics](docs/architecture/ros-diagnostic-tools.md)
 - [OpenClaw alignment](docs/architecture/fireclaw-openclaw-alignment.md)
