@@ -16,15 +16,27 @@ from fireclaw_plugin_sdk.tools import (
     ToolHandler,
     ToolSpec,
 )
+from fireclaw_plugin_sdk.safety import (
+    HARDWARE_STOP_EVIDENCE_CLASS,
+    RUNTIME_STATIONARITY_EVIDENCE_CLASS,
+    RuntimeStopEvidenceProvider,
+    STOP_EVIDENCE_SERVICE_PREFIX,
+    stop_evidence_service_id,
+)
 
 __all__ = [
     "AgentRole",
     "DeploymentMode",
+    "HARDWARE_STOP_EVIDENCE_CLASS",
     "PluginApi",
     "PhysicalToolHandler",
     "PhysicalToolSpec",
+    "RUNTIME_STATIONARITY_EVIDENCE_CLASS",
+    "RuntimeStopEvidenceProvider",
+    "STOP_EVIDENCE_SERVICE_PREFIX",
     "TaskInputBindingSpec",
     "ToolEffect",
     "ToolHandler",
     "ToolSpec",
+    "stop_evidence_service_id",
 ]

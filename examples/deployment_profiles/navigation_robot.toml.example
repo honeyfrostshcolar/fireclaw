@@ -1,0 +1,124 @@
+# Copy this file outside the source tree and replace every /opt/firebot path.
+# Runtime deployment and the existing Robot capability profile intentionally
+# share one TOML document.
+
+[robot]
+id = "firebot-01"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "/opt/firebot/config/fireclaw_ros1.yaml"
+data_dir = "/var/lib/fireclaw/robots/firebot-01"
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
+primitive_skills = ["navigate_to_point"]
+
+[capability_skill_chains]
+navigation = ["navigate_to_point"]
+
+[deployment]
+id = "firebot-01"
+mode = "real"
+# output_root = "/var/lib/fireclaw/deployments"
+
+# Change this to true only after the service/topic/type/field/joint mapping
+# below has been checked against the exact vendor manual and robot firmware.
+[hardware_safety_acceptance]
+profile_reviewed = false
+reviewed_by = "REPLACE_ME"
+reviewed_at = "REPLACE_ME_WITH_TIMEZONE_AWARE_ISO8601"
+vendor_safety_reference = "REPLACE_ME_WITH_MANUAL_AND_REVISION"
+
+[deployment.ros1]
+distro = "noetic"
+setup_files = [
+  "/opt/ros/noetic/setup.bash",
+  "/opt/firebot/vendor_ws/devel/setup.bash",
+]
+
+[deployment.launch]
+# Hardware drivers, watchdog, sensors, robot_state_publisher and base TF.
+robot_launch = "/opt/firebot/launch/robot_base.launch"
+
+[deployment.bindings.navigation]
+# The Plugin owns map_server, AMCL and move_base. Configure only facts and
+# measured limits that differ across robots, sensors, maps or sites.
+map_file = "/opt/firebot/maps/site.yaml"
+scan_topic = "/scan"
+scan_frame = "laser"
+cmd_vel_topic = "/cmd_vel"
+odom_topic = "/odom"
+map_frame = "map"
+odom_frame = "odom"
+base_frame = "base_link"
+footprint = [[-0.30, -0.24], [-0.30, 0.24], [0.30, 0.24], [0.30, -0.24]]
+max_linear_velocity = 0.45
+max_angular_velocity = 1.20
+max_linear_acceleration = 0.75
+max_angular_acceleration = 1.50
+laser_max_range = 12.0
+odom_model_type = "diff"
+obstacle_range = 8.0
+raytrace_range = 10.0
+inflation_radius = 0.65
+cost_scaling_factor = 3.0
+
+[plugins]
+paths = ["../../extensions"]
+selected = [
+  "fireclaw.navigation.move-base",
+  "fireclaw.safety.ros1-hardware",
+]
+
+[plugins.config."fireclaw.navigation.move-base"]
+enabled = true
+real_mutation_enabled = false
+
+# These are vendor-owned hardware contracts, not FireClaw command topics.
+# Replace every placeholder with the robot driver's authoritative interface.
+[plugins.config."fireclaw.safety.ros1-hardware"]
+enabled = true
+observation_timeout_seconds = 3.0
+max_signal_age_seconds = 0.5
+hold_seconds = 0.75
+minimum_samples = 3
+evidence_ttl_seconds = 15.0
+
+[plugins.config."fireclaw.safety.ros1-hardware".stop]
+service = "/hardware/safety/stop"
+type = "std_srvs/SetBool"
+
+[plugins.config."fireclaw.safety.ros1-hardware".watchdog]
+topic = "/hardware/watchdog_state"
+message_type = "firebot_msgs/HardwareWatchdog"
+healthy_field = "healthy"
+stop_asserted_field = "stop_asserted"
+
+[plugins.config."fireclaw.safety.ros1-hardware".emergency_stop]
+topic = "/hardware/emergency_stop"
+message_type = "std_msgs/Bool"
+field = "data"
+
+[plugins.config."fireclaw.safety.ros1-hardware".driver]
+topic = "/hardware/driver_enabled"
+message_type = "std_msgs/Bool"
+field = "data"
+
+[plugins.config."fireclaw.safety.ros1-hardware".brake]
+required = true
+topic = "/hardware/brake_engaged"
+message_type = "std_msgs/Bool"
+engaged_field = "data"
+
+[plugins.config."fireclaw.safety.ros1-hardware".actuators]
+topic = "/hardware/joint_states"
+message_type = "sensor_msgs/JointState"
+expected_names = ["left_wheel", "right_wheel", "water_turret"]
+ignored_names = ["caster_joint"]
+velocity_threshold = 0.01
+
+[plugins.config."fireclaw.safety.ros1-hardware".independent_motion]
+topic = "/hardware/independent_odom"
+message_type = "nav_msgs/Odometry"
+linear_velocity_threshold = 0.01
+angular_velocity_threshold = 0.02

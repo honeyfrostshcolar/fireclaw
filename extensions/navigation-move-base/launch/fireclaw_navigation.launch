@@ -1,0 +1,131 @@
+<?xml version="1.0"?>
+<!--
+  Plugin-owned ROS1 Navigation composition.
+
+  Robot- and map-specific values enter only through the trusted deployment
+  Profile.  The Agent/LLM cannot select launch files, topics, frames, or
+  physical limits at task execution time.
+-->
+<launch>
+  <arg name="map_file"/>
+  <arg name="scan_topic"/>
+  <arg name="scan_frame"/>
+  <arg name="cmd_vel_topic"/>
+  <arg name="odom_topic"/>
+  <arg name="map_frame"/>
+  <arg name="odom_frame"/>
+  <arg name="base_frame"/>
+  <arg name="footprint"/>
+
+  <arg name="max_linear_velocity"/>
+  <arg name="max_angular_velocity"/>
+  <arg name="max_lateral_velocity" default="0.0"/>
+  <arg name="min_translational_velocity" default="0.05"/>
+  <arg name="min_angular_velocity" default="0.10"/>
+  <arg name="max_linear_acceleration" default="0.50"/>
+  <arg name="max_angular_acceleration" default="1.00"/>
+  <arg name="max_lateral_acceleration" default="0.0"/>
+  <arg name="allow_reverse" default="true"/>
+
+  <arg name="laser_max_range" default="-1.0"/>
+  <arg name="odom_model_type" default="diff"/>
+  <arg name="odom_alpha1" default="0.20"/>
+  <arg name="odom_alpha2" default="0.20"/>
+  <arg name="odom_alpha3" default="0.20"/>
+  <arg name="odom_alpha4" default="0.20"/>
+  <arg name="obstacle_range" default="2.5"/>
+  <arg name="raytrace_range" default="3.0"/>
+  <arg name="inflation_radius" default="0.55"/>
+  <arg name="cost_scaling_factor" default="3.0"/>
+
+  <arg name="initial_pose_x" default="0.0"/>
+  <arg name="initial_pose_y" default="0.0"/>
+  <arg name="initial_pose_yaw" default="0.0"/>
+
+  <node pkg="map_server"
+        type="map_server"
+        name="map_server"
+        output="screen"
+        args="$(arg map_file)"/>
+
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <rosparam command="load"
+              file="$(dirname)/../config/defaults/amcl.yaml"/>
+    <param name="global_frame_id" value="$(arg map_frame)"/>
+    <param name="odom_frame_id" value="$(arg odom_frame)"/>
+    <param name="base_frame_id" value="$(arg base_frame)"/>
+    <param name="laser_max_range" value="$(arg laser_max_range)"/>
+    <param name="odom_model_type" value="$(arg odom_model_type)"/>
+    <param name="odom_alpha1" value="$(arg odom_alpha1)"/>
+    <param name="odom_alpha2" value="$(arg odom_alpha2)"/>
+    <param name="odom_alpha3" value="$(arg odom_alpha3)"/>
+    <param name="odom_alpha4" value="$(arg odom_alpha4)"/>
+    <param name="initial_pose_x" value="$(arg initial_pose_x)"/>
+    <param name="initial_pose_y" value="$(arg initial_pose_y)"/>
+    <param name="initial_pose_a" value="$(arg initial_pose_yaw)"/>
+    <remap from="scan" to="$(arg scan_topic)"/>
+  </node>
+
+  <node pkg="move_base"
+        type="move_base"
+        name="move_base"
+        output="screen"
+        respawn="false">
+    <param name="base_local_planner"
+           value="dwa_local_planner/DWAPlannerROS"/>
+
+    <rosparam command="load"
+              file="$(dirname)/../config/defaults/costmap_common.yaml"
+              ns="global_costmap"/>
+    <rosparam command="load"
+              file="$(dirname)/../config/defaults/costmap_common.yaml"
+              ns="local_costmap"/>
+    <rosparam command="load"
+              file="$(dirname)/../config/defaults/global_costmap.yaml"/>
+    <rosparam command="load"
+              file="$(dirname)/../config/defaults/local_costmap.yaml"/>
+    <rosparam command="load"
+              file="$(dirname)/../config/defaults/move_base.yaml"/>
+    <rosparam command="load"
+              file="$(dirname)/../config/defaults/dwa_local_planner.yaml"/>
+
+    <param name="global_costmap/global_frame" value="$(arg map_frame)"/>
+    <param name="global_costmap/robot_base_frame" value="$(arg base_frame)"/>
+    <param name="global_costmap/scan/topic" value="$(arg scan_topic)"/>
+    <param name="global_costmap/scan/sensor_frame" value="$(arg scan_frame)"/>
+    <param name="global_costmap/obstacle_range" value="$(arg obstacle_range)"/>
+    <param name="global_costmap/raytrace_range" value="$(arg raytrace_range)"/>
+    <param name="global_costmap/inflation_radius" value="$(arg inflation_radius)"/>
+    <param name="global_costmap/cost_scaling_factor" value="$(arg cost_scaling_factor)"/>
+    <rosparam param="global_costmap/footprint" subst_value="true">$(arg footprint)</rosparam>
+
+    <param name="local_costmap/global_frame" value="$(arg odom_frame)"/>
+    <param name="local_costmap/robot_base_frame" value="$(arg base_frame)"/>
+    <param name="local_costmap/scan/topic" value="$(arg scan_topic)"/>
+    <param name="local_costmap/scan/sensor_frame" value="$(arg scan_frame)"/>
+    <param name="local_costmap/obstacle_range" value="$(arg obstacle_range)"/>
+    <param name="local_costmap/raytrace_range" value="$(arg raytrace_range)"/>
+    <param name="local_costmap/inflation_radius" value="$(arg inflation_radius)"/>
+    <param name="local_costmap/cost_scaling_factor" value="$(arg cost_scaling_factor)"/>
+    <rosparam param="local_costmap/footprint" subst_value="true">$(arg footprint)</rosparam>
+
+    <param name="DWAPlannerROS/max_vel_x" value="$(arg max_linear_velocity)"/>
+    <param name="DWAPlannerROS/min_vel_x"
+           value="$(eval -float(arg('max_linear_velocity')) if arg('allow_reverse') else 0.0)"/>
+    <param name="DWAPlannerROS/max_vel_y" value="$(arg max_lateral_velocity)"/>
+    <param name="DWAPlannerROS/min_vel_y"
+           value="$(eval -float(arg('max_lateral_velocity')))"/>
+    <param name="DWAPlannerROS/max_vel_trans" value="$(arg max_linear_velocity)"/>
+    <param name="DWAPlannerROS/min_vel_trans" value="$(arg min_translational_velocity)"/>
+    <param name="DWAPlannerROS/max_vel_theta" value="$(arg max_angular_velocity)"/>
+    <param name="DWAPlannerROS/min_vel_theta" value="$(arg min_angular_velocity)"/>
+    <param name="DWAPlannerROS/acc_lim_x" value="$(arg max_linear_acceleration)"/>
+    <param name="DWAPlannerROS/acc_lim_y" value="$(arg max_lateral_acceleration)"/>
+    <param name="DWAPlannerROS/acc_lim_theta" value="$(arg max_angular_acceleration)"/>
+    <param name="DWAPlannerROS/vy_samples"
+           value="$(eval 0 if float(arg('max_lateral_velocity')) == 0.0 else 10)"/>
+
+    <remap from="cmd_vel" to="$(arg cmd_vel_topic)"/>
+    <remap from="odom" to="$(arg odom_topic)"/>
+  </node>
+</launch>

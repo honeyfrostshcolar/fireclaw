@@ -12,16 +12,18 @@ extensions/my-plugin/
   fireclaw.plugin.json
   plugin/entrypoint.py
   plugin/runtime.py
+  runtime/fireclaw.runtime.json
   skills/my-skill/SKILL.md
 ```
 
-`fireclaw.plugin.json` 只描述身份和入口：
+`fireclaw.plugin.json` 只包含 data-only 发现元数据，可选引用 Runtime 描述：
 
 ```json
 {
   "id": "example.scan",
   "api_version": "1",
   "entrypoint": "plugin/entrypoint.py",
+  "runtime": "runtime/fireclaw.runtime.json",
   "trust_level": "trusted",
   "enabled_by_default": true
 }
@@ -33,6 +35,7 @@ extensions/my-plugin/
 [plugins].paths
   -> 读取 fireclaw.plugin.json（不执行代码）
   -> 校验 ID、API 版本、相对路径和符号链接
+  -> 部署阶段可读取 typed Runtime descriptor（仍不导入 Plugin 代码）
   -> 按配置跳过 disabled 插件
   -> 导入插件声明的 entrypoint
   -> 调用 register(plugin_scoped_api)
@@ -93,6 +96,8 @@ FireClaw 只处理 `enabled` 和插件加载流程；`scan_topic` 的类型、�
 ## 安全边界
 
 - manifest 是发现描述，不是宿主命令授权；
+- Runtime descriptor 只允许 typed provider/launch/readiness 数据，不允许
+  Plugin 自带任意 shell 命令；
 - 插件 Tool 仍要经过角色、deployment mode、机器人能力、SafetyGate 和精确
   执行授权；
 - `trusted` 插件当前在受信任进程内运行，适合明确安装的本地扩展；

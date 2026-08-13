@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fireclaw_turtlebot3_burger</name>
+  <version>0.1.0</version>
+  <description>
+    Robot-owned Gazebo base bringup for the FireClaw TurtleBot3 Burger
+    reference platform.
+  </description>
+
+  <maintainer email="maintainers@fireclaw.local">FireClaw Maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>turtlebot3_description</exec_depend>
+  <exec_depend>turtlebot3_gazebo</exec_depend>
+  <exec_depend>xacro</exec_depend>
+</package>

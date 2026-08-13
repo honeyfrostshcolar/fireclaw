@@ -60,6 +60,7 @@ class FireClawExtensionManifest:
     enabled_by_default: bool
     capabilities: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
+    runtime: str | None = None
     config_schema: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,6 +75,7 @@ class FireClawExtensionManifest:
             "enabled_by_default": self.enabled_by_default,
             "capabilities": list(self.capabilities),
             "skills": list(self.skills),
+            "runtime": self.runtime,
             "config_schema": dict(self.config_schema),
         }
 
@@ -86,6 +88,7 @@ class FireClawExtensionCandidate:
     root_dir: Path
     manifest_path: Path
     entrypoint_path: Path
+    runtime_descriptor_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +96,11 @@ class FireClawExtensionCandidate:
             "root_dir": str(self.root_dir),
             "manifest_path": str(self.manifest_path),
             "entrypoint_path": str(self.entrypoint_path),
+            "runtime_descriptor_path": (
+                str(self.runtime_descriptor_path)
+                if self.runtime_descriptor_path is not None
+                else None
+            ),
         }
 
 
@@ -346,6 +354,23 @@ def _read_manifest(path: Path, root: Path) -> FireClawExtensionCandidate:
         _safe_relative_path(item, "skills")
         for item in (raw.get("skills") or ())
     )
+    runtime = None
+    runtime_descriptor_path = None
+    runtime_value = raw.get("runtime")
+    if runtime_value is not None:
+        runtime = _safe_relative_path(runtime_value, "runtime")
+        runtime_candidate = root / runtime
+        if runtime_candidate.is_symlink():
+            raise ValueError("runtime descriptor cannot be a symbolic link")
+        runtime_descriptor_path = runtime_candidate.resolve(strict=False)
+        if not _inside(root, runtime_descriptor_path):
+            raise ValueError("runtime descriptor escapes the extension root")
+        if not runtime_descriptor_path.is_file():
+            raise ValueError(
+                "runtime descriptor must be a regular file inside the extension"
+            )
+        if runtime_descriptor_path.suffix != ".json":
+            raise ValueError("runtime descriptor must be a JSON file")
     config_schema = raw.get("config_schema", raw.get("configSchema", {}))
     if not isinstance(config_schema, dict):
         raise ValueError("config_schema must be an object")
@@ -364,11 +389,13 @@ def _read_manifest(path: Path, root: Path) -> FireClawExtensionCandidate:
             enabled_by_default=enabled_by_default,
             capabilities=capabilities,
             skills=skills,
+            runtime=runtime,
             config_schema=dict(config_schema),
         ),
         root_dir=root,
         manifest_path=path,
         entrypoint_path=entrypoint_path,
+        runtime_descriptor_path=runtime_descriptor_path,
     )
 
 

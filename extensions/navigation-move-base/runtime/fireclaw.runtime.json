@@ -1,0 +1,297 @@
+{
+  "schema_version": "1",
+  "runtime_id": "ros1.move_base",
+  "providers": [
+    {
+      "kind": "system_ros1",
+      "ros_distro": "noetic",
+      "packages": [
+        "move_base",
+        "map_server",
+        "amcl"
+      ],
+      "architectures": [
+        "x86_64",
+        "aarch64"
+      ]
+    },
+    {
+      "kind": "ros1_catkin",
+      "ros_distro": "noetic",
+      "packages": [
+        "amcl",
+        "base_local_planner",
+        "carrot_planner",
+        "clear_costmap_recovery",
+        "costmap_2d",
+        "dwa_local_planner",
+        "fake_localization",
+        "global_planner",
+        "map_server",
+        "move_base",
+        "move_slow_and_clear",
+        "nav_core",
+        "navfn",
+        "navigation",
+        "rotate_recovery",
+        "voxel_grid"
+      ],
+      "architectures": [
+        "x86_64",
+        "aarch64"
+      ],
+      "workspace": "ros_ws",
+      "source_paths": [
+        "src/navigation"
+      ]
+    }
+  ],
+  "launch": {
+    "file": "launch/fireclaw_navigation.launch",
+    "arguments": [
+      {
+        "name": "map_file",
+        "binding": "navigation.map_file",
+        "type": "path"
+      },
+      {
+        "name": "scan_topic",
+        "binding": "navigation.scan_topic",
+        "type": "string"
+      },
+      {
+        "name": "scan_frame",
+        "binding": "navigation.scan_frame",
+        "type": "string"
+      },
+      {
+        "name": "cmd_vel_topic",
+        "binding": "navigation.cmd_vel_topic",
+        "type": "string"
+      },
+      {
+        "name": "odom_topic",
+        "binding": "navigation.odom_topic",
+        "type": "string"
+      },
+      {
+        "name": "map_frame",
+        "binding": "navigation.map_frame",
+        "type": "string"
+      },
+      {
+        "name": "odom_frame",
+        "binding": "navigation.odom_frame",
+        "type": "string"
+      },
+      {
+        "name": "base_frame",
+        "binding": "navigation.base_frame",
+        "type": "string"
+      },
+      {
+        "name": "footprint",
+        "binding": "navigation.footprint",
+        "type": "json"
+      },
+      {
+        "name": "max_linear_velocity",
+        "binding": "navigation.max_linear_velocity",
+        "type": "number"
+      },
+      {
+        "name": "max_angular_velocity",
+        "binding": "navigation.max_angular_velocity",
+        "type": "number"
+      },
+      {
+        "name": "max_lateral_velocity",
+        "binding": "navigation.max_lateral_velocity",
+        "type": "number",
+        "required": false,
+        "default": 0.0
+      },
+      {
+        "name": "min_translational_velocity",
+        "binding": "navigation.min_translational_velocity",
+        "type": "number",
+        "required": false,
+        "default": 0.05
+      },
+      {
+        "name": "min_angular_velocity",
+        "binding": "navigation.min_angular_velocity",
+        "type": "number",
+        "required": false,
+        "default": 0.1
+      },
+      {
+        "name": "max_linear_acceleration",
+        "binding": "navigation.max_linear_acceleration",
+        "type": "number",
+        "required": false,
+        "default": 0.5
+      },
+      {
+        "name": "max_angular_acceleration",
+        "binding": "navigation.max_angular_acceleration",
+        "type": "number",
+        "required": false,
+        "default": 1.0
+      },
+      {
+        "name": "max_lateral_acceleration",
+        "binding": "navigation.max_lateral_acceleration",
+        "type": "number",
+        "required": false,
+        "default": 0.0
+      },
+      {
+        "name": "allow_reverse",
+        "binding": "navigation.allow_reverse",
+        "type": "boolean",
+        "required": false,
+        "default": true
+      },
+      {
+        "name": "laser_max_range",
+        "binding": "navigation.laser_max_range",
+        "type": "number",
+        "required": false,
+        "default": -1.0
+      },
+      {
+        "name": "odom_model_type",
+        "binding": "navigation.odom_model_type",
+        "type": "string",
+        "required": false,
+        "default": "diff"
+      },
+      {
+        "name": "odom_alpha1",
+        "binding": "navigation.odom_alpha1",
+        "type": "number",
+        "required": false,
+        "default": 0.2
+      },
+      {
+        "name": "odom_alpha2",
+        "binding": "navigation.odom_alpha2",
+        "type": "number",
+        "required": false,
+        "default": 0.2
+      },
+      {
+        "name": "odom_alpha3",
+        "binding": "navigation.odom_alpha3",
+        "type": "number",
+        "required": false,
+        "default": 0.2
+      },
+      {
+        "name": "odom_alpha4",
+        "binding": "navigation.odom_alpha4",
+        "type": "number",
+        "required": false,
+        "default": 0.2
+      },
+      {
+        "name": "obstacle_range",
+        "binding": "navigation.obstacle_range",
+        "type": "number",
+        "required": false,
+        "default": 2.5
+      },
+      {
+        "name": "raytrace_range",
+        "binding": "navigation.raytrace_range",
+        "type": "number",
+        "required": false,
+        "default": 3.0
+      },
+      {
+        "name": "inflation_radius",
+        "binding": "navigation.inflation_radius",
+        "type": "number",
+        "required": false,
+        "default": 0.55
+      },
+      {
+        "name": "cost_scaling_factor",
+        "binding": "navigation.cost_scaling_factor",
+        "type": "number",
+        "required": false,
+        "default": 3.0
+      },
+      {
+        "name": "initial_pose_x",
+        "binding": "navigation.initial_pose_x",
+        "type": "number",
+        "required": false,
+        "default": 0.0
+      },
+      {
+        "name": "initial_pose_y",
+        "binding": "navigation.initial_pose_y",
+        "type": "number",
+        "required": false,
+        "default": 0.0
+      },
+      {
+        "name": "initial_pose_yaw",
+        "binding": "navigation.initial_pose_yaw",
+        "type": "number",
+        "required": false,
+        "default": 0.0
+      }
+    ]
+  },
+  "assets": [
+    "config/defaults/amcl.yaml",
+    "config/defaults/costmap_common.yaml",
+    "config/defaults/global_costmap.yaml",
+    "config/defaults/local_costmap.yaml",
+    "config/defaults/move_base.yaml",
+    "config/defaults/dwa_local_planner.yaml"
+  ],
+  "readiness": [
+    {
+      "kind": "ros1_package",
+      "name": "move_base"
+    },
+    {
+      "kind": "ros1_node",
+      "name": "/map_server"
+    },
+    {
+      "kind": "ros1_node",
+      "name": "/amcl"
+    },
+    {
+      "kind": "ros1_node",
+      "name": "/move_base"
+    },
+    {
+      "kind": "ros1_topic",
+      "binding": "navigation.scan_topic"
+    },
+    {
+      "kind": "ros1_topic",
+      "binding": "navigation.odom_topic"
+    },
+    {
+      "kind": "ros1_action",
+      "name": "/move_base"
+    },
+    {
+      "kind": "ros1_tf",
+      "parent_binding": "navigation.map_frame",
+      "child_binding": "navigation.base_frame"
+    },
+    {
+      "kind": "ros1_tf",
+      "parent_binding": "navigation.base_frame",
+      "child_binding": "navigation.scan_frame"
+    }
+  ]
+}

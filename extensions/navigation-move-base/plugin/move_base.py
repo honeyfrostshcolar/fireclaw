@@ -12,15 +12,17 @@ then may submit only the fixed scopes and parameter names in this module.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from math import cos, isfinite, sin
 from threading import RLock
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from fireclaw_plugin_sdk import (
     DeploymentMode,
     PhysicalToolSpec,
+    RUNTIME_STATIONARITY_EVIDENCE_CLASS,
     TaskInputBindingSpec,
     ToolSpec,
 )
@@ -215,6 +217,14 @@ class MoveBaseNavigationBackend(Protocol):
         ...
 
     def clear_costmaps(self, scope: MoveBaseClearScope = "both") -> Mapping[str, Any]:
+        ...
+
+    def collect_stop_evidence(
+        self,
+        *,
+        robot_id: str,
+        reason: str | None = None,
+    ) -> Mapping[str, Any]:
         ...
 
 
@@ -450,6 +460,38 @@ class InMemoryMoveBaseBackend:
             self.calls.append({"operation": "clear_costmaps", "scope": scope})
             return {"status": "succeeded", "scope": scope, "cleared": True}
 
+    provider_id = "navigation-move-base"
+    evidence_class = RUNTIME_STATIONARITY_EVIDENCE_CLASS
+    hardware_owned = False
+
+    def collect_stop_evidence(
+        self,
+        *,
+        robot_id: str,
+        reason: str | None = None,
+    ) -> Mapping[str, Any]:
+        with self._lock:
+            self.calls.append(
+                {
+                    "operation": "collect_stop_evidence",
+                    "robot_id": robot_id,
+                    "reason": reason,
+                }
+            )
+            goal_was_active = bool(self.status.get("goal_active"))
+            self.status.update({"status": "cancelled", "goal_active": False})
+        return _runtime_stop_evidence(
+            provider_id=self.provider_id,
+            robot_id=robot_id,
+            status="stopped",
+            details={
+                "runtime": "in_memory_move_base",
+                "goal_was_active": goal_was_active,
+                "goal_active": False,
+                "stop_reasserted": True,
+            },
+        )
+
 
 @dataclass
 class Ros1MoveBaseBackend:
@@ -473,13 +515,31 @@ class Ros1MoveBaseBackend:
     )
     timeout_seconds: float = 2.0
     cancellation_ack_timeout_seconds: float = 2.0
+    stop_evidence_odom_topic: str = "/odom"
+    stop_evidence_cmd_vel_topic: str = "/cmd_vel"
+    stop_evidence_timeout_seconds: float = 3.0
+    stop_evidence_hold_seconds: float = 0.75
+    stop_evidence_max_linear_speed: float = 0.01
+    stop_evidence_max_angular_speed: float = 0.02
+    stop_evidence_minimum_samples: int = 3
     _clients: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _action_client: Any | None = field(default=None, init=False, repr=False)
 
     def _rospy(self) -> Any:
-        return import_module("rospy")
+        rospy = import_module("rospy")
+        if not rospy.core.is_initialized():
+            # Gateway actions run on worker threads, so rospy must not install
+            # process signal handlers here.  Match the core ROS1 transport's
+            # process-wide node identity and initialization contract.
+            rospy.init_node(
+                "fireclaw_gateway",
+                anonymous=True,
+                disable_signals=True,
+            )
+        return rospy
 
     def _dynamic_client(self, scope: MoveBaseScope) -> Any:
+        self._rospy()
         client = self._clients.get(scope)
         if client is not None:
             return client
@@ -490,6 +550,7 @@ class Ros1MoveBaseBackend:
         return client
 
     def _action(self) -> Any:
+        self._rospy()
         if self._action_client is None:
             module = import_module("actionlib")
             messages = import_module("move_base_msgs.msg")
@@ -531,6 +592,18 @@ class Ros1MoveBaseBackend:
         goal.target_pose.pose.orientation.z = sin(float(yaw) / 2.0)
         goal.target_pose.pose.orientation.w = cos(float(yaw) / 2.0)
         client = self._action()
+        if not client.wait_for_server(timeout=rospy.Duration(self.timeout_seconds)):
+            return {
+                "status": "error",
+                "error_code": "move_base_unavailable",
+                "goal_reached": False,
+                "runtime_stopped": True,
+                "resource_release_safe": True,
+                "x": float(x),
+                "y": float(y),
+                "yaw": float(yaw),
+                "frame_id": str(frame_id),
+            }
 
         def on_feedback(feedback: Any) -> None:
             if callable(feedback_sink):
@@ -711,6 +784,225 @@ class Ros1MoveBaseBackend:
         rospy.ServiceProxy(self.clear_costmaps_service, service_type)()
         return {"status": "succeeded", "scope": scope, "cleared": True}
 
+    provider_id = "navigation-move-base"
+    evidence_class = RUNTIME_STATIONARITY_EVIDENCE_CLASS
+    hardware_owned = False
+
+    def collect_stop_evidence(
+        self,
+        *,
+        robot_id: str,
+        reason: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Reassert a navigation stop and prove stationarity from ROS state.
+
+        This witness is intentionally registered only for simulation.  Real
+        robots need a hardware-owned stop witness that covers every actuator,
+        not just the move_base command path.
+        """
+
+        rospy = self._rospy()
+        client = self._action()
+        details: dict[str, Any] = {
+            "runtime": "ros1_move_base",
+            "action_name": self.action_name,
+            "odom_topic": self.stop_evidence_odom_topic,
+            "cmd_vel_topic": self.stop_evidence_cmd_vel_topic,
+            "reason": reason,
+            "stop_reasserted": False,
+            "active_goal_count": None,
+            "stationary_samples": 0,
+        }
+        try:
+            if not client.wait_for_server(
+                timeout=rospy.Duration(self.timeout_seconds)
+            ):
+                return _runtime_stop_evidence(
+                    provider_id=self.provider_id,
+                    robot_id=robot_id,
+                    status="unknown",
+                    details={
+                        **details,
+                        "error_code": "move_base_unavailable",
+                    },
+                )
+
+            twist_type = import_module("geometry_msgs.msg").Twist
+            odometry_type = import_module("nav_msgs.msg").Odometry
+            status_array_type = import_module(
+                "actionlib_msgs.msg"
+            ).GoalStatusArray
+            publisher = rospy.Publisher(
+                self.stop_evidence_cmd_vel_topic,
+                twist_type,
+                queue_size=1,
+            )
+            observation_lock = RLock()
+            observation: dict[str, Any] = {
+                "odom_sequence": 0,
+                "odom_wall_time": None,
+                "linear_speed": None,
+                "angular_speed": None,
+                "status_wall_time": None,
+                "active_goal_count": None,
+            }
+
+            def on_odom(message: Any) -> None:
+                linear = message.twist.twist.linear
+                angular = message.twist.twist.angular
+                with observation_lock:
+                    observation["odom_sequence"] += 1
+                    observation["odom_wall_time"] = monotonic()
+                    observation["linear_speed"] = max(
+                        abs(float(linear.x)),
+                        abs(float(linear.y)),
+                        abs(float(linear.z)),
+                    )
+                    observation["angular_speed"] = max(
+                        abs(float(angular.x)),
+                        abs(float(angular.y)),
+                        abs(float(angular.z)),
+                    )
+
+            def on_status(message: Any) -> None:
+                active_count = sum(
+                    1
+                    for item in message.status_list
+                    if int(item.status) in _ACTION_ACTIVE_STATES
+                )
+                with observation_lock:
+                    observation["status_wall_time"] = monotonic()
+                    observation["active_goal_count"] = active_count
+
+            odom_subscription = rospy.Subscriber(
+                self.stop_evidence_odom_topic,
+                odometry_type,
+                on_odom,
+                queue_size=10,
+            )
+            status_subscription = rospy.Subscriber(
+                f"{self.action_name.rstrip('/')}/status",
+                status_array_type,
+                on_status,
+                queue_size=10,
+            )
+            try:
+                client.cancel_all_goals()
+                details["stop_reasserted"] = True
+                deadline = monotonic() + max(
+                    0.1,
+                    float(self.stop_evidence_timeout_seconds),
+                )
+                stationary_since: float | None = None
+                stationary_samples = 0
+                last_odom_sequence = 0
+                saw_motion = False
+                while monotonic() < deadline:
+                    publisher.publish(twist_type())
+                    now = monotonic()
+                    with observation_lock:
+                        current = dict(observation)
+                    odom_fresh = (
+                        isinstance(current["odom_wall_time"], (int, float))
+                        and now - float(current["odom_wall_time"]) <= 0.5
+                    )
+                    status_fresh = (
+                        isinstance(current["status_wall_time"], (int, float))
+                        and now - float(current["status_wall_time"]) <= 0.5
+                    )
+                    is_stationary = (
+                        odom_fresh
+                        and status_fresh
+                        and current["active_goal_count"] == 0
+                        and isinstance(current["linear_speed"], (int, float))
+                        and isinstance(current["angular_speed"], (int, float))
+                        and float(current["linear_speed"])
+                        <= self.stop_evidence_max_linear_speed
+                        and float(current["angular_speed"])
+                        <= self.stop_evidence_max_angular_speed
+                    )
+                    if (
+                        is_stationary
+                        and int(current["odom_sequence"])
+                        > last_odom_sequence
+                    ):
+                        last_odom_sequence = int(current["odom_sequence"])
+                        stationary_samples += 1
+                        stationary_since = (
+                            now if stationary_since is None else stationary_since
+                        )
+                        details.update(
+                            {
+                                "active_goal_count": 0,
+                                "stationary_samples": stationary_samples,
+                                "max_observed_linear_speed": float(
+                                    current["linear_speed"]
+                                ),
+                                "max_observed_angular_speed": float(
+                                    current["angular_speed"]
+                                ),
+                            }
+                        )
+                        if (
+                            stationary_samples
+                            >= max(1, self.stop_evidence_minimum_samples)
+                            and now - stationary_since
+                            >= max(0.0, self.stop_evidence_hold_seconds)
+                        ):
+                            return _runtime_stop_evidence(
+                                provider_id=self.provider_id,
+                                robot_id=robot_id,
+                                status="stopped",
+                                details=details,
+                            )
+                    elif odom_fresh and (
+                        float(current["linear_speed"] or 0.0)
+                        > self.stop_evidence_max_linear_speed
+                        or float(current["angular_speed"] or 0.0)
+                        > self.stop_evidence_max_angular_speed
+                    ):
+                        saw_motion = True
+                        stationary_since = None
+                        stationary_samples = 0
+                    sleep(min(0.05, max(0.0, deadline - monotonic())))
+
+                with observation_lock:
+                    final_observation = dict(observation)
+                details.update(
+                    {
+                        "active_goal_count": final_observation[
+                            "active_goal_count"
+                        ],
+                        "stationary_samples": stationary_samples,
+                        "error_code": (
+                            "robot_motion_observed"
+                            if saw_motion
+                            else "stop_evidence_timeout"
+                        ),
+                    }
+                )
+                return _runtime_stop_evidence(
+                    provider_id=self.provider_id,
+                    robot_id=robot_id,
+                    status="moving" if saw_motion else "unknown",
+                    details=details,
+                )
+            finally:
+                odom_subscription.unregister()
+                status_subscription.unregister()
+                publisher.unregister()
+        except Exception as exc:
+            return _runtime_stop_evidence(
+                provider_id=self.provider_id,
+                robot_id=robot_id,
+                status="unknown",
+                details={
+                    **details,
+                    "error_code": "stop_evidence_collection_failed",
+                    "exception_class": type(exc).__name__,
+                },
+            )
+
 
 _ACTION_STATE_NAMES = {
     0: "pending",
@@ -725,10 +1017,31 @@ _ACTION_STATE_NAMES = {
     9: "lost",
 }
 _ACTION_STOP_CONFIRMED_STATES = frozenset({2, 3, 4, 5, 8})
+_ACTION_ACTIVE_STATES = frozenset({0, 1, 6, 7})
 _ACTION_FAILURE_CODES = {
     4: "move_base_aborted",
     5: "move_base_rejected",
 }
+
+
+def _runtime_stop_evidence(
+    *,
+    provider_id: str,
+    robot_id: str,
+    status: str,
+    details: Mapping[str, Any],
+) -> dict[str, Any]:
+    observed = datetime.now(timezone.utc)
+    return {
+        "provider_id": provider_id,
+        "robot_id": robot_id,
+        "status": status,
+        "deployment_mode": "simulation",
+        "dry_run": False,
+        "observed_at": observed.isoformat(),
+        "expires_at": (observed + timedelta(seconds=15)).isoformat(),
+        "details": dict(details),
+    }
 
 
 def _cancellation_ack_deadline(

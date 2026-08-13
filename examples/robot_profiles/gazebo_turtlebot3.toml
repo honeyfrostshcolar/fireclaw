@@ -2,8 +2,8 @@
 id = "gazebo_turtlebot3"
 base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
-ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
-data_dir = "data/robots/gazebo_turtlebot3"
+ros1_config = "../ros1_configs/gazebo_turtlebot3_move_base.yaml"
+data_dir = "../../data/robots/gazebo_turtlebot3"
 capabilities = ["navigation", "patrol"]
 enabled_skills = ["navigate_to_point"]
 llm_exposed_skills = ["navigate_to_point"]

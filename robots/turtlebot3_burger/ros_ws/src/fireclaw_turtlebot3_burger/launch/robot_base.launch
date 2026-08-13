@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!--
+  Robot-owned base bringup for the TurtleBot3 Burger simulation.
+
+  This layer owns the simulated hardware, URDF, sensors, odometry and TF. It
+  deliberately does not start map_server, AMCL or move_base; those belong to
+  the Navigation Plugin's generic launch.
+-->
+<launch>
+  <arg name="model" default="burger"/>
+  <arg name="gui" default="false"/>
+  <arg name="headless" default="false"/>
+  <arg name="paused" default="false"/>
+  <arg name="initial_x" default="-2.0"/>
+  <arg name="initial_y" default="-0.5"/>
+  <arg name="initial_z" default="0.0"/>
+  <arg name="initial_yaw" default="0.0"/>
+  <arg name="world_file"
+       default="$(find turtlebot3_gazebo)/worlds/turtlebot3_world.world"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_file)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="headless" value="$(arg headless)"/>
+    <arg name="debug" value="false"/>
+    <arg name="server_required" value="true"/>
+  </include>
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro"/>
+
+  <node pkg="gazebo_ros"
+        type="spawn_model"
+        name="spawn_turtlebot3_burger"
+        output="screen"
+        args="-urdf -model turtlebot3_$(arg model) -x $(arg initial_x) -y $(arg initial_y) -z $(arg initial_z) -Y $(arg initial_yaw) -param robot_description"/>
+
+  <!-- Start this directly instead of including turtlebot3_remote.launch,
+       whose upstream default requires TURTLEBOT3_MODEL to be exported. -->
+  <node pkg="robot_state_publisher"
+        type="robot_state_publisher"
+        name="robot_state_publisher">
+    <param name="publish_frequency" type="double" value="50.0"/>
+  </node>
+</launch>

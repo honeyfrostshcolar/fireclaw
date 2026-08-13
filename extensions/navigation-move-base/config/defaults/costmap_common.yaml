@@ -1,0 +1,8 @@
+# Physical geometry, sensor identity and measured ranges are Profile bindings.
+map_type: costmap
+observation_sources: scan
+scan:
+  data_type: LaserScan
+  marking: true
+  clearing: true
+  inf_is_valid: false

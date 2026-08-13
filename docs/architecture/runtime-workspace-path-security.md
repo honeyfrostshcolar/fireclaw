@@ -27,6 +27,13 @@ Relative `root_dir` values are resolved from the config directory. A relative
 `FIRECLAW_HOME` is rejected because it would recreate launch-directory
 dependence.
 
+Robot capability Profiles are a separate configuration boundary. Their
+`robot.ros1_config` and `robot.data_dir` values are canonicalized against the
+Profile TOML directory when the Profile is loaded, before a Gateway changes to
+its runtime root. Consequently, a generated Gateway can reuse the original
+absolute Profile path without inheriting the deployment state directory as an
+accidental path base.
+
 ## OpenClaw Analogue
 
 The implementation follows these OpenClaw boundaries:

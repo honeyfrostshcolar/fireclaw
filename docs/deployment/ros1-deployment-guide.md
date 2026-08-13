@@ -1,6 +1,6 @@
 # ROS1 部署指南
 
-更新时间：2026-08-09
+更新时间：2026-08-13
 
 ## 适用范围
 
@@ -56,6 +56,21 @@ Gateway 和 `RobotAdapter` 都不包含导航名称分支或同名方法回退�
 
 ## 启动前检查
 
+推荐使用统一 Plugin Runtime 部署器完成 provider 探测、source fallback 构建、environment、
+bringup 和 readiness：
+
+```bash
+fireclaw deploy plan --profile /opt/firebot/firebot.toml
+fireclaw deploy apply --profile /opt/firebot/firebot.toml
+
+/var/lib/fireclaw/deployments/firebot-01/current/bin/fireclaw-bringup
+/var/lib/fireclaw/deployments/firebot-01/current/bin/fireclaw-gateway
+```
+
+完整 profile schema、生成目录和失败语义见
+[Plugin Runtime 统一部署](plugin-runtime-deployment.md)。以下手工命令保留用于调试或尚未接入
+Runtime descriptor 的旧部署。
+
 ```bash
 source /opt/ros/noetic/setup.bash
 source extensions/navigation-move-base/ros_ws/devel/setup.bash
@@ -90,6 +105,7 @@ FIRECLAW_RUN_ROS1_SMOKE=1 \
 
 完整点导航仿真使用
 [当前架构的 ROS1/Gazebo 导航验收](ros1-gazebo-debugging-guide.md)。实机验证使用
+[实机硬件安全验收](real-robot-hardware-safety-acceptance.md)，通过后再执行
 [ROS1 实机 Smoke Proof](ros1-hardware-smoke-proof.md)。
 
 ## Fail-closed 条件
@@ -102,3 +118,16 @@ FIRECLAW_RUN_ROS1_SMOKE=1 \
 - simulation/real deployment mode 与目标平台不一致；
 - timeout、cancel、急停或审计链无法证明；
 - 系统尝试通过 `RobotAdapter` 同名方法执行领域动作。
+
+timeout 或 cancel 进入 `physical_runtime_stop_unconfirmed` 后，资源冻结会跨进程重启保留。
+不要删除状态文件解锁。使用
+[Plugin Runtime 统一部署：持久安全冻结恢复](plugin-runtime-deployment.md#持久安全冻结恢复)
+中的两阶段流程；ROS bringup 必须保持在线，可信 witness 才能重新触发 stop 并采集 action、
+速度和里程计证据。当前 move_base witness 仅适用于仿真，实机必须由硬件集成提供覆盖整机执行器
+的停止证明。生产实机应启用 `fireclaw.safety.ros1-hardware`，并按
+`examples/deployment_profiles/navigation_robot.toml.example` 绑定硬件 watchdog、急停、driver、
+制动、完整 `JointState` 执行器清单和独立 `Odometry`。Gateway 只接受 `hardware_stop_v1` 的
+结构化正证据；普通 ROS 节点存活、零 `cmd_vel` 或导航 action idle 都不足以解冻。
+拿到真机前先运行 `fireclaw hardware-safety preflight --offline`；现场的
+`preflight / accept / verify / report` 会把配置、ROS 合同、逐信号负向场景和证据摘要组成
+一个闭环，但不会主动制造负向硬件状态。

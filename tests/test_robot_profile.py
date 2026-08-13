@@ -25,16 +25,59 @@ def _navigation_registry(robot_id: str = "debug-robot-1"):
     ).registry
 
 
-def test_load_robot_capability_profile_from_toml(tmp_path: Path) -> None:
-    profile_path = tmp_path / "debug-robot-1.toml"
+def test_load_robot_capability_profile_from_toml(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    profile_path = profile_dir / "debug-robot-1.toml"
     profile_path.write_text(
         """
 [robot]
 id = "debug-robot-1"
 base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
-ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
-data_dir = "data/robots/debug-robot-1"
+ros1_config = "../config/ros1.yaml"
+data_dir = "../data/robots/debug-robot-1"
+capabilities = ["navigation"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
+""".strip(),
+        encoding="utf-8",
+    )
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    monkeypatch.chdir(unrelated_cwd)
+
+    profile = load_robot_capability_profile(profile_path)
+
+    assert profile == RobotCapabilityProfile(
+        robot_id="debug-robot-1",
+        base_url="http://127.0.0.1:8765",
+        adapter="ros1",
+        ros1_config=str((tmp_path / "config" / "ros1.yaml").resolve()),
+        data_dir=(tmp_path / "data" / "robots" / "debug-robot-1").resolve(),
+        capabilities=("navigation",),
+        enabled_skills=("navigate_to_point",),
+        llm_exposed_skills=("navigate_to_point",),
+    )
+
+
+def test_load_robot_capability_profile_preserves_absolute_paths(
+    tmp_path: Path,
+) -> None:
+    ros1_config = tmp_path / "config" / "ros1.yaml"
+    data_dir = tmp_path / "data" / "robot-1"
+    profile_path = tmp_path / "robot.toml"
+    profile_path.write_text(
+        f"""
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+ros1_config = "{ros1_config}"
+data_dir = "{data_dir}"
 capabilities = ["navigation"]
 enabled_skills = ["navigate_to_point"]
 llm_exposed_skills = ["navigate_to_point"]
@@ -44,16 +87,8 @@ llm_exposed_skills = ["navigate_to_point"]
 
     profile = load_robot_capability_profile(profile_path)
 
-    assert profile == RobotCapabilityProfile(
-        robot_id="debug-robot-1",
-        base_url="http://127.0.0.1:8765",
-        adapter="ros1",
-        ros1_config="examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
-        data_dir=Path("data/robots/debug-robot-1"),
-        capabilities=("navigation",),
-        enabled_skills=("navigate_to_point",),
-        llm_exposed_skills=("navigate_to_point",),
-    )
+    assert profile.ros1_config == str(ros1_config)
+    assert profile.data_dir == data_dir
 
 
 def test_profile_derives_gateway_paths_and_registry_entry(tmp_path: Path) -> None:
@@ -72,10 +107,13 @@ llm_exposed_skills = ["navigate_to_point"]
         encoding="utf-8",
     )
     profile = load_robot_capability_profile(profile_path)
+    expected_data_dir = (
+        profile_path.parent / "data" / "robots" / "debug-robot-1"
+    ).resolve()
 
-    assert profile.memory_path == Path("data/robots/debug-robot-1/memory.jsonl")
-    assert profile.event_path == Path("data/robots/debug-robot-1/events.jsonl")
-    assert profile.task_queue_path == Path("data/robots/debug-robot-1/tasks.jsonl")
+    assert profile.memory_path == expected_data_dir / "memory.jsonl"
+    assert profile.event_path == expected_data_dir / "events.jsonl"
+    assert profile.task_queue_path == expected_data_dir / "tasks.jsonl"
     assert profile.to_robot_registry_entry() == {
         "robot_id": "debug-robot-1",
         "base_url": "http://127.0.0.1:8765",

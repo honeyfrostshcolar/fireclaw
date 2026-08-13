@@ -5,6 +5,7 @@
   "description": "Typed navigation status, bounded tuning, cancellation and costmap tools for ROS1 move_base.",
   "api_version": "1",
   "entrypoint": "plugin/entrypoint.py",
+  "runtime": "runtime/fireclaw.runtime.json",
   "trust_level": "trusted",
   "enabled_by_default": true,
   "capabilities": [
@@ -33,6 +34,18 @@
           "type": "string"
         },
         "default": []
+      },
+      "navigate_timeout_seconds": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 300.0,
+        "default": 120.0
+      },
+      "cancellation_ack_timeout_seconds": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 30.0,
+        "default": 2.0
       }
     }
   }

@@ -42,6 +42,39 @@ def test_robot_gateway_cli_exposes_config_flag():
     assert "--runtime-root" in completed.stdout
 
 
+def test_robot_gateway_runtime_uses_defaults_for_omitted_config(
+    monkeypatch,
+) -> None:
+    from fireclaw_core.gateway import gateway as gateway_module
+
+    captured = {}
+
+    class FakeGateway:
+        def __init__(self, config):
+            captured["config"] = config
+            self.config = config
+            self.base_url = f"http://{config.host}:{config.port}"
+
+        def serve_forever(self):
+            captured["served"] = True
+
+    monkeypatch.setattr(gateway_module, "FireClawGateway", FakeGateway)
+
+    assert gateway_module._run_robot_gateway({}, object()) == 0
+
+    config = captured["config"]
+    assert config.host == "127.0.0.1"
+    assert config.port == 8765
+    assert config.adapter == "dry-run"
+    assert config.robot_id == "fireclaw-gateway"
+    assert config.default_session_id == "default"
+    assert config.max_active_execution_tasks == 1
+    assert config.dry_run is True
+    assert config.robot_agent_enabled is False
+    assert config.robot_agent_planner == "deterministic"
+    assert captured["served"] is True
+
+
 def test_gateway_package_module_cli_exposes_config_flag():
     completed = subprocess.run(
         [sys.executable, "-m", "fireclaw_core.gateway", "--help"],

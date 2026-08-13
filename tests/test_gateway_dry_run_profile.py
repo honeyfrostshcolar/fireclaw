@@ -11,7 +11,12 @@ from pathlib import Path
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 
-ROS1_CONFIG_YAML = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
+ROS1_CONFIG_YAML = (
+    Path(__file__).resolve().parents[1]
+    / "examples"
+    / "ros1_configs"
+    / "gazebo_turtlebot3_move_base.yaml"
+)
 
 
 def _write_ros1_profile(tmp_path: Path) -> Path:

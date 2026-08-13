@@ -60,6 +60,18 @@ becomes `timed_out`. Missing acknowledgement becomes `lost`, retains motion
 leases, and closes further resource admission. Stopping a Python wait/thread is
 never treated as proof that the robot stopped.
 
+In simulation, the Plugin also registers a trusted stop-evidence service for
+the operator-confirmed admission recovery protocol. It cancels all move_base
+goals, repeatedly publishes a zero Twist, observes the global action status,
+and requires fresh stationary odometry samples before returning a short-lived
+proof. The Gateway collects this proof both when creating and when confirming
+a recovery request. Request payload booleans are never evidence.
+
+This navigation-only witness is deliberately absent in real mode. A real
+robot must supply a hardware-owned witness that covers every actuator and its
+physical emergency-stop state; move_base state alone cannot unlock whole-robot
+resource admission.
+
 ## Layout
 
 - `ros_ws/src/navigation/`: pinned upstream ROS Navigation Stack source.
@@ -67,26 +79,38 @@ never treated as proof that the robot stopped.
   Gazebo `ContactManager` WorldPlugin.
 - `ros_ws/navigation.repos`: reproducible upstream checkout manifest.
 - `fireclaw.plugin.json`: manifest read by the generic extension scanner.
+- `runtime/fireclaw.runtime.json`: data-only system/source provider, launch,
+  default-asset, binding, and readiness contract used by `fireclaw deploy`.
 - `plugin/entrypoint.py`: provider-owned activation and Tool registration.
 - `plugin/move_base.py`: provider-owned parameter catalog and ROS adapters.
 - `tools/`: atomic FireClaw Tool definitions and package documentation.
 - `runtime/`: optional thin integration helpers; do not duplicate `move_base`.
 - `skills/navigation/SKILL.md`: Agent navigation workflow.
 - `tests/`: ROS contract, simulation, and opt-in Gazebo acceptance tests.
+- `config/defaults/`: Plugin-owned conservative AMCL, costmap, move_base and
+  DWA defaults; robot-specific values are injected from the root Profile.
 - `config/acceptance/`: validated, data-only acceptance scenarios.
 - `launch/fireclaw_acceptance_world.launch`: fixed trusted TurtleBot3
   acceptance environment; it is not an LLM-callable Tool.
+- `launch/fireclaw_navigation.launch`: generic production composition that
+  starts map_server, AMCL and move_base; it is separate from the acceptance
+  world.
 - `worlds/fireclaw_acceptance.world`: fixed world that loads the collision
   observer before the Robot is spawned.
 
-A robot deployment may still own its launch and navigation parameters outside
-FireClaw. Upstream package launch files remain inside `ros_ws/src/navigation/`.
+A robot deployment owns only its base/hardware bringup and the typed bindings
+in root `fireclaw.toml`: map, topics, TF frames, footprint, measured sensor
+characteristics and physical limits. It does not need to implement a
+Navigation Plugin launch contract. Upstream package launch files remain inside
+`ros_ws/src/navigation/`.
 
 ## Runtime Ownership
 
-The recommended real-robot mode is `external`: robot bringup, `systemd`, or a
-trusted ROS launch process starts `move_base`; FireClaw checks readiness and
-attaches to `/move_base`.
+The recommended real-robot mode remains externally supervised: the generated
+`fireclaw-bringup` wrapper (or an operator/systemd equivalent) starts the
+robot-owned base bringup and this Plugin's fixed navigation composition. The generated
+`fireclaw-gateway` wrapper checks declared ROS readiness before FireClaw loads
+the selected Plugins and attaches to `/move_base`.
 
 A future `managed` mode may let a trusted Plugin service start an allowlisted
 command for simulation. The LLM must never compose arbitrary shell or
@@ -94,7 +118,20 @@ command for simulation. The LLM must never compose arbitrary shell or
 
 ## Build
 
-From `extensions/navigation-move-base/ros_ws/`:
+The preferred deployment path is now:
+
+```bash
+fireclaw deploy plan --profile /opt/firebot/firebot.toml
+fireclaw deploy apply --profile /opt/firebot/firebot.toml
+```
+
+The deployer reuses compatible system packages first. It builds the bundled
+Navigation source only when the configured ROS overlay does not provide
+`move_base`, `map_server`, and `amcl`. See
+`docs/deployment/plugin-runtime-deployment.md` for the profile contract.
+
+For manual development/debugging, build from
+`extensions/navigation-move-base/ros_ws/`:
 
 ```bash
 source /opt/ros/noetic/setup.bash

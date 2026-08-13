@@ -67,7 +67,7 @@ def load_robot_capability_profiles(
 
 
 def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
-    target = Path(path)
+    target = Path(path).expanduser().resolve(strict=True)
     with target.open("rb") as handle:
         raw = tomllib.load(handle)
     robot = raw.get("robot")
@@ -76,7 +76,16 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
     robot_id = _required_string(robot, "id")
     base_url = _required_string(robot, "base_url")
     adapter = _required_string(robot, "adapter")
-    data_dir = Path(_required_string(robot, "data_dir"))
+    data_dir = _resolve_profile_path(
+        _required_string(robot, "data_dir"),
+        target.parent,
+    )
+    ros1_config_value = _optional_string(robot, "ros1_config")
+    ros1_config = (
+        str(_resolve_profile_path(ros1_config_value, target.parent))
+        if ros1_config_value is not None
+        else None
+    )
     capabilities = _string_tuple(robot, "capabilities")
     enabled_skills = _string_tuple(robot, "enabled_skills")
     llm_exposed_skills = _string_tuple(robot, "llm_exposed_skills")
@@ -88,7 +97,7 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
         robot_id=robot_id,
         base_url=base_url.rstrip("/"),
         adapter=adapter,
-        ros1_config=_optional_string(robot, "ros1_config"),
+        ros1_config=ros1_config,
         data_dir=data_dir,
         capabilities=capabilities,
         enabled_skills=enabled_skills,
@@ -99,6 +108,15 @@ def load_robot_capability_profile(path: str | Path) -> RobotCapabilityProfile:
         discovery_fingerprint=discovery_fingerprint,
         enabled=bool(robot.get("enabled", True)),
     )
+
+
+def _resolve_profile_path(value: str, base: Path) -> Path:
+    """Resolve Robot Profile paths independently of the process cwd."""
+
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return candidate.resolve(strict=False)
 
 
 def _required_string(raw: dict[str, Any], key: str) -> str:

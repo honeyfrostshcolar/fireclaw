@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireclaw_plugin_sdk import PluginApi
+from fireclaw_plugin_sdk import stop_evidence_service_id
 
 from .move_base import (
     InMemoryMoveBaseBackend,
@@ -22,6 +23,7 @@ from .move_base import (
 
 
 BACKEND_SERVICE = "fireclaw.navigation.move-base.backend"
+STOP_EVIDENCE_SERVICE = stop_evidence_service_id("navigation-move-base")
 
 
 def _backend(api: PluginApi) -> Any | None:
@@ -52,6 +54,15 @@ def register(api: PluginApi) -> None:
     backend = _backend(api)
     if backend is None:
         return
+
+    # Simulation recovery may use this trusted service to reassert a stop and
+    # prove stationarity. Real robots require a hardware-owned witness that
+    # covers every actuator, so this navigation-only witness is not registered
+    # in real mode.
+    if api.mode == "simulation" and callable(
+        getattr(backend, "collect_stop_evidence", None)
+    ):
+        api.register_service(STOP_EVIDENCE_SERVICE, backend)
 
     # Physical motion is contributed by the Navigation Plugin itself.  The
     # core only projects this contract through its generic lifecycle/safety

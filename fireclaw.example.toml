@@ -8,6 +8,37 @@
 [runtime]
 root_dir = "."
 
+# The same root fireclaw.toml is also the Robot capability and Plugin Runtime
+# deployment Profile. Robot-specific ROS launch files stay with the robot;
+# navigation composition and default algorithm parameters stay in the Plugin.
+[robot]
+id = "gazebo_turtlebot3"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+# Robot Profile filesystem paths are resolved relative to this TOML file,
+# independently of the directory from which the Gateway is launched.
+ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
+data_dir = "data/robots/gazebo_turtlebot3"
+capabilities = ["navigation", "patrol"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
+primitive_skills = ["navigate_to_point"]
+
+[capability_skill_chains]
+navigation = ["navigate_to_point"]
+patrol = ["navigate_to_point"]
+
+[robot.sensor_discovery]
+enabled = true
+message_timeout_seconds = 2.0
+
+[[robot.sensor_discovery.rules]]
+topic_pattern = "/scan"
+message_type = "sensor_msgs/LaserScan"
+sensor = "lidar"
+confidence = 0.99
+confirmed = true
+
 [server]
 host = "127.0.0.1"
 port = 8766
@@ -59,10 +90,65 @@ api_key_env = "FIRECLAW_PROVIDER_API_KEY"
 model = ""
 # catalog = "models.json"  # context_window, max_tokens, optional tokenizer_id
 
-# LLM Tool 权限由可信宿主执行。默认 real 不注册计算机工具。
-# 仿真时将 mode 改为 "simulation"，并把两个 sandbox.enabled 改为 true。
+# LLM Tool 权限由可信宿主执行。本样板对应 TurtleBot3 仿真；切换实机时必须把
+# mode 改为 "real" 并重新核对两个角色的 Tool policy，不能静默沿用仿真权限。
 [deployment]
-mode = "real"                    # real | simulation
+id = "gazebo-turtlebot3-burger"
+mode = "simulation"              # real | simulation
+
+[deployment.ros1]
+distro = "noetic"
+setup_files = [
+  "/opt/ros/noetic/setup.bash",
+  "robots/turtlebot3_burger/ros_ws/devel/setup.bash",
+]
+
+[deployment.launch]
+# Only robot hardware/simulation, drivers, sensors, odometry and base TF.
+robot_launch = "robots/turtlebot3_burger/ros_ws/src/fireclaw_turtlebot3_burger/launch/robot_base.launch"
+
+[deployment.bindings.navigation]
+# Required robot/map bindings consumed by the Plugin-owned generic launch.
+map_file = "robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.yaml"
+scan_topic = "/scan"
+scan_frame = "base_scan"
+cmd_vel_topic = "/cmd_vel"
+odom_topic = "/odom"
+map_frame = "map"
+odom_frame = "odom"
+base_frame = "base_footprint"
+footprint = [
+  [-0.105, -0.105],
+  [-0.105, 0.105],
+  [0.041, 0.105],
+  [0.041, -0.105],
+]
+
+# Measured physical limits and localization/sensor characteristics.
+max_linear_velocity = 0.22
+max_angular_velocity = 2.75
+max_lateral_velocity = 0.0
+min_translational_velocity = 0.11
+min_angular_velocity = 1.37
+max_linear_acceleration = 2.5
+max_angular_acceleration = 3.2
+max_lateral_acceleration = 0.0
+allow_reverse = true
+laser_max_range = 3.5
+odom_model_type = "diff"
+odom_alpha1 = 0.1
+odom_alpha2 = 0.1
+odom_alpha3 = 0.1
+odom_alpha4 = 0.1
+
+# Map/environment tuning and the simulation's deterministic start pose.
+obstacle_range = 3.0
+raytrace_range = 3.5
+inflation_radius = 1.0
+cost_scaling_factor = 3.0
+initial_pose_x = -2.0
+initial_pose_y = -0.5
+initial_pose_yaw = 0.0
 
 [deployment.tools.mission_agent]
 allow = ["group:computer"]
@@ -121,7 +207,7 @@ max_workspace_files = 4096
 max_concurrent_processes = 1
 
 [mission]
-robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
+robot_profiles = ["fireclaw.toml"]
 # Token presented by Mission Agent when connecting to Robot Gateways.
 # Prefer FIRECLAW_ROBOT_GATEWAY_TOKEN when all robots share one operator secret.
 # robot_gateway_api_token = "replace-with-the-robot-gateway-secret"
@@ -139,6 +225,7 @@ robot_profiles = ["examples/robot_profiles/gazebo_turtlebot3.toml"]
 # under the manifest ID and are not interpreted by Gateway core.
 [plugins]
 paths = ["extensions"]
+selected = ["fireclaw.navigation.move-base"]
 
 [plugins.config."fireclaw.navigation.move-base"]
 enabled = true
@@ -164,7 +251,7 @@ host = "127.0.0.1"
 port = 8765
 # Required before binding the Robot Gateway outside loopback.
 # api_token = "replace-with-a-random-secret"
-profile_path = "examples/robot_profiles/gazebo_turtlebot3.toml"
+profile_path = "fireclaw.toml"
 dry_run = true
 default_session_id = "default"
 max_active_execution_tasks = 1

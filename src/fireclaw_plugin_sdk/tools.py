@@ -78,6 +78,16 @@ class PluginApi(Protocol):
         """Register one physical Tool and its trusted execution handler."""
         ...
 
+    def register_service(
+        self,
+        service_id: str,
+        service: Any,
+        *,
+        data_only: bool = False,
+    ) -> None:
+        """Register one Plugin-owned service behind the trusted host boundary."""
+        ...
+
 
 @dataclass(frozen=True)
 class ToolSpec:
