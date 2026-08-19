@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 from threading import Condition, RLock, Thread
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from fireclaw_core.mission.mission_report import generate_mission_final_report
@@ -136,7 +136,7 @@ class MissionRun:
         return result
 
 
-RunEventSink = Callable[[str, str, dict[str, Any]], None]
+RunEventSink = Callable[[str, str, Mapping[str, Any]], None]
 
 
 class MissionRunManager:

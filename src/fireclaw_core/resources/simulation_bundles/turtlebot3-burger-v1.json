@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "bundle_id": "turtlebot3-burger-v1",
+  "bundle_version": "1.0.0",
+  "compatible_fireclaw_versions": ">=0.1.0",
+  "description": "Deterministic TurtleBot3 Burger simulation assets, navigation plugin, and ROS1 workspace sources",
+  "relative_layout": [
+    "examples/ros1_configs/",
+    "extensions/navigation-move-base/",
+    "robots/turtlebot3_burger/"
+  ],
+  "include_paths": [
+    "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
+    "extensions/navigation-move-base/fireclaw.plugin.json",
+    "extensions/navigation-move-base/README.md",
+    "extensions/navigation-move-base/runtime/fireclaw.runtime.json",
+    "extensions/navigation-move-base/runtime/README.md",
+    "extensions/navigation-move-base/skills/navigation/SKILL.md",
+    "extensions/navigation-move-base/plugin/entrypoint.py",
+    "extensions/navigation-move-base/plugin/move_base.py",
+    "extensions/navigation-move-base/launch/",
+    "extensions/navigation-move-base/config/defaults/",
+    "extensions/navigation-move-base/worlds/",
+    "extensions/navigation-move-base/ros_ws/UPSTREAM.md",
+    "extensions/navigation-move-base/ros_ws/navigation.repos",
+    "extensions/navigation-move-base/ros_ws/src/navigation/",
+    "extensions/navigation-move-base/ros_ws/src/fireclaw_gazebo_contact_monitor/",
+    "robots/turtlebot3_burger/README.md",
+    "robots/turtlebot3_burger/ros_ws/UPSTREAM.md",
+    "robots/turtlebot3_burger/ros_ws/turtlebot3.repos",
+    "robots/turtlebot3_burger/ros_ws/src/turtlebot3_msgs/",
+    "robots/turtlebot3_burger/ros_ws/src/turtlebot3/",
+    "robots/turtlebot3_burger/ros_ws/src/turtlebot3_simulations/",
+    "robots/turtlebot3_burger/ros_ws/src/fireclaw_turtlebot3_burger/"
+  ],
+  "required_paths": [
+    "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
+    "extensions/navigation-move-base/fireclaw.plugin.json",
+    "extensions/navigation-move-base/runtime/fireclaw.runtime.json",
+    "extensions/navigation-move-base/skills/navigation/SKILL.md",
+    "extensions/navigation-move-base/plugin/entrypoint.py",
+    "robots/turtlebot3_burger/ros_ws/src/fireclaw_turtlebot3_burger/launch/robot_base.launch",
+    "robots/turtlebot3_burger/ros_ws/src/turtlebot3/turtlebot3_navigation/maps/map.yaml"
+  ],
+  "provenance_required_paths": [
+    "extensions/navigation-move-base/ros_ws/UPSTREAM.md",
+    "extensions/navigation-move-base/ros_ws/navigation.repos",
+    "extensions/navigation-move-base/ros_ws/src/navigation/move_base/package.xml",
+    "extensions/navigation-move-base/ros_ws/src/navigation/move_base/src/move_base.cpp",
+    "robots/turtlebot3_burger/ros_ws/UPSTREAM.md",
+    "robots/turtlebot3_burger/ros_ws/turtlebot3.repos",
+    "robots/turtlebot3_burger/ros_ws/src/turtlebot3/LICENSE",
+    "robots/turtlebot3_burger/ros_ws/src/turtlebot3_msgs/LICENSE",
+    "robots/turtlebot3_burger/ros_ws/src/turtlebot3_simulations/LICENSE"
+  ],
+  "upstream_sources": [
+    {
+      "source_id": "ros-navigation",
+      "repository": "https://github.com/ros-planning/navigation.git",
+      "revision": "f44bb1fc2810399165115cc98b530fe4b9397c18",
+      "license": "BSD-3-Clause",
+      "evidence_paths": [
+        "extensions/navigation-move-base/ros_ws/UPSTREAM.md",
+        "extensions/navigation-move-base/ros_ws/navigation.repos",
+        "extensions/navigation-move-base/ros_ws/src/navigation/move_base/package.xml",
+        "extensions/navigation-move-base/ros_ws/src/navigation/move_base/src/move_base.cpp"
+      ]
+    },
+    {
+      "source_id": "turtlebot3",
+      "repository": "https://github.com/ROBOTIS-GIT/turtlebot3.git",
+      "revision": "4ae959ea6a52415c90bf752d2b76e3e28f8a87e2",
+      "license": "Apache-2.0",
+      "evidence_paths": [
+        "robots/turtlebot3_burger/ros_ws/UPSTREAM.md",
+        "robots/turtlebot3_burger/ros_ws/turtlebot3.repos",
+        "robots/turtlebot3_burger/ros_ws/src/turtlebot3/LICENSE"
+      ]
+    },
+    {
+      "source_id": "turtlebot3-msgs",
+      "repository": "https://github.com/ROBOTIS-GIT/turtlebot3_msgs.git",
+      "revision": "76e78b0a34e07cf1dd16dafdc54c44f35c5b83eb",
+      "license": "Apache-2.0",
+      "evidence_paths": [
+        "robots/turtlebot3_burger/ros_ws/UPSTREAM.md",
+        "robots/turtlebot3_burger/ros_ws/turtlebot3.repos",
+        "robots/turtlebot3_burger/ros_ws/src/turtlebot3_msgs/LICENSE"
+      ]
+    },
+    {
+      "source_id": "turtlebot3-simulations",
+      "repository": "https://github.com/ROBOTIS-GIT/turtlebot3_simulations.git",
+      "revision": "e9d809ca8e3bf889c0275e4103b15a341ffab888",
+      "license": "Apache-2.0",
+      "evidence_paths": [
+        "robots/turtlebot3_burger/ros_ws/UPSTREAM.md",
+        "robots/turtlebot3_burger/ros_ws/turtlebot3.repos",
+        "robots/turtlebot3_burger/ros_ws/src/turtlebot3_simulations/LICENSE"
+      ]
+    }
+  ],
+  "forbidden_path_segments": [
+    "build",
+    "devel",
+    "install",
+    "log",
+    "logs",
+    "__pycache__",
+    ".git",
+    ".github",
+    ".pytest_cache",
+    ".superpowers",
+    "acceptance"
+  ],
+  "forbidden_file_suffixes": [
+    ".pyc",
+    ".pyo",
+    ".pyd",
+    ".so",
+    ".o",
+    ".a",
+    ".egg-info",
+    ".swp",
+    "~"
+  ],
+  "size_budget_compressed_bytes": 16777216,
+  "size_budget_unpacked_bytes": 67108864
+}

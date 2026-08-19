@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import isfinite
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Dict, Literal, Mapping
 
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 
 
 InputCoercion = Literal["identity", "float", "integer", "string", "object"]
-ActionInputBuilder = Callable[[Any, dict[str, Any]], dict[str, Any]]
+ActionInputBuilder = Callable[[Any, Mapping[str, Any]], Dict[str, Any]]
 PhysicalActionHandler = Callable[..., Any]
-OperatorMessageBuilder = Callable[[dict[str, Any]], str]
+OperatorMessageBuilder = Callable[[Mapping[str, Any]], str]
 
 _MISSING = object()
 

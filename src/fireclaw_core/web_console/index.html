@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FireClaw Web Console</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body class="theme-rescue-dark">
+  <!-- Top App Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">🔥</span>
+        <div class="brand-titles">
+          <span class="brand-name">FireClaw</span>
+          <span class="brand-subtitle">Web Console</span>
+        </div>
+      </div>
+      <div class="system-status-group">
+        <div class="system-badge" id="mode-badge" data-mode="unknown">
+          <span class="indicator-dot"></span>
+          <span class="badge-text" id="system-mode-text">UNKNOWN</span>
+        </div>
+        <div class="safety-pill blocked" id="global-safety-pill">
+          <span class="safety-dot"></span>
+          <span class="safety-pill-text" id="global-safety-text">UNKNOWN</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="header-nav" aria-label="主要导航">
+      <button class="nav-tab active" data-tab="overview" id="nav-overview">
+        <span class="tab-label">首页概览</span>
+      </button>
+      <button class="nav-tab" data-tab="dispatch" id="nav-dispatch">
+        <span class="tab-label">任务下发</span>
+      </button>
+      <button class="nav-tab" data-tab="execution" id="nav-execution">
+        <span class="tab-label">执行监控</span>
+      </button>
+      <button class="nav-tab" data-tab="recovery" id="nav-recovery">
+        <span class="tab-label">恢复中心</span>
+      </button>
+      <button class="nav-tab" data-tab="settings" id="nav-settings">
+        <span class="tab-label">系统设置</span>
+      </button>
+    </nav>
+
+    <!-- Header Right / Active Robot Indicator -->
+    <div class="header-right">
+      <div class="robot-status-pill" id="active-robot-indicator">
+        <span class="robot-icon" aria-hidden="true">🤖</span>
+        <span class="robot-id" id="robot-id-display">UNKNOWN</span>
+        <span class="robot-id-alias" id="active-robot-label" style="display: none;">UNKNOWN</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="app-main">
+    <!-- Tab 1: Overview (首页概览) -->
+    <section class="tab-pane active" id="tab-overview" aria-labelledby="nav-overview">
+      <div class="overview-grid">
+        <!-- Robot Status Card -->
+        <div class="card" id="robot-status-card">
+          <div class="card-header">
+            <h3>机器人状态与底盘就绪</h3>
+            <span class="badge badge-warning" id="overview-readiness-badge">等待证据</span>
+          </div>
+          <div class="card-body">
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <span class="metric-label">活跃机器人</span>
+                <span class="metric-value" id="overview-active-robot">UNKNOWN</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">运行模式</span>
+                <span class="metric-value" id="overview-mode">UNKNOWN</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">底盘通信</span>
+                <span class="metric-value" id="overview-chassis-comm">UNKNOWN</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">就绪阶段</span>
+                <span class="metric-value" id="overview-phase">UNKNOWN</span>
+              </div>
+            </div>
+            <p class="status-summary" id="overview-summary">正在等待 Gateway readiness 证据；不要据此推断机器人已停止或急停已释放。</p>
+          </div>
+        </div>
+
+        <!-- Safety Status Card -->
+        <div class="card" id="safety-status-card">
+          <div class="card-header">
+            <h3>Gateway 准入投影与物理证据</h3>
+            <span class="badge badge-warning" id="estop-indicator-badge">E-STOP 未知</span>
+          </div>
+          <div class="card-body">
+            <div class="safety-state-box">
+              <div class="safety-state-indicator">
+                <div class="state-icon">🛡️</div>
+                <div class="state-content">
+                  <h4 id="overview-safe-state">UNKNOWN (等待证据)</h4>
+                  <p id="safety-detail-text">尚未收到可验证的准入或物理安全状态。</p>
+                </div>
+              </div>
+            </div>
+            <div class="quick-stats-row">
+              <div class="quick-stat-item">
+                <span class="quick-stat-label">防碰撞门限</span>
+                <span class="quick-stat-val">等待证据</span>
+              </div>
+              <div class="quick-stat-item">
+                <span class="quick-stat-label">动作准入租约</span>
+                <span class="quick-stat-val">等待证据</span>
+              </div>
+              <div class="quick-stat-item">
+                <span class="quick-stat-label">急停状态</span>
+                <span class="quick-stat-val">UNKNOWN</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recommended Action Card -->
+        <div class="card recommended-action-card" id="recommended-action-container">
+          <div class="card-header">
+            <h3>指挥员推荐动作</h3>
+            <span class="badge badge-warning" id="recommendation-level">等待 Gateway</span>
+          </div>
+          <div class="card-body">
+            <p class="recommendation-text" id="recommendation-desc">
+              尚未收到 Gateway 准入结论；不要据此下发实机动作。
+            </p>
+            <div class="action-btn-group">
+              <button class="btn btn-primary" id="btn-primary-action" disabled>等待 Gateway 准入</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fleet State Card -->
+        <div class="card fleet-card" id="fleet-status-card">
+          <div class="card-header">
+            <h3>注册机队列表</h3>
+            <span class="badge" id="fleet-count-badge">等待 Gateway 记录</span>
+          </div>
+          <div class="card-body">
+            <ul class="fleet-list" id="overview-fleet-list">
+              <li class="fleet-item">
+                <div class="fleet-item-info">
+                  <span class="fleet-item-id">UNKNOWN</span>
+                  <span class="fleet-item-caps">能力未报告</span>
+                </div>
+                <span class="badge badge-warning">UNKNOWN</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Dispatch (任务下发与意图确认) -->
+    <section class="tab-pane" id="tab-dispatch" aria-labelledby="nav-dispatch">
+      <div class="dispatch-layout">
+        <!-- Natural Language Dispatch Form -->
+        <div class="card dispatch-card">
+          <div class="card-header">
+            <h3>自然语言任务下发</h3>
+            <span class="badge badge-info">LLM 任务规划</span>
+          </div>
+          <div class="card-body">
+            <div class="template-chips-container">
+              <span class="chips-label">常用救援预设：</span>
+              <div class="quick-templates">
+                <button type="button" class="template-chip" data-template="前往二楼搜索被困人员并汇报位置">🔍 二楼搜救人员</button>
+                <button type="button" class="template-chip" data-template="前往火场东侧侦察火源与温度">🔥 东侧火源侦察</button>
+                <button type="button" class="template-chip" data-template="全区域巡航建立环境态势图">🗺️ 全区态势建图</button>
+                <button type="button" class="template-chip" data-template="立即返回初始安全待命点">🏠 返回安全待命点</button>
+              </div>
+            </div>
+
+            <form id="dispatch-form" onsubmit="return false;">
+              <div class="form-group">
+                <label for="task-input-text">指挥员自然语言指令</label>
+                <textarea id="task-input-text" rows="4" placeholder="例如：前往二楼搜救被困人员，若发现火源立即上报并保持安全距离"></textarea>
+                <!-- Alias for backward compatibility if needed -->
+                <textarea id="command-input" style="display: none;" aria-hidden="true"></textarea>
+              </div>
+              <div class="form-actions">
+                <button type="button" class="btn btn-secondary" id="btn-parse-task">解析任务</button>
+                <button type="button" class="btn btn-secondary" id="btn-parse-intent" style="display: none;">解析意图</button>
+                <button type="submit" class="btn btn-primary" id="btn-submit-task">生成计划预览</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <!-- Intent Confirmation / Subtask Preview Card (Initially Hidden) -->
+        <div class="card intent-preview-card" id="intent-preview-card" style="display: none;">
+          <div class="card-header">
+            <h3>意图理解与规划步骤预览</h3>
+            <span class="badge badge-info" id="intent-type-badge">待确认</span>
+          </div>
+          <div class="card-body">
+            <div class="intent-grid">
+              <div class="intent-item">
+                <span class="intent-label">我理解的任务：</span>
+                <span class="intent-val" id="preview-parsed-task">等待解析</span>
+                <span id="intent-goal-text" style="display: none;">等待解析</span>
+              </div>
+              <div class="intent-item">
+                <span class="intent-label">执行机器人：</span>
+                <span class="intent-val" id="preview-target-robot">UNKNOWN</span>
+              </div>
+              <div class="intent-item">
+                <span class="intent-label">当前风险等级：</span>
+                <span class="intent-val" id="preview-risk-level">UNKNOWN</span>
+                <span id="intent-risk-level" style="display: none;">UNKNOWN</span>
+              </div>
+            </div>
+
+            <div class="subtasks-container">
+              <h4>预计规划步骤序列：</h4>
+              <div class="estimated-steps-box" id="preview-estimated-steps">
+                等待 Gateway 返回计划预览
+              </div>
+              <ol class="subtask-list" id="intent-subtasks-list" style="display: none;"></ol>
+            </div>
+
+            <div class="intent-actions">
+              <button type="button" class="btn btn-secondary" id="btn-cancel-preview">取消并修改</button>
+              <button type="button" class="btn btn-success" id="btn-confirm-start">显式确认并提交请求</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: Execution (执行监控与取消三态) -->
+    <section class="tab-pane" id="tab-execution" aria-labelledby="nav-execution">
+      <div class="execution-layout">
+        <!-- Execution Active Task Header Card -->
+        <div class="card execution-header-card">
+          <div class="card-header">
+            <div class="execution-title-group">
+              <h3>任务执行监控</h3>
+              <span class="badge badge-warning" id="execution-status-badge">UNKNOWN</span>
+              <span id="exec-status" style="display: none;">UNKNOWN</span>
+            </div>
+            <div class="task-controls">
+              <button class="btn btn-secondary" id="btn-pause-task" disabled title="尚未接入权威暂停 API">暂停任务</button>
+              <button class="btn btn-secondary" id="btn-resume-task" style="display: none;" disabled title="尚未接入权威恢复 API">继续任务</button>
+              <button class="btn btn-danger" id="btn-cancel-task">取消任务</button>
+              <button class="btn btn-danger" id="btn-cancel-mission" style="display: none;">取消</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <!-- 3-State Cancel Visualization Indicator -->
+            <div class="cancel-stepper-container" id="cancel-status-indicator">
+              <div class="cancel-step-item" id="cancel-step-1" data-state="cancel_requested">
+                <div class="step-circle">1</div>
+                <div class="step-info">
+                  <span class="step-title">取消请求已发送</span>
+                  <span class="step-sub">cancel_requested</span>
+                </div>
+              </div>
+              <div class="step-divider"></div>
+              <div class="cancel-step-item" id="cancel-step-2" data-state="stopping">
+                <div class="step-circle">2</div>
+                <div class="step-info">
+                  <span class="step-title">机器人正在停止</span>
+                  <span class="step-sub">stopping</span>
+                </div>
+              </div>
+              <div class="step-divider"></div>
+              <div class="cancel-step-item" id="cancel-step-3" data-state="stopped_confirmed">
+                <div class="step-circle">3</div>
+                <div class="step-info">
+                  <span class="step-title">机器人已确认停止</span>
+                  <span class="step-sub">stopped_confirmed</span>
+                </div>
+              </div>
+              <!-- Backward compatibility text element -->
+              <span id="cancel-dot" style="display: none;"></span>
+              <span id="cancel-status-text" style="display: none;">UNKNOWN</span>
+            </div>
+
+            <!-- Meta details row -->
+            <div class="execution-meta-grid">
+              <div class="meta-card">
+                <span class="meta-label">任务 ID (Mission ID)</span>
+                <span class="meta-value" id="exec-mission-id">UNKNOWN</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">分配机器人</span>
+                <span class="meta-value" id="exec-assigned-robot">UNKNOWN</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">已运行时长</span>
+                <span class="meta-value" id="exec-elapsed-time">00:00:00</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Current Action & Feedback Card -->
+        <div class="card current-action-card" id="current-step-card">
+          <div class="card-header">
+            <h3>当前动作与实时反馈</h3>
+            <span class="badge badge-warning" id="current-action-tool">UNKNOWN</span>
+          </div>
+          <div class="card-body">
+            <div class="action-progress-box">
+              <div class="action-header">
+                <span class="action-name" id="current-action-name">等待权威执行事件</span>
+                <span class="action-percent" id="current-action-percent">0%</span>
+              </div>
+              <div class="progress-bar-rail">
+                <div class="progress-bar-fill" id="current-action-progress" style="width: 0%;"></div>
+              </div>
+              <p class="action-feedback" id="current-action-feedback">
+                尚未收到 Gateway / Robot runtime 的 Tool 或运动反馈。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Real-time SSE Execution Timeline -->
+        <div class="card timeline-card">
+          <div class="card-header">
+            <h3>实时事件流水 (SSE Event Stream)</h3>
+            <span class="badge badge-warning" id="sse-stream-status">SSE UNKNOWN</span>
+          </div>
+          <div class="card-body">
+            <div class="timeline" id="execution-timeline">
+              <div class="timeline-empty">正在监听任务执行事件...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 4: admission recovery request prototype -->
+    <section class="tab-pane" id="tab-recovery" aria-labelledby="nav-recovery">
+      <div class="recovery-layout">
+        <!-- Freeze Reason Card -->
+        <div class="card freeze-card">
+          <div class="card-header">
+            <h3>准入冻结原因与现场诊断</h3>
+            <span class="badge badge-warning" id="recovery-state-badge">状态未知</span>
+          </div>
+          <div class="card-body">
+            <div class="freeze-reason-display" id="freeze-reason-display">
+              <div class="freeze-status-text">
+                <span class="freeze-icon">?</span>
+                <span class="freeze-message">正在等待 Gateway 准入投影；未收到机器人物理安全证据。</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Evidence Snapshot Card -->
+        <div class="card evidence-card">
+          <div class="card-header">
+            <h3>现场传感器快照与证据</h3>
+          </div>
+          <div class="card-body">
+            <div class="evidence-display" id="freeze-evidence-display">
+              <div class="evidence-empty">暂无冻结证据快照。当触发安全准入拦截时，此处将展示阻断传感器数据。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Blockers List Card -->
+        <div class="card blockers-card">
+          <div class="card-header">
+            <h3>准入阻断条件清单 (Blockers)</h3>
+          </div>
+          <div class="card-body">
+            <ul class="blockers-list" id="recovery-blockers-list">
+              <li class="blocker-item">
+                <span class="blocker-icon">?</span>
+                <span class="blocker-text">尚未收到 Gateway 阻断项；具体硬件状态为 UNKNOWN。</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Operator-confirmed admission projection reset prototype -->
+        <div class="card recovery-form-card">
+          <div class="card-header">
+            <h3>准入投影重置请求（原型）</h3>
+            <span class="badge badge-warning">非正式两阶段恢复</span>
+          </div>
+          <div class="card-body">
+            <p class="recovery-policy-desc">
+              此页面当前只会请求 Mission Gateway 清理本地准入投影；它不确认物理停止，也未接入 Robot Gateway 的正式 request/confirm/TTL 恢复协议。实机必须继续执行现场急停与硬件证据流程。
+            </p>
+            <form id="recovery-form" onsubmit="return false;">
+              <div class="form-group">
+                <label for="recovery-reason">恢复原因说明 (Audit Trail)</label>
+                <input type="text" id="recovery-reason" placeholder="记录操作员观察与证据编号；不要填写未经验证的安全结论">
+              </div>
+              <div class="form-group checkbox-group">
+                <input type="checkbox" id="recovery-confirm-check">
+                <label for="recovery-confirm-check">
+                  我理解此操作仅重置 Gateway 准入投影，不构成机器人物理停止或安全证明
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="button" class="btn btn-warning" id="btn-execute-recovery" disabled>提交准入投影重置请求</button>
+                <button type="button" class="btn btn-warning" id="btn-request-recovery" style="display: none;">申请准入恢复</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 5: experimental settings assistant -->
+    <section class="tab-pane" id="tab-settings" aria-labelledby="nav-settings">
+      <div class="settings-layout">
+        <!-- 1. Robot Capability Templates & Auto-Discovery Card -->
+        <div class="card settings-template-card">
+          <div class="card-header">
+            <h3>机器人预设型号模板与自动探测 (Template & Discovery)</h3>
+            <span class="badge badge-warning">实验性助手</span>
+          </div>
+          <div class="card-body">
+            <p class="settings-desc">
+              这些模板与发现结果仅用于生成草稿，尚不能证明 Profile 可启动或满足实机安全要求。
+            </p>
+            <div class="template-selection-row">
+              <div class="form-group flex-1">
+                <label for="template-select">预设机器人型号模板</label>
+                <select id="template-select" class="form-select">
+                  <option value="gazebo_turtlebot3_burger">TurtleBot3 Burger Gazebo 仿真小车</option>
+                  <option value="gazebo_fire_patrol_car">四轮差速消防侦察车仿真</option>
+                  <option value="real_firefighting_tracked">真实履带式消防灭火救援机器人</option>
+                  <option value="real_quadruped_rescue">真实四足侦察巡检机器狗</option>
+                  <option value="real_wheeled_recon">轻量化轮式现场快速侦察车</option>
+                </select>
+              </div>
+              <div class="template-actions">
+                <button type="button" class="btn btn-secondary" id="btn-apply-template">应用模板预设</button>
+                <button type="button" class="btn btn-primary" id="btn-discover-ros">探测 ROS Master</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Dynamic Schema-Driven Configuration Card -->
+        <div class="card settings-schema-card">
+          <div class="card-header">
+            <h3>动态参数配置表单 (Schema-Driven Parameters)</h3>
+            <span class="badge badge-warning">原型：非权威 Schema</span>
+          </div>
+          <div class="card-body">
+            <p class="settings-desc">
+              当前表单仍使用 core 原型 Schema；字段探测与 Plugin manifest 尚未形成统一权威合同。
+            </p>
+            <div id="schema-fields-container" class="schema-fields-container">
+              <!-- Dynamically populated by renderDynamicSchemaForm() -->
+              <div class="schema-loading-placeholder">正在加载系统配置 Schema 规范...</div>
+            </div>
+            <div class="schema-form-actions">
+              <button type="button" class="btn btn-primary" id="btn-preview-diff">预览配置变更与影响分析</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Profile Snapshots & History Rollback Card -->
+        <div class="card settings-snapshots-card">
+          <div class="card-header">
+            <h3>配置内容快照与回滚 (Snapshots & Rollback)</h3>
+            <span class="badge badge-secondary">不代表 Known-Good</span>
+          </div>
+          <div class="card-body">
+            <p class="settings-desc">
+              快照记录内容与 SHA-256，但尚未携带启动验证回执；恢复内容后仍须重新验证 Profile。
+            </p>
+            <div class="snapshot-selection-row">
+              <div class="form-group flex-1">
+                <label for="snapshot-select">历史快照版本记录</label>
+                <select id="snapshot-select" class="form-select">
+                  <option value="">加载历史快照中...</option>
+                </select>
+              </div>
+              <div class="snapshot-actions">
+                <button type="button" class="btn btn-warning" id="btn-rollback-snapshot">回滚至所选快照</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Profile & Gateway View Card -->
+        <div class="card settings-profile-card">
+          <div class="card-header">
+            <h3>运行环境摘要 (Profile & Gateway)</h3>
+          </div>
+          <div class="card-body">
+            <div class="settings-grid">
+              <div class="setting-item">
+                <span class="setting-label">机器人 Profile 路径</span>
+                <span class="setting-val" id="profile-path-display">UNKNOWN</span>
+              </div>
+              <div class="setting-item">
+                <span class="setting-label">运行模式</span>
+                <span class="setting-val" id="profile-mode-display">UNKNOWN</span>
+              </div>
+              <div class="setting-item">
+                <span class="setting-label">Gateway 网关地址</span>
+                <span class="setting-val" id="gateway-url-display">当前页面 Origin</span>
+                <span id="setting-gateway-url" style="display: none;"></span>
+              </div>
+              <div class="setting-item">
+                <span class="setting-label">Web Console 版本</span>
+                <span class="setting-val">FireClaw Web Console (MVP prototype)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Connectivity Diagnostic Actions Card -->
+        <div class="card settings-actions-card">
+          <div class="card-header">
+            <h3>连通性与自愈诊断测试</h3>
+          </div>
+          <div class="card-body">
+            <p class="settings-desc">
+              快速验证 ROS 1 Master 节点及 FireClaw Gateway API 接口通信是否正常。
+            </p>
+            <div class="test-btn-group">
+              <button class="btn btn-secondary" id="btn-test-ros">测试 ROS 通信</button>
+              <button class="btn btn-secondary" id="btn-test-gateway">测试 Gateway 通信</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. Diagnostic Log View -->
+        <div class="card settings-log-card">
+          <div class="card-header">
+            <h3>诊断日志报告 (Diagnostic Log)</h3>
+            <span class="badge" id="settings-log-badge">LOG IDLE</span>
+          </div>
+          <div class="card-body">
+            <pre class="log-box" id="settings-log-box">[INFO] Web Console 初始化就绪。
+[INFO] 本地网关监听正常，静态资源与 SSE 路由已挂载。
+[INFO] 等待操作员指令...</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Global Toast Notification Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Four-part Structured Error Modal Dialog -->
+  <div class="modal-backdrop" id="error-modal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-icon">⚠️</span>
+          <h3 id="modal-title">FireClaw 安全警告与故障处置</h3>
+        </div>
+        <button class="modal-close-btn" id="btn-modal-close" aria-label="关闭">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- 4-part structured layout -->
+        <div class="error-quad-container">
+          <div class="error-quad-item" id="modal-what-happened">
+            <div class="quad-header">
+              <span class="quad-badge">1. 发生原因 (What Happened)</span>
+            </div>
+            <div class="quad-content">
+              <p class="quad-text">尚未收到结构化错误响应。</p>
+            </div>
+          </div>
+
+          <div class="error-quad-item" id="modal-robot-safe-status">
+            <div class="quad-header">
+              <span class="quad-badge">2. 机器人安全证据</span>
+            </div>
+            <div class="quad-content">
+              <p class="quad-text">尚未收到可验证的机器人安全状态，请按状态未知处理。</p>
+            </div>
+          </div>
+
+          <div class="error-quad-item" id="modal-action-taken">
+            <div class="quad-header">
+              <span class="quad-badge">3. 自动处置回执</span>
+            </div>
+            <div class="quad-content">
+              <p class="quad-text">尚未收到可验证的自动处置回执。</p>
+            </div>
+          </div>
+
+          <div class="error-quad-item" id="modal-next-steps">
+            <div class="quad-header">
+              <span class="quad-badge">4. 操作员处置建议</span>
+            </div>
+            <div class="quad-content">
+              <p class="quad-text">请核实现场状态；当前恢复页面只重置 Gateway 准入投影。</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dynamic Suggested Actions Button Row -->
+        <div class="modal-suggested-actions" id="modal-suggested-actions" style="display: none;"></div>
+
+        <!-- Collapsible Technical Details Panel -->
+        <details class="modal-technical-details" id="modal-technical-details" style="display: none;">
+          <summary>查看技术详情</summary>
+          <pre id="modal-tech-content"></pre>
+        </details>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-modal-dismiss">关闭</button>
+        <button type="button" class="btn btn-warning" id="btn-modal-go-recovery">前往恢复中心</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Configuration Diff and Impact Analysis Modal Dialog -->
+  <div class="modal-backdrop" id="diff-modal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="diff-modal-title">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-icon">⚖️</span>
+          <h3 id="diff-modal-title">配置变更对比与影响分析 (Diff & Impact Analysis)</h3>
+        </div>
+        <button class="modal-close-btn" id="btn-cancel-diff" aria-label="关闭">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="diff-impact-section">
+          <h4 class="diff-section-title">🛡️ 变更影响级别评估 (Impact Levels)</h4>
+          <div id="diff-impact-alerts" class="diff-impact-alerts">
+            <div class="impact-item impact-info">
+              <span class="impact-badge badge badge-info">INFO</span>
+              <span class="impact-text">尚未发现变更，点击确认可生成当前配置快照。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="diff-viewer-section">
+          <h4 class="diff-section-title">📄 配置差异对比 (Profile TOML Diff)</h4>
+          <div id="diff-viewer" class="diff-viewer">
+            <div class="diff-placeholder">正在计算配置差异...</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-modal-cancel-diff">取消</button>
+        <button type="button" class="btn btn-primary" id="btn-confirm-save-profile">确认保存并创建内容快照</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Footer -->
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <span class="footer-brand">FireClaw Embodied Agent Control Plane</span>
+      <span class="footer-separator">|</span>
+      <span class="footer-version">Local-First Robotics MVP</span>
+    </div>
+  </footer>
+</body>
+</html>

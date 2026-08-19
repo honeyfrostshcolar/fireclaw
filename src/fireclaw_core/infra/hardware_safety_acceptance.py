@@ -17,10 +17,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
+from fireclaw_core.infra import tomllib_compat as tomllib
 
 from fireclaw_core.agent.robot_profile import (
     RobotCapabilityProfile,

@@ -1,10 +1,9 @@
 """Shared model/tool turn boundary for Mission and Robot agents."""
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
 from fireclaw_core.context.manager import (
     ContextBudgetExceeded,
@@ -26,14 +25,14 @@ from fireclaw_core.provider.provider_runtime import (
 
 AgentRequestBuilder = Callable[
     [
-        dict[str, Any],
-        dict[str, Any],
-        dict[str, list[dict[str, Any]]],
-        dict[str, Any],
+        Mapping[str, Any],
+        Mapping[str, Any],
+        Mapping[str, Sequence[Mapping[str, Any]]],
+        Mapping[str, Any],
     ],
-    tuple[list[dict[str, Any]], list[dict[str, Any]]],
+    Tuple[List[Dict[str, Any]], List[Dict[str, Any]]],
 ]
-AgentHarnessTraceSink = Callable[[dict[str, Any]], None]
+AgentHarnessTraceSink = Callable[[Mapping[str, Any]], None]
 
 
 class AgentHarnessError(RuntimeError):

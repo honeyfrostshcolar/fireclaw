@@ -110,32 +110,128 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 ```
 
-## 首次仿真设置
+## 快速入门与核心命令
 
-普通用户从 setup 开始，不需要先手写 TOML 或理解 Robot/Mission Gateway：
+当前基线提供 5 个独立的生命周期入口。它们便于在完整源码仓库中验证安装与运维边界，但尚未组成
+wheel 安装后的“一条命令首次任务”闭环，也不代表已经实现零手写配置：
 
 ```bash
+# 1. 首次准备（生成 TurtleBot3 Gazebo 仿真 Profile 并准备 Runtime release）
 fireclaw setup
-```
 
-它会生成无凭据的 TurtleBot3 Gazebo Profile、验证 ROS/Navigation Plugin、准备内容寻址 Runtime release，
-并记住当前 Profile；不会启动 Gazebo 或任何机器人动作。之后的部署与状态命令可省略 `--profile`：
+# 2. 启动后台守护进程（Supervisor 与 Gateway）
+fireclaw start
 
-```bash
-fireclaw deploy status --no-runtime-check
-fireclaw deploy run
-```
-
-另开终端后可使用：
-
-```bash
+# 3. 查看运行健康度、服务状态与 readiness 快照
 fireclaw status
-fireclaw mission
+
+# 4. 打开 Web Console 仪表盘（可加 --no-browser 仅打印 URL）
+fireclaw open
+
+# 5. 停止后台守护进程与其托管服务（不等于确认机器人已物理停止）
+fireclaw stop
 ```
 
-重复运行 setup 会安全续接并复用相同 release，不覆盖已有 Profile。实机模式不会自动生成配置、部署或
-运动，必须显式提供已经人工审查的 real Profile。详细边界见
+`setup` 会生成无凭据的 TurtleBot3 Gazebo Profile、验证 ROS/Navigation Plugin、准备内容寻址 Runtime release，
+并记住当前 Profile；不会启动 Gazebo、Gateway 或任何机器人动作。当前实现仍要求完整 FireClaw 源码仓库和
+仓库内 ROS workspace，不能据此声称普通 wheel 安装后即可完成首次仿真任务。后续命令可省略
+`--profile`；重复运行会复用 fingerprint 相同的 release，不覆盖已有 Profile。实机模式不会自动生成
+配置、部署或运动，只接受显式提供且已经人工审查的 real Profile。`stop` 只证明守护进程退出；机器人
+物理状态在没有 Adapter/硬件证据时仍为 `UNKNOWN`。详细边界见
 [`docs/getting-started/first-run-setup.md`](docs/getting-started/first-run-setup.md)。
+
+## Web Console 运维控制台
+
+FireClaw 提供了专为应急救援场景打造的轻量化本地运维控制台 (Rescue Ops Dark 主题)，启动守护进程后通过 `fireclaw open` 即可在浏览器中访问（控制台地址为 `http://127.0.0.1:8766/console`）：
+
+控制台是 Gateway 状态的投影，不是独立的硬件事实来源。页面在收到 readiness、急停或停止证据前显示 `UNKNOWN`；`ready` 只表示当前任务准入条件满足，不等同于机器人处于物理静止。
+
+1. **首页概览 (Overview)**：投影 Mission Gateway 当前提供的 readiness 与 fleet 字段。Gateway 尚未提供
+   active Profile、权威 deployment mode 与完整物理证据合同，因此缺失字段显示 `UNKNOWN`，不能把页面
+   当作机器人本体事实来源。
+2. **任务预览 (Task Preview Prototype)**：可显示自然语言解析结果并要求 Web 操作员显式点击确认；当前
+   preview 不是不可变 plan artifact，`/tasks` 也尚未保证消费同一计划，因此不能声称“预览即执行合同”。
+3. **执行事件与取消投影**：通过 Gateway SSE 显示事件，并区分 `cancel_requested`、权威
+   `robot.stopping` 与带 `stop_evidence` 的 `stopped_confirmed`。HTTP `accepted` 只显示为请求已接受，
+   不再伪造 `RUNNING`、Tool 或运动进度；默认 Adapter 未提供停止证据时第三态不会出现。
+4. **恢复请求原型**：页面能显示 Gateway 阻断摘要并提交带操作员确认的 Mission Gateway 准入投影重置
+   请求；这不是 Robot Gateway 的正式 request/confirm/TTL 两阶段恢复，也不证明机器人物理安全。
+5. **配置助手原型**：模板、core Schema、发现、diff、内容快照与回滚组件可供开发验证，但尚未统一到
+   Plugin manifest 权威 Schema，也未形成启动可用、原子保存、凭据隔离和 known-good 回滚合同。Web 在
+   Gateway 未提供 active Profile 时禁止猜测保存/回滚目标。
+6. **4 段式友好错误**：保留错误原因、安全证据、处置回执和下一步四段结构。当前没有 typed evidence/
+   action receipt 接口，因此安全证据固定显示 `UNKNOWN`，处置栏明确表示没有可验证回执；推荐按钮只是
+   建议，不能假定对应动作已经注册或执行。
+
+## 配置辅助 CLI（实验性）
+
+FireClaw 提供 `fireclaw profile` 原型工具链用于模板、发现、diff 和内容快照验证。当前生成结果必须人工
+审查并通过完整 deployment/Profile 校验，不能直接视为可启动或实机安全配置：
+
+```bash
+# 1. 查看 5 类内置预设机器人能力模板
+fireclaw profile list-templates
+
+# 2. 探测 ROS 1 计算图并输出推荐话题映射
+fireclaw profile discover --master-uri http://127.0.0.1:11311
+
+# 3. 对比模板与当前配置文件差异，评估物理影响级别 (CRITICAL/WARNING/INFO)
+fireclaw profile diff --from gazebo_turtlebot3_burger --to profiles/active.toml
+
+# 4. 查看配置历史快照版本记录
+fireclaw profile history --profile profiles/active.toml
+
+# 5. 回滚至指定历史快照
+fireclaw profile rollback --snapshot <SNAPSHOT_ID> --profile profiles/active.toml
+```
+
+## 友好错误提示与操作员引导 (Friendly Errors)
+
+FireClaw 提供分级结构化错误提示，并保留可展开的技术详情。该机制改善呈现，但不会把静态模板当作
+机器人物理状态或自动处置证据：
+
+### 1. 标准化 4 段式中文结构
+
+已接入该机制的异常会格式化为以下 4 段信息：
+
+1. ❶ **发生了什么 (What Happened)**: 简明扼要地解释异常原因与涉及的主题/节点/文件；
+2. ❷ **机器人安全证据 (Robot Safety Evidence)**：当前统一显示 `UNKNOWN`；在后续 typed evidence 合同
+   完成前，不从错误类型推断机器人已经停止、安全或急停已释放；
+3. ❸ **自动处置回执 (Action Receipt)**：当前明确显示没有可验证回执，不把注册表中的建议性文案当作
+   已执行动作；
+4. ❹ **建议下一步 (Next Steps)**: 提供操作员现场处置建议与恢复指引（如检查物理接线、重试指令或提交安全审批）。
+
+### 2. 多终端交互与渐进披露
+
+- **CLI 命令行终端**:
+  - **默认模式**: 输出带框线与状态图标的 4 段中文提示盒；
+  - **调试模式 (`--verbose`)**: 在框体底部展开完整底层技术堆栈与异常详情 (`technical_details`)；
+  - **自动化模式 (`--json`)**: 输出标准化的机器可读 JSON，包含全部 4 段结构与元数据。
+- **Web Console 运维控制台**:
+  - **CRITICAL 严重错误**: 弹出全屏 4 段式模态框和建议项，并附带可折叠的**查看技术详情**
+    (`<details>`) 面板；建议项不代表存在可执行 handler；
+  - **WARNING 警告**: 弹出双行增强型 Toast 提示（含错误摘要与机器人安全状态副标题），附带 `查看详情 →` 快速直达模态框，停留时长扩展至 8 秒；
+  - **INFO 提示**: 右下角弹出轻量化紧凑 Toast 通知。
+
+### 3. 错误码注册表与 CLI 查询
+
+系统内置覆盖 8 大分类（传感器、ROS 通信、网关网络、安全门授权、任务执行、配置管理、基础设施、机器人状态）共 40+ 条预设错误码。可通过命令行快速查询：
+
+```bash
+# 1. 列出所有注册的友好错误码及其处置模板
+fireclaw errors list
+
+# 2. 按严重度或分类过滤错误码
+fireclaw errors list --severity critical
+fireclaw errors list --category sensor
+
+# 3. 查看特定错误码的 4 段式结构与推荐操作
+fireclaw errors get sensor_no_lidar_data
+
+# 4. 以 JSON 格式输出错误注册表定义
+fireclaw errors list --json
+```
+
 
 ## 开发者验证
 

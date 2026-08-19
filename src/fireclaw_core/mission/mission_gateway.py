@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from fireclaw_core.approval.approval_relay import ApprovalRelay
 from fireclaw_core.approval.approval_runtime import ApprovalRuntime
 from fireclaw_core.gateway.auth import (
@@ -19,6 +19,7 @@ from fireclaw_core.gateway.auth import (
     authenticate_gateway_request,
     validate_gateway_bind,
 )
+from fireclaw_core.infra import tomllib_compat as tomllib
 from fireclaw_core.gateway.method_scopes import authorize_method
 from fireclaw_core.gateway.network_security import (
     GatewayNetworkPolicy,
@@ -38,6 +39,7 @@ from fireclaw_core.gateway.control import OperatorContext
 from fireclaw_core.devtools.fleet_doctor import FleetDoctor
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.agent.robot_registry import RobotRegistry
+from fireclaw_core.infra.operator_readiness import build_operator_doctor_snapshot
 from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore, validate_resume_ownership
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
@@ -50,6 +52,20 @@ from fireclaw_core.memory.reconciliation import (
 
 logger = logging.getLogger(__name__)
 
+STATIC_MIME_TYPES: dict[str, str] = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+}
+
 
 MISSION_TRACE_RE = re.compile(r"^/missions/([^/]+)/trace$")
 MISSION_EVENTS_RE = re.compile(r"^/missions/([^/]+)/events$")
@@ -61,6 +77,13 @@ MISSION_RESUME_RE = re.compile(r"^/missions/([^/]+)/resume$")
 MISSION_CORRECTIONS_RE = re.compile(r"^/missions/([^/]+)/corrections?$")
 MISSION_APPROVALS_RE = re.compile(r"^/missions/([^/]+)/approvals$")
 MISSION_EVENTS_STREAM_RE = re.compile(r"^/missions/([^/]+)/events/stream$")
+TASK_TRACE_RE = re.compile(r"^/tasks/([^/]+)/trace$")
+TASK_EVENTS_RE = re.compile(r"^/tasks/([^/]+)/events$")
+TASK_RUN_RE = re.compile(r"^/tasks/([^/]+)/run$")
+TASK_REPORT_RE = re.compile(r"^/tasks/([^/]+)/report$")
+TASK_CANCEL_RE = re.compile(r"^/tasks/([^/]+)/cancel$")
+TASK_PAUSE_RE = re.compile(r"^/tasks/([^/]+)/pause$")
+TASK_RESUME_RE = re.compile(r"^/tasks/([^/]+)/resume$")
 MISSION_MEMORY_SYNC_RE = re.compile(r"^/missions/([^/]+)/memory/sync$")
 MISSION_MEMORY_TOOLS_RE = re.compile(r"^/missions/([^/]+)/memory/tools$")
 MISSION_MEMORY_TOOL_CALL_RE = re.compile(r"^/missions/([^/]+)/memory/tools/call$")
@@ -208,6 +231,165 @@ class MissionGateway:
             "schema_version": 1,
             "status": "ok",
             "service": "mission_gateway",
+        }
+
+    def readiness(self) -> dict[str, Any]:
+        """Report structured readiness snapshot for the active robot/fleet."""
+        fleet_doctor = self.fleet_doctor()
+        doctor_snapshot = build_operator_doctor_snapshot(report=fleet_doctor)
+        fleet_state = self.fleet_state()
+        active_robot_id = None
+        enabled = self.registry.enabled_entries(include_stale=True)
+        if enabled:
+            active_robot_id = enabled[0].robot_id
+        return {
+            "status": "ok",
+            "schema_version": 1,
+            "kind": "readiness_snapshot",
+            "active_robot_id": active_robot_id,
+            "phase": doctor_snapshot.get("phase", "ready"),
+            "safe_state": doctor_snapshot.get("safe_state", "unknown"),
+            "reason_code": doctor_snapshot.get("reason_code", "ready"),
+            "summary": doctor_snapshot.get("summary", "System ready."),
+            "fleet_state": fleet_state,
+            "fleet_doctor": fleet_doctor,
+            "doctor_snapshot": doctor_snapshot,
+        }
+
+    def plan_mission(
+        self,
+        task_description: str,
+        *,
+        profile: str | None = None,
+        operator: OperatorContext | None = None,
+    ) -> dict[str, Any]:
+        if not task_description or not task_description.strip():
+            from fireclaw_core.errors.friendly_errors import resolve_friendly_error
+            resp = resolve_friendly_error(
+                "planner_failed",
+                {"goal": "", "reason": "Field 'task_description' or 'command' is required."},
+            )
+            return {
+                "status": "error",
+                "message": resp.what_happened,
+                "error": resp.to_dict(),
+            }
+        task_desc = task_description.strip()
+        target_robot = None
+        enabled = self.registry.enabled_entries(include_stale=True)
+        if enabled:
+            target_robot = enabled[0].robot_id
+        if not target_robot:
+            target_robot = "turtlebot3_burger"
+
+        if "搜" in task_desc or "救" in task_desc:
+            intent = "前往二楼搜索人员" if "二楼" in task_desc else "搜索与救援被困人员"
+            steps = [
+                "1. move_base 导航至目标搜索区域",
+                "2. 启动视觉与红外热成像传感器搜索被困人员",
+                "3. 标记坐标并向指挥网关上报",
+            ]
+            risk_level = "medium"
+        elif "火" in task_desc or "温" in task_desc or "侦" in task_desc:
+            intent = "火情与温度态势侦察"
+            steps = [
+                "1. 导航至火场边缘安全侦察位姿",
+                "2. 多传感器多波段探测火源分布与温度梯度",
+                "3. 生成热点态势图并实时同步网关",
+            ]
+            risk_level = "high"
+        elif "返" in task_desc or "回" in task_desc or "停" in task_desc:
+            intent = "返回安全待命点"
+            steps = [
+                "1. 中止或收尾当前非关键动作",
+                "2. 计算全局无碰撞返航路径",
+                "3. 导航返回初始安全待命点并锁定底盘",
+            ]
+            risk_level = "low"
+        elif "图" in task_desc or "巡" in task_desc:
+            intent = "全区域巡航与建图"
+            steps = [
+                "1. 启动激光雷达 SLAM 全区拓扑巡航",
+                "2. 实时融合激光点云构建环境态势地图",
+                "3. 保存地图快照并同步至本地控制台",
+            ]
+            risk_level = "low"
+        else:
+            intent = task_desc
+            steps = [
+                f"1. 导航至任务指定目标区域",
+                f"2. 执行动作: {task_desc[:25]}",
+                f"3. 状态校验与网关汇报",
+            ]
+            risk_level = "medium"
+
+        raw_plan = {
+            "intent": intent,
+            "target_robot": target_robot,
+            "steps": steps,
+            "risk_level": risk_level,
+            "profile": profile,
+            "task_description": task_desc,
+        }
+
+        return {
+            "status": "ok",
+            "task_description": task_desc,
+            "intent": intent,
+            "target_robot": target_robot,
+            "steps": steps,
+            "risk_level": risk_level,
+            "raw_plan": raw_plan,
+        }
+
+    def recover(
+        self,
+        payload: dict[str, Any],
+        *,
+        operator: OperatorContext | None = None,
+    ) -> dict[str, Any]:
+        operator_confirmed = payload.get("operator_confirmed")
+        if not operator_confirmed:
+            from fireclaw_core.errors.friendly_errors import resolve_friendly_error
+            resp = resolve_friendly_error(
+                "safety_requires_confirmation",
+                {"action_description": "Mission Gateway 准入投影重置请求"},
+            )
+            return {
+                "status": "error",
+                "message": "Operator confirmation is required for admission projection reset.",
+                "error": resp.to_dict(),
+            }
+        reason = str(
+            payload.get("reason")
+            or "Operator submitted confirmation without additional notes"
+        )
+        robot_id = _optional_string(payload, "robot_id")
+
+        if hasattr(self.mission_agent, "dispatch_recovery_report"):
+            self.mission_agent.dispatch_recovery_report.clear()
+
+        self.publish_event(
+            "mission.admission_projection_reset",
+            "mission-gateway",
+            payload={
+                "operator_confirmed": True,
+                "reason": reason,
+                "robot_id": robot_id,
+                "physical_stop_confirmed": False,
+                "robot_physical_status": "unknown",
+            },
+        )
+        return {
+            "status": "ok",
+            "admission_projection_reset": True,
+            "physical_stop_confirmed": False,
+            "robot_physical_status": "unknown",
+            "message": (
+                "Mission Gateway admission projection was reset; this does not "
+                "confirm physical safety or implement formal two-phase recovery."
+            ),
+            "readiness": self.readiness(),
         }
 
     def submit_mission(
@@ -951,6 +1133,13 @@ class MissionGateway:
                         mission_id=stream_match.group(1),
                     )
                     return
+                if parsed.path in ("/events", "/events/stream"):
+                    gateway._stream_mission_events(
+                        self,
+                        parsed,
+                        mission_id=None,
+                    )
+                    return
                 gateway._handle_get(self, principal=principal)
 
             def do_POST(self) -> None:
@@ -1049,7 +1238,7 @@ class MissionGateway:
         handler: BaseHTTPRequestHandler,
         parsed: Any,
         *,
-        mission_id: str,
+        mission_id: str | None = None,
     ) -> None:
         client_host = str(handler.client_address[0])
         if not self._network_guard.acquire_sse(client_host):
@@ -1078,7 +1267,7 @@ class MissionGateway:
         overflowed = threading.Event()
 
         def _on_event(event: StreamEvent) -> None:
-            if event.mission_id not in {mission_id, None}:
+            if mission_id is not None and event.mission_id not in {mission_id, None}:
                 return
             try:
                 event_queue.put_nowait(event)
@@ -1094,6 +1283,7 @@ class MissionGateway:
             )
             handler.send_header("Cache-Control", "no-cache")
             handler.send_header("Connection", "keep-alive")
+            handler.send_header("Access-Control-Allow-Origin", "*")
             handler.end_headers()
 
             after_seq = _sse_after_sequence(handler, parsed)
@@ -1102,14 +1292,14 @@ class MissionGateway:
                 for event in self._event_bus.get_recent_events(
                     after_sequence=after_seq
                 ):
-                    if event.mission_id not in {mission_id, None}:
+                    if mission_id is not None and event.mission_id not in {mission_id, None}:
                         continue
                     handler.wfile.write(
                         event.to_sse_format().encode("utf-8")
                     )
                     handler.wfile.flush()
                     sent_sequences.add(event.sequence)
-            else:
+            elif mission_id is not None:
                 history = self.get_mission_events(mission_id, limit=200)
                 for value in history.get("events", []):
                     event = StreamEvent(
@@ -1160,8 +1350,42 @@ class MissionGateway:
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path in ("/", "/console"):
+            from fireclaw_core.web_console import read_web_console_asset
+
+            try:
+                body, content_type = read_web_console_asset("index.html")
+            except FileNotFoundError:
+                self._write_error(handler, HTTPStatus.NOT_FOUND, "Web console index.html not found.")
+                return
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header("Content-Type", content_type)
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+            return
+
+        if path.startswith("/static/"):
+            from fireclaw_core.web_console import read_web_console_asset
+
+            rel_path = unquote(path[len("/static/"):])
+            try:
+                body, content_type = read_web_console_asset(rel_path)
+            except (FileNotFoundError, ValueError):
+                self._write_error(handler, HTTPStatus.NOT_FOUND, f"Static asset not found: {path}")
+                return
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header("Content-Type", content_type)
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+            return
+
         if path == "/health":
             self._write_json(handler, HTTPStatus.OK, self.health())
+            return
+        if path == "/readiness":
+            self._write_json(handler, HTTPStatus.OK, self.readiness())
             return
         if path == "/fleet/state":
             self._write_json(handler, HTTPStatus.OK, self.fleet_state())
@@ -1182,13 +1406,74 @@ class MissionGateway:
             self._write_json(handler, HTTPStatus.OK, result)
             return
 
-        trace_match = MISSION_TRACE_RE.match(path)
+        if path == "/config/templates":
+            from fireclaw_core.config.templates import TemplateManager
+            manager = TemplateManager()
+            templates = [t.to_dict() for t in manager.list_templates()]
+            self._write_json(handler, HTTPStatus.OK, {"status": "ok", "templates": templates})
+            return
+
+        if path == "/config/schema":
+            from fireclaw_core.config.schema import get_core_config_schemas
+            schemas = get_core_config_schemas()
+            schema_dict = {}
+            for s in schemas:
+                schema_dict[s.plugin_name] = s.to_dict()
+                parts = s.plugin_name.split(".")
+                for part in parts:
+                    if part not in schema_dict:
+                        schema_dict[part] = s.to_dict()
+                if "navigation" in s.plugin_name and "navigation" not in schema_dict:
+                    schema_dict["navigation"] = s.to_dict()
+                if s.plugin_name == "fireclaw.sensors.thermal":
+                    schema_dict["ros1_sensor"] = s.to_dict()
+            self._write_json(
+                handler,
+                HTTPStatus.OK,
+                {"status": "ok", "schemas": schema_dict},
+            )
+            return
+
+        if path == "/config/history":
+            from fireclaw_core.config.snapshots import ProfileSnapshotManager
+            from fireclaw_core.infra.user_setup import resolve_active_profile_path
+            profile_param = _first(query, "profile")
+            try:
+                profile_path = Path(profile_param) if profile_param else resolve_active_profile_path(None)
+            except Exception as exc:
+                self._write_friendly_error(
+                    handler,
+                    HTTPStatus.BAD_REQUEST,
+                    "config_validation_failed",
+                    context={"validation_errors": f"Could not resolve profile: {exc}"},
+                    technical_details=str(exc),
+                )
+                return
+            if not profile_path.is_file():
+                self._write_friendly_error(
+                    handler,
+                    HTTPStatus.NOT_FOUND,
+                    "config_validation_failed",
+                    context={"validation_errors": f"Profile file not found: {profile_path}"},
+                    technical_details=str(profile_path),
+                )
+                return
+            snap_mgr = ProfileSnapshotManager(history_root=profile_path.parent / ".history")
+            snapshots = [s.to_dict() for s in snap_mgr.list_snapshots(profile_path.stem)]
+            self._write_json(
+                handler,
+                HTTPStatus.OK,
+                {"status": "ok", "profile_path": str(profile_path), "snapshots": snapshots},
+            )
+            return
+
+        trace_match = MISSION_TRACE_RE.match(path) or TASK_TRACE_RE.match(path)
         if trace_match:
             mission_id = trace_match.group(1)
             self._write_json(handler, HTTPStatus.OK, self.get_mission_trace(mission_id))
             return
 
-        run_match = MISSION_RUN_RE.match(path)
+        run_match = MISSION_RUN_RE.match(path) or TASK_RUN_RE.match(path)
         if run_match:
             mission_id = run_match.group(1)
             result = self.get_mission_run(mission_id)
@@ -1196,7 +1481,7 @@ class MissionGateway:
             self._write_json(handler, status, result)
             return
 
-        report_match = MISSION_REPORT_RE.match(path)
+        report_match = MISSION_REPORT_RE.match(path) or TASK_REPORT_RE.match(path)
         if report_match:
             mission_id = report_match.group(1)
             result = self.get_mission_report(mission_id)
@@ -1210,7 +1495,7 @@ class MissionGateway:
             self._write_json(handler, status, result)
             return
 
-        events_match = MISSION_EVENTS_RE.match(path)
+        events_match = MISSION_EVENTS_RE.match(path) or TASK_EVENTS_RE.match(path)
         if events_match:
             mission_id = events_match.group(1)
             self._write_json(
@@ -1277,14 +1562,33 @@ class MissionGateway:
         try:
             payload = self._read_json(handler)
 
-            if path == "/missions":
-                command = payload.get("command")
+            if path == "/plan-mission":
+                task_desc = payload.get("task_description") or payload.get("command") or payload.get("task")
+                if not isinstance(task_desc, str) or not task_desc.strip():
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "planner_failed",
+                        context={"goal": "", "reason": "Field 'task_description' or 'command' is required."},
+                        technical_details="Field 'task_description' or 'command' is missing or empty.",
+                    )
+                    return
+                result = self.plan_mission(
+                    task_desc,
+                    profile=_optional_string(payload, "profile"),
+                    operator=operator,
+                )
+                self._write_json(handler, HTTPStatus.OK, result)
+                return
+
+            if path in ("/missions", "/tasks"):
+                command = payload.get("command") or payload.get("task") or payload.get("goal") or payload.get("task_description")
                 if not isinstance(command, str) or not command.strip():
-                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'command' is required.")
+                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'command' or 'task' is required.")
                     return
                 result = self.submit_mission(
                     command,
-                    session_id=_optional_string(payload, "session_id"),
+                    session_id=_optional_string(payload, "session_id") or _optional_string(payload, "task_id"),
                     operator=operator,
                     use_scheduler=payload.get("use_scheduler", True),
                     background=(
@@ -1293,7 +1597,15 @@ class MissionGateway:
                         else None
                     ),
                 )
+                if "mission_id" in result and "task_id" not in result:
+                    result["task_id"] = result["mission_id"]
                 status = _mission_submit_status(result)
+                self._write_json(handler, status, result)
+                return
+
+            if path == "/recover":
+                result = self.recover(payload, operator=operator)
+                status = HTTPStatus.BAD_REQUEST if result.get("status") == "error" else HTTPStatus.OK
                 self._write_json(handler, status, result)
                 return
 
@@ -1411,18 +1723,20 @@ class MissionGateway:
                 self._write_json(handler, status, result)
                 return
 
-            cancel_match = MISSION_CANCEL_RE.match(path)
+            cancel_match = MISSION_CANCEL_RE.match(path) or TASK_CANCEL_RE.match(path)
             if cancel_match:
                 mission_id = cancel_match.group(1)
                 result = self.cancel_mission(
                     mission_id,
-                    operator=operator.to_dict(),
+                    operator=operator.to_dict() if operator is not None else None,
                 )
+                if "mission_id" in result and "task_id" not in result:
+                    result["task_id"] = result["mission_id"]
                 status = HTTPStatus.NOT_FOUND if result.get("status") == "not_found" else HTTPStatus.OK
                 self._write_json(handler, status, result)
                 return
 
-            pause_match = MISSION_PAUSE_RE.match(path)
+            pause_match = MISSION_PAUSE_RE.match(path) or TASK_PAUSE_RE.match(path)
             if pause_match:
                 mission_id = pause_match.group(1)
                 result = self.pause_mission(mission_id)
@@ -1430,7 +1744,7 @@ class MissionGateway:
                 self._write_json(handler, status, result)
                 return
 
-            resume_match = MISSION_RESUME_RE.match(path)
+            resume_match = MISSION_RESUME_RE.match(path) or TASK_RESUME_RE.match(path)
             if resume_match:
                 mission_id = resume_match.group(1)
                 result = self.resume_mission(mission_id)
@@ -1471,6 +1785,226 @@ class MissionGateway:
                 self._write_json(handler, status, result)
                 return
 
+            if path == "/config/discover":
+                from fireclaw_core.config.discovery import RosGraphDiscoverer
+                master_uri = payload.get("master_uri")
+                timeout = float(payload.get("timeout", 2.0))
+                discoverer = RosGraphDiscoverer()
+                report = discoverer.probe_ros_master(master_uri=master_uri, timeout=timeout)
+                self._write_json(handler, HTTPStatus.OK, report.to_dict())
+                return
+
+            if path == "/config/diff":
+                from fireclaw_core.config.diff_engine import ConfigDiffEngine
+                old_config = payload.get("old_config")
+                new_config = payload.get("new_config")
+                if old_config is None or new_config is None:
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "config_validation_failed",
+                        context={"validation_errors": "Fields 'old_config' and 'new_config' are required."},
+                    )
+                    return
+                engine = ConfigDiffEngine()
+                if isinstance(old_config, str) and isinstance(new_config, str):
+                    result = engine.compare_toml_strings(old_config, new_config)
+                elif isinstance(old_config, dict) and isinstance(new_config, dict):
+                    result = engine.compare_configs(old_config, new_config)
+                elif isinstance(old_config, str) and isinstance(new_config, dict):
+                    result = engine.compare_configs(tomllib.loads(old_config), new_config)
+                elif isinstance(old_config, dict) and isinstance(new_config, str):
+                    result = engine.compare_configs(old_config, tomllib.loads(new_config))
+                else:
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "config_validation_failed",
+                        context={"validation_errors": "Invalid old_config or new_config type."},
+                    )
+                    return
+                self._write_json(handler, HTTPStatus.OK, result.to_dict())
+                return
+
+            if path == "/config/save":
+                from fireclaw_core.config.snapshots import ProfileSnapshotManager
+                from fireclaw_core.config.secrets import SecretManager
+                profile_path_str = payload.get("profile_path")
+                content = payload.get("content")
+                if not profile_path_str or content is None:
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "config_save_failed",
+                        context={
+                            "profile_path": profile_path_str or "",
+                            "reason": "Fields 'profile_path' and 'content' are required.",
+                        },
+                    )
+                    return
+                profile_path = Path(profile_path_str)
+                profile_path.parent.mkdir(parents=True, exist_ok=True)
+                content_str = str(content)
+                profile_path.write_text(content_str, encoding="utf-8")
+
+                create_snap = payload.get("create_snapshot", True)
+                snapshot_id = None
+                if create_snap:
+                    snap_mgr = ProfileSnapshotManager(history_root=profile_path.parent / ".history")
+                    snap = snap_mgr.create_snapshot(
+                        profile_path,
+                        summary=str(payload.get("reason") or "Saved via Gateway"),
+                    )
+                    snapshot_id = snap.snapshot_id
+                self._write_json(
+                    handler,
+                    HTTPStatus.OK,
+                    {
+                        "status": "saved",
+                        "profile_path": str(profile_path),
+                        "snapshot_id": snapshot_id,
+                    },
+                )
+                return
+
+            if path == "/config/rollback":
+                from fireclaw_core.config.snapshots import ProfileSnapshotManager
+                from fireclaw_core.infra.user_setup import resolve_active_profile_path
+                snapshot_id = payload.get("snapshot_id")
+                profile_path_str = payload.get("profile_path")
+                if not snapshot_id:
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "config_rollback_failed",
+                        context={
+                            "snapshot_id": "",
+                            "reason": "Field 'snapshot_id' is required.",
+                        },
+                    )
+                    return
+                try:
+                    profile_path = Path(profile_path_str) if profile_path_str else resolve_active_profile_path(None)
+                except Exception as exc:
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "config_rollback_failed",
+                        context={
+                            "snapshot_id": snapshot_id,
+                            "reason": f"Could not resolve profile path: {exc}",
+                        },
+                        technical_details=str(exc),
+                    )
+                    return
+                if not profile_path.is_file():
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.NOT_FOUND,
+                        "config_validation_failed",
+                        context={
+                            "validation_errors": f"Profile file not found: {profile_path}",
+                        },
+                        technical_details=str(profile_path),
+                    )
+                    return
+                snap_mgr = ProfileSnapshotManager(history_root=profile_path.parent / ".history")
+                success, msg = snap_mgr.rollback_to_snapshot(snapshot_id, profile_path)
+                if not success:
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.NOT_FOUND,
+                        "snapshot_not_found",
+                        context={"snapshot_id": snapshot_id, "reason": msg},
+                        technical_details=msg,
+                    )
+                    return
+                self._write_json(
+                    handler,
+                    HTTPStatus.OK,
+                    {
+                        "status": "rolled_back",
+                        "snapshot_id": snapshot_id,
+                        "profile_path": str(profile_path),
+                        "message": msg,
+                    },
+                )
+                return
+
+            if path == "/config/test-field":
+                import time
+                from urllib import request as urllib_request
+                from fireclaw_core.config.discovery import RosGraphDiscoverer
+
+                field_name = str(payload.get("field_name") or "")
+                field_value = str(payload.get("field_value") or "")
+                probe_action = str(payload.get("probe_action") or "")
+
+                start_t = time.perf_counter()
+
+                if probe_action == "master" or "master_uri" in field_name:
+                    discoverer = RosGraphDiscoverer()
+                    report = discoverer.probe_ros_master(master_uri=field_value, timeout=1.0)
+                    elapsed = (time.perf_counter() - start_t) * 1000.0
+                    if report.discovered:
+                        self._write_json(handler, HTTPStatus.OK, {
+                            "status": "ok",
+                            "field_name": field_name,
+                            "field_value": field_value,
+                            "latency_ms": round(elapsed, 2),
+                            "message": f"ROS Master reachable ({report.master_uri})",
+                        })
+                    else:
+                        self._write_json(handler, HTTPStatus.OK, {
+                            "status": "error",
+                            "field_name": field_name,
+                            "field_value": field_value,
+                            "latency_ms": round(elapsed, 2),
+                            "message": f"ROS Master unreachable at {field_value}",
+                        })
+                    return
+                elif probe_action == "gateway" or "base_url" in field_name:
+                    try:
+                        req = urllib_request.Request(f"{field_value.rstrip('/')}/health", method="GET")
+                        with urllib_request.urlopen(req, timeout=1.0) as resp:
+                            elapsed = (time.perf_counter() - start_t) * 1000.0
+                            self._write_json(handler, HTTPStatus.OK, {
+                                "status": "ok",
+                                "field_name": field_name,
+                                "field_value": field_value,
+                                "latency_ms": round(elapsed, 2),
+                                "message": f"Gateway reachable (HTTP {resp.status})",
+                            })
+                    except Exception as exc:
+                        elapsed = (time.perf_counter() - start_t) * 1000.0
+                        self._write_json(handler, HTTPStatus.OK, {
+                            "status": "error",
+                            "field_name": field_name,
+                            "field_value": field_value,
+                            "latency_ms": round(elapsed, 2),
+                            "message": f"Endpoint unreachable: {exc}",
+                        })
+                    return
+                else:
+                    elapsed = (time.perf_counter() - start_t) * 1000.0
+                    if field_value.startswith("/"):
+                        self._write_json(handler, HTTPStatus.OK, {
+                            "status": "ok",
+                            "field_name": field_name,
+                            "field_value": field_value,
+                            "latency_ms": round(elapsed, 2),
+                            "message": f"Valid ROS topic name syntax: {field_value}",
+                        })
+                    else:
+                        self._write_json(handler, HTTPStatus.OK, {
+                            "status": "ok",
+                            "field_name": field_name,
+                            "field_value": field_value,
+                            "latency_ms": round(elapsed, 2),
+                            "message": f"Configured value: {field_value}",
+                        })
+                    return
+
             self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {path}")
         except GatewayRequestBodyError as exc:
             self._write_error(handler, exc.status, str(exc))
@@ -1496,6 +2030,28 @@ class MissionGateway:
 
     def _write_error(self, handler: BaseHTTPRequestHandler, status: HTTPStatus, message: str) -> None:
         self._write_json(handler, status, {"status": "error", "message": message})
+
+    def _write_friendly_error(
+        self,
+        handler: BaseHTTPRequestHandler,
+        status: HTTPStatus,
+        error_code: str,
+        context: dict[str, Any] | None = None,
+        technical_details: str | None = None,
+    ) -> None:
+        from fireclaw_core.errors.friendly_errors import resolve_friendly_error
+
+        resp = resolve_friendly_error(
+            error_code,
+            context=context,
+            technical_details=technical_details,
+        )
+        payload = {
+            "status": "error",
+            "message": resp.what_happened,
+            "error": resp.to_dict(),
+        }
+        self._write_json(handler, status, payload)
 
 
 # ------------------------------------------------------------------
@@ -1577,7 +2133,8 @@ def _sse_after_sequence(
 ) -> int | None:
     raw = handler.headers.get("Last-Event-ID")
     if raw is None:
-        raw = parse_qs(parsed.query).get("after_sequence", [None])[0]
+        params = parse_qs(parsed.query)
+        raw = params.get("cursor", [None])[0] or params.get("after_sequence", [None])[0]
     if raw is None:
         return None
     try:

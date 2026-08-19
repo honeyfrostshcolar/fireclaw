@@ -102,11 +102,21 @@ def start_server(
     _ensure_data_dir(data_dir, create_robot_template=not bool(robot_profiles))
 
     mission_workspace_root = data_dir / "agent-workspace"
+    allowed_roots: tuple[Path, ...] = (mission_workspace_root,)
+    if isinstance(deployment_config, dict) and deployment_config.get("sandbox"):
+        configured_ws = (
+            deployment_config.get("sandbox", {}).get("mission_agent", {}).get("workspace_root")
+        )
+        if configured_ws:
+            allowed_roots = (
+                mission_workspace_root,
+                Path(configured_ws).expanduser().resolve(strict=False),
+            )
     deployment_profile = deployment_profile_from_config(
         deployment_config,
         role="mission_agent",
         default_workspace_root=mission_workspace_root,
-        allowed_workspace_roots=(mission_workspace_root,),
+        allowed_workspace_roots=allowed_roots,
         path_base=Path.cwd(),
     )
     planner = build_planner(

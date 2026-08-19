@@ -6,13 +6,11 @@ and activation either commits as a unit or rolls back completely.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from contextlib import AbstractContextManager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Literal
+from typing import Any, Callable, ContextManager as AbstractContextManager, Iterable, Literal
 
 from fireclaw_core.plugin.sdk_adapter import (
     normalize_registered_physical_capability,

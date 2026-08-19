@@ -61,13 +61,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomllib  # type: ignore[no-redef]
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore[no-redef]
+from fireclaw_core.infra import tomllib_compat as tomllib
 
 
 DEFAULT_CONFIG_PATHS = (

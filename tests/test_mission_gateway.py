@@ -1262,6 +1262,7 @@ def test_cancel_emits_cancel_requested_event(tmp_path):
         assert len(cancelled) == 1
         assert cancelled[0].mission_id == "m-cancel-evt"
         assert cancelled[0].payload["status"] == "cancel_requested"
+        assert not [e for e in collected_events if e.event_type == "task.cancelling"]
     finally:
         gw.stop()
 

@@ -5,19 +5,19 @@ from hashlib import sha256
 import json
 import math
 import re
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
 
 from fireclaw_core.provider.model_catalog import ModelDescriptor
 
 
 RequestBuilder = Callable[
     [
-        dict[str, Any],
-        dict[str, Any],
-        dict[str, list[dict[str, Any]]],
-        dict[str, Any],
+        Mapping[str, Any],
+        Mapping[str, Any],
+        Mapping[str, Sequence[Mapping[str, Any]]],
+        Mapping[str, Any],
     ],
-    tuple[list[dict[str, Any]], list[dict[str, Any]]],
+    Tuple[List[Dict[str, Any]], List[Dict[str, Any]]],
 ]
 
 

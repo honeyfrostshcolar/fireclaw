@@ -4,9 +4,14 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TextIO
 
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
+from fireclaw_core.errors.friendly_errors import (
+    FriendlyErrorResponse,
+    format_friendly_error_cli,
+    resolve_friendly_error,
+)
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_memory import MissionMemoryRecord, MissionMemoryStore
 from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
@@ -14,17 +19,348 @@ from fireclaw_core.planner.planner_builder import build_planner as _build_planne
 from fireclaw_core.rag.runtime_retrieval import RagRuntimeConfig
 
 
+def print_friendly_error(
+    error_code: str,
+    context: dict[str, Any] | None = None,
+    technical_details: str | None = None,
+    verbose: bool = False,
+    file: TextIO | None = None,
+) -> None:
+    """Resolve and print a 4-part FriendlyError box to stderr."""
+    out_file = sys.stderr if file is None else file
+    resp = resolve_friendly_error(error_code, context=context, technical_details=technical_details)
+    text = format_friendly_error_cli(resp, verbose=verbose)
+    print(text, file=out_file)
+
+
+
 SUCCESS_STATUSES = {"accepted", "duplicate", "running", "succeeded"}
 CANCEL_SUCCESS_STATUSES = {"cancel_requested", "already_terminal", "empty"}
 
+CORE_COMMAND_NAMES: list[str] = [
+    "setup",
+    "start",
+    "open",
+    "status",
+    "stop",
+]
 
-def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] == "robot-gateway":
-        from fireclaw_core.gateway.gateway import main as gateway_main
-        return gateway_main(sys.argv[2:])
+CORE_COMMAND_DESCRIPTIONS: dict[str, str] = {
+    "setup": "首次配置向导 (仿真环境/实机预检) / Prepare a safe first-run Profile and remember it for later commands.",
+    "start": "启动当前 Profile 的 Supervisor/Gateway 守护进程（不证明机器人 ready） / Start the FireClaw supervisor/gateway background daemon.",
+    "open": "打开操作员控制台 / Gateway 界面 / Open or show the FireClaw operator web console URL.",
+    "status": "检查当前机器人与服务就绪状态 / Show actionable robot readiness, not just process liveness.",
+    "stop": "停止 FireClaw 后台守护进程（不构成机器人物理停止证据） / Stop the FireClaw background daemon.",
+}
 
-    parser = argparse.ArgumentParser(description="Run FireClaw mission-control commands.")
-    subparsers = parser.add_subparsers(dest="command_name", required=True)
+ADVANCED_COMMAND_NAMES: list[str] = [
+    "approval",
+    "cancel",
+    "corrections",
+    "deploy",
+    "doctor",
+    "errors",
+    "events",
+    "fault-test",
+    "hardware-safety",
+    "lifecycle-check",
+    "memory",
+    "mission",
+    "plan-mission",
+    "profile",
+    "recover",
+    "replay",
+    "robot-gateway",
+    "robot-profile",
+    "security-audit",
+    "serve",
+    "submit-subtask",
+    "trace",
+]
+
+
+def _add_shared_paths(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--robot-registry", default=None, help="Path to robot registry JSON. Required when --robot-profile is not provided.")
+    parser.add_argument("--robot-profile", action="append", default=None, help="Path to robot profile TOML. Repeat for multiple robots.")
+    parser.add_argument("--mission-registry", required=True, help="Path to mission registry JSONL.")
+    parser.add_argument("--operator-id", default="mission-agent", help="Operator ID for authorization.")
+    parser.add_argument("--role", default="operator", help="Operator role (observer, operator, supervisor, admin).")
+    parser.add_argument("--scopes", nargs="*", default=None, help="Explicit operator scopes (overrides role defaults).")
+
+
+def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--memory-path", default=None, help="Path to mission memory JSONL.")
+    parser.add_argument("--memory-index", default=None, help="Path to SQLite memory index.")
+    _add_memory_rag_options(parser)
+    _add_external_knowledge_rag_options(parser)
+    parser.add_argument(
+        "--embodied-runtime-mode",
+        choices=("real", "simulation", "replay"),
+        default=None,
+        help="Enable policy-checked embodied memory in the explicit runtime domain.",
+    )
+    parser.add_argument("--task-registry", default=None, help="Path to task registry JSONL.")
+    parser.add_argument(
+        "--subagent-registry",
+        default=None,
+        help="Path to the legacy-named Robot Agent run registry JSONL.",
+    )
+    parser.add_argument("--session-lineage", default=None, help="Path to session lineage JSONL.")
+    parser.add_argument("--task-flow", default=None, help="Path to task-flow registry JSONL.")
+    parser.add_argument("--approval-path", default=None, help="Path to approval store JSONL.")
+    parser.add_argument("--mission-planning-audit-path", default=None, help="Path to mission planning audit JSONL.")
+
+
+def _add_memory_rag_options(
+    parser: argparse.ArgumentParser,
+    *,
+    optional_defaults: bool = False,
+) -> None:
+    parser.add_argument(
+        "--memory-rag-backend",
+        choices=("bm25", "dense", "hybrid", "hybrid_rerank"),
+        default=None,
+        help="Use an existing RAG backend for mission-memory candidate retrieval.",
+    )
+    parser.add_argument("--memory-rag-bm25-index-dir", default=None)
+    parser.add_argument("--memory-rag-dense-index-dir", default=None)
+    parser.add_argument(
+        "--memory-rag-generation-root",
+        default=None,
+        help="Managed generation root for automatic validated index refresh.",
+    )
+    parser.add_argument(
+        "--memory-rag-embedding-provider",
+        choices=("fake", "bge-m3"),
+        default=None,
+    )
+    parser.add_argument("--memory-rag-embedding-model-path", default=None)
+    parser.add_argument(
+        "--memory-rag-reranker-provider",
+        choices=("fake", "bge-reranker"),
+        default=None,
+    )
+    parser.add_argument("--memory-rag-reranker-model-path", default=None)
+    parser.add_argument("--memory-rag-device", default=None)
+    parser.add_argument(
+        "--memory-rag-candidate-multiplier",
+        type=int,
+        default=None if optional_defaults else 3,
+    )
+    parser.add_argument(
+        "--memory-rag-rrf-k",
+        type=int,
+        default=None if optional_defaults else 60,
+    )
+
+
+def _add_external_knowledge_rag_options(
+    parser: argparse.ArgumentParser,
+    *,
+    optional_defaults: bool = False,
+) -> None:
+    parser.add_argument(
+        "--knowledge-rag-backend",
+        choices=("bm25", "dense", "hybrid", "hybrid_rerank"),
+        default=None,
+        help="Ground mission planning with an external firefighting knowledge index.",
+    )
+    parser.add_argument("--knowledge-rag-bm25-index-dir", default=None)
+    parser.add_argument("--knowledge-rag-dense-index-dir", default=None)
+    parser.add_argument(
+        "--knowledge-rag-generation-root",
+        default=None,
+        help="Prebuilt managed generation root for hot-reloading external knowledge.",
+    )
+    parser.add_argument(
+        "--knowledge-rag-embedding-provider",
+        choices=("fake", "bge-m3"),
+        default=None,
+    )
+    parser.add_argument("--knowledge-rag-embedding-model-path", default=None)
+    parser.add_argument(
+        "--knowledge-rag-reranker-provider",
+        choices=("fake", "bge-reranker"),
+        default=None,
+    )
+    parser.add_argument("--knowledge-rag-reranker-model-path", default=None)
+    parser.add_argument("--knowledge-rag-device", default=None)
+    parser.add_argument(
+        "--knowledge-rag-candidate-multiplier",
+        type=int,
+        default=None if optional_defaults else 3,
+    )
+    parser.add_argument(
+        "--knowledge-rag-rrf-k",
+        type=int,
+        default=None if optional_defaults else 60,
+    )
+
+
+class _FireClawHelpAction(argparse.Action):
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str = argparse.SUPPRESS,
+        default: str = argparse.SUPPRESS,
+        help: str | None = None,
+    ) -> None:
+        super().__init__(
+            option_strings=option_strings,
+            dest=dest,
+            default=default,
+            nargs=0,
+            help=help or "Show this help message and exit.",
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        active_argv = getattr(parser, "_active_argv", None)
+        if active_argv is not None:
+            show_all = "--all" in active_argv
+        else:
+            show_all = ("--all" in sys.argv) if sys.argv else False
+        if hasattr(parser, "show_all"):
+            parser.show_all = show_all or getattr(parser, "show_all", False)
+        parser.print_help()
+        parser.exit(0)
+
+
+class _FireClawAllAction(argparse.Action):
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str = argparse.SUPPRESS,
+        default: str = argparse.SUPPRESS,
+        help: str | None = None,
+    ) -> None:
+        super().__init__(
+            option_strings=option_strings,
+            dest=dest,
+            default=default,
+            nargs=0,
+            help=help or "Show all subcommands including advanced developer tools.",
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        if hasattr(parser, "show_all"):
+            parser.show_all = True
+        parser.print_help()
+        parser.exit(0)
+
+
+class FireClawArgumentParser(argparse.ArgumentParser):
+    def __init__(
+        self,
+        *args: Any,
+        show_all: bool = False,
+        is_top_level: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        self.show_all = show_all
+        self.is_top_level = is_top_level
+        self._active_argv: list[str] | None = None
+        self._subparsers_action: argparse._SubParsersAction | None = None
+        super().__init__(*args, **kwargs)
+
+    def format_help(self) -> str:
+        if not self.is_top_level:
+            return super().format_help()
+
+        show_all = self.show_all
+        if not show_all and self._active_argv is not None:
+            show_all = "--all" in self._active_argv
+        elif not show_all and sys.argv:
+            show_all = "--all" in sys.argv
+
+        lines: list[str] = []
+        prog = self.prog or "fireclaw"
+        lines.append(f"usage: {prog} [-h] [--all] <command> ...")
+        lines.append("")
+        if self.description:
+            lines.append(self.description)
+            lines.append("")
+
+        sub_helps: dict[str, str] = {}
+        subparsers_action = self._subparsers_action
+        if subparsers_action is None:
+            for action in self._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    subparsers_action = action
+                    break
+        if subparsers_action is not None:
+            for choice_action in subparsers_action._choices_actions:
+                sub_helps[choice_action.dest] = choice_action.help or ""
+
+        # Core Commands section
+        lines.append("Core Commands (日常操作):")
+        for cmd in CORE_COMMAND_NAMES:
+            desc = CORE_COMMAND_DESCRIPTIONS.get(cmd) or sub_helps.get(cmd, "")
+            lines.append(f"  {cmd:<16} {desc}")
+        lines.append("")
+
+        # Advanced & Developer Commands section
+        if show_all:
+            lines.append("Advanced & Developer Commands:")
+            for cmd in ADVANCED_COMMAND_NAMES:
+                if cmd in sub_helps:
+                    desc = sub_helps[cmd]
+                    lines.append(f"  {cmd:<16} {desc}")
+            lines.append("")
+        else:
+            lines.append("Advanced & Developer Tools (运行 fireclaw --help --all 查看全部详细参数):")
+            adv_list = [cmd for cmd in ADVANCED_COMMAND_NAMES if cmd in sub_helps]
+            wrapped_lines = []
+            cur_line = "  "
+            for i, cmd in enumerate(adv_list):
+                suffix = ", " if i < len(adv_list) - 1 else ""
+                if len(cur_line) + len(cmd) + len(suffix) > 74:
+                    wrapped_lines.append(cur_line)
+                    cur_line = "  " + cmd + suffix
+                else:
+                    cur_line += cmd + suffix
+            if cur_line.strip():
+                wrapped_lines.append(cur_line)
+            lines.extend(wrapped_lines)
+            lines.append("")
+
+        lines.append("Options:")
+        lines.append("  -h, --help       Show this help message and exit.")
+        lines.append("  --all            Show all subcommands and advanced developer tools.")
+        lines.append("")
+        lines.append(f"Run '{prog} <command> --help' for details on a specific command.")
+        lines.append("")
+        return "\n".join(lines)
+
+
+def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgumentParser:
+    parser = FireClawArgumentParser(
+        prog=prog,
+        description="Run FireClaw mission-control commands.",
+        add_help=False,
+        show_all=show_all,
+        is_top_level=True,
+    )
+    parser.add_argument("-h", "--help", action=_FireClawHelpAction)
+    parser.add_argument("--all", action=_FireClawAllAction)
+
+    subparsers = parser.add_subparsers(
+        dest="command_name",
+        required=True,
+        parser_class=argparse.ArgumentParser,
+    )
+    parser._subparsers_action = subparsers
 
     setup = subparsers.add_parser(
         "setup",
@@ -65,6 +401,107 @@ def main() -> int:
         help="Emit machine-readable output and never prompt.",
     )
 
+    start = subparsers.add_parser(
+        "start",
+        help="Start the FireClaw supervisor/gateway background daemon.",
+    )
+    start.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help="Robot/deployment Profile TOML; defaults to the active Profile.",
+    )
+    start.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run the supervisor in foreground mode instead of a background daemon.",
+    )
+    start.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="Startup health check timeout in seconds.",
+    )
+    start.add_argument(
+        "--runtime-root",
+        type=Path,
+        default=None,
+        help="Advanced override for FIRECLAW_HOME and generated user files.",
+    )
+    start.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable output.",
+    )
+
+    stop = subparsers.add_parser(
+        "stop",
+        help="Stop the running FireClaw background daemon.",
+    )
+    stop.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help="Robot/deployment Profile TOML; defaults to the active Profile.",
+    )
+    stop.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="Graceful shutdown timeout in seconds.",
+    )
+    stop.add_argument(
+        "--force",
+        action="store_true",
+        help="Force kill the daemon process group with SIGKILL.",
+    )
+    stop.add_argument(
+        "--runtime-root",
+        type=Path,
+        default=None,
+        help="Advanced override for FIRECLAW_HOME and generated user files.",
+    )
+    stop.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable output.",
+    )
+
+    open_parser = subparsers.add_parser(
+        "open",
+        help="Open or show the FireClaw operator web console URL.",
+    )
+    open_parser.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help="Robot/deployment Profile TOML; defaults to the active Profile.",
+    )
+    open_parser.add_argument(
+        "--browser",
+        dest="browser",
+        action="store_true",
+        default=True,
+        help="Open the console URL in the default web browser (default).",
+    )
+    open_parser.add_argument(
+        "--no-browser",
+        dest="browser",
+        action="store_false",
+        help="Do not open the default web browser.",
+    )
+    open_parser.add_argument(
+        "--runtime-root",
+        type=Path,
+        default=None,
+        help="Advanced override for FIRECLAW_HOME and generated user files.",
+    )
+    open_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable output.",
+    )
+
     submit = subparsers.add_parser("submit-subtask", help="Submit an explicit subtask to a Robot Agent.")
     submit.add_argument("--robot", required=True, help="Target robot_id from the robot registry.")
     submit.add_argument("--command", required=True, help="Natural-language command for the Robot Agent.")
@@ -73,7 +510,6 @@ def main() -> int:
     _add_shared_paths(submit)
 
     trace = subparsers.add_parser("trace", help="Read and aggregate a mission trace.")
-
     trace.add_argument("mission_id", help="Mission id to inspect.")
     _add_shared_paths(trace)
     _add_runtime_paths(trace)
@@ -570,6 +1006,49 @@ def main() -> int:
     profile_confirm.add_argument("--confirmed-by", required=True, help="Operator ID that reviewed the discovery mapping.")
     profile_confirm.add_argument("--confirmed-at", default=None, help="ISO-8601 confirmation time. Defaults to current UTC time.")
 
+    profile = subparsers.add_parser("profile", help="Manage robot capability profiles, templates, discovery, and snapshots.")
+    profile_sub = profile.add_subparsers(dest="profile_command", required=True)
+
+    prof_list = profile_sub.add_parser("list-templates", help="List built-in robot capability templates.")
+    prof_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
+
+    prof_disc = profile_sub.add_parser("discover", help="Probe ROS Master and discover topics/services/action servers.")
+    prof_disc.add_argument("--master-uri", default=None, help="ROS Master URI.")
+    prof_disc.add_argument("--timeout", type=float, default=2.0, help="Probe timeout in seconds.")
+    prof_disc.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
+
+    prof_diff = profile_sub.add_parser("diff", help="Compare two configuration profiles or a template against a profile with impact analysis.")
+    prof_diff.add_argument("--from", dest="from_source", required=True, help="Template ID or path to source TOML file.")
+    prof_diff.add_argument("--to", dest="to_source", required=True, help="Path to target TOML file.")
+    prof_diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
+
+    prof_hist = profile_sub.add_parser("history", help="List snapshot history for a profile.")
+    prof_hist.add_argument("--profile", type=Path, default=None, help="Path to profile TOML file (defaults to active profile).")
+    prof_hist.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
+
+    prof_rb = profile_sub.add_parser("rollback", help="Rollback profile to a previous snapshot.")
+    prof_rb.add_argument("--snapshot", required=True, help="Snapshot ID to rollback to.")
+    prof_rb.add_argument("--profile", type=Path, default=None, help="Path to profile TOML file (defaults to active profile).")
+    prof_rb.add_argument("--reason", default="Rollback via CLI", help="Audit reason for the rollback.")
+    prof_rb.add_argument("--changed-by", default="operator", help="Operator ID performing the rollback.")
+    prof_rb.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
+
+    errors = subparsers.add_parser(
+        "errors",
+        help="List or inspect registered friendly error codes, safety guidance, and suggested actions.",
+    )
+    errors_sub = errors.add_subparsers(dest="errors_command", required=True)
+
+    err_list = errors_sub.add_parser("list", help="List all registered friendly error codes.")
+    err_list.add_argument("--category", default=None, help="Filter errors by category prefix (e.g. sensor, ros, gateway, safety, planner, config, disk, robot).")
+    err_list.add_argument("--severity", choices=["critical", "warning", "info"], default=None, help="Filter errors by severity level.")
+    err_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
+
+    err_get = errors_sub.add_parser("get", help="Show 4-part details for a specific error code.")
+    err_get.add_argument("error_code", help="Error code name to inspect.")
+    err_get.add_argument("--verbose", action="store_true", help="Show technical details.")
+    err_get.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
+
     deploy = subparsers.add_parser(
         "deploy",
         help="Plan, apply, or inspect Plugin Runtime deployment.",
@@ -702,11 +1181,56 @@ def main() -> int:
                 help="Install the unit without starting it now.",
             )
 
-    args = parser.parse_args()
+    help_cmd = subparsers.add_parser("help", help="Show help for FireClaw commands.")
+    help_cmd.add_argument("subcommand", nargs="?", default=None, help="Subcommand to show help for.")
+    help_cmd.add_argument("--all", action="store_true", help="Show all subcommands and advanced developer tools.")
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        raw_argv = sys.argv[1:]
+    else:
+        raw_argv = list(argv)
+
+    if raw_argv and raw_argv[0] == "robot-gateway":
+        from fireclaw_core.gateway.gateway import main as gateway_main
+        return gateway_main(raw_argv[1:])
+
+    show_all = "--all" in raw_argv
+    prog = "fireclaw"
+    parser = build_parser(show_all=show_all, prog=prog)
+    parser._active_argv = raw_argv
+
+    args = parser.parse_args(raw_argv)
+    if args.command_name == "help":
+        if getattr(args, "subcommand", None):
+            sub_name = args.subcommand
+            if parser._subparsers_action and sub_name in parser._subparsers_action.choices:
+                parser._subparsers_action.choices[sub_name].print_help()
+                return 0
+            else:
+                print_friendly_error(
+                    "unknown_error",
+                    {"error_code": f"Unknown subcommand '{sub_name}'. Run 'fireclaw --help' for available commands."},
+                )
+                return 1
+        else:
+            if getattr(args, "all", False):
+                parser.show_all = True
+            parser.print_help()
+            return 0
     if args.command_name == "setup":
         from fireclaw_core.infra.user_setup import handle_setup
 
         return handle_setup(args)
+    if args.command_name == "start":
+        return handle_start(args)
+    if args.command_name == "stop":
+        return handle_stop(args)
+    if args.command_name == "open":
+        return handle_open(args)
     if args.command_name == "submit-subtask":
         result = _build_mission_agent(args).submit_subtask(
             args.robot,
@@ -1022,6 +1546,10 @@ def main() -> int:
         return gateway_main(args.robot_gateway_args)
     if args.command_name == "robot-profile":
         return _handle_robot_profile(args)
+    if args.command_name == "profile":
+        return _handle_profile(args)
+    if args.command_name == "errors":
+        return _handle_errors(args)
     parser.error(f"Unknown command: {args.command_name}")
     return 1
 
@@ -1050,7 +1578,11 @@ def _handle_memory(args: argparse.Namespace) -> int:
         try:
             content = json.loads(args.content)
         except json.JSONDecodeError as exc:
-            print(f"Error: --content is not valid JSON: {exc}", file=sys.stderr)
+            print_friendly_error(
+                "sensor_evidence_invalid",
+                {"reason": f"--content is not valid JSON: {exc}"},
+                technical_details=str(exc),
+            )
             return 1
         record = MissionMemoryRecord(
             record_id=f"mem-{uuid.uuid4().hex[:8]}",
@@ -1070,7 +1602,10 @@ def _handle_memory(args: argparse.Namespace) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
-    print(f"Error: unknown memory subcommand: {args.memory_command}", file=sys.stderr)
+    print_friendly_error(
+        "unknown_error",
+        {"error_code": f"unknown memory subcommand: {args.memory_command}"},
+    )
     return 1
 
 
@@ -1103,12 +1638,18 @@ def _handle_approval(args: argparse.Namespace) -> int:
         else:
             result = store.deny(args.request_id, decided_by="mission_cli", reason=args.reason, decided_at=now)
         if result is None:
-            print(f"Error: request {args.request_id} not found or already decided", file=sys.stderr)
+            print_friendly_error(
+                "action_failed",
+                {"action_name": "approval_decide", "detail": f"Request {args.request_id} not found or already decided"},
+            )
             return 1
         _print_json(result.to_dict())
         return 0
 
-    print(f"Error: unknown approval subcommand: {args.approval_command}", file=sys.stderr)
+    print_friendly_error(
+        "unknown_error",
+        {"error_code": f"unknown approval subcommand: {args.approval_command}"},
+    )
     return 1
 
 
@@ -1274,7 +1815,10 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
         )
 
         if not args.write_profile and not args.output:
-            print("Error: --output is required unless --write-profile is given.", file=sys.stderr)
+            print_friendly_error(
+                "config_validation_failed",
+                {"validation_errors": "--output is required unless --write-profile is given."},
+            )
             return 1
 
         profile = load_robot_capability_profile(args.profile)
@@ -1424,10 +1968,18 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
         )
         report = discovery.discover()
         if report.runtime_fingerprint is None:
-            print("Error: runtime fingerprint unavailable; refusing to confirm discovery.", file=sys.stderr)
+            print_friendly_error(
+                "sensor_unavailable",
+                {"sensor_id": "runtime fingerprint"},
+                technical_details="runtime fingerprint unavailable; refusing to confirm discovery.",
+            )
             return 1
         if not report.verified_sensors():
-            print("Error: no verified sensors discovered; refusing to confirm discovery.", file=sys.stderr)
+            print_friendly_error(
+                "sensor_unavailable",
+                {"sensor_id": "verified sensors"},
+                technical_details="no verified sensors discovered; refusing to confirm discovery.",
+            )
             return 1
         confirmed_at = args.confirmed_at or datetime.now(timezone.utc).isoformat()
         block_text = render_confirmed_discovery_blocks(
@@ -1452,126 +2004,284 @@ def _handle_robot_profile(args: argparse.Namespace) -> int:
             "diff": diff.to_dict(),
         })
         return 0
-    print(f"Error: unknown robot-profile subcommand: {args.robot_profile_command}", file=sys.stderr)
+    print_friendly_error(
+        "unknown_error",
+        {"error_code": f"unknown robot-profile subcommand: {args.robot_profile_command}"},
+    )
     return 1
 
 
-def _add_shared_paths(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--robot-registry", default=None, help="Path to robot registry JSON. Required when --robot-profile is not provided.")
-    parser.add_argument("--robot-profile", action="append", default=None, help="Path to robot profile TOML. Repeat for multiple robots.")
-    parser.add_argument("--mission-registry", required=True, help="Path to mission registry JSONL.")
-    parser.add_argument("--operator-id", default="mission-agent", help="Operator ID for authorization.")
-    parser.add_argument("--role", default="operator", help="Operator role (observer, operator, supervisor, admin).")
-    parser.add_argument("--scopes", nargs="*", default=None, help="Explicit operator scopes (overrides role defaults).")
+def _handle_profile(args: argparse.Namespace) -> int:
+    from fireclaw_core.config import (
+        TemplateManager,
+        RosGraphDiscoverer,
+        ConfigDiffEngine,
+        ProfileSnapshotManager,
+    )
+    from fireclaw_core.infra.user_setup import resolve_active_profile_path
+
+    cmd = args.profile_command
+    if cmd == "list-templates":
+        manager = TemplateManager()
+        templates = manager.list_templates()
+        if getattr(args, "json", False):
+            _print_json([t.to_dict() for t in templates])
+            return 0
+        print("Available Robot Templates:")
+        print("=" * 80)
+        for t in templates:
+            print(f"• ID: {t.template_id}")
+            print(f"  Name: {t.name_zh} ({t.mode} / {t.chassis_type})")
+            print(f"  Description: {t.description_zh}")
+            if t.recommended_topics:
+                print(f"  Recommended Topics: {', '.join(f'{k}={v}' for k, v in t.recommended_topics.items())}")
+            print("-" * 80)
+        return 0
+
+    if cmd == "discover":
+        discoverer = RosGraphDiscoverer()
+        report = discoverer.probe_ros_master(
+            master_uri=getattr(args, "master_uri", None),
+            timeout=getattr(args, "timeout", 2.0),
+        )
+        if getattr(args, "json", False):
+            _print_json(report.to_dict())
+            return 0
+        print("ROS Master Discovery Report:")
+        print(f"URI: {report.master_uri}")
+        status_str = "ONLINE" if report.discovered else "OFFLINE"
+        print(f"Status: {status_str}")
+        if report.discovered:
+            print(f"\nDiscovered Topics ({len(report.active_topics)}):")
+            for item in sorted(report.active_topics):
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    print(f"  - {item[0]} ({item[1]})")
+                else:
+                    print(f"  - {item}")
+            if report.matched_topics:
+                print("\nSuggested Profile Topic Mappings:")
+                for k, v in sorted(report.matched_topics.items()):
+                    print(f"  • {k}: {v}")
+            if report.matched_actions:
+                print(f"\nSuggested Action Servers ({len(report.matched_actions)}):")
+                for k, v in sorted(report.matched_actions.items()):
+                    print(f"  - {k}: {v}")
+        else:
+            print("Notice: ROS Master is offline or unreachable.")
+            if report.reason:
+                print(f"Reason: {report.reason}")
+        return 0
+
+    if cmd == "diff":
+        manager = TemplateManager()
+        from_src = args.from_source
+        to_src = args.to_source
+
+        template = manager.get_template(from_src)
+        if template is not None:
+            from_toml = manager.render_profile_toml(from_src)
+        else:
+            from_path = Path(from_src)
+            if not from_path.is_file():
+                print_friendly_error(
+                    "config_validation_failed",
+                    {"validation_errors": f"source '--from' '{from_src}' is neither a known template ID nor an existing file."},
+                    technical_details=f"--from {from_src}",
+                )
+                return 1
+            from_toml = from_path.read_text(encoding="utf-8")
+
+        to_path = Path(to_src)
+        if not to_path.is_file():
+            print_friendly_error(
+                "config_validation_failed",
+                {"validation_errors": f"target '--to' file '{to_src}' not found."},
+                technical_details=f"--to {to_src}",
+            )
+            return 1
+        to_toml = to_path.read_text(encoding="utf-8")
+
+        engine = ConfigDiffEngine()
+        result = engine.compare_toml_strings(from_toml, to_toml)
+        if getattr(args, "json", False):
+            _print_json(result.to_dict())
+            return 0
+
+        print(f"Configuration Diff: {from_src} -> {to_src}")
+        print("=" * 80)
+        if not result.has_changes:
+            print("No differences found. Configurations are identical.")
+            return 0
+
+        print(f"Found {len(result.diff_fields)} changed field(s):\n")
+        for diff in result.diff_fields:
+            badge = f"[{diff.impact_level.upper()}]"
+            print(f"  {badge:<10} {diff.path}")
+            print(f"    Change: {diff.change_type} | Old: {diff.old_val} -> New: {diff.new_val}")
+            if diff.impact_description_zh:
+                print(f"    Impact: {diff.impact_description_zh}")
+            print()
+
+        if result.impact_summary_zh:
+            print("Impact Analysis Summary:")
+            for summary in result.impact_summary_zh:
+                print(f"  • {summary}")
+        return 0
+
+    if cmd == "history":
+        profile_path = args.profile
+        if profile_path is None:
+            try:
+                profile_path = resolve_active_profile_path(None)
+            except Exception as e:
+                print_friendly_error(
+                    "config_validation_failed",
+                    {"validation_errors": f"Could not resolve active profile ({e}). Please specify --profile."},
+                    technical_details=str(e),
+                )
+                return 1
+        else:
+            profile_path = Path(profile_path)
+
+        if not profile_path.exists():
+            print_friendly_error(
+                "config_validation_failed",
+                {"validation_errors": f"Profile file not found: {profile_path}"},
+                technical_details=str(profile_path),
+            )
+            return 1
+
+        snap_mgr = ProfileSnapshotManager(history_root=profile_path.parent / ".history")
+        snapshots = snap_mgr.list_snapshots(profile_path.stem)
+        if getattr(args, "json", False):
+            _print_json([s.to_dict() for s in snapshots])
+            return 0
+
+        print(f"Snapshot History for {profile_path}: ({len(snapshots)} snapshots)")
+        print("-" * 80)
+        if not snapshots:
+            print("No historical snapshots found.")
+            return 0
+        for s in snapshots:
+            print(f"• ID: {s.snapshot_id}  |  Timestamp: {s.timestamp_iso}  |  Hash: {s.hash8}")
+            print(f"  Summary: {s.summary}")
+            print("-" * 80)
+        return 0
+
+    if cmd == "rollback":
+        profile_path = args.profile
+        if profile_path is None:
+            try:
+                profile_path = resolve_active_profile_path(None)
+            except Exception as e:
+                print_friendly_error(
+                    "config_validation_failed",
+                    {"validation_errors": f"Could not resolve active profile ({e}). Please specify --profile."},
+                    technical_details=str(e),
+                )
+                return 1
+        else:
+            profile_path = Path(profile_path)
+
+        if not profile_path.exists():
+            print_friendly_error(
+                "config_validation_failed",
+                {"validation_errors": f"Profile file not found: {profile_path}"},
+                technical_details=str(profile_path),
+            )
+            return 1
+
+        snap_mgr = ProfileSnapshotManager(history_root=profile_path.parent / ".history")
+        success, msg = snap_mgr.rollback_to_snapshot(args.snapshot, profile_path)
+        if not success:
+            print_friendly_error(
+                "config_rollback_failed",
+                {"snapshot_id": args.snapshot, "reason": msg},
+                technical_details=msg,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            _print_json({
+                "status": "rolled_back",
+                "snapshot_id": args.snapshot,
+                "profile_path": str(profile_path),
+                "message": msg,
+            })
+            return 0
+        print(f"Successfully rolled back {profile_path} to snapshot {args.snapshot}.")
+        return 0
+
+    print_friendly_error(
+        "unknown_error",
+        {"error_code": f"unknown profile subcommand: {cmd}"},
+    )
+    return 1
 
 
-def _add_runtime_paths(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--memory-path", default=None, help="Path to mission memory JSONL.")
-    parser.add_argument("--memory-index", default=None, help="Path to SQLite memory index.")
-    _add_memory_rag_options(parser)
-    _add_external_knowledge_rag_options(parser)
-    parser.add_argument(
-        "--embodied-runtime-mode",
-        choices=("real", "simulation", "replay"),
-        default=None,
-        help="Enable policy-checked embodied memory in the explicit runtime domain.",
-    )
-    parser.add_argument("--task-registry", default=None, help="Path to task registry JSONL.")
-    parser.add_argument(
-        "--subagent-registry",
-        default=None,
-        help="Path to the legacy-named Robot Agent run registry JSONL.",
-    )
-    parser.add_argument("--session-lineage", default=None, help="Path to session lineage JSONL.")
-    parser.add_argument("--task-flow", default=None, help="Path to task-flow registry JSONL.")
-    parser.add_argument("--approval-path", default=None, help="Path to approval store JSONL.")
-    parser.add_argument("--mission-planning-audit-path", default=None, help="Path to mission planning audit JSONL.")
+def _handle_errors(args: argparse.Namespace) -> int:
+    from fireclaw_core.errors.error_registry import FRIENDLY_ERROR_REGISTRY
+    from fireclaw_core.errors.friendly_errors import resolve_friendly_error, format_friendly_error_cli
 
+    cmd = args.errors_command
+    if cmd == "list":
+        category_filter = getattr(args, "category", None)
+        severity_filter = getattr(args, "severity", None)
+        results = []
+        for code, tpl in FRIENDLY_ERROR_REGISTRY.items():
+            if severity_filter and tpl.severity != severity_filter:
+                continue
+            if category_filter and not code.startswith(category_filter):
+                continue
+            resolved = resolve_friendly_error(code)
+            results.append({
+                "error_code": tpl.error_code,
+                "severity": tpl.severity,
+                "what_happened": tpl.what_happened,
+                "robot_safe_status": resolved.robot_safe_status,
+                "action_taken": resolved.action_taken,
+                "next_steps": tpl.next_steps,
+                "suggested_actions": tpl.suggested_actions,
+            })
+        if getattr(args, "json", False):
+            print(json.dumps(results, ensure_ascii=False, indent=2))
+            return 0
+        print(f"FireClaw 注册错误码清单 (共 {len(results)} 条):")
+        print("=" * 80)
+        for r in results:
+            icon = "✖" if r["severity"] == "critical" else ("⚠" if r["severity"] == "warning" else "ℹ")
+            print(f"[{icon} {r['severity'].upper():<8}] {r['error_code']}")
+            print(f"  发生原因:     {r['what_happened']}")
+            print(f"  安全证据:     {r['robot_safe_status']}")
+            print(f"  处置回执:     {r['action_taken']}")
+            print(f"  建议下一步:   {r['next_steps']}")
+            if r["suggested_actions"]:
+                actions_str = ", ".join(f"[{a.get('label', a.get('action', ''))}]" for a in r["suggested_actions"])
+                print(f"  推荐操作:     {actions_str}")
+            print("-" * 80)
+        return 0
 
-def _add_memory_rag_options(
-    parser: argparse.ArgumentParser,
-    *,
-    optional_defaults: bool = False,
-) -> None:
-    parser.add_argument(
-        "--memory-rag-backend",
-        choices=("bm25", "dense", "hybrid", "hybrid_rerank"),
-        default=None,
-        help="Use an existing RAG backend for mission-memory candidate retrieval.",
-    )
-    parser.add_argument("--memory-rag-bm25-index-dir", default=None)
-    parser.add_argument("--memory-rag-dense-index-dir", default=None)
-    parser.add_argument(
-        "--memory-rag-generation-root",
-        default=None,
-        help="Managed generation root for automatic validated index refresh.",
-    )
-    parser.add_argument(
-        "--memory-rag-embedding-provider",
-        choices=("fake", "bge-m3"),
-        default=None,
-    )
-    parser.add_argument("--memory-rag-embedding-model-path", default=None)
-    parser.add_argument(
-        "--memory-rag-reranker-provider",
-        choices=("fake", "bge-reranker"),
-        default=None,
-    )
-    parser.add_argument("--memory-rag-reranker-model-path", default=None)
-    parser.add_argument("--memory-rag-device", default=None)
-    parser.add_argument(
-        "--memory-rag-candidate-multiplier",
-        type=int,
-        default=None if optional_defaults else 3,
-    )
-    parser.add_argument(
-        "--memory-rag-rrf-k",
-        type=int,
-        default=None if optional_defaults else 60,
-    )
+    if cmd in ("get", "show"):
+        code = args.error_code
+        if code not in FRIENDLY_ERROR_REGISTRY:
+            print_friendly_error(
+                "unknown_error",
+                {"error_code": f"Error code '{code}' not found in registry."},
+            )
+            return 1
+        resp = resolve_friendly_error(code)
+        if getattr(args, "json", False):
+            print(json.dumps(resp.to_dict(), ensure_ascii=False, indent=2))
+            return 0
+        verbose = getattr(args, "verbose", False)
+        print(format_friendly_error_cli(resp, verbose=verbose))
+        return 0
 
-
-def _add_external_knowledge_rag_options(
-    parser: argparse.ArgumentParser,
-    *,
-    optional_defaults: bool = False,
-) -> None:
-    parser.add_argument(
-        "--knowledge-rag-backend",
-        choices=("bm25", "dense", "hybrid", "hybrid_rerank"),
-        default=None,
-        help="Ground mission planning with an external firefighting knowledge index.",
+    print_friendly_error(
+        "unknown_error",
+        {"error_code": f"unknown errors subcommand: {cmd}"},
     )
-    parser.add_argument("--knowledge-rag-bm25-index-dir", default=None)
-    parser.add_argument("--knowledge-rag-dense-index-dir", default=None)
-    parser.add_argument(
-        "--knowledge-rag-generation-root",
-        default=None,
-        help="Prebuilt managed generation root for hot-reloading external knowledge.",
-    )
-    parser.add_argument(
-        "--knowledge-rag-embedding-provider",
-        choices=("fake", "bge-m3"),
-        default=None,
-    )
-    parser.add_argument("--knowledge-rag-embedding-model-path", default=None)
-    parser.add_argument(
-        "--knowledge-rag-reranker-provider",
-        choices=("fake", "bge-reranker"),
-        default=None,
-    )
-    parser.add_argument("--knowledge-rag-reranker-model-path", default=None)
-    parser.add_argument("--knowledge-rag-device", default=None)
-    parser.add_argument(
-        "--knowledge-rag-candidate-multiplier",
-        type=int,
-        default=None if optional_defaults else 3,
-    )
-    parser.add_argument(
-        "--knowledge-rag-rrf-k",
-        type=int,
-        default=None if optional_defaults else 60,
-    )
+    return 1
 
 
 def _build_mission_runtime_paths(args: argparse.Namespace) -> MissionRuntimePaths:
@@ -1730,6 +2440,193 @@ def _mission_operator() -> dict[str, Any]:
 
 def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def handle_start(
+    args: argparse.Namespace,
+    *,
+    out: TextIO = sys.stdout,
+    manager: Any = None,
+) -> int:
+    from fireclaw_core.infra.daemon_manager import (
+        DaemonRuntimeManager,
+        FireClawDaemonError,
+    )
+    from fireclaw_core.infra.user_setup import FireClawSetupError
+
+    mgr = manager or DaemonRuntimeManager(
+        runtime_root=getattr(args, "runtime_root", None)
+    )
+    try:
+        result = mgr.start_daemon(
+            profile_path=args.profile,
+            foreground=args.foreground,
+            timeout=args.timeout,
+        )
+    except (FireClawDaemonError, FireClawSetupError, OSError, ValueError) as exc:
+        err_payload = {
+            "schema_version": 1,
+            "kind": "fireclaw_start",
+            "status": "error",
+            "code": getattr(exc, "code", "daemon_start_failed"),
+            "message": str(exc) or type(exc).__name__,
+            "operator_action": getattr(
+                exc,
+                "operator_action",
+                "检查日志与 Profile 配置后重试。",
+            ),
+            "robot_action_started": False,
+            "safe_state": "no_robot_action_started",
+        }
+        if args.json:
+            print(json.dumps(err_payload, ensure_ascii=False, indent=2), file=out)
+        else:
+            print("FireClaw 启动未完成", file=out)
+            print(f"\n发生了什么：{err_payload['message']}", file=out)
+            print("机器人状态：没有启动任何机器人动作。", file=out)
+            print("FireClaw 已采取：保留现有状态，不执行未授权动作。", file=out)
+            print(f"下一步：{err_payload['operator_action']}", file=out)
+        return 2
+
+    if args.foreground:
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2), file=out)
+        else:
+            print(result.get("message", "Supervisor stopped."), file=out)
+        return 0 if result.get("status") in {"stopped", "running", "already_running"} else 1
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2), file=out)
+        return 0
+
+    daemon = result.get("daemon") or {}
+    print("FireClaw 守护进程已启动", file=out)
+    print(f"\n✓ 进程 PID：{daemon.get('pid')}", file=out)
+    print(f"✓ 运行模式：{daemon.get('mode')}", file=out)
+    print(f"✓ 控制台地址：{daemon.get('gateway_url')}", file=out)
+    print(f"✓ 日志路径：{daemon.get('log_path')}", file=out)
+    print("\n下一步：运行 fireclaw open 打开控制台，或运行 fireclaw status 查看状态。", file=out)
+    return 0
+
+
+def handle_stop(
+    args: argparse.Namespace,
+    *,
+    out: TextIO = sys.stdout,
+    manager: Any = None,
+) -> int:
+    from fireclaw_core.infra.daemon_manager import (
+        DaemonRuntimeManager,
+        FireClawDaemonError,
+    )
+    from fireclaw_core.infra.user_setup import FireClawSetupError
+
+    mgr = manager or DaemonRuntimeManager(
+        runtime_root=getattr(args, "runtime_root", None)
+    )
+    try:
+        result = mgr.stop_daemon(
+            profile_path=args.profile,
+            timeout=args.timeout,
+            force=args.force,
+        )
+    except (FireClawDaemonError, FireClawSetupError, OSError, ValueError) as exc:
+        err_payload = {
+            "schema_version": 1,
+            "kind": "fireclaw_stop",
+            "status": "error",
+            "code": getattr(exc, "code", "daemon_stop_failed"),
+            "message": str(exc) or type(exc).__name__,
+            "operator_action": getattr(
+                exc,
+                "operator_action",
+                "检查进程状态后重试。",
+            ),
+            "robot_action_started": False,
+            "safe_state": "no_robot_action_started",
+        }
+        if args.json:
+            print(json.dumps(err_payload, ensure_ascii=False, indent=2), file=out)
+        else:
+            print("FireClaw 停止未完成", file=out)
+            print(f"\n发生了什么：{err_payload['message']}", file=out)
+            print(f"下一步：{err_payload['operator_action']}", file=out)
+        return 2
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2), file=out)
+        return 0
+
+    if result.get("status") == "stopped":
+        print("FireClaw 守护进程已停止", file=out)
+        print(f"\n✓ 停止进程 PID：{result.get('pid')}", file=out)
+        print("✓ 守护进程状态：进程已退出。", file=out)
+        print(
+            "! 机器人物理状态：UNKNOWN；守护进程退出不构成物理停止证据，"
+            "请以 Robot Adapter 证据或现场急停确认。",
+            file=out,
+        )
+    else:
+        print("FireClaw 守护进程未在运行。", file=out)
+    return 0
+
+
+def handle_open(
+    args: argparse.Namespace,
+    *,
+    out: TextIO = sys.stdout,
+    manager: Any = None,
+    browser_opener: Callable[[str], bool] | None = None,
+) -> int:
+    from fireclaw_core.infra.daemon_manager import (
+        DaemonRuntimeManager,
+        FireClawDaemonError,
+    )
+    from fireclaw_core.infra.user_setup import FireClawSetupError
+
+    mgr = manager or DaemonRuntimeManager(
+        runtime_root=getattr(args, "runtime_root", None)
+    )
+    try:
+        result = mgr.open_console(
+            profile_path=args.profile,
+            browser=getattr(args, "browser", True),
+            browser_opener=browser_opener,
+        )
+    except (FireClawDaemonError, FireClawSetupError, OSError, ValueError) as exc:
+        err_payload = {
+            "schema_version": 1,
+            "kind": "fireclaw_open",
+            "status": "error",
+            "code": getattr(exc, "code", "daemon_open_failed"),
+            "message": str(exc) or type(exc).__name__,
+            "operator_action": getattr(
+                exc,
+                "operator_action",
+                "先运行 fireclaw start 启动守护进程。",
+            ),
+            "robot_action_started": False,
+            "safe_state": "no_robot_action_started",
+        }
+        if args.json:
+            print(json.dumps(err_payload, ensure_ascii=False, indent=2), file=out)
+        else:
+            print("FireClaw 打开控制台失败", file=out)
+            print(f"\n发生了什么：{err_payload['message']}", file=out)
+            print(f"下一步：{err_payload['operator_action']}", file=out)
+        return 2
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2), file=out)
+        return 0
+
+    print("FireClaw 控制台已就绪", file=out)
+    print(f"\n✓ 控制台 URL：{result.get('url')}", file=out)
+    if result.get("browser_opened"):
+        print("✓ 浏览器状态：已在默认浏览器中打开。", file=out)
+    else:
+        print("✓ 浏览器状态：请在浏览器中访问上述 URL。", file=out)
+    return 0
 
 
 if __name__ == "__main__":

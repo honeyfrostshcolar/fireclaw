@@ -12,10 +12,7 @@ import sys
 from typing import Any, Callable, Mapping, TextIO
 from uuid import uuid4
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
+from fireclaw_core.infra import tomllib_compat as tomllib
 
 from fireclaw_core.agent.robot_profile import load_robot_capability_profile
 from fireclaw_core.deployment import (
@@ -443,7 +440,6 @@ def _resolve_simulation_source_root(value: str | Path | None) -> Path:
         if module_root is not None and module_root not in candidates:
             candidates.append(module_root)
     markers = (
-        Path("examples/setup_templates/gazebo_turtlebot3.toml"),
         Path("extensions/navigation-move-base/fireclaw.plugin.json"),
         Path(
             "robots/turtlebot3_burger/ros_ws/src/"
@@ -496,14 +492,21 @@ def _ensure_generated_simulation_profile(
         "agent-workspaces/robot",
     ):
         _private_nested_directory(workspace_root, relative)
-    template_path = source_root / "examples/setup_templates/gazebo_turtlebot3.toml"
-    if template_path.is_symlink() or not template_path.is_file():
-        raise FireClawSetupError(
-            "Simulation Profile template is missing or unsafe.",
-            code="simulation_template_invalid",
-            operator_action="恢复 FireClaw 官方仿真模板后重试。",
-        )
-    template = template_path.read_text(encoding="utf-8")
+
+    from fireclaw_core.resources import load_setup_template
+
+    try:
+        template = load_setup_template("gazebo_turtlebot3")
+    except FileNotFoundError:
+        # Fallback to source template if package resources are not built in editable dev
+        template_path = source_root / "examples/setup_templates/gazebo_turtlebot3.toml"
+        if template_path.is_symlink() or not template_path.is_file():
+            raise FireClawSetupError(
+                "Simulation Profile template is missing or unsafe.",
+                code="simulation_template_invalid",
+                operator_action="恢复 FireClaw 官方仿真模板后重试。",
+            )
+        template = template_path.read_text(encoding="utf-8")
     replacements = {
         "{{RUNTIME_ROOT}}": runtime_root,
         "{{PROFILE_PATH}}": profile_path,

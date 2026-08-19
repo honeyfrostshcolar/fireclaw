@@ -10,10 +10,7 @@ import sys
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
+from fireclaw_core.infra import tomllib_compat as tomllib
 
 from fireclaw_core.infra.path_security import validate_runtime_root
 

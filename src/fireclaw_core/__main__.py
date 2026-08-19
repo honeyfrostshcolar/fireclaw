@@ -8,8 +8,8 @@ KNOWN_SUBCOMMANDS = {
     "submit-subtask", "trace", "cancel", "plan-mission", "events",
     "corrections", "memory", "replay", "approval", "lifecycle-check",
     "security-audit", "serve", "mission", "robot-gateway", "robot-profile",
-    "deploy", "status", "doctor", "recover", "hardware-safety",
-    "fault-test", "setup",
+    "profile", "deploy", "status", "doctor", "recover", "hardware-safety",
+    "fault-test", "setup", "start", "stop", "open", "help", "errors",
 }
 
 

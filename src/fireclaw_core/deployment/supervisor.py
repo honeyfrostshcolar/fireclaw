@@ -9,7 +9,6 @@ after any unexpected process exit.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
@@ -23,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Protocol, TextIO
+from typing import Any, Callable, Dict, Mapping, Protocol, Sequence, TextIO
 from uuid import uuid4
 
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
@@ -46,8 +45,8 @@ class ManagedProcess(Protocol):
     def send_signal(self, signal_number: int) -> None: ...
 
 
-StatusProbe = Callable[..., dict[str, Any]]
-HealthProbe = Callable[[], dict[str, Any]]
+StatusProbe = Callable[..., Dict[str, Any]]
+HealthProbe = Callable[[], Dict[str, Any]]
 ProcessFactory = Callable[
     [str, Sequence[str], TextIO, Path],
     ManagedProcess,

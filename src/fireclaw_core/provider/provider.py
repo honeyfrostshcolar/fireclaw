@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
 
 from fireclaw_core.gateway.auth import is_loopback_host
 
@@ -173,8 +176,10 @@ class OpenAICompatProvider:
 
     # -- internal helpers --------------------------------------------------
 
-    def _post(self, body: dict[str, Any]) -> httpx.Response:
+    def _post(self, body: dict[str, Any]) -> Any:
         """Execute the HTTP POST, translating transport errors."""
+        if httpx is None:
+            raise RuntimeError("httpx is required to use OpenAICompatProvider.")
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -230,9 +235,9 @@ class OpenAICompatProvider:
                         content=b"".join(chunks),
                         request=streaming_response.request,
                     )
-        except httpx.TimeoutException as exc:
+        except getattr(httpx, "TimeoutException", ()) as exc:
             raise ProviderTimeoutError(str(exc)) from exc
-        except httpx.TransportError as exc:
+        except getattr(httpx, "TransportError", ()) as exc:
             raise ProviderError(str(exc)) from exc
 
     @staticmethod

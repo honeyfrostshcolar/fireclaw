@@ -8,12 +8,11 @@ Python Plugin can target.  The host remains responsible for projecting a
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Dict, Literal, Mapping, Protocol
 
 
 DeploymentMode = Literal["simulation", "real"]
@@ -26,7 +25,7 @@ ToolEffect = Literal[
     "credential_access",
     "real_hardware",
 ]
-ToolHandler = Callable[[dict[str, Any]], Any]
+ToolHandler = Callable[[Mapping[str, Any]], Any]
 PhysicalToolHandler = Callable[..., Any]
 InputCoercion = Literal["identity", "float", "integer", "string", "object"]
 

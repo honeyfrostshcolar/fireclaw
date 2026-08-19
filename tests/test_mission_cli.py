@@ -1706,4 +1706,4 @@ llm_exposed_skills = ["navigate_to_waypoint", "victim_search", "publish_operator
     )
 
     assert main() == 1
-    assert "runtime fingerprint unavailable" in capsys.readouterr().err
+    assert "runtime fingerprint" in capsys.readouterr().err

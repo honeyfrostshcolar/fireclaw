@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from math import isfinite
-from typing import Any, Callable
+from typing import Any, Callable, List, Sequence
 
 from fireclaw_core.agent.robot_registry import RobotRegistry
 from fireclaw_core.mission.world_state_belief import (
@@ -14,8 +14,8 @@ from fireclaw_core.mission.world_state_belief import (
 )
 
 
-EnvironmentFactProvider = Callable[[str], list["MissionEnvironmentFact"]]
-ResourceReservationProvider = Callable[[str], list["MissionResourceReservation"]]
+EnvironmentFactProvider = Callable[[str], Sequence["MissionEnvironmentFact"]]
+ResourceReservationProvider = Callable[[str], Sequence["MissionResourceReservation"]]
 
 
 @dataclass(frozen=True)

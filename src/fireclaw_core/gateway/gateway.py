@@ -4400,6 +4400,18 @@ def _run_robot_gateway(
     if not isinstance(plugin_configs, dict):
         raise ValueError("plugin_configs must be an object")
 
+    robot_allowed_roots: tuple[Path, ...] = (robot_workspace_root,)
+    dep_cfg = merged.get("deployment")
+    if isinstance(dep_cfg, dict) and dep_cfg.get("sandbox"):
+        configured_ws = (
+            dep_cfg.get("sandbox", {}).get("robot_agent", {}).get("workspace_root")
+        )
+        if configured_ws:
+            robot_allowed_roots = (
+                robot_workspace_root,
+                Path(configured_ws).expanduser().resolve(strict=False),
+            )
+
     gateway = FireClawGateway(
         # The deployment profile is immutable for the lifetime of this
         # Gateway process; changing mode requires a restart.
@@ -4458,7 +4470,7 @@ def _run_robot_gateway(
                 merged.get("deployment"),
                 role="robot_agent",
                 default_workspace_root=robot_workspace_root,
-                allowed_workspace_roots=(robot_workspace_root,),
+                allowed_workspace_roots=robot_allowed_roots,
                 path_base=Path.cwd(),
             ),
         )

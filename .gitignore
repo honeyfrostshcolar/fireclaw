@@ -33,3 +33,16 @@ robots/**/ros_ws/src/CMakeLists.txt
 
 # FireClaw config (may contain secrets)
 fireclaw.toml
+.fireclaw/
+
+# Per-robot runtime state. These files are generated locally and may contain
+# mission/site data; product fixtures must use explicit, non-runtime names.
+data/robots/**/memory-runtime.sqlite3
+data/robots/**/memory-runtime.sqlite3-*
+
+# Release artifacts, packages and superpowers scratch
+.superpowers/
+dist/
+build/
+*.whl
+*.tar.gz

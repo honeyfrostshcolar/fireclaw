@@ -10,7 +10,7 @@ from uuid import uuid4
 
 
 CancellationCheck = Callable[[], bool]
-ProcessFactory = Callable[..., subprocess.Popen[bytes]]
+ProcessFactory = Callable[..., subprocess.Popen]
 
 _PIPE_CHUNK_BYTES = 16 * 1024
 _POLL_INTERVAL_SECONDS = 0.02

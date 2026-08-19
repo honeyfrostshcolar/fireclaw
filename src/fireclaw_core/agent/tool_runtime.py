@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Dict, Literal, Mapping
 from uuid import uuid4
 
 from fireclaw_core.approval.execution_authorization import (
@@ -29,7 +29,7 @@ from fireclaw_core.policy.deployment import (
 )
 
 
-AgentToolHandler = Callable[[dict[str, Any]], Any]
+AgentToolHandler = Callable[[Mapping[str, Any]], Any]
 AuthorizationUseRecorder = Callable[..., bool]
 AgentToolExecutionStatus = Literal[
     "executed",

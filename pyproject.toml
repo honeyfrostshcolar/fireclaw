@@ -32,6 +32,11 @@ rag = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"fireclaw_core.resources.setup_templates" = ["*.toml"]
+"fireclaw_core.resources.simulation_bundles" = ["*.json"]
+"fireclaw_core.web_console" = ["*.html", "*.css", "*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

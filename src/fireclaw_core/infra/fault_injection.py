@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from fireclaw_core.evaluation.artifacts import (
     EvaluationRunBundle,
@@ -99,8 +99,8 @@ SCENARIOS: dict[str, FaultScenario] = {
 
 
 CommandRunner = Callable[
-    [Sequence[str], Path, Mapping[str, str] | None],
-    subprocess.CompletedProcess[str],
+    [Sequence[str], Path, Optional[Mapping[str, str]]],
+    Any,
 ]
 
 

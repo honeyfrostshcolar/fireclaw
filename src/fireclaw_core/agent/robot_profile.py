@@ -5,10 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
+from fireclaw_core.infra import tomllib_compat as tomllib
 
 from fireclaw_core.execution.skills import SkillRegistry
 from fireclaw_core.sensors.discovery import DiscoveryFingerprint, SensorMappingRule

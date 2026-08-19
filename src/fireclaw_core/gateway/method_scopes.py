@@ -93,9 +93,28 @@ _register(MethodDescriptor("GET /fleet/state", READ_SCOPE, "read", "Fleet state"
 _register(MethodDescriptor("GET /fleet/doctor", READ_SCOPE, "read", "Fleet diagnostics"))
 _register(MethodDescriptor("GET /missions/{id}/events/stream", READ_SCOPE, "read", "SSE mission event stream"))
 
+# Web Console & Readiness endpoints
+_register(MethodDescriptor("GET /", READ_SCOPE, "read", "Web console UI"))
+_register(MethodDescriptor("GET /console", READ_SCOPE, "read", "Web console UI"))
+_register(MethodDescriptor("GET /static/{file}", READ_SCOPE, "read", "Web console static assets"))
+_register(MethodDescriptor("GET /readiness", READ_SCOPE, "read", "Readiness check"))
+_register(MethodDescriptor("POST /plan-mission", READ_SCOPE, "read", "Display-only mission preview prototype"))
+_register(MethodDescriptor("POST /recover", EMERGENCY_RECOVERY_SCOPE, "emergency", "Reset Mission Gateway admission projection"))
+
 # Enrollment endpoints
 _register(MethodDescriptor("POST /enrollment", PAIRING_SCOPE, "pairing", "Enrollment request"))
 _register(MethodDescriptor("POST /enrollment/approve", PAIRING_SCOPE, "pairing", "Approve enrollment"))
+
+# Experimental configuration-assistant endpoints.
+_register(MethodDescriptor("GET /config/templates", READ_SCOPE, "read", "List robot capability templates"))
+_register(MethodDescriptor("POST /config/discover", READ_SCOPE, "read", "Discover ROS graph with prototype mappings"))
+_register(MethodDescriptor("GET /config/schema", READ_SCOPE, "read", "Core configuration schema prototype"))
+_register(MethodDescriptor("POST /config/diff", READ_SCOPE, "read", "Diff configuration profiles with impact analysis"))
+_register(MethodDescriptor("POST /config/save", WRITE_SCOPE, "write", "Write profile content and create a content snapshot"))
+_register(MethodDescriptor("GET /config/history", READ_SCOPE, "read", "List profile snapshot history"))
+_register(MethodDescriptor("POST /config/rollback", WRITE_SCOPE, "write", "Restore profile snapshot content"))
+_register(MethodDescriptor("POST /config/test-field", READ_SCOPE, "read", "Run a prototype configuration field probe"))
+
 
 
 def _match_registered(method: str) -> MethodDescriptor | None:
