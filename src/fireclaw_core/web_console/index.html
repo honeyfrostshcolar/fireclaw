@@ -176,7 +176,7 @@
             <div class="template-chips-container">
               <span class="chips-label">常用救援预设：</span>
               <div class="quick-templates">
-                <button type="button" class="template-chip" data-template="前往二楼搜索被困人员并汇报位置">🔍 二楼搜救人员</button>
+                <button type="button" class="template-chip" data-template="前往坐标 (2.0, 1.5) 搜索被困人员并汇报位置">🔍 定点搜救人员</button>
                 <button type="button" class="template-chip" data-template="前往火场东侧侦察火源与温度">🔥 东侧火源侦察</button>
                 <button type="button" class="template-chip" data-template="全区域巡航建立环境态势图">🗺️ 全区态势建图</button>
                 <button type="button" class="template-chip" data-template="立即返回初始安全待命点">🏠 返回安全待命点</button>
@@ -186,7 +186,7 @@
             <form id="dispatch-form" onsubmit="return false;">
               <div class="form-group">
                 <label for="task-input-text">指挥员自然语言指令</label>
-                <textarea id="task-input-text" rows="4" placeholder="例如：前往二楼搜救被困人员，若发现火源立即上报并保持安全距离"></textarea>
+                <textarea id="task-input-text" rows="4" placeholder="例如：前往坐标 (2.0, 1.5) 搜索被困人员，发现异常后上报并保持安全距离"></textarea>
                 <!-- Alias for backward compatibility if needed -->
                 <textarea id="command-input" style="display: none;" aria-hidden="true"></textarea>
               </div>
@@ -511,6 +511,14 @@
               <div class="setting-item">
                 <span class="setting-label">运行模式</span>
                 <span class="setting-val" id="profile-mode-display">UNKNOWN</span>
+              </div>
+              <div class="setting-item">
+                <span class="setting-label">Profile revision</span>
+                <span class="setting-val" id="profile-revision-display">UNKNOWN</span>
+              </div>
+              <div class="setting-item">
+                <span class="setting-label">Runtime identity evidence</span>
+                <span class="setting-val" id="identity-evidence-display">UNKNOWN</span>
               </div>
               <div class="setting-item">
                 <span class="setting-label">Gateway 网关地址</span>

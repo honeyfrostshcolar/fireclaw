@@ -10,6 +10,10 @@ from fireclaw_core.agent.robot_deliberation import (
     RobotAgentDeliberationRuntime,
 )
 from fireclaw_core.agent.tool_runtime import AgentToolRuntime
+from fireclaw_core.context.manager import (
+    ContextManagementPolicy,
+    ModelAwareContextManager,
+)
 from fireclaw_core.agent.robot_registry import (
     RobotRegistry,
     RobotRegistryEntry,
@@ -31,6 +35,7 @@ from fireclaw_core.provider.provider import (
     TokenUsage,
     ToolCall,
 )
+from fireclaw_core.provider.model_catalog import ModelDescriptor
 from fireclaw_core.task.task_contract import StructuredRobotTask
 
 _TEST_IMAGE_ID = "sha256:" + ("a" * 64)
@@ -270,6 +275,19 @@ def test_mission_react_loop_receives_computer_output_as_advisory(
         model_id="test-model",
         plugin_host=host,
         agent_tool_runtime=tool_runtime,
+        context_manager=ModelAwareContextManager(
+            runtime=None,
+            task="mission_planning",
+            policy=ContextManagementPolicy(output_reserve_tokens=4096),
+            model_descriptor=ModelDescriptor(
+                id="test-model",
+                name="test-model",
+                provider="test",
+                context_window=65_536,
+                max_tokens=4096,
+                supports_tools=True,
+            ),
+        ),
     )
     runtime = MissionDeliberationRuntime(
         registry=registry,

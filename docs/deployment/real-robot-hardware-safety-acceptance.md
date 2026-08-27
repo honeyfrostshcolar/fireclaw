@@ -11,8 +11,8 @@
 
 ## 现在需要准备的文件
 
-复制 `examples/deployment_profiles/navigation_robot.toml.example` 到部署机器的私有
-配置目录，不要直接修改示例或把现场地址、凭证提交到仓库。逐项填写：
+复制根目录的 `fireclaw.real.example.toml` 为部署机器上的私有
+`fireclaw.real.toml`，不要直接修改示例或把现场地址、凭证提交到仓库。逐项填写：
 
 1. `[robot]`：真实 `id`、Gateway 地址、ROS1 adapter 配置和数据目录。
 2. `[deployment.ros1]`：ROS distro 以及基础 ROS、厂商 workspace 的 setup 文件。
@@ -35,7 +35,7 @@
 
 ```bash
 fireclaw hardware-safety preflight \
-  --profile /path/to/firebot.toml \
+  --profile /path/to/fireclaw.real.toml \
   --offline
 ```
 
@@ -50,7 +50,7 @@ fireclaw hardware-safety preflight \
 
 ```bash
 fireclaw hardware-safety preflight \
-  --profile /path/to/firebot.toml
+  --profile /path/to/fireclaw.real.toml
 ```
 
 实时预检只读取 ROS master、服务/topic 类型和样本结构，不调用停止服务，也不
@@ -63,7 +63,7 @@ fireclaw hardware-safety preflight \
 
 ```bash
 fireclaw hardware-safety accept \
-  --profile /path/to/firebot.toml \
+  --profile /path/to/fireclaw.real.toml \
   --scenario stop_proof \
   --operator-id operator-01 \
   --firmware-version vendor-fw-1.2.3
@@ -116,7 +116,7 @@ fireclaw hardware-safety verify \
 
 ```bash
 fireclaw hardware-safety report \
-  --profile /path/to/firebot.toml \
+  --profile /path/to/fireclaw.real.toml \
   --firmware-version vendor-fw-1.2.3 \
   --artifact-dir results/hardware-safety
 ```

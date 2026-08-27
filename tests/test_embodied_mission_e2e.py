@@ -1,13 +1,15 @@
 """End-to-end embodied mission scenario gate.
 
 Exercises the full pipeline:
-  operator command -> MissionGateway.submit_mission -> MissionAgent.plan_and_submit
+  operator command -> preview -> explicit confirmation -> sealed-plan execution
   -> Robot Agent dispatch -> events -> task-flow -> lineage -> memory
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from pathlib import Path
 from urllib import request
 
@@ -21,6 +23,8 @@ from fireclaw_core.mission.mission_planner import (
     MissionSubtask,
 )
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
+from fireclaw_core.mission.plan_artifact import PlanArtifactStore
+from fireclaw_core.mission.runtime_identity import GatewayRuntimeIdentity
 from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
@@ -43,9 +47,16 @@ class FakeSubagentClient:
 
     def submit_task(self, entry, **kwargs):
         self.calls.append((entry, kwargs))
+        task_id = f"task-{entry.robot_id}"
+        self.traces[(entry.robot_id, task_id)] = {
+            "status": "completed",
+            "task_id": task_id,
+            "robot_id": entry.robot_id,
+            "result": {"status": "completed"},
+        }
         return {
             "status": "accepted",
-            "task_id": f"task-{entry.robot_id}",
+            "task_id": task_id,
             "session_id": kwargs.get("session_id"),
             "robot_id": entry.robot_id,
         }
@@ -97,9 +108,14 @@ class FakePlanner:
                     MissionSubtask(
                         robot_id=available_ids[0],
                         command=command,
-                        floor=2,
+                        floor=None,
                         capability_required="victim_search",
                         execution_group=0,
+                        task_type="search",
+                        target={
+                            "frame_id": "map",
+                            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                        },
                     )
                 ],
             ),
@@ -140,6 +156,18 @@ def _json_request(
         return response.status, json.loads(response.read().decode("utf-8"))
 
 
+def _confirmation(preview: dict) -> dict:
+    return {
+        "artifact_id": preview["artifact_id"],
+        "plan_token": preview["plan_token"],
+        "plan_digest": preview["plan_digest"],
+        "status_version": preview["status_version"],
+        "session_id": preview["session_id"],
+        "robot_ids": preview["robot_ids"],
+        "operator_confirmed": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # E2E test
 # ---------------------------------------------------------------------------
@@ -171,6 +199,17 @@ def test_embodied_mission_e2e_full_pipeline(tmp_path: Path):
         task_flow_store=task_flow_store,
     )
 
+    profile_path = tmp_path / "active-profile.json"
+    profile_path.write_text(
+        json.dumps({
+            "runtime_mode": "simulation",
+            "robot_id": "robot-1",
+            "scope": "2d_map_e2e",
+        }, sort_keys=True),
+        encoding="utf-8",
+    )
+    profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+
     # 3. Create MissionGateway with lifecycle stores
     config = MissionGatewayConfig(port=0)
     gw = MissionGateway(
@@ -181,21 +220,51 @@ def test_embodied_mission_e2e_full_pipeline(tmp_path: Path):
         task_registry=task_registry,
         subagent_registry=subagent_registry,
         session_lineage_store=lineage_store,
+        runtime_identity=GatewayRuntimeIdentity.create(
+            runtime_mode="simulation",
+            active_profile_path=profile_path,
+            profile_sha256=profile_sha256,
+            robot_id="robot-1",
+        ),
+        plan_artifact_store=PlanArtifactStore(
+            tmp_path / "plan-artifacts.jsonl"
+        ),
     )
     gw.start()
     try:
         base = gw.base_url
 
-        # 4. Submit mission "去二楼救人"
-        status, body = _json_request(base, "POST", "/missions", {
-            "command": "去二楼救人",
-            "session_id": "mission-e2e",
-            "use_scheduler": False,
+        # 4. Preview and explicitly confirm one 2D-map rescue task.
+        command = "前往坐标 (2.0, 1.5) 搜索受困人员"
+        status, preview = _json_request(base, "POST", "/plan-mission", {
+            "command": command,
+            "target_robot": "robot-1",
         })
+        assert status == 200
+        assert preview["status"] == "preview_ready"
+        status, body = _json_request(
+            base,
+            "POST",
+            "/plan-mission/confirm",
+            _confirmation(preview),
+        )
         assert status == 202
-        assert body["status"] == "planned"
+        assert body["status"] == "accepted"
+        assert body["plan_digest"] == preview["plan_digest"]
         mission_id = body["mission_id"]
         assert mission_id is not None
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            _, run = _json_request(
+                base,
+                "GET",
+                f"/missions/{mission_id}/run",
+            )
+            if run.get("terminal") is True:
+                break
+            time.sleep(0.05)
+        assert run["run_status"] in {"succeeded", "completed"}
 
         # 5. Verify mission trace
         status, trace = _json_request(base, "GET", f"/missions/{mission_id}/trace")
@@ -222,7 +291,7 @@ def test_embodied_mission_e2e_full_pipeline(tmp_path: Path):
             f"Expected task-flow record for mission {mission_id}, "
             f"got {len(flows)} recent flows"
         )
-        assert mission_flows[0].command == "去二楼救人"
+        assert mission_flows[0].command == command
 
         # 9. Verify memory store has records
         records = memory_store.list_records(mission_id=mission_id)

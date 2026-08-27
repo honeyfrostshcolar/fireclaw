@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import unittest
 from urllib import request
 from urllib.error import HTTPError
@@ -9,6 +10,7 @@ from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.gateway.network_security import GatewayNetworkPolicy
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.runtime_identity import GatewayRuntimeIdentity
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +71,15 @@ def _make_gateway(
         config,
         mission_agent=agent,
         registry=reg,
+        subagent_client=agent.subagent_client,
+        runtime_identity=GatewayRuntimeIdentity.create(
+            runtime_mode="simulation",
+            active_profile_path=Path(__file__),
+            profile_sha256="a" * 64,
+            robot_id="robot-1",
+            deployment_fingerprint="b" * 64,
+            observed_at="2026-08-20T00:00:00+00:00",
+        ),
     )
 
 
@@ -128,6 +139,8 @@ class TestWebConsoleRoutes(unittest.TestCase):
         self.assertIn("<title>FireClaw Web Console</title>", html_str)
         self.assertIn("/static/style.css", html_str)
         self.assertIn("/static/app.js", html_str)
+        self.assertNotIn("二楼", html_str)
+        self.assertIn("坐标 (2.0, 1.5)", html_str)
 
     def test_get_console_serves_html_console(self):
         status, headers, body = _raw_request(self.gw.base_url, "GET", "/console")
@@ -171,8 +184,18 @@ class TestWebConsoleRoutes(unittest.TestCase):
         status, payload = _json_request(self.gw.base_url, "GET", "/readiness")
         self.assertEqual(status, 200)
         self.assertEqual(payload.get("status"), "ok")
-        self.assertEqual(payload.get("schema_version"), 1)
+        self.assertEqual(payload.get("schema_version"), 2)
         self.assertEqual(payload.get("active_robot_id"), "robot-1")
+        identity = payload["runtime_identity"]
+        self.assertEqual(identity["value"]["runtime_mode"], "simulation")
+        self.assertEqual(identity["value"]["robot_id"], "robot-1")
+        self.assertEqual(identity["freshness"], "fresh")
+        self.assertRegex(identity["evidence_id"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(payload["robot_readiness"][0]["robot_id"], "robot-1")
+        self.assertEqual(
+            payload["robot_readiness"][0]["readiness"]["value"]["status"],
+            "online",
+        )
         self.assertIn("phase", payload)
         self.assertIn("safe_state", payload)
         self.assertIn("fleet_state", payload)

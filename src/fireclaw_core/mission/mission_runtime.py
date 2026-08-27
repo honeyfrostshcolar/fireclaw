@@ -23,6 +23,7 @@ from fireclaw_core.memory.consolidation import FireClawConsolidationEngine
 from fireclaw_core.memory.consolidation_state import ConsolidationStateStore
 from fireclaw_core.memory.consolidation_coordinator import MemoryConsolidationCoordinator
 from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.mission.mission_deliberation import MissionDeliberationLimits
 from fireclaw_core.mission.mission_memory import MissionMemoryStore
 from fireclaw_core.mission.mission_planning_audit import JsonlMissionPlanningAuditSink
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
@@ -95,6 +96,8 @@ def build_mission_agent_from_paths(
     subagent_client=None,
     resume_dispatches: bool = True,
     source: str = "runtime",
+    mission_scheduler_config=None,
+    mission_deliberation_limits: MissionDeliberationLimits | None = None,
 ) -> MissionAgent:
     embodied_memory_producer = None
     approval_memory_producer = None
@@ -363,11 +366,13 @@ def build_mission_agent_from_paths(
         mission_memory_tools=mission_memory_tools,
         memory_lifecycle=memory_lifecycle,
         planner_memory_context_builder=planner_memory_context_builder,
+        mission_deliberation_limits=mission_deliberation_limits,
         agent_loop_checkpoint_store=JsonlAgentLoopCheckpointStore(
             agent_loop_checkpoint_path
         ),
         consolidation_coordinator=consolidation_coordinator,
         working_memory_hydration_report=hydration_report,
+        mission_scheduler_config=mission_scheduler_config,
     )
     if resume_dispatches:
         agent.resume_pending_dispatches()

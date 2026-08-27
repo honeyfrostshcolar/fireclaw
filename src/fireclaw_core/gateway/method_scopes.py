@@ -98,7 +98,11 @@ _register(MethodDescriptor("GET /", READ_SCOPE, "read", "Web console UI"))
 _register(MethodDescriptor("GET /console", READ_SCOPE, "read", "Web console UI"))
 _register(MethodDescriptor("GET /static/{file}", READ_SCOPE, "read", "Web console static assets"))
 _register(MethodDescriptor("GET /readiness", READ_SCOPE, "read", "Readiness check"))
-_register(MethodDescriptor("POST /plan-mission", READ_SCOPE, "read", "Display-only mission preview prototype"))
+_register(MethodDescriptor("POST /plan-mission", READ_SCOPE, "read", "Create a sealed mission-plan preview"))
+_register(MethodDescriptor("POST /plan-mission/stream", READ_SCOPE, "read", "Stream a sealed mission-plan preview run"))
+_register(MethodDescriptor("POST /plan-mission/clarification", READ_SCOPE, "read", "Answer a Mission Agent planning question"))
+_register(MethodDescriptor("POST /plan-mission/clarification/stream", READ_SCOPE, "read", "Stream a resumed Mission Agent planning run"))
+_register(MethodDescriptor("POST /plan-mission/confirm", APPROVALS_SCOPE, "approve", "Consume a sealed mission plan once"))
 _register(MethodDescriptor("POST /recover", EMERGENCY_RECOVERY_SCOPE, "emergency", "Reset Mission Gateway admission projection"))
 
 # Enrollment endpoints

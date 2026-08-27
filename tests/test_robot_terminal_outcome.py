@@ -3,6 +3,7 @@ import pytest
 from fireclaw_core.task.terminal_outcome import (
     build_robot_task_terminal_outcome,
     normalize_robot_task_terminal_status,
+    robot_task_operator_message,
     robot_task_status_from_trace,
     robot_task_terminal_status_from_trace,
 )
@@ -23,6 +24,20 @@ from fireclaw_core.task.terminal_outcome import (
 )
 def test_normalize_robot_task_terminal_status(raw_status, expected):
     assert normalize_robot_task_terminal_status(raw_status) == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("succeeded", "任务已完成。"),
+        ("blocked", "任务已阻塞，无法安全继续。"),
+        ("awaiting_confirmation", "任务等待操作员确认。"),
+        ("clarify", "任务需要补充信息，暂不能继续。"),
+        ("unknown", "任务执行失败。"),
+    ],
+)
+def test_robot_task_operator_message_is_deterministic_chinese(status, expected):
+    assert robot_task_operator_message(status) == expected
 
 
 def test_awaiting_confirmation_is_active_instead_of_terminal():

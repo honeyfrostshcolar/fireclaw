@@ -2964,3 +2964,64 @@ def test_memory_degradation_does_not_block_planning(tmp_path):
     # Decision is "allow" even though memory is degraded
     assert mem_decision.status == "allow"
     assert mem_decision.reason == "memory_context_degraded"
+
+
+def test_sealed_failure_reasons_extract_move_base_abort() -> None:
+    from fireclaw_core.mission.mission_agent import (
+        _sealed_failure_message,
+        _sealed_plan_failure_reasons,
+    )
+
+    subtask_results = [
+        {
+            "command": "导航到地图坐标原点 (0, 0)",
+            "result": {
+                "execution": {
+                    "steps": [
+                        {
+                            "skill_name": "navigate_to_point",
+                            "status": "failed",
+                            "output": {
+                                "status": "aborted",
+                                "error_code": "move_base_aborted",
+                                "goal_status_text": (
+                                    "Failed to find a valid plan. Even after "
+                                    "executing all recovery behaviors"
+                                ),
+                            },
+                        }
+                    ]
+                }
+            },
+        }
+    ]
+
+    reasons = _sealed_plan_failure_reasons(subtask_results)
+    assert len(reasons) == 1
+    assert "move_base_aborted" in reasons[0]
+    assert "导航到地图坐标原点" in reasons[0]
+
+    message = _sealed_failure_message(
+        "Mission stopped by failure policy after Robot terminal outcome blocked.",
+        reasons,
+    )
+    assert "move_base_aborted" in message
+    assert "机器人侧原因" in message
+
+    succeeded = [
+        {
+            "command": "导航到(0.63, 0.54)",
+            "result": {
+                "execution": {
+                    "steps": [
+                        {
+                            "skill_name": "navigate_to_point",
+                            "status": "succeeded",
+                            "output": {"status": "succeeded", "goal_reached": True},
+                        }
+                    ]
+                }
+            },
+        }
+    ]
+    assert _sealed_plan_failure_reasons(succeeded) == []

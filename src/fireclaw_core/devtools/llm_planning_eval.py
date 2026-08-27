@@ -10,7 +10,7 @@ Usage::
 
     python -m \
       fireclaw_core.devtools.llm_planning_eval \
-      --config fireclaw.toml \
+      --config fireclaw.sim.toml \
       --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
       --output-dir results/embodied-eval/llm-planning-example \
       --temperature 0
@@ -694,7 +694,7 @@ def _resolve_provider_settings(
     if base_url is None:
         raise ValueError(
             "provider_base_url is required; pass --provider-base-url or "
-            "set [provider].base_url in fireclaw.toml"
+            "set [provider].base_url in fireclaw.sim.toml"
         )
     resolved_name = _nonempty_config_string(
         provider_name
@@ -708,8 +708,8 @@ def _resolve_provider_settings(
     )
     if resolved_model is None:
         raise ValueError(
-            "model is required; pass --model or set [provider].model in "
-            "fireclaw.toml"
+            "model is required; pass --model or set [provider].model in the "
+            "selected mode-specific TOML"
         )
     resolved_api_key_env = _nonempty_config_string(
         api_key_env
@@ -737,8 +737,8 @@ def _resolve_provider_settings(
         }
     if not api_key:
         raise ValueError(
-            "Provider credential is missing; set [provider].api_key in "
-            "fireclaw.toml or the configured API-key environment variable "
+            "Provider credential is missing; set [provider].api_key in the "
+            "selected mode-specific TOML or the configured API-key environment variable "
             f"{resolved_api_key_env!r}"
         )
 
@@ -767,6 +767,7 @@ def _resolve_provider_settings(
         "model": resolved_model,
         "api_key": api_key,
         "api_key_env": resolved_api_key_env,
+        "thinking": config.get("provider_thinking"),
         "credential_source": credential_source,
         "catalog_path": catalog_path,
     }
@@ -783,8 +784,9 @@ def main(argv: list[str] | None = None) -> int:
         "--config",
         default=None,
         help=(
-            "Path to fireclaw.toml; defaults to ./fireclaw.toml when present. "
-            "Explicit provider flags override [provider]."
+            "Path to a mode-specific TOML; legacy ./fireclaw.toml is only "
+            "auto-detected for compatibility. Explicit provider flags override "
+            "[provider]."
         ),
     )
     parser.add_argument("--scenarios", required=True)
@@ -850,10 +852,15 @@ def main(argv: list[str] | None = None) -> int:
             model=provider_settings["model"],
             model_catalog_path=catalog_path,
         )
+        provider_kwargs: dict[str, Any] = {
+            "base_url": provider_settings["base_url"],
+            "api_key": provider_settings["api_key"],
+            "timeout": args.provider_timeout,
+        }
+        if provider_settings["thinking"] is not None:
+            provider_kwargs["thinking"] = provider_settings["thinking"]
         provider = OpenAICompatProvider(
-            base_url=provider_settings["base_url"],
-            api_key=provider_settings["api_key"],
-            timeout=args.provider_timeout,
+            **provider_kwargs,
         )
         catalog = ModelCatalog(catalog_path) if catalog_path else None
         provider_runtime = SimpleProviderRuntime(

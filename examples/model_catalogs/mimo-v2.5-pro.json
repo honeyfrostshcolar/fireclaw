@@ -1,0 +1,13 @@
+{
+  "default_model": "mimo-v2.5-pro",
+  "models": [
+    {
+      "id": "mimo-v2.5-pro",
+      "name": "MiMo V2.5 Pro",
+      "provider": "mimo",
+      "context_window": 32768,
+      "max_tokens": 4096,
+      "supports_tools": true
+    }
+  ]
+}

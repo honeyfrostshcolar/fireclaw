@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from urllib import request
 from urllib.error import HTTPError
 
@@ -10,7 +11,12 @@ from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.gateway.control import OperatorContext
 from fireclaw_core.gateway.network_security import GatewayNetworkPolicy
 from fireclaw_core.mission.mission_agent import MissionAgent
-from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.mission_gateway import (
+    MissionGateway,
+    MissionGatewayConfig,
+    _mission_run_status_projection,
+    _mission_run_stream_payload,
+)
 from fireclaw_core.approval.approval_runtime import ApprovalRuntime
 from fireclaw_core.mission.mission_planner import (
     MissionPlan,
@@ -92,9 +98,13 @@ class FakePlanner:
                     MissionSubtask(
                         robot_id=available_ids[0],
                         command=command,
-                        floor=2,
+                        floor=None,
                         capability_required="victim_search",
                         execution_group=0,
+                        target={
+                            "frame_id": "map",
+                            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                        },
                     )
                 ],
             ),
@@ -104,6 +114,83 @@ class FakePlanner:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_mission_run_stream_payload_keeps_large_reports_out_of_sse():
+    report = {
+        "status": "completed",
+        "summary": "导航完成",
+        "sensor_findings": "x" * (300 * 1024),
+    }
+
+    ready = _mission_run_stream_payload("mission.report_ready", report)
+    terminal = _mission_run_stream_payload(
+        "mission.completed",
+        {"status": "completed", "final_report": report},
+    )
+
+    assert ready == {
+        "status": "completed",
+        "report_available": True,
+        "report_status": "completed",
+        "report_summary": "导航完成",
+    }
+    assert terminal == {
+        "status": "completed",
+        "report_available": True,
+        "report_status": "completed",
+        "report_summary": "导航完成",
+    }
+    assert len(json.dumps(ready).encode("utf-8")) < 256 * 1024
+    assert "sensor_findings" not in ready
+
+    terminal_pending = _mission_run_stream_payload(
+        "mission.completed",
+        {
+            "status": "completed",
+            "report_status": "pending",
+            "report_pending": True,
+        },
+    )
+    assert terminal_pending == {
+        "status": "completed",
+        "report_status": "pending",
+        "report_pending": True,
+    }
+
+
+def test_mission_run_status_projection_omits_large_result_and_report():
+    projected = _mission_run_status_projection({
+        "mission_id": "mission-1",
+        "status": "completed",
+        "run_status": "completed",
+        "terminal": True,
+        "result": {"status": "succeeded", "findings": "x" * (300 * 1024)},
+        "final_report": {"status": "completed", "details": "y" * (300 * 1024)},
+    })
+
+    assert projected == {
+        "mission_id": "mission-1",
+        "status": "completed",
+        "run_status": "completed",
+        "terminal": True,
+        "result_status": "succeeded",
+        "report_available": True,
+        "report_status": "completed",
+    }
+    assert "result" not in projected
+    assert "final_report" not in projected
+
+    pending = _mission_run_status_projection({
+        "mission_id": "mission-pending",
+        "status": "completed",
+        "run_status": "completed",
+        "terminal": True,
+        "report_status": "pending",
+        "report_pending": True,
+    })
+    assert pending["report_status"] == "pending"
+    assert pending["report_pending"] is True
 
 
 def _make_registry() -> RobotRegistry:
@@ -191,12 +278,155 @@ def _start_gateway(gw: MissionGateway) -> str:
     return gw.base_url
 
 
+def test_streamed_planning_socket_backpressure_does_not_block_agent() -> None:
+    gateway = _make_gateway(_make_agent())
+    release_writer = threading.Event()
+    planner_finished = threading.Event()
+
+    class BlockingWriter:
+        def __init__(self) -> None:
+            self.write_count = 0
+
+        def write(self, value: bytes) -> int:
+            self.write_count += 1
+            if self.write_count >= 2:
+                release_writer.wait(timeout=2.0)
+            return len(value)
+
+        def flush(self) -> None:
+            return None
+
+    class Connection:
+        timeout = None
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, value):
+            self.timeout = value
+
+    class Handler:
+        client_address = ("127.0.0.1", 12345)
+        connection = Connection()
+        wfile = BlockingWriter()
+        close_connection = False
+
+        def send_response(self, status):
+            return None
+
+        def send_header(self, name, value):
+            return None
+
+        def end_headers(self):
+            return None
+
+    def run_planning(event_sink):
+        event_sink(
+            "mission_agent.turn.started",
+            {"iteration": 1, "max_iterations": 4},
+        )
+        planner_finished.set()
+        return {"status": "preview_ready"}
+
+    handler = Handler()
+    stream_thread = threading.Thread(
+        target=gateway._stream_planning_events,
+        kwargs={"handler": handler, "run_planning": run_planning},
+        daemon=True,
+    )
+    stream_thread.start()
+    try:
+        assert planner_finished.wait(timeout=0.5)
+    finally:
+        release_writer.set()
+        stream_thread.join(timeout=2.0)
+
+    assert not stream_thread.is_alive()
+    assert handler.wfile.write_count >= 3
+
+
+def test_streamed_planning_emits_stage_timing_before_final_result() -> None:
+    gateway = _make_gateway(_make_agent())
+
+    class RecordingWriter:
+        def __init__(self) -> None:
+            self.chunks: list[bytes] = []
+
+        def write(self, value: bytes) -> int:
+            self.chunks.append(value)
+            return len(value)
+
+        def flush(self) -> None:
+            return None
+
+    class Connection:
+        timeout = None
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, value):
+            self.timeout = value
+
+    class Handler:
+        client_address = ("127.0.0.1", 12346)
+        connection = Connection()
+        wfile = RecordingWriter()
+        close_connection = False
+
+        def send_response(self, status):
+            return None
+
+        def send_header(self, name, value):
+            return None
+
+        def end_headers(self):
+            return None
+
+    def run_planning(event_sink):
+        event_sink(
+            "mission_agent.stage.completed",
+            {
+                "stage": "readiness",
+                "status": "completed",
+                "duration_ms": 12.34,
+            },
+        )
+        return {
+            "status": "preview_ready",
+            "planning_timing": {
+                "stages": [
+                    {
+                        "stage": "readiness",
+                        "status": "completed",
+                        "duration_ms": 12.34,
+                    },
+                ],
+                "by_stage_ms": {"readiness": 12.34},
+            },
+        }
+
+    handler = Handler()
+    gateway._stream_planning_events(
+        handler=handler,
+        run_planning=run_planning,
+    )
+    stream = b"".join(handler.wfile.chunks).decode("utf-8")
+
+    stage_index = stream.rfind("event: mission_agent.stage.completed")
+    result_index = stream.rfind("event: planning.result")
+    assert stage_index >= 0
+    assert result_index > stage_index
+    assert '"stage":"sse_finalize"' in stream
+    assert '"sse_finalize"' in stream
+
+
 # ---------------------------------------------------------------------------
 # Tests: POST /missions
 # ---------------------------------------------------------------------------
 
 
-def test_post_missions_returns_plan(tmp_path):
+def test_post_missions_cannot_bypass_sealed_plan_confirmation(tmp_path):
     registry = _make_registry()
     client = FakeSubagentClient()
     planner = FakePlanner()
@@ -211,12 +441,14 @@ def test_post_missions_returns_plan(tmp_path):
     try:
         status, body = _json_request(
             base, "POST", "/missions",
-            {"command": "去二楼搜索受困人员", "use_scheduler": False},
+            {
+                "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                "use_scheduler": False,
+            },
         )
-        assert status == 202
-        assert body["status"] == "planned"
-        assert body["mission_id"] is not None
-        assert "subtask_results" in body
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
+        assert "mission_id" not in body
     finally:
         gw.stop()
 
@@ -227,8 +459,8 @@ def test_post_missions_missing_command():
     base = _start_gateway(gw)
     try:
         status, body = _json_request(base, "POST", "/missions", {})
-        assert status == 400
-        assert "command" in body["message"].lower()
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
     finally:
         gw.stop()
 
@@ -250,10 +482,15 @@ def test_post_missions_with_session_id(tmp_path):
             base,
             "POST",
             "/missions",
-            {"command": "去三楼搜索", "session_id": "sess-abc", "use_scheduler": False},
+            {
+                "command": "前往坐标 (3.0, 1.0) 搜索",
+                "session_id": "sess-abc",
+                "use_scheduler": False,
+            },
         )
-        assert status == 202
-        assert body["mission_id"] == "sess-abc"
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
+        assert "mission_id" not in body
     finally:
         gw.stop()
 
@@ -281,23 +518,27 @@ def test_post_missions_with_operator(tmp_path):
                 "use_scheduler": False,
             },
         )
-        assert status == 202
-        assert body["status"] == "planned"
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
     finally:
         gw.stop()
 
 
-def test_post_missions_no_planner():
-    """Without a planner, plan_and_submit returns no_planner."""
+def test_post_missions_no_planner_still_requires_confirmation_contract():
     registry = _make_registry()
     client = FakeSubagentClient()
     agent = _make_agent(registry=registry, subagent_client=client, planner=None)
     gw = _make_gateway(agent, registry=registry, subagent_client=client)
     base = _start_gateway(gw)
     try:
-        status, body = _json_request(base, "POST", "/missions", {"command": "去二楼"})
-        assert status == 400
-        assert body["status"] == "no_planner"
+        status, body = _json_request(
+            base,
+            "POST",
+            "/missions",
+            {"command": "前往坐标 (2.0, 1.5)"},
+        )
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
     finally:
         gw.stop()
 
@@ -1136,8 +1377,8 @@ def test_mission_sse_endpoint_rejects_forged_scope_without_authentication():
 # ---------------------------------------------------------------------------
 
 
-def test_submit_emits_mission_events(tmp_path):
-    """POST /missions emits mission.submitted and mission.planned events."""
+def test_direct_submit_emits_no_mission_events(tmp_path):
+    """Blocked POST /missions emits no lifecycle event or robot work."""
     registry = _make_registry()
     client = FakeSubagentClient()
     planner = FakePlanner()
@@ -1160,29 +1401,20 @@ def test_submit_emits_mission_events(tmp_path):
     try:
         status, body = _json_request(
             base, "POST", "/missions",
-            {"command": "去二楼搜索受困人员", "use_scheduler": False},
+            {
+                "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                "use_scheduler": False,
+            },
         )
-        assert status == 202
-        mission_id = body["mission_id"]
-
-        # Check mission.submitted event
-        submitted = [e for e in collected_events if e.event_type == "mission.submitted"]
-        assert len(submitted) == 1
-        assert submitted[0].mission_id == mission_id
-        assert submitted[0].source == "mission-gateway"
-        assert submitted[0].payload["command"] == "去二楼搜索受困人员"
-
-        # Check mission.planned event
-        planned = [e for e in collected_events if e.event_type == "mission.planned"]
-        assert len(planned) == 1
-        assert planned[0].mission_id == mission_id
-        assert planned[0].payload["intent"] == "search"
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
+        assert collected_events == []
+        assert client.calls == []
     finally:
         gw.stop()
 
 
-def test_submit_emits_subtask_dispatched_events(tmp_path):
-    """POST /missions emits mission.subtask_dispatched for each accepted subtask."""
+def test_direct_submit_emits_no_subtask_dispatched_events(tmp_path):
     registry = _make_registry()
     client = FakeSubagentClient()
     planner = FakePlanner()
@@ -1204,18 +1436,16 @@ def test_submit_emits_subtask_dispatched_events(tmp_path):
     try:
         status, body = _json_request(
             base, "POST", "/missions",
-            {"command": "去二楼搜索", "use_scheduler": False},
+            {
+                "command": "前往坐标 (2.0, 1.5) 搜索",
+                "use_scheduler": False,
+            },
         )
-        assert status == 202
-
-        # Check mission.subtask_dispatched events
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
         dispatched = [e for e in collected_events if e.event_type == "mission.subtask_dispatched"]
-        assert len(dispatched) >= 1
-        for evt in dispatched:
-            assert evt.mission_id == body["mission_id"]
-            assert evt.task_id is not None
-            assert evt.payload["robot_id"] is not None
-            assert evt.payload["status"] == "accepted"
+        assert dispatched == []
+        assert client.calls == []
     finally:
         gw.stop()
 
@@ -1350,8 +1580,7 @@ def test_cancel_no_subtask_emits_no_cancel_event(tmp_path):
         gw.stop()
 
 
-def test_submit_no_planner_emits_no_mission_events():
-    """POST /missions with no planner emits zero mission.* events."""
+def test_direct_submit_without_planner_emits_no_mission_events():
     registry = _make_registry()
     client = FakeSubagentClient()
     agent = _make_agent(registry=registry, subagent_client=client, planner=None)
@@ -1365,9 +1594,14 @@ def test_submit_no_planner_emits_no_mission_events():
     gw._event_bus.subscribe(_collector)
     base = _start_gateway(gw)
     try:
-        status, body = _json_request(base, "POST", "/missions", {"command": "去二楼"})
-        assert status == 400
-        assert body["status"] == "no_planner"
+        status, body = _json_request(
+            base,
+            "POST",
+            "/missions",
+            {"command": "前往坐标 (2.0, 1.5)"},
+        )
+        assert status == 428
+        assert body["error_code"] == "plan_confirmation_required"
 
         mission_events = [e for e in collected_events if e.event_type.startswith("mission.")]
         assert len(mission_events) == 0, f"Expected no mission events, got: {[e.event_type for e in mission_events]}"

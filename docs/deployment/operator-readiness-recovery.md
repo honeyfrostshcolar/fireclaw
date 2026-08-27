@@ -6,7 +6,7 @@
 ## 状态检查
 
 ```bash
-fireclaw status --profile /opt/firebot/firebot.toml
+fireclaw status --profile /opt/firebot/fireclaw.real.toml
 ```
 
 状态同时检查：
@@ -34,7 +34,7 @@ fireclaw status --profile /opt/firebot/firebot.toml
 默认输出面向操作员；自动化系统使用完整证据 envelope：
 
 ```bash
-fireclaw status --profile /opt/firebot/firebot.toml --json
+fireclaw status --profile /opt/firebot/fireclaw.real.toml --json
 ```
 
 稳定字段包括 `phase`、`safe_state`、`reason_code`、`retryable`、`operator_action` 和
@@ -45,7 +45,7 @@ Fleet Doctor 默认使用 Profile 中受信任的 Mission Gateway probe URL；�
 
 ```bash
 fireclaw status \
-  --profile /opt/firebot/firebot.toml \
+  --profile /opt/firebot/fireclaw.real.toml \
   --server https://mission-gateway.example:8766 \
   --mission-api-token "$FIRECLAW_GATEWAY_TOKEN"
 ```
@@ -59,7 +59,7 @@ Robot Gateway 的 `--api-token` 与 Mission Gateway 的 `--mission-api-token` �
 `deploy apply`；unit 未安装时提示 `deploy service install`；已安装但 inactive 时提示：
 
 ```bash
-fireclaw deploy service start --profile /opt/firebot/firebot.toml
+fireclaw deploy service start --profile /opt/firebot/fireclaw.real.toml
 ```
 
 前台调试仍可运行 `<deployment-root>/current/bin/fireclaw-runtime`。两个入口都按 bringup -> ROS
@@ -88,7 +88,7 @@ Doctor 聚合机器人登记、可达性、能力声明、onboarding 和 lifecyc
 Robot Gateway 在线，然后运行：
 
 ```bash
-fireclaw recover --profile /opt/firebot/firebot.toml
+fireclaw recover --profile /opt/firebot/fireclaw.real.toml
 ```
 
 交互流程会：
@@ -108,7 +108,7 @@ fireclaw recover --profile /opt/firebot/firebot.toml
 
 ```bash
 fireclaw recover \
-  --profile /opt/firebot/firebot.toml \
+  --profile /opt/firebot/fireclaw.real.toml \
   --reason "operator inspected the scene and requested recovery" \
   --request-only \
   --json
@@ -119,7 +119,7 @@ fireclaw recover \
 
 ```bash
 fireclaw recover \
-  --profile /opt/firebot/firebot.toml \
+  --profile /opt/firebot/fireclaw.real.toml \
   --request-id recovery-...
 ```
 
@@ -131,7 +131,7 @@ hardware-owned 或证据结构不完整的 Provider；所以“有一个服务�
 实机恢复要求硬件 stop 服务确认后，同时证明：watchdog 健康且 stop asserted、物理急停有效、
 driver disabled、声明存在的制动器 engaged、显式列出的全部执行器连续静止，以及独立 odometry
 连续静止。默认下限是 3 个样本和 0.75 秒；任何缺失、陈旧、未知执行器或运动样本都会保持冻结。
-配置模板见 `examples/deployment_profiles/navigation_robot.toml.example`，字段必须绑定厂商驱动拥有
+配置模板见 `fireclaw.real.example.toml`，字段必须绑定厂商驱动拥有
 的接口，不能绑定 FireClaw 自己发布的命令回显。
 
 逻辑准入恢复后硬件急停仍保持有效；FireClaw 不清除物理安全链，也不会恢复旧任务。只有现场另行

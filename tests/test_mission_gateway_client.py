@@ -21,6 +21,7 @@ import pytest
 
 from fireclaw_core.mission.mission_gateway_client import (
     MissionGatewayClient,
+    MissionGatewayRequestError,
     _iter_sse_events,
 )
 from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent
@@ -147,6 +148,7 @@ def _make_echo_handler(expected_responses: dict[str, dict[str, Any]], captured_r
             captured_requests.append({
                 "method": method,
                 "path": path,
+                "query": parsed.query,
                 "headers": dict(self.headers),
                 "body": body,
             })
@@ -185,22 +187,114 @@ def _start_echo_server(responses: dict[str, dict[str, Any]]) -> tuple[HTTPServer
 
 
 class TestMissionGatewayClient:
-    def test_submit_mission(self) -> None:
+    def test_json_http_error_is_bounded_typed_request_error(self) -> None:
         responses = {
-            "POST /missions": {
+            "POST /plan-mission": {
+                "status": 422,
+                "body": {
+                    "status": "error",
+                    "message": "LLM 未返回工具调用。",
+                    "preview_created": False,
+                },
+            },
+        }
+        server, base_url, _ = _start_echo_server(responses)
+        try:
+            client = MissionGatewayClient(base_url)
+            with pytest.raises(MissionGatewayRequestError) as captured:
+                client.preview_mission("随便往前走")
+
+            error = captured.value
+            assert isinstance(error, HTTPError)
+            assert error.status_code == 422
+            assert error.gateway_code == "http_422"
+            assert error.gateway_message == "LLM 未返回工具调用。"
+            assert error.payload["preview_created"] is False
+            assert error.retryable is False
+        finally:
+            server.shutdown()
+
+    def test_preview_then_confirm_plan(self) -> None:
+        preview = {
+            "status": "preview_ready",
+            "artifact_id": "artifact-1",
+            "plan_token": "token-1",
+            "plan_digest": "sha256:digest",
+            "status_version": 1,
+            "session_id": "plan-session-1",
+            "robot_ids": ["robot-1"],
+        }
+        responses = {
+            "POST /plan-mission": {
+                "status": 200,
+                "body": preview,
+            },
+            "POST /plan-mission/confirm": {
                 "status": 202,
-                "body": {"status": "planned", "mission_id": "m-1"},
+                "body": {"status": "accepted", "mission_id": "m-1"},
             },
         }
         server, base_url, captured = _start_echo_server(responses)
         try:
             client = MissionGatewayClient(base_url)
-            result = client.submit_mission("去二楼搜索")
-            assert result["status"] == "planned"
-            assert result["mission_id"] == "m-1"
-            # Verify the request was sent correctly
-            req = captured[-1]
-            assert req["body"]["command"] == "去二楼搜索"
+            issued = client.preview_mission(
+                "前往坐标 (2.0, 1.5) 搜索",
+                target_robot="robot-1",
+            )
+            result = client.confirm_plan(issued, operator_confirmed=True)
+
+            assert result == {"status": "accepted", "mission_id": "m-1"}
+            assert captured[0]["path"] == "/plan-mission"
+            assert captured[0]["body"] == {
+                "command": "前往坐标 (2.0, 1.5) 搜索",
+                "target_robot": "robot-1",
+            }
+            assert captured[1]["path"] == "/plan-mission/confirm"
+            assert captured[1]["body"] == {
+                "artifact_id": "artifact-1",
+                "plan_token": "token-1",
+                "plan_digest": "sha256:digest",
+                "status_version": 1,
+                "session_id": "plan-session-1",
+                "robot_ids": ["robot-1"],
+                "operator_confirmed": True,
+            }
+        finally:
+            server.shutdown()
+
+    def test_answer_planning_clarification_uses_bound_session(self) -> None:
+        responses = {
+            "POST /plan-mission/clarification": {
+                "status": 200,
+                "body": {
+                    "status": "preview_ready",
+                    "planning_session_id": "planning-1",
+                },
+            },
+        }
+        server, base_url, captured = _start_echo_server(responses)
+        try:
+            client = MissionGatewayClient(base_url)
+            result = client.answer_planning_clarification(
+                "planning-1",
+                "map 坐标 (1.8, -0.1)，yaw=-2.34",
+            )
+
+            assert result["status"] == "preview_ready"
+            assert captured[0]["body"] == {
+                "planning_session_id": "planning-1",
+                "answer": "map 坐标 (1.8, -0.1)，yaw=-2.34",
+            }
+        finally:
+            server.shutdown()
+
+    def test_direct_submit_is_rejected_before_network(self) -> None:
+        server, base_url, captured = _start_echo_server({})
+        try:
+            client = MissionGatewayClient(base_url)
+            with pytest.raises(RuntimeError, match="preview_mission"):
+                client.submit_mission("前往坐标 (2.0, 1.5) 搜索")
+            assert captured == []
         finally:
             server.shutdown()
 
@@ -216,6 +310,28 @@ class TestMissionGatewayClient:
             client = MissionGatewayClient(base_url)
             result = client.get_mission_trace("m-1")
             assert result["mission_id"] == "m-1"
+        finally:
+            server.shutdown()
+
+    def test_get_mission_run_status_uses_bounded_view(self) -> None:
+        responses = {
+            "GET /missions/m-1/run": {
+                "status": 200,
+                "body": {
+                    "mission_id": "m-1",
+                    "status": "completed",
+                    "run_status": "completed",
+                    "terminal": True,
+                },
+            },
+        }
+        server, base_url, captured = _start_echo_server(responses)
+        try:
+            client = MissionGatewayClient(base_url)
+            result = client.get_mission_run_status("m-1")
+            assert result["terminal"] is True
+            assert result["run_status"] == "completed"
+            assert captured[-1]["query"] == "view=status"
         finally:
             server.shutdown()
 
@@ -280,6 +396,25 @@ class TestMissionGatewayClient:
             result = client.get_fleet_state()
             assert len(result["entries"]) == 1
             assert result["entries"][0]["robot_id"] == "robot-1"
+        finally:
+            server.shutdown()
+
+    def test_get_readiness(self) -> None:
+        responses = {
+            "GET /readiness": {
+                "status": 200,
+                "body": {
+                    "status": "ok",
+                    "runtime_mode": "simulation",
+                    "robot_readiness": [],
+                },
+            },
+        }
+        server, base_url, _ = _start_echo_server(responses)
+        try:
+            client = MissionGatewayClient(base_url)
+            result = client.get_readiness()
+            assert result["runtime_mode"] == "simulation"
         finally:
             server.shutdown()
 
@@ -355,26 +490,22 @@ class TestMissionGatewayClient:
         finally:
             server.shutdown()
 
-    def test_submit_mission_passes_extra_kwargs(self) -> None:
-        """Verify extra kwargs are passed in the POST body."""
+    def test_confirm_plan_rejects_incomplete_preview(self) -> None:
         responses = {
-            "POST /missions": {
+            "POST /plan-mission/confirm": {
                 "status": 202,
-                "body": {"status": "planned", "mission_id": "m-2"},
-            },
+                "body": {"status": "accepted", "mission_id": "m-2"},
+            }
         }
         server, base_url, captured = _start_echo_server(responses)
         try:
             client = MissionGatewayClient(base_url)
-            result = client.submit_mission(
-                "搜索",
-                session_id="sess-1",
-                use_scheduler=False,
-            )
-            req = captured[-1]
-            assert req["body"]["command"] == "搜索"
-            assert req["body"]["session_id"] == "sess-1"
-            assert req["body"]["use_scheduler"] is False
+            with pytest.raises(ValueError, match="plan_token"):
+                client.confirm_plan(
+                    {"artifact_id": "artifact-1"},
+                    operator_confirmed=True,
+                )
+            assert captured == []
         finally:
             server.shutdown()
 
@@ -587,8 +718,10 @@ class TestSSECursorReplayGateway:
 
 
 class TestMissionGatewayClientIntegration:
-    def test_client_submit_mission_real(self, tmp_path) -> None:
-        """Test submit_mission against a real MissionGateway."""
+    def test_client_preview_and_confirm_real(self, tmp_path) -> None:
+        """Test the explicit sealed-plan flow against a real MissionGateway."""
+        import hashlib
+
         from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
         from fireclaw_core.mission.mission_agent import MissionAgent
         from fireclaw_core.mission.mission_planner import (
@@ -597,6 +730,8 @@ class TestMissionGatewayClientIntegration:
             MissionPlanningResult,
             MissionSubtask,
         )
+        from fireclaw_core.mission.plan_artifact import PlanArtifactStore
+        from fireclaw_core.mission.runtime_identity import GatewayRuntimeIdentity
         from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 
         registry = RobotRegistry([
@@ -639,9 +774,13 @@ class TestMissionGatewayClientIntegration:
                         subtasks=[MissionSubtask(
                             robot_id=available_ids[0],
                             command=command,
-                            floor=1,
+                            floor=None,
                             capability_required="search",
                             execution_group=0,
+                            target={
+                                "frame_id": "map",
+                                "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                            },
                         )],
                     ),
                 )
@@ -651,13 +790,43 @@ class TestMissionGatewayClientIntegration:
             subagent_client=FakeClient(),
             planner=FakePlanner(),
         )
+        profile_path = tmp_path / "active-profile.json"
+        profile_path.write_text(
+            json.dumps({
+                "runtime_mode": "simulation",
+                "robot_id": "robot-1",
+                "scope": "2d_map_client_integration",
+            }, sort_keys=True),
+            encoding="utf-8",
+        )
         config = MissionGatewayConfig(port=0)
-        gw = MissionGateway(config, mission_agent=agent, registry=registry, subagent_client=FakeClient())
+        gw = MissionGateway(
+            config,
+            mission_agent=agent,
+            registry=registry,
+            subagent_client=FakeClient(),
+            runtime_identity=GatewayRuntimeIdentity.create(
+                runtime_mode="simulation",
+                active_profile_path=profile_path,
+                profile_sha256=hashlib.sha256(
+                    profile_path.read_bytes()
+                ).hexdigest(),
+                robot_id="robot-1",
+            ),
+            plan_artifact_store=PlanArtifactStore(
+                tmp_path / "plan-artifacts.jsonl"
+            ),
+        )
         gw.start()
         try:
             client = MissionGatewayClient(gw.base_url)
-            result = client.submit_mission("去二楼搜索", use_scheduler=False)
-            assert result["status"] == "planned"
+            preview = client.preview_mission(
+                "前往坐标 (2.0, 1.5) 搜索",
+                target_robot="robot-1",
+            )
+            result = client.confirm_plan(preview, operator_confirmed=True)
+            assert preview["status"] == "preview_ready"
+            assert result["status"] == "accepted"
             assert "mission_id" in result
         finally:
             gw.stop()
@@ -729,6 +898,73 @@ class TestMissionGatewayClientIntegration:
             assert events[0]["event_type"] == "ev.1"
         finally:
             server.shutdown()
+
+    def test_client_stream_preview_mission_posts_and_parses_final(self) -> None:
+        captured: list[dict[str, Any]] = []
+
+        class PlanningSSEHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                captured.append({
+                    "path": self.path,
+                    "accept": self.headers.get("Accept"),
+                    "body": json.loads(self.rfile.read(length).decode("utf-8")),
+                })
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                events = [
+                    {
+                        "event_type": "mission_agent.turn.started",
+                        "sequence": 1,
+                        "elapsed_seconds": 0.1,
+                        "payload": {"iteration": 1},
+                    },
+                    {
+                        "event_type": "planning.result",
+                        "sequence": 2,
+                        "elapsed_seconds": 0.2,
+                        "payload": {"status": "preview_ready"},
+                    },
+                ]
+                for event in events:
+                    block = (
+                        f"event: {event['event_type']}\n"
+                        f"id: {event['sequence']}\n"
+                        f"data: {json.dumps(event)}\n\n"
+                    )
+                    self.wfile.write(block.encode("utf-8"))
+                    self.wfile.flush()
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), PlanningSSEHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address
+        try:
+            client = MissionGatewayClient(f"http://{host}:{port}")
+            events = list(client.stream_preview_mission(
+                "前往坐标 (2.0, 1.5) 搜索",
+                target_robot="robot-1",
+            ))
+        finally:
+            server.shutdown()
+
+        assert captured == [{
+            "path": "/plan-mission/stream",
+            "accept": "text/event-stream",
+            "body": {
+                "command": "前往坐标 (2.0, 1.5) 搜索",
+                "target_robot": "robot-1",
+            },
+        }]
+        assert [event["event_type"] for event in events] == [
+            "mission_agent.turn.started",
+            "planning.result",
+        ]
+        assert events[-1]["payload"]["status"] == "preview_ready"
 
     def test_client_stream_reconnect_with_after_sequence(self) -> None:
         """Verify reconnect by resuming from a given after_sequence."""

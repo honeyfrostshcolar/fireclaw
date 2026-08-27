@@ -285,3 +285,83 @@ def test_mission_agent_versions_and_binds_state_snapshot(tmp_path) -> None:
         if item.content.get("artifact_type") == "mission_deliberation_trace"
     ]
     assert len(deliberations) == 2
+
+
+def test_snapshot_preserves_robot_pose():
+    builder = MissionStateSnapshotBuilder(registry=_registry())
+    snapshot = builder.build(
+        mission_id="mission-pose-test",
+        presence={
+            "robot-a": {
+                "online": True,
+                "state": {
+                    "robot_state": {
+                        "mode": "simulation",
+                        "battery_percent": 90.0,
+                        "pose": {"x": -2.0, "y": -0.5, "yaw": 0.0, "frame_id": "map"},
+                    }
+                },
+            }
+        },
+    )
+
+    robot_a = next(r for r in snapshot.robots if r.robot_id == "robot-a")
+    assert robot_a.pose == {"x": -2.0, "y": -0.5, "yaw": 0.0, "frame_id": "map"}
+    as_dict = robot_a.to_dict()
+    assert as_dict["pose"] == {"x": -2.0, "y": -0.5, "yaw": 0.0, "frame_id": "map"}
+
+
+def test_snapshot_does_not_fabricate_navigation_robot_pose():
+    registry = RobotRegistry([
+        RobotRegistryEntry(
+            robot_id="gazebo_turtlebot3",
+            base_url="http://robot.test",
+            capabilities=("navigation",),
+        )
+    ])
+    builder = MissionStateSnapshotBuilder(registry=registry)
+
+    snapshot = builder.build(
+        mission_id="mission-no-pose",
+        presence={
+            "gazebo_turtlebot3": {
+                "online": True,
+                "state": {"robot_state": {"mode": "ros1"}},
+            }
+        },
+    )
+
+    assert snapshot.robots[0].pose is None
+
+
+def test_snapshot_rejects_non_finite_or_incomplete_pose():
+    builder = MissionStateSnapshotBuilder(registry=_registry())
+
+    snapshot = builder.build(
+        mission_id="mission-invalid-pose",
+        presence={
+            "robot-a": {
+                "online": True,
+                "state": {
+                    "robot_state": {
+                        "pose": {
+                            "x": float("nan"),
+                            "y": -0.5,
+                            "yaw": 0.0,
+                            "frame_id": "map",
+                        }
+                    }
+                },
+            },
+            "robot-b": {
+                "online": True,
+                "state": {
+                    "robot_state": {
+                        "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0}
+                    }
+                },
+            },
+        },
+    )
+
+    assert all(robot.pose is None for robot in snapshot.robots)

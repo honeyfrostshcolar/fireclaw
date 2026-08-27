@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
-from math import cos, isfinite, sin
+from math import atan2, cos, isfinite, sin
 from threading import RLock
 from time import monotonic, sleep
 from typing import Any, Literal, Mapping, Protocol, Sequence
@@ -371,6 +371,12 @@ class InMemoryMoveBaseBackend:
         self._lock = RLock()
         self.calls: list[dict[str, Any]] = []
         self.status = dict(status or {"status": "idle", "goal_active": False})
+        self.current_pose: dict[str, Any] | None = {
+            "x": -2.0,
+            "y": -0.5,
+            "yaw": 0.0,
+            "frame_id": "map",
+        }
         self.parameters: dict[str, dict[str, Any]] = {
             scope: {} for scope in MOVE_BASE_SCOPES
         }
@@ -381,7 +387,11 @@ class InMemoryMoveBaseBackend:
     def get_status(self) -> Mapping[str, Any]:
         with self._lock:
             self.calls.append({"operation": "get_status"})
-            return {"status": "succeeded", **dict(self.status)}
+            return {
+                "status": "succeeded",
+                "current_pose": dict(self.current_pose) if self.current_pose is not None else None,
+                **dict(self.status),
+            }
 
     def navigate_to_point(
         self,
@@ -400,6 +410,7 @@ class InMemoryMoveBaseBackend:
         }
         with self._lock:
             self.calls.append({"operation": "navigate_to_point", **target})
+            self.current_pose = dict(target)
             self.status.update(
                 {
                     "status": "succeeded",
@@ -522,8 +533,13 @@ class Ros1MoveBaseBackend:
     stop_evidence_max_linear_speed: float = 0.01
     stop_evidence_max_angular_speed: float = 0.02
     stop_evidence_minimum_samples: int = 3
+    pose_map_frame: str = "map"
+    pose_base_frame: str = "base_footprint"
+    pose_lookup_timeout_seconds: float = 1.5
     _clients: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _action_client: Any | None = field(default=None, init=False, repr=False)
+    _tf_buffer: Any | None = field(default=None, init=False, repr=False)
+    _tf_listener: Any | None = field(default=None, init=False, repr=False)
 
     def _rospy(self) -> Any:
         rospy = import_module("rospy")
@@ -560,10 +576,54 @@ class Ros1MoveBaseBackend:
             )
         return self._action_client
 
+    def _measured_pose(self, rospy: Any) -> dict[str, float | str] | None:
+        """Read the live map->base transform as measured arrival evidence.
+
+        The commanded x/y/yaw echoed in the navigation result only restates
+        the goal. Completion contracts must be verified against an actual
+        pose measurement, so this lookup runs after move_base reports
+        success. Returns None (never a guess) when TF has no fresh data.
+        """
+        try:
+            tf2_ros = import_module("tf2_ros")
+            if self._tf_buffer is None or self._tf_listener is None:
+                self._tf_buffer = tf2_ros.Buffer()
+                self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
+            transform = self._tf_buffer.lookup_transform(
+                self.pose_map_frame,
+                self.pose_base_frame,
+                rospy.Time(0),
+                rospy.Duration(self.pose_lookup_timeout_seconds),
+            )
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            yaw = atan2(
+                2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+                1.0 - 2.0 * (rotation.y**2 + rotation.z**2),
+            )
+            return {
+                "x": float(translation.x),
+                "y": float(translation.y),
+                "yaw": float(yaw),
+                "frame_id": str(transform.header.frame_id),
+            }
+        except Exception:
+            # Fail honest: no fresh TF evidence means no pose claim.
+            return None
+
+    def _current_map_pose(self) -> dict[str, float | str] | None:
+        """Return current TF pose without ever substituting a configured goal."""
+
+        return self._measured_pose(self._rospy())
+
     def get_status(self) -> Mapping[str, Any]:
         client = self._action()
         if not client.wait_for_server(timeout=self._rospy().Duration(self.timeout_seconds)):
-            return {"status": "error", "error_code": "move_base_unavailable"}
+            return {
+                "status": "error",
+                "error_code": "move_base_unavailable",
+                "current_pose": self._current_map_pose(),
+            }
         state = int(client.get_state())
         return {
             "status": "succeeded",
@@ -571,6 +631,21 @@ class Ros1MoveBaseBackend:
             "goal_state_name": _ACTION_STATE_NAMES.get(state, "unknown"),
             "goal_active": state in {0, 1, 6, 7},
             "action_name": self.action_name,
+            "current_pose": self._current_map_pose(),
+        }
+
+    def get_current_pose(self) -> Mapping[str, Any]:
+        pose = self._current_map_pose()
+        if pose is None:
+            return {
+                "status": "error",
+                "error_code": "tf_pose_unavailable",
+                "message": "Current map frame transform is not available from TF.",
+            }
+        return {
+            "status": "succeeded",
+            "pose": pose,
+            "frame_id": pose.get("frame_id", "map"),
         }
 
     def navigate_to_point(
@@ -657,6 +732,11 @@ class Ros1MoveBaseBackend:
             "yaw": float(yaw),
             "frame_id": str(frame_id),
         }
+        if state == 3:
+            # Arrival claim must rest on a measured pose, not the echoed goal.
+            measured = self._measured_pose(rospy)
+            if measured is not None:
+                result["pose"] = measured
         error_code = _ACTION_FAILURE_CODES.get(state)
         if error_code is not None:
             result["error_code"] = error_code
@@ -1193,7 +1273,7 @@ def _navigation_point_inputs(arguments: dict[str, Any]) -> dict[str, Any]:
 def move_base_navigation_physical_tools(
     backend: MoveBaseNavigationBackend,
     *,
-    timeout_seconds: float = 120.0,
+    timeout_seconds: float = 360.0,
     cancellation_ack_timeout_seconds: float = 2.0,
 ) -> tuple[PhysicalToolSpec, ...]:
     """Build Plugin-owned physical navigation Tool contracts.
@@ -1345,11 +1425,31 @@ def move_base_navigation_agent_tools(
         ToolSpec(
             name="move_base_navigation_status",
             description=(
-                "Read the current structured move_base action status. "
+                "Read the current structured move_base action status and current_pose. "
                 "Use this after a navigation timeout or unexpected motion."
             ),
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=lambda _arguments: _safe_backend_call(backend.get_status),
+            effect="read",
+            modes=("simulation", "real"),
+            **common,
+        ),
+        ToolSpec(
+            name="navigation_get_pose",
+            description=(
+                "Read the robot's current estimated physical pose (x, y, yaw, frame_id) "
+                "from the navigation backend and TF."
+            ),
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=lambda _arguments: (
+                _safe_backend_call(backend.get_current_pose)
+                if hasattr(backend, "get_current_pose")
+                else {
+                    "status": "succeeded",
+                    "pose": getattr(backend, "current_pose", None),
+                    "frame_id": "map",
+                }
+            ),
             effect="read",
             modes=("simulation", "real"),
             **common,

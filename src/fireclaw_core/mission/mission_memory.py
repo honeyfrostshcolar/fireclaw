@@ -101,6 +101,14 @@ class MissionMemoryStore:
         self._indexing_policy = indexing_policy or TranscriptIndexingPolicy()
         self._lock = threading.RLock()
         self._write_guard: Callable[[str], None] | None = None
+        # The JSONL file remains the authority, but physical execution needs
+        # point lookups (duplicate IDs and relation endpoints) on every event.
+        # Keep a process-local projection and invalidate it when the authority
+        # file's O(1) stat token changes.  This turns repeated read-before-write
+        # scans into one lazy load per authority version.
+        self._record_cache: list[MissionMemoryRecord] | None = None
+        self._record_cache_by_id: dict[str, MissionMemoryRecord] | None = None
+        self._record_cache_token: str | None = None
 
     def set_write_guard(self, guard: Callable[[str], None] | None) -> None:
         """Install a mission-level lifecycle guard for future appends."""
@@ -119,17 +127,7 @@ class MissionMemoryStore:
     def snapshot_token(self) -> str:
         """Return an O(1) token that changes when the JSONL authority changes."""
         with self._lock:
-            try:
-                stat = self.path.stat()
-            except FileNotFoundError:
-                return "missing"
-            return ":".join(str(value) for value in (
-                stat.st_dev,
-                stat.st_ino,
-                stat.st_size,
-                stat.st_mtime_ns,
-                stat.st_ctime_ns,
-            ))
+            return self._snapshot_token_unlocked()
 
     def append(self, record: MissionMemoryRecord) -> None:
         if record.record_type not in MEMORY_RECORD_TYPES:
@@ -140,10 +138,19 @@ class MissionMemoryStore:
         with self._lock:
             if self._write_guard is not None:
                 self._write_guard(record.mission_id)
+            # If this store has already materialized its cache, detect an
+            # external append before extending the local projection.  The
+            # normal single-process path only performs an O(1) stat check.
+            if self._record_cache is not None:
+                self._ensure_record_cache_unlocked()
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True))
                 handle.write("\n")
+            if self._record_cache is not None:
+                self._record_cache.append(record)
+                self._record_cache_by_id[record.record_id] = record
+                self._record_cache_token = self._snapshot_token_unlocked()
             if self.index is not None:
                 authority_token = self.snapshot_token()
                 if self._indexing_policy.should_index(record.record_type):
@@ -164,6 +171,7 @@ class MissionMemoryStore:
             raise ValueError("mission_id must not be empty")
         with self._lock:
             if not self.path.exists():
+                self._invalidate_record_cache_unlocked()
                 return 0
             self.path.parent.mkdir(parents=True, exist_ok=True)
             removed = 0
@@ -193,6 +201,7 @@ class MissionMemoryStore:
             except Exception:
                 temporary_path.unlink(missing_ok=True)
                 raise
+            self._invalidate_record_cache_unlocked()
             if self.index is not None:
                 records = self._read_all_unlocked()
                 self.index.clear()
@@ -261,7 +270,9 @@ class MissionMemoryStore:
         mission_id: str | None = None,
         record_type: str | None = None,
     ) -> list[MissionMemoryRecord]:
-        records = self._read_all()
+        with self._lock:
+            self._ensure_record_cache_unlocked()
+            records = list(self._record_cache or ())
         if mission_id is not None:
             records = [r for r in records if r.mission_id == mission_id]
         if record_type is not None:
@@ -288,7 +299,7 @@ class MissionMemoryStore:
                 keyword=keyword,
                 limit=limit,
             )
-        records = self._read_all()
+        records = self.list_records()
         matches: list[MissionMemoryRecord] = []
         for record in records:
             if mission_id is not None and record.mission_id != mission_id:
@@ -342,7 +353,7 @@ class MissionMemoryStore:
         return [_record_from_dict(r) for r in raw]
 
     def summary(self, mission_id: str | None = None) -> dict[str, Any]:
-        records = self._read_all()
+        records = self.list_records()
         if mission_id is not None:
             records = [r for r in records if r.mission_id == mission_id]
         by_type: dict[str, int] = {}
@@ -356,6 +367,47 @@ class MissionMemoryStore:
     def _read_all(self) -> list[MissionMemoryRecord]:
         with self._lock:
             return self._read_all_unlocked()
+
+    def has_record_id(self, record_id: str) -> bool:
+        """Return whether *record_id* exists without rescanning JSONL per call."""
+        with self._lock:
+            self._ensure_record_cache_unlocked()
+            return record_id in (self._record_cache_by_id or {})
+
+    def get_record(self, record_id: str) -> MissionMemoryRecord | None:
+        """Load one record by ID from the authority-backed local projection."""
+        with self._lock:
+            self._ensure_record_cache_unlocked()
+            return (self._record_cache_by_id or {}).get(record_id)
+
+    def _snapshot_token_unlocked(self) -> str:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return "missing"
+        return ":".join(str(value) for value in (
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_size,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+        ))
+
+    def _ensure_record_cache_unlocked(self) -> None:
+        token = self._snapshot_token_unlocked()
+        if self._record_cache is not None and self._record_cache_token == token:
+            return
+        records = self._read_all_unlocked()
+        self._record_cache = records
+        # Keep the last record for a duplicate ID, matching list_events()'s
+        # existing dict-comprehension behavior on malformed historical data.
+        self._record_cache_by_id = {record.record_id: record for record in records}
+        self._record_cache_token = token
+
+    def _invalidate_record_cache_unlocked(self) -> None:
+        self._record_cache = None
+        self._record_cache_by_id = None
+        self._record_cache_token = None
 
     def _read_all_unlocked(self) -> list[MissionMemoryRecord]:
         if not self.path.exists():

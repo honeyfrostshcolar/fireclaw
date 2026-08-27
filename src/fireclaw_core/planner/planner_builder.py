@@ -21,6 +21,8 @@ def build_planner(
     planner_type: str = "deterministic",
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
+    provider_timeout_seconds: float = 60.0,
+    provider_thinking: bool | None = None,
     model: str | None = None,
     llm_trace_path: str | None = None,
     model_catalog_path: str | None = None,
@@ -33,7 +35,12 @@ def build_planner(
             raise ValueError("provider_api_key is required when planner_type='llm'")
         if not model:
             raise ValueError("model is required when planner_type='llm'")
-        provider = OpenAICompatProvider(base_url=provider_base_url, api_key=provider_api_key)
+        provider = OpenAICompatProvider(
+            base_url=provider_base_url,
+            api_key=provider_api_key,
+            timeout=provider_timeout_seconds,
+            thinking=provider_thinking,
+        )
         catalog = (
             ModelCatalog(model_catalog_path)
             if model_catalog_path
@@ -79,6 +86,8 @@ def build_provider_runtime(
     *,
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
+    provider_timeout_seconds: float = 60.0,
+    provider_thinking: bool | None = None,
     model: str | None = None,
     model_catalog_path: str | None = None,
 ) -> ProviderRuntime:
@@ -88,7 +97,12 @@ def build_provider_runtime(
         raise ValueError("provider_api_key is required")
     if not model:
         raise ValueError("model is required")
-    provider = OpenAICompatProvider(base_url=provider_base_url, api_key=provider_api_key)
+    provider = OpenAICompatProvider(
+        base_url=provider_base_url,
+        api_key=provider_api_key,
+        timeout=provider_timeout_seconds,
+        thinking=provider_thinking,
+    )
     catalog = (
         ModelCatalog(model_catalog_path)
         if model_catalog_path

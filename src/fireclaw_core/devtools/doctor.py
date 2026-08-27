@@ -493,7 +493,7 @@ def main() -> int:
     parser.add_argument(
         "--security-config",
         default=None,
-        help="Path to fireclaw.toml for the read-only deployment security audit.",
+        help="Path to the mode-specific TOML for the read-only deployment security audit.",
     )
     parser.add_argument("--memory-eval-fixture", default=None, help="Path to memory retrieval eval fixture JSON")
     parser.add_argument("--memory-eval-threshold", type=float, default=0.5, help="Minimum hit_rate to pass memory eval (default: 0.5)")

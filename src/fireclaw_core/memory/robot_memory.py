@@ -218,7 +218,14 @@ class RobotMemoryRecorder:
         except Exception:
             logger.warning("Failed to write robot embodied-memory event", exc_info=True)
             return None
-        if event.event_type == "observation" and self._entity_extraction_pipeline is not None:
+        # Entity extraction is opt-in through the structured ``entities``
+        # payload.  Sensor/state observations without that field must not
+        # trigger a historical-memory scan on the physical execution path.
+        if (
+            event.event_type == "observation"
+            and self._entity_extraction_pipeline is not None
+            and "entities" in event.payload
+        ):
             try:
                 report = self._entity_extraction_pipeline.process_observation(event)
                 if report.issues:

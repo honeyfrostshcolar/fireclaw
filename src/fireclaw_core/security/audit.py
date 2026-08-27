@@ -129,7 +129,7 @@ def run_security_audit(
                 "warn",
                 "No deployment configuration was provided",
                 "Gateway, sandbox, path, and transport settings cannot be fully audited.",
-                "Pass --config with the exact fireclaw.toml used for deployment.",
+                "Pass --config with the exact mode-specific TOML used for deployment.",
             )
         )
 

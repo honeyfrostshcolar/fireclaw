@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from math import cos, sin
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
@@ -271,7 +272,7 @@ def test_navigation_motion_is_plugin_owned_and_never_adapter_dispatched() -> Non
     assert contribution is not None
     assert contribution.owner_plugin_id == PLUGIN_ID
     assert PLUGIN_ID in {record.plugin_id for record in report.loaded}
-    assert contribution.value.timeout_seconds == 120.0
+    assert contribution.value.timeout_seconds == 360.0
     assert contribution.value.cancellation_ack_timeout_seconds == 2.0
 
     robot = DryRunRobotAdapter(robot_id="plugin-navigation")
@@ -631,3 +632,142 @@ def test_ros1_stop_evidence_reasserts_zero_velocity_and_observes_stationarity(
     assert len(publisher.messages) >= 1
     assert publisher.unregistered is True
     assert all(handle.unregistered for handle in subscriptions)
+
+
+def _make_map_transform(x: float, y: float, yaw: float, frame: str = "map"):
+    return SimpleNamespace(
+        header=SimpleNamespace(frame_id=frame),
+        transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x, y=y, z=0.0),
+            rotation=SimpleNamespace(
+                x=0.0,
+                y=0.0,
+                z=sin(yaw / 2.0),
+                w=cos(yaw / 2.0),
+            ),
+        ),
+    )
+
+
+def _fake_ros_import_with_tf(action_client, transform):
+    """Fake ROS import stack including tf2_ros for measured-pose lookups."""
+    initialized = []
+
+    class FakeTime:
+        def __init__(self, value=0):
+            self.value = value
+
+        @staticmethod
+        def now():
+            return FakeTime(123.0)
+
+    rospy = SimpleNamespace(
+        Duration=lambda seconds: seconds,
+        Time=FakeTime,
+        core=SimpleNamespace(is_initialized=lambda: bool(initialized)),
+        init_node=lambda name, *, anonymous, disable_signals: initialized.append(name),
+    )
+
+    class FakeBuffer:
+        def lookup_transform(self, target_frame, source_frame, stamp, timeout=None):
+            assert (target_frame, source_frame) == ("map", "base_footprint")
+            if transform is None:
+                raise RuntimeError("no transform data")
+            return transform
+
+    tf2_ros = SimpleNamespace(
+        Buffer=FakeBuffer,
+        TransformListener=lambda buffer: SimpleNamespace(buffer=buffer),
+    )
+
+    class MoveBaseGoal:
+        def __init__(self):
+            self.target_pose = SimpleNamespace(
+                header=SimpleNamespace(frame_id=None, stamp=None),
+                pose=SimpleNamespace(
+                    position=SimpleNamespace(x=None, y=None),
+                    orientation=SimpleNamespace(z=None, w=None),
+                ),
+            )
+
+    def load(name):
+        return {
+            "rospy": rospy,
+            "move_base_msgs.msg": SimpleNamespace(
+                MoveBaseGoal=MoveBaseGoal, MoveBaseAction=object
+            ),
+            "actionlib": SimpleNamespace(
+                SimpleActionClient=lambda name, action: action_client
+            ),
+            "tf2_ros": tf2_ros,
+        }[name]
+
+    return load
+
+
+def test_ros1_move_base_success_reports_measured_pose(monkeypatch):
+    module = _move_base_module()
+    action_client = FakeMoveBaseActionClient(
+        acknowledge_cancel=False,
+        terminal_state=3,
+    )
+    monkeypatch.setattr(
+        module,
+        "import_module",
+        _fake_ros_import_with_tf(
+            action_client,
+            transform=_make_map_transform(0.66, 0.49, -0.02),
+        ),
+    )
+    backend = module.Ros1MoveBaseBackend(pose_lookup_timeout_seconds=0.1)
+
+    result = backend.navigate_to_point(0.63, 0.54)
+
+    assert result["goal_reached"] is True
+    pose = result["pose"]
+    assert pose["x"] == 0.66
+    assert pose["y"] == 0.49
+    assert abs(pose["yaw"] - (-0.02)) < 1e-6
+    assert pose["frame_id"] == "map"
+
+
+def test_ros1_move_base_omits_pose_when_tf_has_no_data(monkeypatch):
+    module = _move_base_module()
+    action_client = FakeMoveBaseActionClient(
+        acknowledge_cancel=False,
+        terminal_state=3,
+    )
+    monkeypatch.setattr(
+        module,
+        "import_module",
+        _fake_ros_import_with_tf(action_client, transform=None),
+    )
+    backend = module.Ros1MoveBaseBackend(pose_lookup_timeout_seconds=0.1)
+
+    result = backend.navigate_to_point(0.63, 0.54)
+
+    # Fail honest: without TF evidence the result must not claim a pose.
+    assert result["goal_reached"] is True
+    assert "pose" not in result
+
+
+def test_ros1_move_base_failure_does_not_claim_measured_pose(monkeypatch):
+    module = _move_base_module()
+    action_client = FakeMoveBaseActionClient(
+        acknowledge_cancel=False,
+        terminal_state=4,
+    )
+    monkeypatch.setattr(
+        module,
+        "import_module",
+        _fake_ros_import_with_tf(
+            action_client,
+            transform=_make_map_transform(0.66, 0.49, 0.0),
+        ),
+    )
+    backend = module.Ros1MoveBaseBackend(pose_lookup_timeout_seconds=0.1)
+
+    result = backend.navigate_to_point(9.0, 9.0)
+
+    assert result["goal_reached"] is False
+    assert "pose" not in result

@@ -35,7 +35,11 @@ from fireclaw_core.mission.graph_proposal import (
     MissionGraphCompiler,
 )
 from fireclaw_core.mission.mission_plan_validator import MissionPlanValidator
+from fireclaw_core.mission.plan_artifact import (
+    command_has_relative_pose_reference,
+)
 from fireclaw_core.mission.mission_planner import (
+    MissionPlan,
     MissionPlannerContext,
     MissionPlanningResult,
 )
@@ -159,6 +163,10 @@ class MissionDeliberationRequest:
     supersedes_plan_id: str | None = None
     invalidation_evidence_ids: tuple[str, ...] = ()
     context_envelope: MissionPlanningContextEnvelope | None = None
+    # Non-authoritative live progress hook.  It is intentionally excluded from
+    # checkpoint serialization; the callback belongs to the current Gateway
+    # request and must never become planner state.
+    progress_sink: Callable[[str, dict[str, Any]], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -546,6 +554,7 @@ class MissionDeliberationResult:
     reason_code: str | None = None
     validation_errors: tuple[str, ...] = ()
     observation_request: MissionObservationRequest | None = None
+    timing: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -561,6 +570,7 @@ class MissionDeliberationResult:
                 observation.to_dict() for observation in self.observations
             ],
             "validation_errors": list(self.validation_errors),
+            "timing": [dict(item) for item in self.timing],
         }
         if self.reason_code is not None:
             result["reason_code"] = self.reason_code
@@ -678,17 +688,64 @@ class MissionDeliberationRuntime:
         plan_revision: int = 1,
         supersedes_plan_id: str | None = None,
         invalidation_evidence_ids: tuple[str, ...] = (),
+        proposal_validators: tuple[
+            Callable[[MissionPlan], list[str]], ...
+        ] = (),
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> MissionDeliberationResult:
         command_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
+        proposal_validator_ids = tuple(
+            f"{validator.__module__}:{validator.__qualname__}"
+            for validator in proposal_validators
+        )
+        validator_hash = hashlib.sha256(
+            json.dumps(
+                proposal_validator_ids,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:12]
         checkpoint_key = (
             f"mission:{mission_id}:snapshot:{state_snapshot.snapshot_id}:"
-            f"revision:{plan_revision}:command:{command_hash[:16]}"
+            f"revision:{plan_revision}:command:{command_hash[:16]}:"
+            f"validators:{validator_hash}"
         )
         run_id = (
             checkpoint_key
             if self.checkpoint_store is not None
             else f"deliberation-{uuid4().hex}"
         )
+
+        timing_records: list[dict[str, Any]] = []
+
+        def emit(event_type: str, payload: dict[str, Any]) -> None:
+            """Report structured progress without making display authoritative.
+
+            The Gateway supplies a bounded ``put_nowait`` sink for live
+            operator streaming.  Other callers may omit the sink entirely.
+            A broken observability consumer must never invalidate planning.
+            """
+
+            enriched_payload = {
+                "run_id": run_id,
+                "mission_id": mission_id,
+                **payload,
+            }
+            if event_type == "mission_agent.stage.completed":
+                timing_records.append(dict(enriched_payload))
+            if event_sink is None:
+                return
+            try:
+                event_sink(
+                    event_type,
+                    enriched_payload,
+                )
+            except Exception:
+                logger.warning(
+                    "Mission deliberation progress sink failed",
+                    exc_info=True,
+                )
+
         attempts: list[MissionDeliberationAttempt] = []
         observations: list[MissionStateObservation] = []
         validation_errors = tuple(
@@ -735,6 +792,9 @@ class MissionDeliberationRuntime:
                     != state_snapshot.snapshot_id
                     or adapter_state.get("command_hash") != command_hash
                     or adapter_state.get("plan_revision") != plan_revision
+                    or tuple(
+                        adapter_state.get("proposal_validator_ids", [])
+                    ) != proposal_validator_ids
                 ):
                     raise ValueError(
                         "Mission checkpoint does not match the frozen "
@@ -762,6 +822,12 @@ class MissionDeliberationRuntime:
                     )
                     if isinstance(item, str)
                 )
+                timing_records = [
+                    dict(item)
+                    for item in adapter_state.get("timing_records", [])
+                    if isinstance(item, dict)
+                    and isinstance(item.get("stage"), str)
+                ]
 
         seen_reads: set[tuple[str, str | None]] = {
             (
@@ -790,6 +856,9 @@ class MissionDeliberationRuntime:
                 "snapshot_id": state_snapshot.snapshot_id,
                 "command_hash": command_hash,
                 "plan_revision": plan_revision,
+                "proposal_validator_ids": list(
+                    proposal_validator_ids
+                ),
                 "supersedes_plan_id": supersedes_plan_id,
                 "invalidation_evidence_ids": list(
                     invalidation_evidence_ids
@@ -821,6 +890,7 @@ class MissionDeliberationRuntime:
                 ),
                 "agent_tool_execution_count": agent_tool_execution_count,
                 "seen_agent_tool_calls": sorted(seen_agent_tool_calls),
+                "timing_records": [dict(item) for item in timing_records],
             }
 
         def decide(
@@ -828,6 +898,16 @@ class MissionDeliberationRuntime:
         ) -> _MissionLoopDecision:
             attempt_started = self._monotonic()
             attempt_started_at = self._timestamp()
+            emit(
+                "mission_agent.turn.started",
+                {
+                    "iteration": turn.iteration,
+                    "max_iterations": self.limits.max_iterations,
+                    "remaining_iterations": turn.remaining_iterations,
+                    "message": "Mission Agent is selecting the next bounded operation.",
+                },
+            )
+            context_started = self._monotonic()
             try:
                 context_assembly = self.context_assembler.assemble(
                     mission_id=mission_id,
@@ -845,6 +925,19 @@ class MissionDeliberationRuntime:
                     ),
                 )
             except MissionPlanningContextAssemblyError as exc:
+                emit(
+                    "mission_agent.stage.completed",
+                    {
+                        "stage": "context_assembly",
+                        "status": "error",
+                        "duration_ms": round(
+                            max(0.0, (self._monotonic() - context_started) * 1000),
+                            2,
+                        ),
+                        "iteration": turn.iteration,
+                        "error_code": "context_budget_exceeded",
+                    },
+                )
                 context_errors = (str(exc),)
                 control = _MissionLoopDecision(
                     operation="assemble_context",
@@ -870,6 +963,20 @@ class MissionDeliberationRuntime:
                 )
                 controls[turn.iteration] = control
                 return control
+            emit(
+                "mission_agent.stage.completed",
+                {
+                    "stage": "context_assembly",
+                    "status": "completed",
+                    "duration_ms": round(
+                        max(0.0, (self._monotonic() - context_started) * 1000),
+                        2,
+                    ),
+                    "iteration": turn.iteration,
+                    "critical_chars": context_assembly.envelope.manifest.critical_chars,
+                    "advisory_chars": context_assembly.envelope.manifest.advisory_chars,
+                },
+            )
             context_manifest = context_assembly.envelope.manifest
             request = MissionDeliberationRequest(
                 mission_id=mission_id,
@@ -884,6 +991,7 @@ class MissionDeliberationRuntime:
                 supersedes_plan_id=supersedes_plan_id,
                 invalidation_evidence_ids=invalidation_evidence_ids,
                 context_envelope=context_assembly.envelope,
+                progress_sink=emit,
             )
             try:
                 decision = self.policy.decide(request)
@@ -923,6 +1031,21 @@ class MissionDeliberationRuntime:
 
             if decision.context_manifest is not None:
                 context_manifest = decision.context_manifest
+            emit(
+                "mission_agent.operation.started",
+                {
+                    "iteration": turn.iteration,
+                    "max_iterations": self.limits.max_iterations,
+                    "operation": decision.operation,
+                    "message": decision.message,
+                    "reason_code": decision.reason_code,
+                    "tool_name": decision.tool_name,
+                    "decision_duration_ms": max(
+                        0.0,
+                        (self._monotonic() - attempt_started) * 1000,
+                    ),
+                },
+            )
             control = _MissionLoopDecision(
                 operation=decision.operation,
                 started_at=attempt_started_at,
@@ -952,23 +1075,28 @@ class MissionDeliberationRuntime:
                 tool_name: str | None = None,
                 tool_arguments_hash: str | None = None,
                 errors: tuple[str, ...] = (),
+                observation: MissionStateObservation | None = None,
             ) -> None:
-                attempts.append(
-                    self._attempt(
-                        iteration=turn.iteration,
-                        operation=control.operation,
-                        outcome=outcome,
-                        started_at=control.started_at,
-                        started=control.started,
-                        reason_code=reason_code,
-                        read_request=read_request,
-                        observation_request=observation_request,
-                        tool_name=tool_name,
-                        tool_arguments_hash=tool_arguments_hash,
-                        validation_errors=errors,
-                        context_manifest=control.context_manifest,
-                    )
+                attempt = self._attempt(
+                    iteration=turn.iteration,
+                    operation=control.operation,
+                    outcome=outcome,
+                    started_at=control.started_at,
+                    started=control.started,
+                    reason_code=reason_code,
+                    read_request=read_request,
+                    observation_request=observation_request,
+                    tool_name=tool_name,
+                    tool_arguments_hash=tool_arguments_hash,
+                    validation_errors=errors,
+                    context_manifest=control.context_manifest,
                 )
+                attempts.append(attempt)
+                payload = attempt.to_dict()
+                payload["max_iterations"] = self.limits.max_iterations
+                if observation is not None:
+                    payload["observation"] = observation.to_dict()
+                emit("mission_agent.attempt.completed", payload)
 
             def continuing(
                 *,
@@ -1072,20 +1200,54 @@ class MissionDeliberationRuntime:
                     decision.read_request.subject_id,
                 )
                 if read_key in seen_reads:
+                    clarification = self._missing_relative_pose_clarification(
+                        command=command,
+                        read_request=decision.read_request,
+                        observations=observations,
+                    )
+                    if clarification is not None:
+                        record(
+                            outcome="clarification_requested",
+                            reason_code="coordinate_grounding_required",
+                            read_request=decision.read_request,
+                        )
+                        return terminal(_MissionLoopTerminal(
+                            status="clarification_required",
+                            message=clarification,
+                            reason_code="coordinate_grounding_required",
+                            planning_result=MissionPlanningResult(
+                                status="clarify",
+                                message=clarification,
+                            ),
+                        ))
+                    errors = (
+                        f"状态 {decision.read_request.kind} 已经查询并作为 observation 返回，"
+                        "请直接根据已获取的观察数据调用 propose_task_graph 生成任务计划，"
+                        "或调用 request_clarification 追问操作员。",
+                    )
                     record(
                         outcome="rejected",
                         reason_code="repeated_state_read",
                         read_request=decision.read_request,
+                        errors=errors,
                     )
                     return terminal(_MissionLoopTerminal(
                         status="blocked",
-                        message="Mission deliberation repeated a state read without progress.",
+                        message=(
+                            "Mission deliberation repeated an unchanged "
+                            "state read without making progress."
+                        ),
                         reason_code="repeated_state_read",
+                        validation_errors=errors,
                         planning_result=MissionPlanningResult(
                             status="blocked",
-                            message="Mission deliberation repeated a state read without progress.",
+                            message=(
+                                "Mission deliberation repeated an unchanged "
+                                "state read without making progress."
+                            ),
                         ),
                     ))
+                state_read_started = self._monotonic()
                 try:
                     observation = self.snapshot_reader.read(
                         state_snapshot,
@@ -1093,6 +1255,22 @@ class MissionDeliberationRuntime:
                         iteration=turn.iteration,
                     )
                 except ValueError as exc:
+                    emit(
+                        "mission_agent.stage.completed",
+                        {
+                            "stage": "state_observation",
+                            "status": "error",
+                            "duration_ms": round(
+                                max(
+                                    0.0,
+                                    (self._monotonic() - state_read_started) * 1000,
+                                ),
+                                2,
+                            ),
+                            "iteration": turn.iteration,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
                     errors = (str(exc),)
                     record(
                         outcome="rejected",
@@ -1105,11 +1283,28 @@ class MissionDeliberationRuntime:
                         outcome="rejected",
                         reason_code="invalid_state_read",
                     )
+                emit(
+                    "mission_agent.stage.completed",
+                    {
+                        "stage": "state_observation",
+                        "status": "completed",
+                        "duration_ms": round(
+                            max(
+                                0.0,
+                                (self._monotonic() - state_read_started) * 1000,
+                            ),
+                            2,
+                        ),
+                        "iteration": turn.iteration,
+                        "kind": decision.read_request.kind,
+                    },
+                )
                 seen_reads.add(read_key)
                 observations.append(observation)
                 record(
                     outcome="observed",
                     read_request=decision.read_request,
+                    observation=observation,
                 )
                 validation_errors = ()
                 return continuing(outcome="observed")
@@ -1193,19 +1388,19 @@ class MissionDeliberationRuntime:
                 )
                 agent_tool_execution_count += 1
                 seen_agent_tool_calls.add(action_hash)
-                observations.append(
-                    MissionStateObservation(
-                        kind=f"agent_tool:{decision.tool_name}",
-                        data=result.to_dict(),
-                        iteration=turn.iteration,
-                        authoritative=False,
-                    )
+                tool_observation = MissionStateObservation(
+                    kind=f"agent_tool:{decision.tool_name}",
+                    data=result.to_dict(),
+                    iteration=turn.iteration,
+                    authoritative=False,
                 )
+                observations.append(tool_observation)
                 record(
                     outcome=result.status,
                     reason_code=result.error_code,
                     tool_name=decision.tool_name,
                     tool_arguments_hash=action_hash,
+                    observation=tool_observation,
                 )
                 validation_errors = ()
                 if result.status == "approval_required":
@@ -1290,6 +1485,7 @@ class MissionDeliberationRuntime:
 
             if decision.operation == "propose_plan":
                 assert decision.planning_result is not None
+                validation_started = self._monotonic()
                 (
                     accepted_planning_result,
                     task_graph,
@@ -1297,11 +1493,29 @@ class MissionDeliberationRuntime:
                 ) = self._validate_plan_proposal(
                     decision,
                     mission_id=mission_id,
+                    command=command,
                     state_snapshot=state_snapshot,
                     observations=observations,
                     plan_revision=plan_revision,
                     supersedes_plan_id=supersedes_plan_id,
                     invalidation_evidence_ids=invalidation_evidence_ids,
+                    proposal_validators=proposal_validators,
+                )
+                emit(
+                    "mission_agent.stage.completed",
+                    {
+                        "stage": "plan_validation",
+                        "status": "completed",
+                        "duration_ms": round(
+                            max(
+                                0.0,
+                                (self._monotonic() - validation_started) * 1000,
+                            ),
+                            2,
+                        ),
+                        "iteration": turn.iteration,
+                        "outcome": "accepted" if not proposal_errors else "rejected",
+                    },
                 )
                 errors = tuple(proposal_errors)
                 record(
@@ -1427,6 +1641,7 @@ class MissionDeliberationRuntime:
         final = self._mission_terminal_from_loop(
             loop_result,
             validation_errors=validation_errors,
+            attempts=attempts,
         )
         return self._result(
             run_id=run_id,
@@ -1443,6 +1658,43 @@ class MissionDeliberationRuntime:
             planning_result=final.planning_result,
             task_graph=final.task_graph,
             observation_request=final.observation_request,
+            timing=tuple(dict(item) for item in timing_records),
+        )
+
+
+    @staticmethod
+    def _missing_relative_pose_clarification(
+        *,
+        command: str,
+        read_request: MissionStateReadRequest,
+        observations: list[MissionStateObservation],
+    ) -> str | None:
+        """Fail safely when a model repeats a pose read that returned no pose."""
+
+        if (
+            read_request.kind != "robot_state"
+            or not command_has_relative_pose_reference(command)
+        ):
+            return None
+        matching = next(
+            (
+                observation
+                for observation in reversed(observations)
+                if observation.kind == read_request.kind
+                and observation.subject_id == read_request.subject_id
+            ),
+            None,
+        )
+        if matching is None:
+            return None
+        robot = matching.data.get("robot")
+        if isinstance(robot, dict) and isinstance(robot.get("pose"), dict):
+            return None
+        robot_label = read_request.subject_id or "目标机器人"
+        return (
+            f"已识别任务中的相对返回目标，但当前冻结状态没有 {robot_label} "
+            "可验证的 map 位姿，无法安全解析‘返回现在的位置’。"
+            "请提供任务开始位置的具体地图坐标 (x, y)，或先恢复机器人 TF 位姿读取后重试。"
         )
 
     def _validate_plan_proposal(
@@ -1450,11 +1702,15 @@ class MissionDeliberationRuntime:
         decision: MissionDeliberationDecision,
         *,
         mission_id: str,
+        command: str,
         state_snapshot: MissionStateSnapshot,
         observations: list[MissionStateObservation],
         plan_revision: int,
         supersedes_plan_id: str | None,
         invalidation_evidence_ids: tuple[str, ...],
+        proposal_validators: tuple[
+            Callable[[MissionPlan], list[str]], ...
+        ],
     ) -> tuple[
         MissionPlanningResult,
         MissionTaskGraph | None,
@@ -1491,11 +1747,24 @@ class MissionDeliberationRuntime:
                     invalidation_evidence_ids=invalidation_evidence_ids,
                 )
             assert accepted_planning_result.plan is not None
-            proposal_errors = MissionPlanValidator().validate(
-                accepted_planning_result.plan,
+            accepted_plan = accepted_planning_result.plan
+            proposal_errors = []
+            if accepted_plan.command != command:
+                proposal_errors.append(
+                    "Mission plan command does not match the authenticated "
+                    "operator dialogue."
+                )
+            proposal_errors.extend(MissionPlanValidator().validate(
+                accepted_plan,
                 self.registry,
                 task_graph=task_graph,
-            )
+            ))
+            for validator in proposal_validators:
+                proposal_errors.extend(
+                    str(error)
+                    for error in validator(accepted_plan)
+                )
+            proposal_errors = list(dict.fromkeys(proposal_errors))
             unresolved_belief_ids = sorted(
                 belief.belief_id
                 for belief in state_snapshot.environment_beliefs
@@ -1645,6 +1914,7 @@ class MissionDeliberationRuntime:
         ],
         *,
         validation_errors: tuple[str, ...],
+        attempts: list[MissionDeliberationAttempt] = (),
     ) -> _MissionLoopTerminal:
         if loop_result.result is not None:
             return loop_result.result
@@ -1671,6 +1941,28 @@ class MissionDeliberationRuntime:
                 ),
             )
         if loop_result.reason_code == "iteration_limit":
+            all_errors = list(validation_errors)
+            for attempt in attempts:
+                all_errors.extend(attempt.validation_errors)
+            unbound_errors = [
+                e for e in all_errors
+                if "not bound" in str(e) or "explicit coordinate" in str(e) or "without an explicit" in str(e)
+            ]
+            if unbound_errors:
+                clarification_question = (
+                    "任务中包含未明确指定坐标的目标（例如‘返回现在的位置’或相对代词）。"
+                    "请补充说明您希望前往的具体地图坐标 (x, y)，例如 (-2.0, -0.5)。"
+                )
+                return _MissionLoopTerminal(
+                    status="clarification_required",
+                    message=clarification_question,
+                    reason_code="coordinate_grounding_required",
+                    validation_errors=tuple(dict.fromkeys(all_errors)),
+                    planning_result=MissionPlanningResult(
+                        status="clarify",
+                        message=clarification_question,
+                    ),
+                )
             message = "Mission deliberation exceeded its iteration limit."
             return _MissionLoopTerminal(
                 status="blocked",
@@ -1845,6 +2137,7 @@ class MissionDeliberationRuntime:
         validation_errors: tuple[str, ...] = (),
         observation_request: MissionObservationRequest | None = None,
         completed_at: str | None = None,
+        timing: tuple[dict[str, Any], ...] = (),
     ) -> MissionDeliberationResult:
         return MissionDeliberationResult(
             run_id=run_id,
@@ -1861,6 +2154,7 @@ class MissionDeliberationRuntime:
             reason_code=reason_code,
             validation_errors=validation_errors,
             observation_request=observation_request,
+            timing=tuple(dict(item) for item in timing),
         )
 
     def _timestamp(self) -> str:

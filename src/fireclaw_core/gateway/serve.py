@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import signal
 import sys
 from pathlib import Path
@@ -15,7 +16,15 @@ from fireclaw_core.gateway.transport import (
     GatewayTlsServerConfig,
 )
 from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.planning_dialogue import (
+    DEFAULT_MAX_CLARIFICATION_ROUNDS,
+    DEFAULT_PLANNING_DIALOGUE_TTL_SECONDS,
+)
+from fireclaw_core.mission.mission_scheduler import MissionSchedulerConfig
+from fireclaw_core.mission.plan_artifact import PlanArtifactStore
+from fireclaw_core.mission.runtime_identity import build_gateway_runtime_identity
 from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
+from fireclaw_core.mission.mission_deliberation import MissionDeliberationLimits
 from fireclaw_core.planner.planner_builder import build_planner
 from fireclaw_core.agent.robot_registry import load_robot_registry
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
@@ -24,6 +33,8 @@ from fireclaw_core.rag.runtime_retrieval import RagRuntimeConfig
 from fireclaw_core.policy.deployment import deployment_profile_from_config
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MISSION_PLANNING_TIMEOUT_SECONDS = 180.0
 
 DEFAULT_ROBOTS_TEMPLATE = {
     "robots": [
@@ -64,6 +75,9 @@ def start_server(
     planner_type: str = "deterministic",
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
+    provider_timeout_seconds: float = 60.0,
+    provider_thinking: bool | None = None,
+    mission_planning_timeout_seconds: float | None = None,
     model: str | None = None,
     model_catalog_path: str | None = None,
     llm_trace_path: str | None = None,
@@ -75,10 +89,15 @@ def start_server(
     robot_agent_model: str | None = None,
     robot_agent_model_catalog_path: str | None = None,
     robot_profiles: tuple[str, ...] | None = None,
+    mission_group_timeout_seconds: float = 720.0,
+    planning_dialogue_max_rounds: int | None = None,
+    planning_dialogue_ttl_seconds: float | None = None,
     embodied_runtime_mode: str | None = None,
     memory_rag: RagRuntimeConfig | None = None,
     external_knowledge_rag: RagRuntimeConfig | None = None,
     deployment_config: dict[str, Any] | None = None,
+    active_profile_path: str | Path | None = None,
+    deployment_receipt_path: str | Path | None = None,
 ) -> MissionGateway:
     """Assemble and start the MissionGateway HTTP server.
 
@@ -123,11 +142,26 @@ def start_server(
         planner_type=planner_type,
         provider_base_url=provider_base_url,
         provider_api_key=provider_api_key,
+        provider_timeout_seconds=provider_timeout_seconds,
+        provider_thinking=provider_thinking,
         model=model,
         model_catalog_path=model_catalog_path,
         llm_trace_path=llm_trace_path,
         deployment_profile=deployment_profile,
     )
+
+    planning_timeout_seconds = (
+        DEFAULT_MISSION_PLANNING_TIMEOUT_SECONDS
+        if mission_planning_timeout_seconds is None
+        else float(mission_planning_timeout_seconds)
+    )
+    if (
+        not math.isfinite(planning_timeout_seconds)
+        or planning_timeout_seconds <= 0
+    ):
+        raise ValueError(
+            "mission_planning_timeout_seconds must be positive and finite"
+        )
 
     paths = MissionRuntimePaths(
         robot_registry=data_dir / "robots.json",
@@ -163,6 +197,16 @@ def start_server(
         planner=planner,
         subagent_client=robot_client,
         source="serve",
+        mission_deliberation_limits=MissionDeliberationLimits(
+            max_iterations=4,
+            timeout_seconds=planning_timeout_seconds,
+            # Follow-up questions ("what happened?") legitimately inspect
+            # several frozen-state views in one deliberation.
+            max_observations=6,
+        ),
+        mission_scheduler_config=MissionSchedulerConfig(
+            group_timeout_seconds=mission_group_timeout_seconds,
+        ),
     )
 
     # When robot_profiles is set, agent.registry is already built from profiles;
@@ -177,6 +221,16 @@ def start_server(
         api_token=resolve_gateway_api_token(api_token),
         tls=tls or GatewayTlsServerConfig(),
         network=network_policy or GatewayNetworkPolicy(),
+        planning_dialogue_max_rounds=(
+            int(planning_dialogue_max_rounds)
+            if planning_dialogue_max_rounds is not None
+            else DEFAULT_MAX_CLARIFICATION_ROUNDS
+        ),
+        planning_dialogue_ttl_seconds=(
+            float(planning_dialogue_ttl_seconds)
+            if planning_dialogue_ttl_seconds is not None
+            else DEFAULT_PLANNING_DIALOGUE_TTL_SECONDS
+        ),
     )
     memory_reconciler = None
     if embodied_runtime_mode is not None and agent.embodied_memory_store is not None:
@@ -185,6 +239,11 @@ def start_server(
             state_path=data_dir / "memory-reconciliation.jsonl",
             runtime_mode=embodied_runtime_mode,
         )
+    runtime_identity = build_gateway_runtime_identity(
+        active_profile_path,
+        configured_runtime_mode=embodied_runtime_mode,
+        deployment_receipt_path=deployment_receipt_path,
+    )
     gw = MissionGateway(
         config,
         mission_agent=agent,
@@ -194,6 +253,10 @@ def start_server(
         subagent_registry=agent.subagent_registry,
         session_lineage_store=agent.session_lineage_store,
         memory_reconciler=memory_reconciler,
+        runtime_identity=runtime_identity,
+        plan_artifact_store=PlanArtifactStore(
+            data_dir / "plan-artifacts.jsonl"
+        ),
     )
     gw.start()
     logger.info("FireClaw MissionGateway started at %s", gw.base_url)
@@ -214,6 +277,9 @@ def run_server_blocking(
     planner_type: str = "deterministic",
     provider_base_url: str | None = None,
     provider_api_key: str | None = None,
+    provider_timeout_seconds: float = 60.0,
+    provider_thinking: bool | None = None,
+    mission_planning_timeout_seconds: float | None = None,
     model: str | None = None,
     model_catalog_path: str | None = None,
     llm_trace_path: str | None = None,
@@ -225,10 +291,15 @@ def run_server_blocking(
     robot_agent_model: str | None = None,
     robot_agent_model_catalog_path: str | None = None,
     robot_profiles: tuple[str, ...] | None = None,
+    mission_group_timeout_seconds: float = 720.0,
+    planning_dialogue_max_rounds: int | None = None,
+    planning_dialogue_ttl_seconds: float | None = None,
     embodied_runtime_mode: str | None = None,
     memory_rag: RagRuntimeConfig | None = None,
     external_knowledge_rag: RagRuntimeConfig | None = None,
     deployment_config: dict[str, Any] | None = None,
+    active_profile_path: str | Path | None = None,
+    deployment_receipt_path: str | Path | None = None,
 ) -> None:
     """Start the server and block until interrupted (Ctrl+C)."""
     gw = start_server(
@@ -244,6 +315,9 @@ def run_server_blocking(
         planner_type=planner_type,
         provider_base_url=provider_base_url,
         provider_api_key=provider_api_key,
+        provider_timeout_seconds=provider_timeout_seconds,
+        provider_thinking=provider_thinking,
+        mission_planning_timeout_seconds=mission_planning_timeout_seconds,
         model=model,
         model_catalog_path=model_catalog_path,
         llm_trace_path=llm_trace_path,
@@ -255,10 +329,15 @@ def run_server_blocking(
         robot_agent_model=robot_agent_model,
         robot_agent_model_catalog_path=robot_agent_model_catalog_path,
         robot_profiles=robot_profiles,
+        mission_group_timeout_seconds=mission_group_timeout_seconds,
+        planning_dialogue_max_rounds=planning_dialogue_max_rounds,
+        planning_dialogue_ttl_seconds=planning_dialogue_ttl_seconds,
         embodied_runtime_mode=embodied_runtime_mode,
         memory_rag=memory_rag,
         external_knowledge_rag=external_knowledge_rag,
         deployment_config=deployment_config,
+        active_profile_path=active_profile_path,
+        deployment_receipt_path=deployment_receipt_path,
     )
 
     shutdown_requested = False

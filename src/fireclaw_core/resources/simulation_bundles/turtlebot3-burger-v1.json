@@ -3,6 +3,10 @@
   "bundle_id": "turtlebot3-burger-v1",
   "bundle_version": "1.0.0",
   "compatible_fireclaw_versions": ">=0.1.0",
+  "artifact": {
+    "filename": "fireclaw-sim-turtlebot3-burger-v1.tar.gz",
+    "sha256": "9979e28cd5b464ed0876c43d6d3ea4b3c8163bceb7d2645447345c8dab06380f"
+  },
   "description": "Deterministic TurtleBot3 Burger simulation assets, navigation plugin, and ROS1 workspace sources",
   "relative_layout": [
     "examples/ros1_configs/",

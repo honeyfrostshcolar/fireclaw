@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 from math import isfinite
 import time
@@ -46,6 +47,8 @@ from fireclaw_core.evaluation.provenance import (
 from fireclaw_core.gateway.gateway import FireClawGateway, GatewayConfig
 from fireclaw_core.infra.log_redaction import redact_dict
 from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.mission_gateway_client import MissionGatewayClient
+from fireclaw_core.mission.plan_artifact import PlanArtifactStore
 from fireclaw_core.mission.mission_planner import (
     MissionPlan,
     MissionPlannerContext,
@@ -56,6 +59,7 @@ from fireclaw_core.mission.mission_runtime import (
     MissionRuntimePaths,
     build_mission_agent_from_paths,
 )
+from fireclaw_core.mission.runtime_identity import GatewayRuntimeIdentity
 from fireclaw_core.policy.deployment import DeploymentProfile, SandboxProfile
 from fireclaw_core.task.terminal_outcome import (
     ROBOT_TASK_SUCCESS_STATUSES,
@@ -235,6 +239,22 @@ def _run_scenario(
             resume_dispatches=False,
         )
 
+        active_profile_path = tmp_dir / "active-profile.json"
+        active_profile_path.write_text(
+            json.dumps(
+                {
+                    "runtime_mode": "simulation",
+                    "robot_id": stable_robot_id,
+                    "scope": "deterministic_2d_map_evaluation",
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        profile_sha256 = hashlib.sha256(
+            active_profile_path.read_bytes()
+        ).hexdigest()
+
         mission_config = MissionGatewayConfig(port=0)
         mission_gw = MissionGateway(
             mission_config,
@@ -244,19 +264,32 @@ def _run_scenario(
             task_registry=agent.task_registry,
             subagent_registry=agent.subagent_registry,
             session_lineage_store=agent._session_lineage_store,
+            runtime_identity=GatewayRuntimeIdentity.create(
+                runtime_mode="simulation",
+                active_profile_path=active_profile_path,
+                profile_sha256=profile_sha256,
+                robot_id=stable_robot_id,
+            ),
+            plan_artifact_store=PlanArtifactStore(
+                tmp_dir / "plan-artifacts.jsonl"
+            ),
         )
         mission_gw.start()
         try:
             base = mission_gw.base_url
 
-            # Submit through the production-default scheduler-backed,
-            # background Mission Run path.
-            _http_status, body = _json_request(base, "POST", "/missions", {
-                "command": command,
-                "session_id": f"eval-{case_id}",
-                "use_scheduler": True,
-                "background": True,
-            })
+            # Preview and confirm through the same sealed-plan contract as an
+            # operator client. The planner runs once during preview; execution
+            # consumes that exact artifact without replanning.
+            mission_client = MissionGatewayClient(base)
+            preview = mission_client.preview_mission(
+                command,
+                target_robot=stable_robot_id,
+            )
+            body = mission_client.confirm_plan(
+                preview,
+                operator_confirmed=True,
+            )
             mission_id = body.get("mission_id", "")
             background_run = (
                 body.get("status") == "accepted"
@@ -392,6 +425,18 @@ def _run_scenario(
             _write_artifact(
                 scenario_prefix / "scenario.json",
                 scenario.to_dict(),
+            )
+            _write_artifact(
+                scenario_prefix / "plan-preview.json",
+                redact_dict({
+                    key: value
+                    for key, value in preview.items()
+                    if key != "plan_token"
+                }),
+            )
+            _write_artifact(
+                scenario_prefix / "plan-confirmation.json",
+                redact_dict(body),
             )
             _write_artifact(
                 scenario_prefix / "mission-run.json",

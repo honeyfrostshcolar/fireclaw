@@ -19,6 +19,8 @@ def _write_mock_wheel(directory: Path) -> Path:
     with zipfile.ZipFile(wheel_path, "w") as z:
         z.writestr("fireclaw_core/__init__.py", "")
         z.writestr("fireclaw_core/__main__.py", "def main(): pass")
+        z.writestr("fireclaw_core/mission/mission_gateway_client.py", "")
+        z.writestr("fireclaw_core/mission/plan_artifact.py", "")
         z.writestr("fireclaw_core/web_console/index.html", "<html></html>")
         z.writestr("fireclaw_core/web_console/style.css", "body {}")
         z.writestr("fireclaw_core/web_console/app.js", "console.log('ok')")

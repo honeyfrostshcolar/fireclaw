@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 import re
 from typing import TYPE_CHECKING, Any, Protocol
 
-from fireclaw_core.planner.planner import CHINESE_DIGITS
-
 if TYPE_CHECKING:
     from fireclaw_core.mission.graph_proposal import MissionGraphProposal
 from fireclaw_core.agent.robot_registry import RobotRegistryEntry
@@ -99,6 +97,9 @@ class MissionPlannerContext:
     external_knowledge: list[dict[str, Any]] = field(default_factory=list)
     tool_exposed_belief_ids: tuple[str, ...] | None = None
     active_observation_capabilities: tuple[str, ...] | None = None
+    # Current-dialogue answers are authenticated operator input, not advisory
+    # memory. The Gateway bounds and owns this list before it reaches a model.
+    operator_clarifications: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --- Protocol ---
@@ -118,18 +119,6 @@ DEFAULT_INTENT_PATTERNS: tuple[tuple[str, str, str], ...] = (
     (r"侦察|探查|侦查", "recon", "recon"),
     (r"运送|搬运|送物资", "transport", "transport"),
 )
-
-
-def _extract_floors(command: str) -> list[int]:
-    """Extract all floor numbers from a Chinese command string."""
-    floors: list[int] = []
-    for match in re.finditer(r"([0-9]+|[一二三四五六七八九十])楼", command):
-        token = match.group(1)
-        if token.isdigit():
-            floors.append(int(token))
-        elif token in CHINESE_DIGITS:
-            floors.append(CHINESE_DIGITS[token])
-    return floors
 
 
 def _extract_points(command: str) -> list[dict[str, float]]:
@@ -160,19 +149,6 @@ def _detect_intent(
     return None
 
 
-def _floor_command(floor: int, intent: str) -> str:
-    """Generate a subtask command for a specific floor."""
-    intent_verbs = {
-        "search": "搜索受困人员",
-        "patrol": "巡逻",
-        "firefight": "灭火",
-        "recon": "侦察",
-        "transport": "运送物资",
-    }
-    verb = intent_verbs.get(intent, "执行任务")
-    return f"去{floor}楼{verb}"
-
-
 # --- Planner ---
 
 class MissionPlanner:
@@ -197,12 +173,11 @@ class MissionPlanner:
         intent, capability_required = intent_match
 
         points = _extract_points(command)
-        floors = _extract_floors(command)
-        if not points and not floors:
+        if not points:
             return MissionPlanningResult(
                 status="clarify",
                 message=(
-                    "请指定当前地图中的目标点，"
+                    "当前仅支持二维 map；请指定当前地图中的目标点，"
                     "例如：去坐标 (2.0, 1.5) 搜索受困人员。"
                 ),
             )
@@ -219,20 +194,11 @@ class MissionPlanner:
                 message=f"没有可用的机器人具备 {capability_required} 能力。",
             )
 
-        subtasks = (
-            _assign_point_targets(
-                points,
-                capable_robots,
-                intent,
-                capability_required,
-            )
-            if points
-            else _assign_robots(
-                floors,
-                capable_robots,
-                intent,
-                capability_required,
-            )
+        subtasks = _assign_point_targets(
+            points,
+            capable_robots,
+            intent,
+            capability_required,
         )
         plan = MissionPlan(intent=intent, command=command, subtasks=subtasks)
 
@@ -244,41 +210,13 @@ class MissionPlanner:
         )
 
 
-def _assign_robots(
-    floors: list[int],
-    capable_robots: list[RobotRegistryEntry],
-    intent: str,
-    capability_required: str,
-) -> list[MissionSubtask]:
-    """Assign robots to floor subtasks.
-
-    When there are enough robots, each floor gets a different robot (parallel).
-    When there are fewer robots than floors, robots are reused with sequential groups.
-    """
-    subtasks: list[MissionSubtask] = []
-    robot_count = len(capable_robots)
-
-    for index, floor in enumerate(floors):
-        robot = capable_robots[index % robot_count]
-        execution_group = index // robot_count
-        subtasks.append(MissionSubtask(
-            robot_id=robot.robot_id,
-            command=_floor_command(floor, intent),
-            floor=floor,
-            capability_required=capability_required,
-            execution_group=execution_group,
-        ))
-
-    return subtasks
-
-
 def _assign_point_targets(
     points: list[dict[str, float]],
     capable_robots: list[RobotRegistryEntry],
     intent: str,
     capability_required: str,
 ) -> list[MissionSubtask]:
-    """Assign single-floor map points across capable robots."""
+    """Assign 2D map points across capable robots."""
     subtasks: list[MissionSubtask] = []
     robot_count = len(capable_robots)
     for index, pose in enumerate(points):

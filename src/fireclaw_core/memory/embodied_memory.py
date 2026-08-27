@@ -86,6 +86,7 @@ MEMORY_PRODUCER_EVENT_TYPES: dict[str, frozenset[str]] = {
         "command",
         "correction",
         "mission",
+        "observation",
         "outcome",
         "plan",
         "subtask",
@@ -835,19 +836,29 @@ class EmbodiedMemoryStore:
         return self._index
 
     def _assert_record_id_unused(self, record_id: str) -> None:
-        if any(record.record_id == record_id for record in self._evidence.list_records()):
+        if self._evidence.has_record_id(record_id):
             raise ValueError(f"Memory record id already exists: {record_id}")
 
     def _validate_relation_endpoints(self, relation: EmbodiedMemoryRelation) -> None:
-        events = {event.event_id: event for event in self.list_events()}
-        source = events.get(relation.source_record_id)
-        target = events.get(relation.target_record_id)
+        source = self._event_from_record_id(relation.source_record_id)
+        target = self._event_from_record_id(relation.target_record_id)
         if source is None or target is None:
             raise ValueError("Memory relation endpoints must reference existing embodied events")
         if source.mission_id != relation.mission_id or target.mission_id != relation.mission_id:
             raise ValueError("Memory relation endpoints must belong to the relation mission")
         if source.runtime_mode != relation.runtime_mode or target.runtime_mode != relation.runtime_mode:
             raise ValueError("Memory relation endpoints cannot cross runtime modes")
+
+    def _event_from_record_id(self, record_id: str) -> EmbodiedMemoryEvent | None:
+        record = self._evidence.get_record(record_id)
+        if record is None or record.record_type == "relation":
+            return None
+        if EMBODIED_METADATA_KEY not in record.content:
+            return None
+        try:
+            return EmbodiedMemoryEvent.from_mission_record(record)
+        except ValueError:
+            return None
 
 
 class EmbodiedMemoryProducer:

@@ -7,7 +7,7 @@ be shared across robots:
 
 - `launch/robot_base.launch`: Gazebo, the Burger URDF, sensors, odometry and TF;
 
-The root `fireclaw.toml` supplies the map, topics, frames, footprint and
+The simulation-only root `fireclaw.sim.toml` supplies the map, topics, frames, footprint and
 physical limits. The generic
 `extensions/navigation-move-base/launch/fireclaw_navigation.launch` starts
 map_server, AMCL and move_base and loads Plugin-owned defaults.

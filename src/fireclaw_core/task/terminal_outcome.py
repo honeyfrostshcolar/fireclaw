@@ -80,6 +80,23 @@ _LEGACY_STATUS_ALIASES = {
     "orphaned": "lost",
 }
 
+# Operator-facing terminal text is a protocol, not model-generated prose.
+# Machine-readable status/reason/evidence fields retain the detail needed for
+# audit and automation; ``message`` is deliberately deterministic so a model
+# cannot change the UI language from one turn to the next.
+ROBOT_TASK_MESSAGE_LOCALE = "zh-CN"
+ROBOT_TASK_MESSAGES: dict[str, str] = {
+    "completed": "任务已完成。",
+    "blocked": "任务已阻塞，无法安全继续。",
+    "escalated": "任务需要人工介入。",
+    "failed": "任务执行失败。",
+    "timed_out": "任务执行超时。",
+    "cancelled": "任务已取消。",
+    "lost": "任务状态丢失，无法确认执行结果。",
+    "awaiting_confirmation": "任务等待操作员确认。",
+    "clarify": "任务需要补充信息，暂不能继续。",
+}
+
 
 @dataclass(frozen=True)
 class RobotTaskTerminalOutcome:
@@ -103,6 +120,26 @@ def normalize_robot_task_terminal_status(
     if candidate not in ROBOT_TASK_TERMINAL_STATUSES:
         return None
     return cast(RobotTaskTerminalStatus, candidate)
+
+
+def robot_task_operator_message(status: Any) -> str:
+    """Return the deterministic Simplified-Chinese message for a status.
+
+    This helper accepts legacy aliases (for example ``succeeded``) and the
+    active confirmation/clarification statuses used before terminalization.
+    Unknown values fail closed to a generic failure message; callers should
+    keep the raw value in a structured field for diagnostics.
+    """
+
+    candidate = status.strip().lower() if isinstance(status, str) else ""
+    # These are active (pre-terminal) statuses and intentionally do not pass
+    # through the legacy alias table where ``clarify`` maps to ``escalated``.
+    if candidate in {"awaiting_confirmation", "clarify"}:
+        return ROBOT_TASK_MESSAGES[candidate]
+    normalized = normalize_robot_task_terminal_status(status)
+    if normalized is not None:
+        return ROBOT_TASK_MESSAGES[normalized]
+    return ROBOT_TASK_MESSAGES.get(candidate, ROBOT_TASK_MESSAGES["failed"])
 
 
 def build_robot_task_terminal_outcome(

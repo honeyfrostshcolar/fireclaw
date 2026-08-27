@@ -120,6 +120,44 @@ def test_runtime_accepts_validated_plan_proposal_without_dispatching() -> None:
     assert result.validation_errors == ()
 
 
+def test_runtime_records_context_and_validation_stage_timings() -> None:
+    policy = _SequencePolicy([
+        MissionDeliberationDecision.propose(_planning_result()),
+    ])
+    events: list[tuple[str, dict]] = []
+    snapshot = _snapshot()
+    runtime = MissionDeliberationRuntime(
+        registry=_registry(),
+        policy=policy,
+    )
+
+    result = runtime.deliberate(
+        mission_id="mission-1",
+        command="去二楼搜索受困人员",
+        state_snapshot=snapshot,
+        planner_context=_context(snapshot),
+        event_sink=lambda event_type, payload: events.append(
+            (event_type, dict(payload))
+        ),
+    )
+
+    stages = [
+        payload
+        for event_type, payload in events
+        if event_type == "mission_agent.stage.completed"
+    ]
+    assert {payload["stage"] for payload in stages} >= {
+        "context_assembly",
+        "plan_validation",
+    }
+    assert result.timing
+    assert {item["stage"] for item in result.timing} >= {
+        "context_assembly",
+        "plan_validation",
+    }
+    assert all(item["duration_ms"] >= 0 for item in result.timing)
+
+
 def test_runtime_can_inspect_snapshot_before_proposing() -> None:
     policy = _SequencePolicy([
         MissionDeliberationDecision.inspect("robot_state", subject_id="robot-a"),

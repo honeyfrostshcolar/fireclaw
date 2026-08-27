@@ -80,6 +80,49 @@ def _dummy_applier(plan: _DummyPlan) -> dict[str, object]:
     }
 
 
+def _prepare_fake_simulation_runtime(*, runtime_root: str | Path, **_kwargs: Any) -> dict[str, object]:
+    root = Path(runtime_root)
+    bundle_root = (
+        root
+        / "simulation-bundles"
+        / "turtlebot3-burger-v1"
+        / "releases"
+        / ("a" * 64)
+    )
+    for relative in (
+        "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml",
+        "robots/turtlebot3_burger/ros_ws/src/"
+        "fireclaw_turtlebot3_burger/launch/robot_base.launch",
+        "robots/turtlebot3_burger/ros_ws/src/turtlebot3/"
+        "turtlebot3_navigation/maps/map.yaml",
+    ):
+        path = bundle_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("test fixture\n", encoding="utf-8")
+    (bundle_root / "extensions").mkdir(exist_ok=True)
+    workspace_setup = (
+        root
+        / "simulation-workspaces"
+        / "turtlebot3-burger-v1"
+        / "releases"
+        / ("b" * 64)
+        / "install/setup.bash"
+    )
+    workspace_setup.parent.mkdir(parents=True, exist_ok=True)
+    workspace_setup.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    return {
+        "status": "ready",
+        "bundle_root": str(bundle_root),
+        "bundle_id": "turtlebot3-burger-v1",
+        "bundle_version": "1.0.0",
+        "bundle_sha256": "a" * 64,
+        "bundle_receipt": str(bundle_root / "bundle-receipt.json"),
+        "workspace_fingerprint": "b" * 64,
+        "workspace_receipt": str(workspace_setup.parent.parent / "workspace-receipt.json"),
+        "workspace_setup": str(workspace_setup),
+    }
+
+
 def _setup_simulation_environment(tmp_path: Path) -> tuple[Path, Path]:
     runtime_root = tmp_path / "fireclaw-home"
     result = setup_fireclaw(
@@ -89,6 +132,7 @@ def _setup_simulation_environment(tmp_path: Path) -> tuple[Path, Path]:
         deploy=True,
         plan_builder=_dummy_planner,
         deployment_applier=_dummy_applier,
+        simulation_preparer=_prepare_fake_simulation_runtime,
     )
     profile_path = Path(result["profile_path"])
     return runtime_root, profile_path
@@ -216,6 +260,7 @@ class TestDaemonManager(unittest.TestCase):
             )
             self.assertEqual(second["status"], "already_running")
             self.assertEqual(second["daemon"]["pid"], dummy_proc.pid)
+            self.assertIs(second["health_verified"], True)
         finally:
             try:
                 os.killpg(dummy_proc.pid, signal.SIGKILL)

@@ -33,6 +33,11 @@ from fireclaw_core.agent.robot import DryRunRobotAdapter, RobotAdapter
 from fireclaw_core.safety.safety import SafetyDecision, SafetyGate
 from fireclaw_core.execution.skills import create_default_skill_registry
 from fireclaw_core.task.task_contract import StructuredRobotTask, planning_result_from_structured_task
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_MESSAGE_LOCALE,
+    ROBOT_TASK_TERMINAL_STATUSES,
+    robot_task_operator_message,
+)
 from fireclaw_core.context.manager import StructuredSemanticCompactor
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.plugin.extension_loader import (
@@ -582,13 +587,165 @@ class FireClawAgent:
             ),
             "robot_state": robot_state,
             "environment_state": environment_state,
+            "memory_snapshot": {
+                "evidence_event_ids": list(memory_snapshot.evidence_event_ids),
+                "recorded": self._robot_memory_recorder is not None,
+            },
             "memory_error": None,
         }
 
+        self._apply_terminal_message_contract(result)
         self._attach_execution_event(
             result,
             execution_result=execution_result,
             structured_task=None,
+        )
+        self._append_memory_result(result)
+        return result
+
+    def execute_authorized_pending_step(
+        self,
+        *,
+        command: str,
+        structured_task: StructuredRobotTask | None,
+        pending_execution: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Resume an already approved physical plan without re-deliberating.
+
+        The first Robot Agent turn has already selected and SafetyGate-checked
+        the plan.  Approval is a continuation point, not a new planning
+        request.  We therefore reconstruct the exact persisted plan, verify
+        the newly issued authorization against it, re-read live robot state,
+        and run SafetyGate once more using the original evidence IDs.  The
+        revalidation writes an auditable safety decision but deliberately does
+        not call ``record_snapshot`` again.
+        """
+
+        if not isinstance(pending_execution, Mapping):
+            raise ValueError("pending execution must be an object")
+        version = pending_execution.get("version", 1)
+        if version != 1:
+            raise ValueError(
+                f"Unsupported pending execution version: {version}"
+            )
+        planning_payload = pending_execution.get("planning")
+        if not isinstance(planning_payload, Mapping):
+            raise ValueError("pending execution planning must be an object")
+        planning_result = self._planning_result_from_record(
+            {"planning": dict(planning_payload)}
+        )
+        raw_snapshot = pending_execution.get("memory_snapshot")
+        evidence_event_ids: tuple[str, ...] = ()
+        if isinstance(raw_snapshot, Mapping):
+            raw_ids = raw_snapshot.get("evidence_event_ids")
+            if isinstance(raw_ids, (list, tuple)):
+                evidence_event_ids = tuple(
+                    str(event_id)
+                    for event_id in raw_ids
+                    if isinstance(event_id, str) and event_id
+                )
+        operation_id = pending_execution.get("operation_id")
+        if not isinstance(operation_id, str) or not operation_id:
+            operation_id = None
+
+        robot_state_object = self._get_robot_state()
+        environment_state_object = self._get_environment_state()
+        robot_state = self._state_snapshot(robot_state_object)
+        environment_state = self._state_snapshot(environment_state_object)
+        verified_authorization = self._verify_execution_authorization(
+            command=command,
+            planning_result=planning_result,
+            structured_task=structured_task,
+        )
+        safety_decision, safety_event_id = self.safety.evaluate_with_memory_event(
+            planning_result,
+            self.registry,
+            dry_run=self.dry_run,
+            available_sensors=self._safety_available_sensors(),
+            execution_authorization=verified_authorization,
+            robot_state=robot_state_object,
+            environment_state=environment_state_object,
+            mission_id=self.session_id,
+            subtask_id=self.task_id,
+            evidence_event_ids=evidence_event_ids,
+        )
+        self._emit_event(
+            "task.authorized_plan_resumed",
+            {
+                "operation_id": operation_id,
+                "snapshot_reused": True,
+                "robot_agent_reinvoked": False,
+                "llm_reinvoked": False,
+                "evidence_event_ids": list(evidence_event_ids),
+            },
+        )
+        self._emit_event("task.planned", self._planning_to_dict(planning_result))
+        self._emit_event("safety.decided", asdict(safety_decision))
+
+        execution_result, capability_policy_manifest = (
+            self._execute_policy_checked_plan(
+                planning_result=planning_result,
+                structured_task=structured_task,
+                safety_decision=safety_decision,
+                safety_event_id=safety_event_id,
+                execution_authorization=verified_authorization,
+                robot_state=robot_state_object,
+                operation_id=(
+                    operation_id
+                    or (
+                        verified_authorization.authorization_id
+                        if verified_authorization is not None
+                        else self.task_id
+                    )
+                ),
+            )
+        )
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "command": command,
+            "status": self._resolve_status(
+                safety_decision,
+                execution_result,
+            ),
+            "message": self._resolve_message(
+                planning_result,
+                safety_decision,
+                execution_result,
+            ),
+            "dry_run": self.dry_run,
+            "planning": self._planning_to_dict(planning_result),
+            "safety": asdict(safety_decision),
+            "execution": self._execution_to_dict(execution_result),
+            "capability_policy": capability_policy_manifest,
+            "confirmation": self._confirmation_to_dict(
+                safety_decision,
+                verified_authorization,
+            ),
+            "robot_state": robot_state,
+            "environment_state": environment_state,
+            "memory_snapshot": {
+                "evidence_event_ids": list(evidence_event_ids),
+                "reused": True,
+                "recorded": False,
+            },
+            "authorization_resume": {
+                "snapshot_reused": True,
+                "robot_agent_reinvoked": False,
+                "llm_reinvoked": False,
+                "operation_id": operation_id,
+            },
+            "structured_task": (
+                structured_task.to_dict()
+                if structured_task is not None
+                else None
+            ),
+            "memory_error": None,
+        }
+        self._apply_terminal_message_contract(result)
+        self._attach_execution_event(
+            result,
+            execution_result=execution_result,
+            structured_task=structured_task,
         )
         self._append_memory_result(result)
         return result
@@ -670,12 +827,17 @@ class FireClawAgent:
             ),
             "robot_state": robot_state,
             "environment_state": environment_state,
+            "memory_snapshot": {
+                "evidence_event_ids": list(memory_snapshot.evidence_event_ids),
+                "recorded": self._robot_memory_recorder is not None,
+            },
             "memory_error": None,
         }
         result["structured_task"] = structured_task.to_dict() if structured_task is not None else None
         # Note: session info (session_id, turn_index) is intentionally omitted here
         # to match the pre-existing run_structured_task() behavior. Session tracking
         # lives in the run() path for interactive commands.
+        self._apply_terminal_message_contract(result)
         self._attach_execution_event(
             result,
             execution_result=execution_result,
@@ -746,6 +908,7 @@ class FireClawAgent:
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "command": command,
+            "operation_id": operation_id,
             "status": self._resolve_status(
                 safety_decision,
                 execution_result,
@@ -768,9 +931,14 @@ class FireClawAgent:
             "environment_state": self._state_snapshot(
                 self._get_environment_state()
             ),
+            "memory_snapshot": {
+                "evidence_event_ids": list(memory_snapshot.evidence_event_ids),
+                "recorded": self._robot_memory_recorder is not None,
+            },
             "structured_task": structured_task.to_dict(),
             "memory_error": None,
         }
+        self._apply_terminal_message_contract(payload)
         return DeliberatedStepExecution(
             payload=payload,
             execution_result=execution_result,
@@ -822,6 +990,7 @@ class FireClawAgent:
             step_executions[-1].payload if step_executions else None
         )
         pending_plan = None
+        latest_planning = None
         if status == "awaiting_confirmation" and isinstance(
             latest_step,
             dict,
@@ -831,17 +1000,46 @@ class FireClawAgent:
                 candidate_plan = latest_planning.get("plan")
                 if isinstance(candidate_plan, dict):
                     pending_plan = dict(candidate_plan)
+        pending_target_pose = (
+            dict(latest_planning["target_pose"])
+            if isinstance(latest_planning, dict)
+            and isinstance(latest_planning.get("target_pose"), dict)
+            else None
+        )
+        if pending_target_pose is None and isinstance(
+            structured_task.target.get("pose"),
+            dict,
+        ):
+            pending_target_pose = {
+                **dict(structured_task.target["pose"]),
+                "frame_id": str(
+                    structured_task.target.get("frame_id") or "map"
+                ),
+            }
+        pending_target_floor = (
+            latest_planning.get("target_floor")
+            if isinstance(latest_planning, dict)
+            else None
+        )
+        if pending_target_floor is None:
+            pending_target_floor = structured_task.target.get("floor")
+        terminal_message = robot_task_operator_message(status)
+        deliberation_trace = loop_result.to_dict()
+        deliberation_trace["message"] = terminal_message
+        deliberation_trace["message_locale"] = ROBOT_TASK_MESSAGE_LOCALE
         result = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "command": command,
             "status": status,
-            "message": loop_result.message,
+            "message": terminal_message,
+            "message_locale": ROBOT_TASK_MESSAGE_LOCALE,
             "dry_run": self.dry_run,
             "planning": {
                 "status": "deliberated",
-                "message": loop_result.message,
+                "message": terminal_message,
                 "intent": structured_task.task_type,
-                "target_floor": structured_task.target.get("floor"),
+                "target_floor": pending_target_floor,
+                "target_pose": pending_target_pose,
                 "plan": pending_plan,
             },
             "safety": (
@@ -860,14 +1058,25 @@ class FireClawAgent:
                 if isinstance(latest_step, dict)
                 else None
             ),
+            "operation_id": (
+                latest_step.get("operation_id")
+                if isinstance(latest_step, dict)
+                else None
+            ),
+            "memory_snapshot": (
+                latest_step.get("memory_snapshot")
+                if isinstance(latest_step, dict)
+                else None
+            ),
             "robot_state": self._state_snapshot(self._get_robot_state()),
             "environment_state": self._state_snapshot(
                 self._get_environment_state()
             ),
             "structured_task": structured_task.to_dict(),
-            "robot_agent_deliberation": loop_result.to_dict(),
+            "robot_agent_deliberation": deliberation_trace,
             "memory_error": None,
         }
+        self._apply_terminal_message_contract(result)
         self._attach_execution_event(
             result,
             execution_result=aggregate_execution,
@@ -1059,6 +1268,24 @@ class FireClawAgent:
         ):
             return str(execution_result.steps[-1].error)
         return planning_result.message
+
+    def _apply_terminal_message_contract(self, result: dict[str, Any]) -> None:
+        """Normalize terminal result text before it reaches memory/events.
+
+        ``FireClawAgent`` still exposes a few legacy statuses such as
+        ``succeeded`` and ``block``. Only canonical terminal statuses (plus
+        the legacy success alias) are rewritten here; planner clarification
+        messages retain their domain-specific detail.
+        """
+
+        raw_status = result.get("status")
+        status = "completed" if raw_status == "succeeded" else raw_status
+        if status not in ROBOT_TASK_TERMINAL_STATUSES and status != (
+            "awaiting_confirmation"
+        ):
+            return
+        result["message"] = robot_task_operator_message(status)
+        result["message_locale"] = ROBOT_TASK_MESSAGE_LOCALE
 
     def _planning_to_dict(self, planning_result: PlanningResult) -> dict[str, Any]:
         return {
@@ -1393,6 +1620,7 @@ class FireClawAgent:
             "environment_state": environment_state,
             "memory_error": None,
         }
+        self._apply_terminal_message_contract(result)
         self._append_memory_result(result)
         return result
 
@@ -1428,6 +1656,7 @@ class FireClawAgent:
             "environment_state": environment_state,
             "memory_error": None,
         }
+        self._apply_terminal_message_contract(result)
         self._append_memory_result(result)
         return result
 

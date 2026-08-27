@@ -4,6 +4,9 @@ import pytest
 
 from fireclaw_core.agent.robot_deliberation import (
     LLMRobotAgentDecisionPolicy,
+    ROBOT_TASK_BLOCKED_TOOL,
+    ROBOT_TASK_COMPLETE_TOOL,
+    ROBOT_TASK_ESCALATE_TOOL,
     RobotAgentDecision,
     RobotAgentDeliberationLimits,
     RobotAgentDeliberationRuntime,
@@ -555,6 +558,77 @@ def test_llm_robot_agent_policy_rejects_multiple_operations_in_one_turn():
 
     with pytest.raises(RobotAgentPlannerError, match="exactly one"):
         LLMRobotAgentDecisionPolicy(runtime).decide(request)
+
+
+def test_terminal_tool_schemas_require_the_operator_message_locale():
+    for schema, required_name in (
+        (ROBOT_TASK_COMPLETE_TOOL, "message"),
+        (ROBOT_TASK_BLOCKED_TOOL, "reason"),
+        (ROBOT_TASK_ESCALATE_TOOL, "reason"),
+    ):
+        parameters = schema["function"]["parameters"]
+        assert "message_locale" in parameters["properties"]
+        assert parameters["properties"]["message_locale"]["enum"] == [
+            "zh-CN"
+        ]
+        assert required_name in parameters["required"]
+        assert "message_locale" in parameters["required"]
+
+
+def test_llm_terminal_decision_is_host_rendered_in_simplified_chinese():
+    runtime = FakeProviderRuntime(
+        ChatCompletion(
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name="complete_robot_task",
+                    arguments={
+                        "message": "Task completed successfully.",
+                        "message_locale": "en-US",
+                    },
+                )
+            ],
+            usage=TokenUsage(1, 1, 2),
+            model="fake-model",
+            finish_reason="tool_calls",
+        )
+    )
+
+    decision = LLMRobotAgentDecisionPolicy(runtime).decide(_policy_request())
+
+    assert decision.operation == "complete"
+    assert decision.message == "任务已完成。"
+    assert decision.message_locale == "zh-CN"
+
+
+def test_robot_deliberation_normalizes_legacy_terminal_policy_messages():
+    policy = SequencePolicy(
+        [
+            RobotAgentDecision(
+                operation="execute_skill",
+                message="navigate",
+                tool_name="navigate_to_waypoint",
+                inputs={"floor": 2},
+            ),
+            RobotAgentDecision(
+                operation="complete",
+                message="Task completed in English.",
+                message_locale="en-US",
+            ),
+        ]
+    )
+
+    result = RobotAgentDeliberationRuntime(policy=policy).run(
+        _single_skill_task(),
+        fallback_robot_id="robot-1",
+        context_provider=lambda: {},
+        execute_skill=_success,
+    )
+
+    assert result.status == "completed"
+    assert result.message == "任务已完成。"
+    assert result.result["status"] == "completed"
 
 
 def _policy_request():

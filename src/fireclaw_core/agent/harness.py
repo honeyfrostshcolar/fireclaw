@@ -33,6 +33,7 @@ AgentRequestBuilder = Callable[
     Tuple[List[Dict[str, Any]], List[Dict[str, Any]]],
 ]
 AgentHarnessTraceSink = Callable[[Mapping[str, Any]], None]
+AgentHarnessStageSink = Callable[[str, Mapping[str, Any]], None]
 
 
 class AgentHarnessError(RuntimeError):
@@ -74,6 +75,10 @@ class AgentHarnessAttempt:
     cancellation_requested: Callable[[], bool] | None = None
     temperature: float = 0.0
     seed: int | None = None
+    # Optional non-authoritative timing hook.  It is deliberately attached to
+    # one attempt rather than the harness instance so Mission and Robot agent
+    # runs can observe their own provider stages without sharing state.
+    stage_sink: AgentHarnessStageSink | None = None
 
 
 @dataclass(frozen=True)
@@ -155,14 +160,34 @@ class ProviderAgentHarness:
         managed: ManagedContextResult | None = None
         response: ChatCompletion | None = None
         try:
-            managed = self.context_manager.fit(
-                scope=attempt.scope,
-                context_id=attempt.context_id,
-                authoritative=attempt.authoritative,
-                continuity=attempt.continuity,
-                advisory=attempt.advisory,
-                build_request=attempt.build_request,
-                compact_sections=attempt.compact_sections,
+            context_started = time.monotonic()
+            try:
+                managed = self.context_manager.fit(
+                    scope=attempt.scope,
+                    context_id=attempt.context_id,
+                    authoritative=attempt.authoritative,
+                    continuity=attempt.continuity,
+                    advisory=attempt.advisory,
+                    build_request=attempt.build_request,
+                    compact_sections=attempt.compact_sections,
+                )
+            except Exception as exc:
+                self._emit_stage(
+                    attempt,
+                    "context_fit",
+                    context_started,
+                    status="error",
+                    details={"error_type": type(exc).__name__},
+                )
+                raise
+            self._emit_stage(
+                attempt,
+                "context_fit",
+                context_started,
+                details={
+                    "input_tokens": managed.manifest.used_input_tokens,
+                    "output_reserve_tokens": managed.manifest.output_reserve_tokens,
+                },
             )
             visible_tool_names = _normalize_tool_schemas(managed.tools)
             if attempt.allowed_tool_names is not None:
@@ -193,8 +218,32 @@ class ProviderAgentHarness:
             }
             if attempt.seed is not None:
                 provider_request["seed"] = attempt.seed
-            response = self.provider_runtime.chat_completion(
-                **provider_request
+            provider_started = time.monotonic()
+            try:
+                response = self.provider_runtime.chat_completion(
+                    **provider_request
+                )
+            except Exception as exc:
+                self._emit_stage(
+                    attempt,
+                    "provider_request",
+                    provider_started,
+                    status="error",
+                    details={"error_type": type(exc).__name__},
+                )
+                raise
+            provider_status: Mapping[str, Any] = {}
+            try:
+                status = self.provider_runtime.status()
+                if isinstance(status, dict):
+                    provider_status = status
+            except Exception:
+                provider_status = {}
+            self._emit_stage(
+                attempt,
+                "provider_request",
+                provider_started,
+                details={"model": provider_status.get("model")},
             )
             if self._cancelled(attempt):
                 raise AgentHarnessError(
@@ -263,6 +312,35 @@ class ProviderAgentHarness:
 
     def dispose(self) -> None:
         self._disposed = True
+
+    @staticmethod
+    def _emit_stage(
+        attempt: AgentHarnessAttempt,
+        stage: str,
+        started: float,
+        *,
+        status: str = "completed",
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        sink = attempt.stage_sink
+        if sink is None:
+            return
+        payload: dict[str, Any] = {
+                "duration_ms": round(
+                max(0.0, (time.monotonic() - started) * 1000),
+                2,
+                ),
+                "status": status,
+                "harness_run_id": attempt.run_id,
+            }
+        if details:
+            payload.update({key: value for key, value in details.items() if value is not None})
+        try:
+            sink(stage, payload)
+        except Exception:
+            # Timing is observability only; a broken consumer must never alter
+            # the provider/tool safety boundary.
+            return
 
     def _trace(
         self,

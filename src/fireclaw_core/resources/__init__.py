@@ -29,6 +29,7 @@ _BUNDLE_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SOURCE_ID_RE = re.compile(r"^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$")
 _SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _resource_filename(resource_id: str, known_files: Mapping[str, str], kind: str) -> str:
@@ -120,6 +121,21 @@ def validate_simulation_bundle_catalog(
     compatibility = catalog.get("compatible_fireclaw_versions")
     if not isinstance(compatibility, str) or not compatibility.strip():
         raise ValueError("Catalog 'compatible_fireclaw_versions' must be a non-empty string")
+
+    artifact = catalog.get("artifact")
+    if not isinstance(artifact, Mapping):
+        raise ValueError("Catalog 'artifact' must be an object")
+    expected_filename = f"fireclaw-sim-{bundle_id}.tar.gz"
+    if artifact.get("filename") != expected_filename:
+        raise ValueError(
+            "Catalog artifact.filename must match the canonical bundle filename "
+            f"{expected_filename!r}"
+        )
+    artifact_sha256 = artifact.get("sha256")
+    if not isinstance(artifact_sha256, str) or not _SHA256_RE.fullmatch(
+        artifact_sha256
+    ):
+        raise ValueError("Catalog artifact.sha256 must be a lowercase SHA-256 digest")
 
     include_paths = _validate_path_list(catalog, "include_paths", allow_trailing_slash=True)
     required_paths = _validate_path_list(catalog, "required_paths", allow_trailing_slash=False)

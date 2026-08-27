@@ -57,7 +57,7 @@ rrf_k = 60
 启动：
 
 ```bash
-PYTHONPATH=src python -m fireclaw_core serve --config fireclaw.toml
+PYTHONPATH=src python -m fireclaw_core serve --config fireclaw.sim.toml
 ```
 
 也可以使用同名 CLI 参数，例如 `--knowledge-rag-backend`、

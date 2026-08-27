@@ -60,7 +60,7 @@ class Ros1EmergencyStopConfig:
 class Ros1TransportConfig:
     enabled: bool = False
     wait_for_server_seconds: float = 5.0
-    wait_for_result_seconds: float = 30.0
+    wait_for_result_seconds: float = 360.0
 
 
 @dataclass(frozen=True)
@@ -153,7 +153,7 @@ def _parse_transport_config(raw: Any) -> Ros1TransportConfig:
     if not isinstance(raw, dict):
         raise ValueError("transport must be an object.")
     wait_for_server_seconds = float(raw.get("wait_for_server_seconds", 5.0))
-    wait_for_result_seconds = float(raw.get("wait_for_result_seconds", 30.0))
+    wait_for_result_seconds = float(raw.get("wait_for_result_seconds", 360.0))
     if wait_for_server_seconds < 0:
         raise ValueError("transport.wait_for_server_seconds must be non-negative.")
     if wait_for_result_seconds < 0:

@@ -30,5 +30,5 @@ def test_operator_console_prints_human_readable_progress(tmp_path):
     assert "正在规划机器人任务。" in text
     assert "安全检查通过。" in text
     assert "正在前往 map 坐标系中的目标点 (2.0, 1.5)。" in text
-    assert "任务完成：FireClaw execution plan completed." in text
+    assert "任务完成：任务已完成。" in text
     assert '"status"' not in text

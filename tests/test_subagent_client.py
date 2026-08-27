@@ -145,6 +145,39 @@ def test_robot_subagent_client_exposes_operator_status_and_recovery_routes():
     ]
 
 
+def test_robot_subagent_client_confirms_one_exact_task():
+    entry = RobotRegistryEntry(
+        robot_id="robot-1",
+        base_url="http://127.0.0.1:8765",
+    )
+    client = RobotSubagentClient()
+    calls = []
+
+    def request_json(method, base_url, path, payload=None):
+        calls.append((method, base_url, path, payload))
+        return {"status": "accepted"}
+
+    client._request_json = request_json
+
+    result = client.confirm_task(
+        entry,
+        "task-1",
+        session_id="mission-1",
+    )
+
+    assert calls == [
+        (
+            "POST",
+            entry.base_url,
+            "/confirm",
+            {"task_id": "task-1", "session_id": "mission-1"},
+        )
+    ]
+    assert result["task_id"] == "task-1"
+    assert result["session_id"] == "mission-1"
+    assert result["robot_id"] == "robot-1"
+
+
 def test_robot_subagent_client_sends_structured_task_payload(tmp_path):
     from fireclaw_core.task.task_contract import StructuredRobotTask
 

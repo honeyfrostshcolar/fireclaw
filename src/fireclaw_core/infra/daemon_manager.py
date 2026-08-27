@@ -276,10 +276,21 @@ class DaemonRuntimeManager:
         # Idempotency check: already running?
         curr_status = self.get_daemon_status(resolved_profile)
         if curr_status.get("status") == "running":
+            daemon = curr_status["daemon"]
+            gateway_url = daemon.get("gateway_url", DEFAULT_GATEWAY_URL)
+            existing_pid = int(daemon["pid"])
+            poller = health_poller or (
+                lambda url, tout: _poll_gateway_health(
+                    url,
+                    tout,
+                    pid=existing_pid,
+                )
+            )
             return {
                 "status": "already_running",
-                "daemon": curr_status["daemon"],
-                "message": f"Daemon is already running with PID {curr_status['daemon']['pid']}.",
+                "daemon": daemon,
+                "health_verified": bool(poller(gateway_url, timeout)),
+                "message": f"Daemon is already running with PID {existing_pid}.",
             }
 
         _ensure_private_dir(self.state_dir)

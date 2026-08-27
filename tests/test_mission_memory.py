@@ -204,6 +204,46 @@ def test_mission_memory_store_skips_corrupt_jsonl_lines(tmp_path):
     assert records[1].record_id == "m2"
 
 
+def test_record_lookup_cache_avoids_reloading_jsonl_for_each_lookup(tmp_path, monkeypatch):
+    path = tmp_path / "mission_memory.jsonl"
+    store = MissionMemoryStore(path)
+    store.append(_make_record(record_id="mem-1"))
+
+    reads = 0
+    read_all = store._read_all_unlocked
+
+    def counted_read_all():
+        nonlocal reads
+        reads += 1
+        return read_all()
+
+    monkeypatch.setattr(store, "_read_all_unlocked", counted_read_all)
+
+    assert store.has_record_id("mem-1") is True
+    assert store.get_record("mem-1").record_id == "mem-1"
+    assert store.has_record_id("missing") is False
+    assert reads == 1
+
+    # Appends made through the same store extend the cache instead of forcing
+    # another authority-file scan.
+    store.append(_make_record(record_id="mem-2"))
+    assert store.has_record_id("mem-2") is True
+    assert reads == 1
+
+
+def test_record_lookup_cache_reloads_after_external_append(tmp_path):
+    path = tmp_path / "mission_memory.jsonl"
+    store = MissionMemoryStore(path)
+    store.append(_make_record(record_id="mem-1"))
+    assert store.has_record_id("mem-1") is True
+
+    other_process = MissionMemoryStore(path)
+    other_process.append(_make_record(record_id="mem-2"))
+
+    assert store.has_record_id("mem-2") is True
+    assert [record.record_id for record in store.list_records()] == ["mem-1", "mem-2"]
+
+
 def test_mission_memory_record_to_dict():
     record = _make_record(
         record_id="mem-1",

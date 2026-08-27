@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import asdict, is_dataclass, replace
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 from uuid import uuid4
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from fireclaw_core.mission.mission_scheduler import MissionSchedulerConfig
 
 from fireclaw_core.approval.approval_store import JsonlApprovalStore
 from fireclaw_core.agent.loop_checkpoint import AgentLoopCheckpointStore
@@ -50,7 +53,12 @@ from fireclaw_core.mission.mission_planning_audit import (
     MissionPlanningAuditSink,
     append_guard_decision,
 )
-from fireclaw_core.mission.mission_planner import MissionPlannerContext, MissionPlanningResult, MissionSubtask
+from fireclaw_core.mission.mission_planner import (
+    MissionPlan,
+    MissionPlannerContext,
+    MissionPlanningResult,
+    MissionSubtask,
+)
 from fireclaw_core.mission.mission_registry import JsonlMissionRegistry
 from fireclaw_core.mission.mission_registry import TERMINAL_SUBTASK_STATUSES
 from fireclaw_core.planner.planner import RuleBasedPlanner
@@ -58,6 +66,7 @@ from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore, MissionSessionLineage
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.mission.mission_deliberation import (
+    MissionDeliberationLimits,
     MissionDeliberationResult,
     MissionDeliberationRuntime,
     PlannerDeliberationPolicy,
@@ -67,6 +76,10 @@ from fireclaw_core.mission.mission_plan_validator import MissionPlanValidator
 from fireclaw_core.mission.mission_plan_revision import (
     MissionPlanRevisionCoordinator,
 )
+from fireclaw_core.mission.plan_artifact import (
+    validate_plan_2d,
+    validate_plan_target_binding,
+)
 from fireclaw_core.mission.mission_state import (
     MissionStateSnapshot,
     MissionStateSnapshotBuilder,
@@ -75,6 +88,7 @@ from fireclaw_core.mission.mission_state import (
 from fireclaw_core.mission.task_graph import (
     MissionTaskGraph,
     MissionTaskGraphValidator,
+    task_graph_from_mission_plan,
 )
 from fireclaw_core.task.task_contract import MemoryLineage, structured_task_from_mission_subtask
 from fireclaw_core.task.task_flow_registry import JsonlTaskFlowRegistryStore, TaskFlowRecord
@@ -88,6 +102,15 @@ class SubagentClient(Protocol):
         ...
 
     def get_task_trace(self, entry: RobotRegistryEntry, task_id: str) -> dict[str, Any]:
+        ...
+
+    def confirm_task(
+        self,
+        entry: RobotRegistryEntry,
+        task_id: str,
+        *,
+        session_id: str,
+    ) -> dict[str, Any]:
         ...
 
     def cancel_task(
@@ -141,6 +164,7 @@ class MissionAgent:
         planner_memory_context_builder: PlannerMemoryContextBuilder | None = None,
         mission_state_snapshot_builder: MissionStateSnapshotBuilder | None = None,
         mission_deliberation_runtime: MissionDeliberationRuntime | None = None,
+        mission_deliberation_limits: MissionDeliberationLimits | None = None,
         agent_loop_checkpoint_store: (
             AgentLoopCheckpointStore | None
         ) = None,
@@ -149,6 +173,7 @@ class MissionAgent:
         mission_observation_compiler: MissionObservationCompiler | None = None,
         consolidation_coordinator: Any | None = None,
         working_memory_hydration_report: Any | None = None,
+        mission_scheduler_config: MissionSchedulerConfig | None = None,
     ) -> None:
         self.registry = registry
         self.profile_skill_chains_by_robot = profile_skill_chains_by_robot or {}
@@ -184,6 +209,7 @@ class MissionAgent:
                 MissionDeliberationRuntime(
                     registry=registry,
                     policy=planner_policy,
+                    limits=mission_deliberation_limits,
                     checkpoint_store=agent_loop_checkpoint_store,
                     agent_tool_runtime=getattr(
                         planner_policy,
@@ -275,6 +301,7 @@ class MissionAgent:
             )
         )
         self.working_memory_hydration_report = working_memory_hydration_report
+        self.mission_scheduler_config = mission_scheduler_config
 
     @property
     def session_lineage_store(self) -> JsonlSessionLineageStore | None:
@@ -569,6 +596,184 @@ class MissionAgent:
             )
         self._record_mission_state_snapshot(snapshot)
         return snapshot
+
+    def deliberate_preview(
+        self,
+        command: str,
+        *,
+        mission_id: str,
+        presence: dict[str, dict[str, Any]],
+        available_robot_ids: set[str] | frozenset[str],
+        operator_clarifications: list[dict[str, Any]] | None = None,
+        operator_id: str | None = None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> MissionDeliberationResult:
+        """Run the bounded Mission Agent planner without dispatching actions.
+
+        The caller supplies the Gateway's already authenticated readiness
+        projection so preview planning does not perform a second, conflicting
+        robot-presence probe. Active observation is deliberately not resumed
+        here: an ``observation_required`` result returns to the operator
+        surface and cannot silently move a robot during plan preview.
+        """
+
+        if self.mission_deliberation_runtime is None:
+            raise RuntimeError("No Mission deliberation runtime is configured.")
+        normalized_command = command.strip()
+        if not normalized_command:
+            raise ValueError("Mission preview command must not be empty.")
+        normalized_robot_ids = {
+            str(robot_id).strip()
+            for robot_id in available_robot_ids
+            if str(robot_id).strip()
+        }
+        def emit_stage(
+            stage: str,
+            started: float,
+            *,
+            status: str = "completed",
+            details: dict[str, Any] | None = None,
+        ) -> None:
+            if event_sink is None:
+                return
+            payload: dict[str, Any] = {
+                "stage": stage,
+                "status": status,
+                "duration_ms": round(
+                    max(0.0, (time.monotonic() - started) * 1000),
+                    2,
+                ),
+            }
+            if details:
+                payload.update(details)
+            event_sink("mission_agent.stage.completed", payload)
+
+        snapshot_started = time.monotonic()
+        state_snapshot = self._build_mission_state_snapshot(
+            mission_id,
+            presence,
+        )
+        snapshot_errors = MissionStateSnapshotValidator().validate(
+            state_snapshot
+        )
+        if snapshot_errors:
+            raise ValueError(
+                "Mission preview state snapshot failed deterministic "
+                "validation: " + "; ".join(snapshot_errors)
+            )
+        emit_stage(
+            "mission_state_snapshot",
+            snapshot_started,
+            details={"robot_count": len(state_snapshot.robots)},
+        )
+
+        command_memory_started = time.monotonic()
+        command_event_id = self._record_embodied_memory(
+            mission_id,
+            "command",
+            "operator_assertion",
+            {
+                "command": normalized_command,
+                "operator_clarifications": list(
+                    operator_clarifications or []
+                ),
+                "preview_only": True,
+            },
+            source_type="operator",
+            source_id=operator_id,
+        )
+        emit_stage(
+            "memory_write",
+            command_memory_started,
+            details={"record_kind": "command"},
+        )
+        snapshot_memory_started = time.monotonic()
+        state_snapshot_event_id = self._record_mission_state_snapshot(
+            state_snapshot
+        )
+        emit_stage(
+            "memory_write",
+            snapshot_memory_started,
+            details={"record_kind": "mission_state_snapshot"},
+        )
+        memory_context_started = time.monotonic()
+        memory_context_result = self._build_planner_memory_context(
+            normalized_command,
+            mission_id=mission_id,
+        )
+        emit_stage(
+            "planner_memory_context",
+            memory_context_started,
+            details={
+                "memory_count": len(memory_context_result.memories),
+                "correction_count": len(memory_context_result.corrections),
+                "external_knowledge_count": len(
+                    memory_context_result.external_knowledge
+                ),
+            },
+        )
+        planner_context_started = time.monotonic()
+        context = MissionPlannerContext(
+            available_robots=[
+                entry
+                for entry in self.registry.enabled_entries()
+                if entry.robot_id in normalized_robot_ids
+            ],
+            state_snapshot=state_snapshot.to_dict(),
+            retrieved_memories=list(memory_context_result.memories),
+            operator_corrections=list(memory_context_result.corrections),
+            external_knowledge=list(
+                memory_context_result.external_knowledge
+            ),
+            operator_clarifications=[
+                dict(item) for item in (operator_clarifications or [])
+            ],
+        )
+        emit_stage("planner_context", planner_context_started)
+
+        def validate_target_binding_with_snapshot(
+            plan: MissionPlan,
+        ) -> list[str]:
+            """Validate relative targets against this preview's frozen pose evidence.
+
+            ``MissionDeliberationRuntime`` intentionally accepts generic
+            one-argument proposal validators.  Passing the bare
+            ``validate_plan_target_binding`` function here used to discard the
+            already-built ``state_snapshot`` and made a valid relative target
+            look unbound.  Keep the generic runtime contract while closing
+            over the immutable snapshot captured for this preview.
+            """
+
+            return validate_plan_target_binding(
+                plan,
+                state_snapshot=state_snapshot,
+            )
+
+        result = self.mission_deliberation_runtime.deliberate(
+            mission_id=mission_id,
+            command=normalized_command,
+            state_snapshot=state_snapshot,
+            planner_context=context,
+            proposal_validators=(
+                validate_target_binding_with_snapshot,
+                validate_plan_2d,
+            ),
+            event_sink=event_sink,
+        )
+        trace_started = time.monotonic()
+        self._record_mission_deliberation(
+            result,
+            derived_from=tuple(
+                event_id
+                for event_id in (
+                    command_event_id,
+                    state_snapshot_event_id,
+                )
+                if event_id is not None
+            ),
+        )
+        emit_stage("mission_trace_persist", trace_started)
+        return result
 
     def _record_mission_state_snapshot(
         self,
@@ -1538,6 +1743,243 @@ class MissionAgent:
         )
         return list(result.memories), list(result.corrections)
 
+    def execute_sealed_plan(
+        self,
+        plan: MissionPlan,
+        *,
+        session_id: str,
+        operator: dict[str, Any] | None,
+        artifact_id: str,
+        plan_digest: str,
+        run_control: Any | None = None,
+    ) -> dict[str, Any]:
+        """Validate and execute an already sealed plan without invoking a planner.
+
+        A sealed execution may stop when live evidence invalidates the plan, but
+        it may neither revise the graph nor dispatch a retry/reassignment. The
+        operator must preview and confirm a new artifact for any changed work.
+        """
+
+        deny = self._authorize("mission.plan")
+        if deny is not None:
+            return {**deny, "subtask_results": []}
+        mission_id = _mission_id(session_id)
+        if _run_control_cancelled(run_control):
+            return {
+                "status": "cancelled",
+                "message": "Mission Run was cancelled before sealed-plan dispatch.",
+                "mission_id": mission_id,
+                "plan_artifact_id": artifact_id,
+                "plan_digest": plan_digest,
+                "subtask_results": [],
+            }
+
+        task_graph = task_graph_from_mission_plan(
+            plan,
+            mission_id=mission_id,
+            plan_id=f"sealed:{artifact_id}:{plan_digest}",
+        )
+        validation_errors = [
+            *validate_plan_2d(plan),
+            *MissionPlanValidator().validate(
+                plan,
+                self.registry,
+                task_graph=task_graph,
+            ),
+        ]
+        if validation_errors:
+            return {
+                "status": "blocked",
+                "message": "Sealed mission plan failed deterministic validation.",
+                "errors": validation_errors,
+                "mission_id": mission_id,
+                "plan_artifact_id": artifact_id,
+                "plan_digest": plan_digest,
+                "subtask_results": [],
+            }
+
+        presence = self.check_fleet_presence()
+        offline = sorted({
+            subtask.robot_id
+            for subtask in plan.subtasks
+            if not presence.get(subtask.robot_id, {}).get("online")
+        })
+        if offline:
+            return {
+                "status": "blocked",
+                "message": (
+                    "Sealed plan robot readiness changed before dispatch; "
+                    "create and confirm a new preview."
+                ),
+                "reason_code": "sealed_plan_robot_drift",
+                "robot_ids": offline,
+                "mission_id": mission_id,
+                "plan_artifact_id": artifact_id,
+                "plan_digest": plan_digest,
+                "subtask_results": [],
+            }
+
+        command_event_id = self._record_embodied_memory(
+            mission_id,
+            "command",
+            "operator_assertion",
+            {
+                "command": plan.command,
+                "plan_artifact_id": artifact_id,
+                "plan_digest": plan_digest,
+                "source": "sealed_plan_confirmation",
+            },
+            source_type="operator",
+            source_id=self._operator_source_id(operator),
+        )
+        plan_event_id = self._record_embodied_memory(
+            mission_id,
+            "plan",
+            "cognitive_artifact",
+            {
+                "status": "sealed",
+                "intent": plan.intent,
+                "plan": plan.to_dict(),
+                "task_graph": task_graph.to_dict(),
+                "plan_artifact_id": artifact_id,
+                "plan_digest": plan_digest,
+            },
+            source_type="sealed_plan_store",
+            method_id=self._planner_method_id(),
+            derived_from=(command_event_id,) if command_event_id is not None else (),
+        )
+        self._add_embodied_relation(
+            mission_id,
+            plan_event_id,
+            command_event_id,
+            "caused_by",
+        )
+        self._active_task_graphs[mission_id] = task_graph
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        if (
+            self.mission_registry is not None
+            and self.mission_registry.get_mission(mission_id) is None
+        ):
+            self.mission_registry.create_mission(
+                mission_id=mission_id,
+                session_id=mission_id,
+                command=plan.command,
+                created_at=created_at,
+            )
+        if self._session_lineage_store is not None:
+            try:
+                self._session_lineage_store.upsert(MissionSessionLineage(
+                    session_id=mission_id,
+                    kind="mission",
+                    operator_id=(operator or {}).get("operator_id", "unknown"),
+                    parent_session_id=None,
+                    spawned_by=None,
+                    spawn_depth=0,
+                    created_at=created_at,
+                    updated_at=created_at,
+                ))
+            except Exception:
+                logger.warning(
+                    "Failed to write sealed-plan session lineage for %s",
+                    mission_id,
+                    exc_info=True,
+                )
+        if self.task_registry is not None:
+            self.task_registry.project_task_state(
+                task_id=mission_id,
+                requester_session_id=mission_id,
+                owner_id="operator",
+                command=plan.command,
+                runtime="mission_agent",
+                scope_kind="mission",
+                status="confirmed",
+                delivery_status="delivered",
+                notify_policy="state_changes",
+                created_at=created_at,
+            )
+
+        from fireclaw_core.mission.mission_scheduler import MissionScheduler
+
+        scheduler = MissionScheduler(
+            mission_agent=self,
+            **(
+                {"config": self.mission_scheduler_config}
+                if self.mission_scheduler_config is not None
+                else {}
+            ),
+        )
+        scheduler_result = scheduler.schedule(
+            plan,
+            mission_id=mission_id,
+            operator=operator,
+            memory_command_event_id=command_event_id,
+            memory_plan_event_id=plan_event_id,
+            run_control=run_control,
+            allow_plan_revisions=False,
+            allow_recovery_dispatch=False,
+            relay_confirmed_plan_authorizations=True,
+        )
+        subtask_results: list[dict[str, Any]] = []
+        for group in scheduler_result.get("group_results", []):
+            subtask_results.extend(group.get("subtask_results", []))
+        outcome_status = scheduler_result.get("status", "blocked")
+        failure_reasons = _sealed_plan_failure_reasons(subtask_results)
+        self._record_mission_memory(
+            mission_id,
+            "outcome",
+            {
+                "command": plan.command,
+                "status": outcome_status,
+                "subtask_count": len(subtask_results),
+                "plan_artifact_id": artifact_id,
+                "plan_digest": plan_digest,
+            },
+        )
+        self._project_task_flow(
+            mission_id,
+            plan.command,
+            subtask_results,
+            created_at,
+        )
+        response: dict[str, Any] = {
+            "status": outcome_status,
+            "message": (
+                scheduler_result.get(
+                    "message",
+                    "Sealed mission plan execution finished.",
+                )
+                if outcome_status in {"succeeded", "completed"}
+                else _sealed_failure_message(
+                    scheduler_result.get("message"),
+                    failure_reasons,
+                )
+            ),
+            "mission_id": mission_id,
+            "intent": plan.intent,
+            "plan": plan.to_dict(),
+            "plan_artifact_id": artifact_id,
+            "plan_digest": plan_digest,
+            "plan_source": "sealed_plan_artifact",
+            "task_graph": task_graph.to_dict(),
+            "subtask_results": subtask_results,
+            "group_results": scheduler_result.get("group_results", []),
+            "failure_decisions": scheduler_result.get("failure_decisions", []),
+        }
+        if failure_reasons:
+            response["failure_reasons"] = failure_reasons
+        for key in (
+            "revision_dispatch",
+            "cancellation_results",
+            "cancellation_terminal_states",
+            "active_plan_id",
+            "node_executions",
+            "failed_nodes",
+        ):
+            if scheduler_result.get(key) is not None:
+                response[key] = scheduler_result[key]
+        return response
+
     def plan_and_submit(
         self,
         command: str,
@@ -1861,7 +2303,14 @@ class MissionAgent:
 
         if use_scheduler:
             from fireclaw_core.mission.mission_scheduler import MissionScheduler
-            scheduler = MissionScheduler(mission_agent=self)
+            scheduler = MissionScheduler(
+                mission_agent=self,
+                **(
+                    {"config": self.mission_scheduler_config}
+                    if self.mission_scheduler_config is not None
+                    else {}
+                ),
+            )
             scheduler_result = scheduler.schedule(
                 planning_result.plan,
                 mission_id=mission_id,
@@ -2479,6 +2928,74 @@ class MissionAgent:
 
 def _capability_from_entry(entry: RobotRegistryEntry) -> str:
     return entry.capabilities[0] if entry.capabilities else "unknown"
+
+
+_SEALED_FAILURE_STEP_STATUSES = frozenset({"failed", "error", "timeout", "cancelled"})
+_SEALED_FAILURE_OUTPUT_STATUSES = frozenset({
+    "aborted",
+    "error",
+    "lost",
+    "timed_out",
+    "failed",
+})
+
+
+def _sealed_plan_failure_reasons(
+    subtask_results: list[dict[str, Any]],
+) -> list[str]:
+    """Extract concrete Robot-side failure causes from terminal subtasks.
+
+    The scheduler's status/message describe Mission-level policy ("stopped by
+    failure policy"), not what physically went wrong. The operator must see
+    the authoritative cause (e.g. move_base_aborted with its status text),
+    which lives in each failed execution step's output.
+    """
+
+    reasons: list[str] = []
+    for sub in subtask_results:
+        if not isinstance(sub, dict):
+            continue
+        result = sub.get("result")
+        execution = result.get("execution") if isinstance(result, dict) else None
+        steps = execution.get("steps") if isinstance(execution, dict) else None
+        for step in steps or []:
+            if not isinstance(step, dict):
+                continue
+            output = step.get("output")
+            output = output if isinstance(output, dict) else {}
+            step_status = str(step.get("status") or "")
+            out_status = str(output.get("status") or "")
+            if (
+                step_status not in _SEALED_FAILURE_STEP_STATUSES
+                and out_status not in _SEALED_FAILURE_OUTPUT_STATUSES
+            ):
+                continue
+            label = str(sub.get("command") or step.get("skill_name") or "subtask")
+            code = str(
+                output.get("error_code")
+                or step_status
+                or out_status
+                or "unknown"
+            )
+            text = str(
+                output.get("goal_status_text") or output.get("error") or ""
+            ).strip()
+            reason = f"{label} → {code}" + (f"：{text}" if text else "")
+            if reason not in reasons:
+                reasons.append(reason)
+    return reasons[:5]
+
+
+def _sealed_failure_message(
+    base_message: Any,
+    failure_reasons: list[str],
+) -> str:
+    base = str(base_message or "Sealed mission plan execution failed.").strip()
+    if not failure_reasons:
+        return base
+    shown = "；".join(failure_reasons[:3])
+    more = f"（共 {len(failure_reasons)} 条）" if len(failure_reasons) > 3 else ""
+    return f"{base}；机器人侧原因：{shown}{more}"
 
 
 def _mission_id(session_id: str | None) -> str:

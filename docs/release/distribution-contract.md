@@ -38,6 +38,10 @@ FireClaw 发布分为两个正交的交付产物：
 - 每个文件必须同时匹配 SHA-256、字节数和规范化权限（`0o644` / `0o755`）。
 - catalog 声明的 required paths、上游 commit、license 标识及 provenance/license 证据文件必须全部存在。
 - 压缩、解压体积以及成员数量在读取内容前执行上限检查，避免将异常归档当作普通发布产物处理。
+- 安装 smoke 必须从无 `PYTHONPATH` 的临时 venv 导入 wheel，读取 package resources，并对真实 companion
+  bundle 执行完整校验/物化、可续接 workspace receipt、稳定 Profile 生成以及 simulation-only
+  `start → open` 编排。Catkin、daemon 与浏览器只在 typed boundary 使用 test double，因此门禁本身不会
+  启动 ROS、Gazebo 或真实机器人。
 - `--skip-smoke` 只用于诊断；缺少 bundle 或 smoke 时，最终 verdict 必须失败，不能显示 `ALL PASSED`。
 
 ---

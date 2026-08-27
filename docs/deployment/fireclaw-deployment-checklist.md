@@ -219,10 +219,10 @@ production Mission planner and deterministic graph compiler but has no
 Gateway, scheduler, Robot Adapter, ROS, or physical dispatch surface.
 
 ```bash
-cp fireclaw.example.toml fireclaw.toml
+cp fireclaw.sim.example.toml fireclaw.sim.toml
 # Fill the shared [provider] table before running the evaluation.
 .venv/bin/python -m fireclaw_core.devtools.llm_planning_eval \
-  --config fireclaw.toml \
+  --config fireclaw.sim.toml \
   --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
   --output-dir results/embodied-eval/<unique-llm-run-id> \
   --temperature 0 \

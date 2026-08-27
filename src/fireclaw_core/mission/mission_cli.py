@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable, TextIO
@@ -388,12 +389,37 @@ def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgu
         "--source-root",
         type=Path,
         default=None,
-        help="Advanced override for the FireClaw source tree containing simulation assets.",
+        help="Developer fallback: build the companion bundle from this FireClaw source checkout.",
+    )
+    setup.add_argument(
+        "--simulation-bundle",
+        type=Path,
+        default=None,
+        help=(
+            "Version-matched fireclaw-sim-*.tar.gz companion artifact; otherwise "
+            "use FIRECLAW_SIMULATION_BUNDLE, the current directory, or the runtime cache."
+        ),
     )
     setup.add_argument(
         "--no-deploy",
         action="store_true",
         help="Validate and activate the Profile without preparing Runtime files.",
+    )
+    setup.add_argument(
+        "--no-start",
+        action="store_true",
+        help="Prepare simulation releases and Profile without starting the Gateway.",
+    )
+    setup.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Complete simulation startup but print the Console URL without launching a browser.",
+    )
+    setup.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=15.0,
+        help="Gateway health verification timeout for the simulation quickstart.",
     )
     setup.add_argument(
         "--json",
@@ -519,7 +545,13 @@ def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgu
     _add_shared_paths(cancel)
     _add_runtime_paths(cancel)
 
-    plan = subparsers.add_parser("plan-mission", help="Plan and submit mission subtasks from a natural-language command.")
+    plan = subparsers.add_parser(
+        "plan-mission",
+        help=(
+            "Deprecated direct-dispatch command; use the Gateway sealed "
+            "preview/confirm flow."
+        ),
+    )
     plan.add_argument("--command", required=True, help="Natural-language mission command.")
     plan.add_argument("--session-id", default=None, help="Mission/session id.")
     plan.add_argument("--planner", choices=["deterministic", "llm"], default="deterministic",
@@ -609,7 +641,7 @@ def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgu
         "--config",
         type=Path,
         required=True,
-        help="Path to the fireclaw.toml used for deployment.",
+        help="Path to the exact mode-specific TOML used for deployment.",
     )
     security_audit.add_argument("--runtime-root", default=None)
     security_audit.add_argument(
@@ -630,7 +662,12 @@ def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgu
     )
 
     serve = subparsers.add_parser("serve", help="Start a persistent MissionGateway server.")
-    serve.add_argument("--config", type=Path, default=None, help="Path to fireclaw.toml config file.")
+    serve.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to an explicit fireclaw.sim.toml or reviewed fireclaw.real.toml.",
+    )
     serve.add_argument(
         "--runtime-root",
         default=None,
@@ -689,6 +726,21 @@ def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgu
     serve.add_argument("--planner", choices=["deterministic", "llm"], default=None, help="Planner backend.")
     serve.add_argument("--provider-base-url", default=None, help="LLM provider base URL.")
     serve.add_argument("--provider-api-key", default=None, help="LLM provider API key.")
+    serve.add_argument(
+        "--provider-timeout-seconds",
+        type=float,
+        default=None,
+        help="Maximum time for one Mission Agent LLM request.",
+    )
+    serve.add_argument(
+        "--mission-planning-timeout-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Maximum wall-clock time for the complete multi-turn Mission "
+            "planning loop. Independent from one provider request timeout."
+        ),
+    )
     serve.add_argument("--model", default=None, help="LLM model id.")
     serve.add_argument("--catalog", default=None, help="Path to model catalog JSON file.")
     serve.add_argument("--llm-trace-path", default=None, help="Path to LLM trace JSONL file.")
@@ -699,6 +751,12 @@ def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgu
     serve.add_argument("--robot-agent-model", default=None, help="Robot-local agent LLM model id.")
     serve.add_argument("--robot-agent-catalog", default=None, help="Path to robot-local model catalog JSON file.")
     serve.add_argument(
+        "--mission-group-timeout-seconds",
+        type=float,
+        default=None,
+        help="Outer budget for one Mission execution group.",
+    )
+    serve.add_argument(
         "--robot-profile",
         action="append",
         default=None,
@@ -707,7 +765,22 @@ def build_parser(show_all: bool = False, prog: str = "fireclaw") -> FireClawArgu
 
     mission = subparsers.add_parser("mission", help="Open the interactive mission console.")
     mission.add_argument("--server", default="http://127.0.0.1:8766", help="MissionGateway base URL.")
-    mission.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds.")
+    mission.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="HTTP timeout in seconds (includes the LLM deliberation budget).",
+    )
+    mission.add_argument(
+        "--verbose",
+        "--show-details",
+        dest="show_details",
+        action="store_true",
+        help=(
+            "Show full planning timing, heartbeats, thinking, and internal "
+            "Robot Agent events (default: concise operator view)."
+        ),
+    )
     mission.add_argument(
         "--api-token",
         default=None,
@@ -1250,10 +1323,19 @@ def main(argv: list[str] | None = None) -> int:
         _print_json(result)
         return 0 if result.get("status") in CANCEL_SUCCESS_STATUSES else 1
     if args.command_name == "plan-mission":
-        agent = _build_mission_agent(args, planner=_build_planner(args))
-        result = agent.plan_and_submit(args.command, session_id=args.session_id, operator=_mission_operator(), use_scheduler=args.use_scheduler)
-        _print_json(result)
-        return 0 if result.get("status") == "planned" else 1
+        _print_json({
+            "status": "confirmation_required",
+            "error_code": "plan_confirmation_required",
+            "message": (
+                "Direct natural-language mission dispatch is disabled. "
+                "Use the Web Console or 'fireclaw mission' to create a "
+                "sealed preview and explicitly confirm that exact plan."
+            ),
+            "preview_endpoint": "/plan-mission",
+            "confirm_endpoint": "/plan-mission/confirm",
+            "robot_action_started": False,
+        })
+        return 2
     if args.command_name == "events":
         result = _build_mission_agent(args).mission_events(
             args.mission_id,
@@ -1337,6 +1419,10 @@ def main(argv: list[str] | None = None) -> int:
             "planner_type": args.planner,
             "provider_base_url": args.provider_base_url,
             "provider_api_key": args.provider_api_key,
+            "provider_timeout_seconds": args.provider_timeout_seconds,
+            "mission_planning_timeout_seconds": (
+                args.mission_planning_timeout_seconds
+            ),
             "model": args.model,
             "model_catalog_path": args.catalog,
             "llm_trace_path": args.llm_trace_path,
@@ -1346,6 +1432,9 @@ def main(argv: list[str] | None = None) -> int:
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
             "robot_agent_model": args.robot_agent_model,
             "robot_agent_model_catalog_path": args.robot_agent_catalog,
+            "mission_group_timeout_seconds": (
+                args.mission_group_timeout_seconds
+            ),
             "mission_robot_profiles": args.robot_profile,
             "embodied_runtime_mode": args.embodied_runtime_mode,
             "deployment": None,
@@ -1460,6 +1549,18 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 provider_base_url=merged.get("provider_base_url"),
                 provider_api_key=merged.get("provider_api_key"),
+                provider_timeout_seconds=float(
+                    merged.get("provider_timeout_seconds")
+                    if merged.get("provider_timeout_seconds") is not None
+                    else 60.0
+                ),
+                provider_thinking=merged.get("provider_thinking"),
+                mission_planning_timeout_seconds=(
+                    float(merged["mission_planning_timeout_seconds"])
+                    if merged.get("mission_planning_timeout_seconds")
+                    is not None
+                    else None
+                ),
                 model=merged.get("model"),
                 model_catalog_path=merged.get("model_catalog_path"),
                 llm_trace_path=merged.get("llm_trace_path"),
@@ -1485,6 +1586,23 @@ def main(argv: list[str] | None = None) -> int:
                     if merged.get("mission_robot_profiles")
                     else None
                 ),
+                mission_group_timeout_seconds=float(
+                    merged.get("mission_group_timeout_seconds")
+                    if merged.get("mission_group_timeout_seconds") is not None
+                    else 720.0
+                ),
+                planning_dialogue_max_rounds=(
+                    int(merged["mission_planning_dialogue_max_rounds"])
+                    if merged.get("mission_planning_dialogue_max_rounds")
+                    is not None
+                    else None
+                ),
+                planning_dialogue_ttl_seconds=(
+                    float(merged["mission_planning_dialogue_ttl_seconds"])
+                    if merged.get("mission_planning_dialogue_ttl_seconds")
+                    is not None
+                    else None
+                ),
                 embodied_runtime_mode=(
                     str(merged["embodied_runtime_mode"])
                     if merged.get("embodied_runtime_mode") is not None
@@ -1496,6 +1614,10 @@ def main(argv: list[str] | None = None) -> int:
                     dict(merged["deployment"])
                     if isinstance(merged.get("deployment"), dict)
                     else None
+                ),
+                active_profile_path=config_path,
+                deployment_receipt_path=os.environ.get(
+                    "FIRECLAW_DEPLOYMENT_RECEIPT"
                 ),
             )
         return 0
@@ -1511,6 +1633,7 @@ def main(argv: list[str] | None = None) -> int:
                 cert_file=args.tls_client_cert_file,
                 key_file=args.tls_client_key_file,
             ),
+            show_details=args.show_details,
         )
         return 0
     if args.command_name == "status":

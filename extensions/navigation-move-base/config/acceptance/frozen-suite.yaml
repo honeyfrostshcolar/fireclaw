@@ -38,7 +38,7 @@ shared_assets:
     sha256: 0103b9dfaa3b79592af71cc35d64f69cfbd3565d173160820ad8ef56cd27b3fc
   ros1_config:
     path: examples/ros1_configs/gazebo_turtlebot3_move_base.yaml
-    sha256: 14c88daa925434ffc8e3cf2289f743a971aec53b84071ca7286cf7f25dcdc416
+    sha256: 744bfe093df42033c63314fe36b045806d58ac819f32c440df214b02e8f69105
 runtime_capture:
   navigation_parameters:
     required: true

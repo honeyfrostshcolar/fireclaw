@@ -1,16 +1,17 @@
 # FireClaw 首次设置
 
-`fireclaw setup` 是当前源码仓库内的首次设置入口。它准备一个无凭据的 TurtleBot3 Gazebo Profile、验证
-ROS 与 Navigation Plugin 依赖、生成内容寻址 Runtime release，并把该 Profile 记为当前选择。它不会启动
-Gazebo、Gateway 或任何机器人动作。当前流程仍依赖完整 FireClaw 源码仓库和仓库内 ROS workspace；本页
-不声称 wheel 安装后已经具备一条命令的首次仿真任务闭环。
+`fireclaw setup` 是仿真首次使用入口。它校验并物化与 wheel catalog 固定 SHA 对应的 companion bundle，
+在内容寻址目录中续接构建 ROS workspace，生成只引用稳定 release 的无凭据 TurtleBot3 Gazebo Profile，
+完成受管部署，然后启动 Gateway 并打开 Web Console。该流程可以从普通 wheel + companion bundle 开始，
+不要求 Profile 指向源码树或 `devel/setup.bash`。
 
 ## 仿真设置
 
-在完整 FireClaw 仓库中运行：
+安装 wheel 后，把 release companion bundle 放在当前目录，或显式指定：
 
 ```bash
 fireclaw setup
+fireclaw setup --simulation-bundle /path/to/fireclaw-sim-turtlebot3-burger-v1.tar.gz
 ```
 
 交互模式默认推荐“仿真体验”。脚本或 CI 可以使用：
@@ -21,13 +22,14 @@ fireclaw setup --mode simulation --json
 
 默认用户文件位于 `FIRECLAW_HOME`；未设置该环境变量时使用用户目录下的 `.fireclaw`。生成内容包括：
 
-- `profiles/gazebo-turtlebot3-burger.toml`：只含确定性 planner，不写 Provider key；
+- `simulation-bundles/turtlebot3-burger-v1/releases/<bundle-sha>/`：校验后的不可变资源；
+- `simulation-workspaces/turtlebot3-burger-v1/releases/<fingerprint>/`：可续接的 Catkin install workspace 与 receipt；
+- `profiles/gazebo-turtlebot3-burger-<version>-<sha-prefix>.toml`：只引用上述稳定 release，不写 Provider key；
 - `state/active-profile.json`：只保存 Profile 路径、模式、模板版本和更新时间；
 - `workspaces/gazebo-turtlebot3-burger/`：任务数据和 Agent workspace；
 - `deployments/gazebo-turtlebot3-burger/`：内容寻址 Runtime release。
 
-成功后可分别使用以下生命周期命令（可省略 `--profile`）。它们尚未被编排成自动的
-setup → start → open 流程：
+默认命令已编排 `setup → start → open`。以下命令用于后续独立运维，或配合 `setup --no-start`：
 
 ```bash
 # 1. 启动后台守护进程与 Gateway
@@ -51,14 +53,16 @@ fireclaw stop
 ## Web Console 运维控制台使用指南
 
 通过 `fireclaw open` 打开的 Web 控制台（默认运行在 `http://127.0.0.1:8766/console`）是一个 MVP
-运维界面。以下模块包含可验证的 UI/API 骨架，也有尚未闭环的产品合同；不得把页面缺省值当作实机事实：
+运维界面。以下模块包含可验证的 UI/API 合同，也有尚未闭环的产品合同；不得把页面缺省值当作实机事实：
 
 控制台只投影 Gateway/Adapter 提供的状态，不自行证明硬件事实。尚未收到 readiness、急停或停止证据时，页面显示 `UNKNOWN`；`ready` 表示任务准入条件满足，不代表机器人已经物理停止。
 
 ### 1. 首页概览 (Overview)
-- **准入状态**：显示 Mission Gateway 当前返回的 readiness 投影；缺失值统一显示 `UNKNOWN`。
-- **机器人/模式/Profile**：当前 Gateway 合同尚未提供完整 active Profile 与权威运行模式，因此 Web 不填入
-  TurtleBot3 或 Simulation 作为事实。
+- **准入状态**：显示 Mission Gateway 当前返回的 evidence envelope；缺失或非 fresh 值统一显示 `UNKNOWN`。
+- **机器人/模式/Profile**：来自 Gateway 启动时冻结的 runtime identity，包含 Profile path、SHA/revision、
+  deployment mode、robot ID 和可选 deployment fingerprint。Web 不使用 legacy scalar 或注册表第一项回退。
+- **机器人 readiness**：来自本次 Robot Gateway `/state` 探测或明确的 stale/unknown 证据；页面不再使用
+  registry heartbeat 的 `is_online` 布尔值冒充本次实测在线。
 - **推荐入口**：只根据当前 Gateway 投影切换页面，不构成动作准入或物理安全判断。
 
 ### 2. 任务下发 (Task Dispatch)
@@ -120,30 +124,33 @@ fireclaw stop
 
 ## 中断与重复运行
 
-setup 是幂等的：
+setup 是可续接且幂等的：
 
 - 已生成的 Profile 不会被覆盖；
-- 已安装且 fingerprint 相同的 release 会返回 `reused=true`；
-- 依赖检查失败时保留 Profile，但不会写 active profile；修复问题后运行同一命令即可续接；
+- bundle、Catkin workspace 与部署 release 都有独立 fingerprint/receipt；验证一致时返回 `reused=true`；
+- Catkin 构建失败会保留失败 receipt 与有界日志；修复依赖后同一命令续接相同 fingerprint 目录；
+- Gateway 已运行时会重新验证健康度，再续接打开控制台；
 - Profile 损坏、模式不一致或路径为符号链接时保持失败，不会自动“修复”成另一套配置。
 
-只验证并记录 Profile、不生成 Runtime release：
+完成 bundle、workspace、Profile 与部署 release，但不启动 Gazebo、Gateway 或浏览器：
 
 ```bash
-fireclaw setup --mode simulation --no-deploy
+fireclaw setup --mode simulation --no-start --no-browser
 ```
 
-这属于高级诊断用法；正常首次设置不需要该参数。
+`--no-deploy` 仍可用于更早的计划诊断；正常首次设置不需要这些参数。
 
 ## 实机边界
 
 首次设置不会生成真实机器人 Profile，也不会自动部署或启动实机。实机只能使用已经人工审查的 Profile：
 
 ```bash
-fireclaw setup --mode real --profile /path/to/reviewed-robot.toml
+fireclaw setup --mode real --profile /path/to/fireclaw.real.toml
 ```
 
-该流程只执行非致动验证并记录当前选择。真正运行前仍必须完成 hardware-safety preflight/acceptance；
-simulation Profile 不能通过修改一个 mode 字段变成可信实机配置。
+该流程只执行被动 ROS Master/XMLRPC 发现、写入 `applied=false` 的 draft/diff，并运行 `live=false` 静态
+hardware-safety preflight；它不会调用 deployment planner/applier、daemon manager、Robot Tool 或运动接口。
+真正运行前仍必须人工审查 draft/diff 并完成独立的 hardware-safety acceptance；simulation Profile 不能
+通过修改一个 mode 字段变成可信实机配置。
 
 setup 不读取现有 Provider API key，也不会把凭据复制进生成文件。模型密钥继续通过受控环境变量提供。

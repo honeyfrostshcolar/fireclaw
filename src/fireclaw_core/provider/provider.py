@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -121,10 +122,18 @@ class OpenAICompatProvider:
         api_key: str,
         timeout: float = 60.0,
         *,
+        thinking: bool | None = None,
         trust_env: bool = False,
         max_response_bytes: int = 4 * 1024 * 1024,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not isfinite(float(timeout))
+            or float(timeout) <= 0
+        ):
+            raise ValueError("Provider timeout must be a positive finite number.")
         self.base_url = base_url.rstrip("/")
         parsed = urlparse(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -140,8 +149,15 @@ class OpenAICompatProvider:
             raise ValueError(
                 "Provider max_response_bytes must be between 1 and 16777216."
             )
+        if thinking is not None and not isinstance(thinking, bool):
+            raise ValueError("Provider thinking must be a boolean or None.")
         self.api_key = api_key
-        self.timeout = timeout
+        self.timeout = float(timeout)
+        # ``None`` preserves the provider's default.  MiMo callers can set
+        # this explicitly to ``False`` to send its OpenAI-compatible
+        # ``thinking.type=disabled`` control instead of relying on the model
+        # default, which is enabled for some reasoning models.
+        self.thinking = thinking
         self.trust_env = trust_env
         self.max_response_bytes = max_response_bytes
         self.transport = transport
@@ -170,6 +186,10 @@ class OpenAICompatProvider:
             body["tools"] = tools
         if seed is not None:
             body["seed"] = seed
+        if self.thinking is not None:
+            body["thinking"] = {
+                "type": "enabled" if self.thinking else "disabled"
+            }
 
         response = self._post(body)
         return self._parse_response(response, model)

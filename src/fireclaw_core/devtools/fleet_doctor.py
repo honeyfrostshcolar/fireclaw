@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from fireclaw_core.lifecycle import LifecycleMaintenanceRunner
@@ -103,13 +104,19 @@ class FleetDoctor:
         findings: list[FleetDoctorFinding] = []
         for entry in self.registry.enabled_entries():
             result = self.subagent_client.check_presence(entry)
+            checked_at = datetime.now(timezone.utc).isoformat()
             if not result.get("online"):
                 findings.append(FleetDoctorFinding(
                     severity="error",
                     category="reachability",
                     robot_id=entry.robot_id,
                     message=f"Robot {entry.robot_id} is unreachable: {result.get('error', 'unknown error')}.",
-                    details={"error": result.get("error")},
+                    details={
+                        "online": False,
+                        "last_seen_at": result.get("last_seen_at"),
+                        "checked_at": checked_at,
+                        "error": result.get("error"),
+                    },
                 ))
             else:
                 findings.append(FleetDoctorFinding(
@@ -117,6 +124,12 @@ class FleetDoctor:
                     category="reachability",
                     robot_id=entry.robot_id,
                     message=f"Robot {entry.robot_id} is online.",
+                    details={
+                        "online": True,
+                        "last_seen_at": result.get("last_seen_at"),
+                        "checked_at": checked_at,
+                        "state": result.get("state"),
+                    },
                 ))
         return findings
 

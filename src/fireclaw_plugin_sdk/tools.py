@@ -44,6 +44,7 @@ _VALID_EFFECTS = frozenset(
     }
 )
 _MAX_TOOL_TIMEOUT_SECONDS = 300.0
+_MAX_PHYSICAL_TOOL_TIMEOUT_SECONDS = 1800.0
 _MAX_PHYSICAL_CANCELLATION_ACK_SECONDS = 30.0
 _MAX_TOOL_RESULT_BYTES = 1024 * 1024
 
@@ -288,7 +289,7 @@ class PhysicalToolSpec:
                 or not isinstance(self.timeout_seconds, (int, float))
                 or not isfinite(float(self.timeout_seconds))
                 or self.timeout_seconds <= 0
-                or self.timeout_seconds > _MAX_TOOL_TIMEOUT_SECONDS
+                or self.timeout_seconds > _MAX_PHYSICAL_TOOL_TIMEOUT_SECONDS
             ):
                 raise ValueError("PhysicalToolSpec timeout is outside API limits.")
         if (

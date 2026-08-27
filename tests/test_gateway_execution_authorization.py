@@ -287,3 +287,203 @@ def test_confirm_resumes_original_task_as_original_requester(
     assert approval["payload"]["approved_by"]["operator_id"] == "supervisor-1"
     assert scheduled["payload"]["requested_by"]["operator_id"] == "operator-1"
     assert scheduled["payload"]["approved_by"]["operator_id"] == "supervisor-1"
+
+
+def test_physical_authorization_persists_exact_resume_material_and_skips_planner(
+    tmp_path,
+    monkeypatch,
+):
+    gateway = FireClawGateway(_config(tmp_path))
+    result = _awaiting_confirmation_result()
+    result["structured_task"] = {
+        **result["structured_task"],
+        "required_skills": ["navigate_to"],
+    }
+    result["planning"] = {
+        **result["planning"],
+        "plan": {
+            "intent": "navigation",
+            "steps": [
+                {
+                    "skill_name": "navigate_to",
+                    "inputs": {"target": {"x": 4.0, "y": 2.0}},
+                }
+            ],
+        },
+    }
+    result["memory_snapshot"] = {
+        "evidence_event_ids": ["snapshot-1", "snapshot-2"],
+        "recorded": True,
+    }
+    gateway.task_queue.create(
+        task_id="runtime-task-1",
+        session_id="mission-1",
+        command="navigate to the east corridor",
+        created_at="2026-08-10T00:00:00+00:00",
+    )
+    gateway.task_queue.update(
+        "runtime-task-1",
+        status="running",
+        started_at="2026-08-10T00:00:01+00:00",
+    )
+    gateway._record_authorization_request_if_needed(
+        task_id="runtime-task-1",
+        session_id="mission-1",
+        command="navigate to the east corridor",
+        result=result,
+        operator=_requester(),
+    )
+    gateway._record_result_events(
+        "runtime-task-1",
+        "mission-1",
+        result,
+    )
+    request = gateway.runtime_state.pending_authorization_request("mission-1")
+    assert request is not None
+    assert request["pending_execution"] == {
+        "version": 1,
+        "planning": result["planning"],
+        "memory_snapshot": {
+            "evidence_event_ids": ["snapshot-1", "snapshot-2"],
+        },
+    }
+
+    class FakeAgent:
+        def __init__(self):
+            self.calls = []
+
+        def execute_authorized_pending_step(
+            self,
+            *,
+            command,
+            structured_task,
+            pending_execution,
+        ):
+            self.calls.append(
+                {
+                    "command": command,
+                    "task_id": structured_task.task_id,
+                    "pending_execution": pending_execution,
+                }
+            )
+            return {
+                "status": "succeeded",
+                "message": "resumed",
+                "execution": {"status": "succeeded", "steps": []},
+                "planning": pending_execution["planning"],
+                "safety": {"status": "allow"},
+            }
+
+    fake_agent = FakeAgent()
+    monkeypatch.setattr(
+        gateway,
+        "_create_agent",
+        lambda **kwargs: fake_agent,
+    )
+    monkeypatch.setattr(gateway, "_record_result_events", lambda *args: None)
+
+    request_object = gateway.runtime_state.pending_authorization_request(
+        "mission-1"
+    )
+    assert request_object is not None
+    from fireclaw_core.gateway.control import AuthorizationRequest
+
+    authorization_request = AuthorizationRequest.from_dict(request_object)
+    approved, approval_payload = gateway._authorize_confirmation(
+        session_id="mission-1",
+        operator=_supervisor(),
+    )
+    assert approved is True
+    from fireclaw_core.approval.execution_authorization import ExecutionAuthorization
+
+    execution_authorization = ExecutionAuthorization.from_dict(
+        approval_payload["execution_authorization"]
+    )
+    structured_task = dict(authorization_request.structured_task or {})
+    structured_task["execution_authorization"] = execution_authorization.to_dict()
+    resumed = gateway._execute_agent_task(
+        command=authorization_request.command,
+        session_id=authorization_request.session_id,
+        task_id=authorization_request.task_id,
+        record_received=False,
+        structured_task=structured_task,
+        execution_authorization=execution_authorization,
+        pending_execution=authorization_request.pending_execution,
+    )
+
+    assert resumed["status"] == "succeeded"
+    assert len(fake_agent.calls) == 1
+    assert fake_agent.calls[0]["pending_execution"]["version"] == 1
+
+
+def test_confirm_task_id_does_not_approve_another_task_in_same_session(
+    tmp_path,
+    monkeypatch,
+):
+    gateway = FireClawGateway(
+        GatewayConfig(
+            **{
+                **_config(tmp_path).__dict__,
+                "max_active_execution_tasks": 2,
+            }
+        )
+    )
+    for index in (1, 2):
+        runtime_task_id = f"runtime-task-{index}"
+        result = _awaiting_confirmation_result()
+        result["structured_task"] = {
+            **result["structured_task"],
+            "task_id": f"plan-node-{index}",
+        }
+        gateway.task_queue.create(
+            task_id=runtime_task_id,
+            session_id="mission-1",
+            command=f"navigate task {index}",
+            created_at=f"2026-08-10T00:00:0{index}+00:00",
+        )
+        gateway.task_queue.update(
+            runtime_task_id,
+            status="running",
+            started_at=f"2026-08-10T00:00:1{index}+00:00",
+        )
+        gateway._record_authorization_request_if_needed(
+            task_id=runtime_task_id,
+            session_id="mission-1",
+            command=f"navigate task {index}",
+            result=result,
+            operator=_requester(),
+        )
+        gateway._record_result_events(
+            runtime_task_id,
+            "mission-1",
+            result,
+        )
+
+    started = {}
+
+    def capture_worker(control, operator, *, resumed=False):
+        started["task_id"] = control.task_id
+
+    monkeypatch.setattr(gateway, "_start_task_worker", capture_worker)
+
+    confirmed = gateway.confirm_task(
+        session_id="mission-1",
+        task_id="runtime-task-1",
+        operator=_supervisor(),
+    )
+
+    assert confirmed["status"] == "accepted"
+    assert confirmed["task_id"] == "runtime-task-1"
+    assert started["task_id"] == "runtime-task-1"
+    assert (
+        gateway.runtime_state.pending_authorization_request_for_task(
+            "runtime-task-1"
+        )
+        is None
+    )
+    assert (
+        gateway.runtime_state.pending_authorization_request_for_task(
+            "runtime-task-2"
+        )
+        is not None
+    )

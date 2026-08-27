@@ -99,7 +99,8 @@ resource admission.
   observer before the Robot is spawned.
 
 A robot deployment owns only its base/hardware bringup and the typed bindings
-in root `fireclaw.toml`: map, topics, TF frames, footprint, measured sensor
+in the mode-specific root config (`fireclaw.sim.toml` or a reviewed
+`fireclaw.real.toml`): map, topics, TF frames, footprint, measured sensor
 characteristics and physical limits. It does not need to implement a
 Navigation Plugin launch contract. Upstream package launch files remain inside
 `ros_ws/src/navigation/`.
@@ -121,8 +122,8 @@ command for simulation. The LLM must never compose arbitrary shell or
 The preferred deployment path is now:
 
 ```bash
-fireclaw deploy plan --profile /opt/firebot/firebot.toml
-fireclaw deploy apply --profile /opt/firebot/firebot.toml
+fireclaw deploy plan --profile /opt/firebot/fireclaw.real.toml
+fireclaw deploy apply --profile /opt/firebot/fireclaw.real.toml
 ```
 
 The deployer reuses compatible system packages first. It builds the bundled

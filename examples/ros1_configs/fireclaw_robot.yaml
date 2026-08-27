@@ -6,7 +6,7 @@ namespace: "/fireclaw/firebot_01"
 transport:
   enabled: true
   wait_for_server_seconds: 10.0
-  wait_for_result_seconds: 60.0
+  wait_for_result_seconds: 360.0
 emergency_stop:
   interface: service
   name: "/emergency_stop"

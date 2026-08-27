@@ -7,7 +7,7 @@ FireClaw navigation Plugin and `navigate_to_point` Tool.
 
 - Robot model, Gazebo world, sensors, odometry and base TF: this directory.
 - Robot/map bindings such as map path, topics, frames, footprint and physical
-  limits: the root `fireclaw.toml`.
+  limits: the simulation-only root `fireclaw.sim.toml`.
 - Generic map_server, AMCL, move_base composition and default parameters:
   `extensions/navigation-move-base/`.
 - ROS1 Navigation Stack and `move_base` Runtime:
@@ -45,23 +45,23 @@ This platform now demonstrates the intended thin robot boundary:
 
 - `ros_ws/src/fireclaw_turtlebot3_burger/launch/robot_base.launch` starts
   Gazebo, the Burger model, sensors, odometry and TF;
-- root `fireclaw.toml` selects the map and binds the Burger topics, frames,
+- root `fireclaw.sim.toml` selects the map and binds the Burger topics, frames,
   footprint, sensor characteristics and motion limits;
 - the Navigation Plugin starts map_server, AMCL and move_base and loads its own
   conservative default YAML files.
 
-Copy the committed root example once, then keep robot-local edits in the
-ignored root config:
+Copy the simulation-only root example once, then keep robot-local edits in the
+ignored simulation config. Never change this file to `mode = "real"`:
 
 ```bash
-cp fireclaw.example.toml fireclaw.toml
+cp fireclaw.sim.example.toml fireclaw.sim.toml
 ```
 
 From the repository root, plan and materialize the deployment once:
 
 ```bash
-fireclaw deploy plan --profile fireclaw.toml
-fireclaw deploy apply --profile fireclaw.toml
+fireclaw deploy plan --profile fireclaw.sim.toml
+fireclaw deploy apply --profile fireclaw.sim.toml
 ```
 
 Then start the generated processes in two terminals:

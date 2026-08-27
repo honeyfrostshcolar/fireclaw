@@ -202,6 +202,27 @@ def test_relation_rejects_cross_runtime_modes_before_evidence_append(tmp_path):
     assert {record.record_id for record in store.evidence_store.list_records()} == {"sim", "real"}
 
 
+def test_relation_validation_does_not_rescan_jsonl_for_each_relation(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _observation(store, event_id="source")
+    _observation(store, event_id="target")
+
+    def fail_list_records(*args, **kwargs):
+        raise AssertionError("relation validation must use the record cache")
+
+    monkeypatch.setattr(store.evidence_store, "list_records", fail_list_records)
+
+    store.add_relation(
+        relation_id="rel-cached",
+        mission_id="mission-1",
+        source_record_id="source",
+        target_record_id="target",
+        relation_type="supports",
+        runtime_mode="simulation",
+        created_at=T2,
+    )
+
+
 def test_event_validation_rejects_ambiguous_runtime_and_reserved_payload(tmp_path):
     store = _store(tmp_path)
     with pytest.raises(ValueError, match="Invalid runtime_mode"):

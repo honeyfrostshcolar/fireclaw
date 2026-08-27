@@ -83,6 +83,7 @@ def _make_provider(
     json_body: dict[str, Any] | None = None,
     raw_body: bytes | None = None,
     error: Exception | None = None,
+    thinking: bool | None = None,
     trust_env: bool = False,
     max_response_bytes: int = 4 * 1024 * 1024,
 ) -> tuple[OpenAICompatProvider, list[httpx.Request]]:
@@ -106,6 +107,7 @@ def _make_provider(
     provider = OpenAICompatProvider(
         base_url="http://localhost:8080",
         api_key="sk-test",
+        thinking=thinking,
         trust_env=trust_env,
         max_response_bytes=max_response_bytes,
         transport=httpx.MockTransport(_handler),
@@ -204,6 +206,48 @@ def test_openai_compat_provider_forwards_optional_seed():
 
     body = json.loads(requests[0].content.decode("utf-8"))
     assert body["seed"] == 17
+
+
+@pytest.mark.parametrize(
+    ("thinking", "expected_type"),
+    [(False, "disabled"), (True, "enabled")],
+)
+def test_openai_compat_provider_forwards_thinking_mode(thinking, expected_type):
+    provider, requests = _make_provider(
+        json_body=_sample_openai_response(),
+        thinking=thinking,
+    )
+
+    provider.chat_completion(
+        messages=[{"role": "user", "content": "plan"}],
+        model="mimo-v2.5-pro",
+    )
+
+    body = json.loads(requests[0].content.decode("utf-8"))
+    assert body["thinking"] == {"type": expected_type}
+
+
+def test_openai_compat_provider_omits_unspecified_thinking():
+    provider, requests = _make_provider(
+        json_body=_sample_openai_response(),
+    )
+
+    provider.chat_completion(
+        messages=[{"role": "user", "content": "plan"}],
+        model="gpt-4",
+    )
+
+    body = json.loads(requests[0].content.decode("utf-8"))
+    assert "thinking" not in body
+
+
+def test_openai_compat_provider_rejects_invalid_thinking_value():
+    with pytest.raises(ValueError, match="thinking"):
+        OpenAICompatProvider(
+            base_url="http://localhost:8080",
+            api_key="sk-test",
+            thinking="disabled",  # type: ignore[arg-type]
+        )
 
 
 def test_openai_compat_provider_can_opt_into_environment_proxy():

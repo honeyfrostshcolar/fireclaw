@@ -5,6 +5,11 @@
 schema_version = 1
 template_id = "gazebo-turtlebot3-burger-v1"
 mode = "simulation"
+bundle_id = {{BUNDLE_ID}}
+bundle_version = {{BUNDLE_VERSION}}
+bundle_sha256 = {{BUNDLE_SHA256}}
+bundle_root = {{BUNDLE_ROOT}}
+workspace_fingerprint = {{WORKSPACE_FINGERPRINT}}
 
 [runtime]
 root_dir = {{WORKSPACE_ROOT}}
@@ -15,7 +20,7 @@ base_url = "http://127.0.0.1:8765"
 adapter = "ros1"
 ros1_config = {{ROS1_CONFIG}}
 data_dir = {{ROBOT_DATA_DIR}}
-capabilities = ["navigation", "patrol"]
+capabilities = ["navigation", "patrol", "emergency_stop"]
 enabled_skills = ["navigate_to_point"]
 llm_exposed_skills = ["navigate_to_point"]
 primitive_skills = ["navigate_to_point"]
@@ -141,6 +146,8 @@ max_concurrent_processes = 1
 [mission]
 robot_profiles = [{{PROFILE_PATH}}]
 embodied_runtime_mode = "simulation"
+group_timeout_seconds = 720
+planning_timeout_seconds = 180
 
 [mission.robot_gateway_tls]
 
@@ -150,6 +157,7 @@ selected = ["fireclaw.navigation.move-base"]
 
 [plugins.config."fireclaw.navigation.move-base"]
 enabled = true
+navigate_timeout_seconds = 360
 
 [robot_gateway]
 host = "127.0.0.1"
@@ -165,3 +173,4 @@ enabled = false
 [robot_agent]
 enabled = true
 planner = "deterministic"
+loop_timeout_seconds = 600

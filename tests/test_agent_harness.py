@@ -164,6 +164,31 @@ def test_harness_enforces_context_fit_and_returns_manifest() -> None:
     assert traces[0]["classification"] == "ok"
 
 
+def test_harness_emits_context_and_provider_stage_timings() -> None:
+    runtime = _Runtime(_response())
+    stages: list[tuple[str, dict]] = []
+    harness = ProviderAgentHarness(
+        provider_runtime=runtime,
+        context_manager=_manager(runtime),
+    )
+
+    harness.run_attempt(
+        _attempt(
+            stage_sink=lambda stage, payload: stages.append(
+                (stage, dict(payload))
+            )
+        )
+    )
+
+    assert [stage for stage, _ in stages] == [
+        "context_fit",
+        "provider_request",
+    ]
+    assert all(payload["duration_ms"] >= 0 for _, payload in stages)
+    assert stages[0][1]["input_tokens"] > 0
+    assert stages[1][1]["model"] == "test-model"
+
+
 def test_harness_forwards_and_traces_optional_seed() -> None:
     runtime = _Runtime(_response())
     traces: list[dict] = []

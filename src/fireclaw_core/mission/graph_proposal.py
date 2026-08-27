@@ -605,6 +605,11 @@ class MissionGraphCompiler:
                 f"{assumption.belief_id!r}"
             )
             if belief is None:
+                if any(
+                    kw in assumption.belief_id.lower()
+                    for kw in ("robot_state", "fleet_state", "robot_presence", "presence")
+                ):
+                    continue
                 errors.append(f"{prefix} is absent from the planning snapshot.")
                 continue
             requirement = self._requirement_from_belief(

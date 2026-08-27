@@ -33,6 +33,30 @@ def test_build_planner_llm_with_params():
     assert planner is not None
 
 
+def test_build_planner_passes_explicit_provider_timeout():
+    planner = build_planner(
+        planner_type="llm",
+        provider_base_url="https://api.example.com/v1",
+        provider_api_key="test-key",
+        provider_timeout_seconds=60.0,
+        model="gpt-4o",
+    )
+
+    assert planner._provider_runtime._provider.timeout == 60.0
+
+
+def test_build_planner_passes_provider_thinking_setting():
+    planner = build_planner(
+        planner_type="llm",
+        provider_base_url="https://api.example.com/v1",
+        provider_api_key="test-key",
+        provider_thinking=False,
+        model="mimo-v2.5-pro",
+    )
+
+    assert planner._provider_runtime._provider.thinking is False
+
+
 def test_build_planner_projects_simulation_computer_tools(tmp_path):
     planner = build_planner(
         planner_type="llm",

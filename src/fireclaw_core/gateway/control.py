@@ -104,6 +104,13 @@ class AuthorizationRequest:
     authorized_actions: tuple[dict[str, Any], ...] = ()
     robot_id: str | None = None
     authorization_kind: str = "physical"
+    # Exact pre-authorization execution material.  This is intentionally
+    # separate from ``structured_task``: the latter is the task contract,
+    # while this payload captures the already selected physical plan and the
+    # evidence snapshot that SafetyGate evaluated.  On approval the gateway
+    # can resume this material directly without asking Robot Agent to decide
+    # the same action again.
+    pending_execution: dict[str, Any] | None = None
 
     def is_expired(self, now: str) -> bool:
         return datetime.fromisoformat(now) >= datetime.fromisoformat(self.expires_at)
@@ -131,6 +138,11 @@ class AuthorizationRequest:
             ],
             "robot_id": self.robot_id,
             "authorization_kind": self.authorization_kind,
+            "pending_execution": (
+                dict(self.pending_execution)
+                if self.pending_execution is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -172,6 +184,11 @@ class AuthorizationRequest:
             ),
             authorization_kind=str(
                 payload.get("authorization_kind") or "physical"
+            ),
+            pending_execution=(
+                dict(payload["pending_execution"])
+                if isinstance(payload.get("pending_execution"), dict)
+                else None
             ),
         )
 

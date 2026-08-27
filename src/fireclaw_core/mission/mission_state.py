@@ -54,6 +54,7 @@ class MissionRobotState:
     task_capacity: RobotTaskCapacity | None = None
     active_task_ids: tuple[str, ...] = ()
     emergency_stop_active: bool = False
+    pose: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -76,6 +77,7 @@ class MissionRobotState:
             "battery_percent": self.battery_percent,
             "current_floor": self.current_floor,
             "supports_real_execution": self.supports_real_execution,
+            "pose": dict(self.pose) if self.pose is not None else None,
         }
         result.update({key: value for key, value in optional_values.items() if value is not None})
         if self.task_capacity is not None:
@@ -421,6 +423,7 @@ class MissionStateSnapshotBuilder:
             task_capacity=task_capacity,
             active_task_ids=active_task_ids,
             emergency_stop_active=emergency_stop.get("active") is True,
+            pose=_optional_pose(robot_state.get("pose")),
         )
 
     def _task_states(self, mission_id: str) -> list[MissionTaskState]:
@@ -762,3 +765,28 @@ def _valid_timestamp(value: str | None) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _optional_pose(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    x = value.get("x")
+    y = value.get("y")
+    yaw = value.get("yaw")
+    frame_id = value.get("frame_id")
+    coordinates = (x, y, yaw)
+    if any(
+        not isinstance(item, (int, float))
+        or isinstance(item, bool)
+        or not isfinite(float(item))
+        for item in coordinates
+    ):
+        return None
+    if not isinstance(frame_id, str) or not frame_id.strip():
+        return None
+    return {
+        "x": float(x),
+        "y": float(y),
+        "yaw": float(yaw),
+        "frame_id": frame_id.strip(),
+    }

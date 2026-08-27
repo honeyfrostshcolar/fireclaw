@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
-from threading import Condition, RLock, Thread
+import time
+from threading import Condition, Event, RLock, Thread
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
+from fireclaw_core.mission.mission_planner import MissionPlan
 from fireclaw_core.mission.mission_report import generate_mission_final_report
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,17 @@ class MissionRunControl:
         self._paused = False
         self._cancel_requested = False
         self._corrections: list[dict[str, Any]] = []
+        self._event_sink: Callable[[str, dict[str, Any]], None] | None = None
+
+    def set_event_sink(self, sink: Callable[[str, dict[str, Any]], None] | None) -> None:
+        with self._condition:
+            self._event_sink = sink
+
+    def emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        with self._condition:
+            sink = self._event_sink
+        if sink is not None:
+            sink(event_type, payload)
 
     def request_pause(self) -> bool:
         with self._condition:
@@ -101,14 +114,22 @@ class MissionRun:
     command: str
     operator: dict[str, Any] | None
     use_scheduler: bool
+    sealed_plan: MissionPlan | None = field(default=None, repr=False)
+    plan_artifact_id: str | None = None
+    plan_digest: str | None = None
     status: str = "queued"
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     result: dict[str, Any] | None = None
     final_report: dict[str, Any] | None = None
     error: str | None = None
+    report_error: str | None = None
+    report_started_at: str | None = None
+    report_finished_at: str | None = None
+    report_duration_ms: float | None = None
     control: MissionRunControl = field(default_factory=MissionRunControl, repr=False)
     thread: Thread | None = field(default=None, repr=False)
+    report_thread: Thread | None = field(default=None, repr=False)
 
     @property
     def terminal(self) -> bool:
@@ -131,8 +152,33 @@ class MissionRun:
             result["result"] = dict(self.result)
         if self.final_report is not None:
             result["final_report"] = dict(self.final_report)
+        if self.final_report is not None:
+            report_status = str(
+                self.final_report.get("status") or "ready"
+            )
+        elif self.terminal:
+            report_status = "pending"
+        else:
+            report_status = "not_started"
+        result["report_status"] = report_status
+        result["report_pending"] = (
+            self.terminal and self.final_report is None
+        )
+        if self.report_started_at is not None:
+            result["report_started_at"] = self.report_started_at
+        if self.report_finished_at is not None:
+            result["report_finished_at"] = self.report_finished_at
+        if self.report_duration_ms is not None:
+            result["report_duration_ms"] = self.report_duration_ms
+        if self.report_error is not None:
+            result["report_error"] = self.report_error
         if self.error is not None:
             result["error"] = self.error
+        if self.plan_artifact_id is not None:
+            result["plan_artifact_id"] = self.plan_artifact_id
+        if self.plan_digest is not None:
+            result["plan_digest"] = self.plan_digest
+            result["plan_source"] = "sealed_plan_artifact"
         return result
 
 
@@ -211,6 +257,78 @@ class MissionRunManager:
             "run_id": run.run_id,
             "run_status": run.status,
             "created_at": run.created_at,
+        }
+
+    def submit_preplanned(
+        self,
+        plan: MissionPlan,
+        *,
+        mission_id: str,
+        operator: dict[str, Any] | None,
+        artifact_id: str,
+        plan_digest: str,
+    ) -> dict[str, Any]:
+        """Queue one immutable plan; the worker never calls the planner."""
+
+        resolved_mission_id = mission_id.strip()
+        if not resolved_mission_id:
+            raise ValueError("mission_id must be non-empty")
+        with self._lock:
+            existing = self._runs.get(resolved_mission_id)
+            if existing is not None:
+                return {**existing.to_dict(), "status": "duplicate"}
+            if sum(
+                1
+                for item in self._runs.values()
+                if item.status in RUN_ACTIVE_STATUSES
+            ) >= self.max_workers:
+                return {
+                    "status": "blocked",
+                    "mission_id": resolved_mission_id,
+                    "message": "Mission background worker capacity is exhausted.",
+                }
+            now = datetime.now(timezone.utc).isoformat()
+            run = MissionRun(
+                run_id=resolved_mission_id,
+                mission_id=resolved_mission_id,
+                command=plan.command,
+                operator=dict(operator) if isinstance(operator, dict) else None,
+                use_scheduler=True,
+                sealed_plan=plan,
+                plan_artifact_id=artifact_id,
+                plan_digest=plan_digest,
+                created_at=now,
+                updated_at=now,
+            )
+            self._runs[resolved_mission_id] = run
+            self._create_mission_placeholder(run)
+            thread = Thread(
+                target=self._execute,
+                args=(run,),
+                name=f"fireclaw-mission-{resolved_mission_id}",
+                daemon=True,
+            )
+            run.thread = thread
+            thread.start()
+        self._emit(
+            "mission.run_accepted",
+            run,
+            {
+                "status": "queued",
+                "plan_artifact_id": artifact_id,
+                "plan_digest": plan_digest,
+                "plan_source": "sealed_plan_artifact",
+            },
+        )
+        return {
+            "status": "accepted",
+            "mission_id": run.mission_id,
+            "run_id": run.run_id,
+            "run_status": run.status,
+            "created_at": run.created_at,
+            "plan_artifact_id": artifact_id,
+            "plan_digest": plan_digest,
+            "plan_source": "sealed_plan_artifact",
         }
 
     def get(self, mission_id: str) -> dict[str, Any]:
@@ -321,50 +439,80 @@ class MissionRunManager:
                     "status": "pending",
                     "mission_id": mission_id,
                     "run_status": run.status,
+                    "report_status": "pending",
+                    "report_pending": run.terminal,
                 }
             return dict(run.final_report)
 
     def shutdown(self, *, wait: bool = False) -> None:
         with self._lock:
-            threads = [run.thread for run in self._runs.values() if run.thread is not None]
+            threads = [
+                thread
+                for run in self._runs.values()
+                for thread in (run.thread, run.report_thread)
+                if thread is not None
+            ]
         if wait:
             for thread in threads:
                 if thread is not None:
                     thread.join(timeout=5)
 
     def _execute(self, run: MissionRun) -> None:
+        run.control.set_event_sink(lambda et, p: self._emit(et, run, p))
         try:
             if not run.control.wait_until_resumed():
                 self._finish_cancelled(run, None)
                 return
-            self._set_status(run, "planning")
-            result = self.mission_agent.plan_and_submit(
-                run.command,
-                session_id=run.mission_id,
-                operator=run.operator,
-                use_scheduler=run.use_scheduler,
-                run_control=run.control,
-            )
+            if run.sealed_plan is not None:
+                self._set_status(run, "running")
+                self._emit(
+                    "mission.sealed_plan_loaded",
+                    run,
+                    {
+                        "plan": run.sealed_plan.to_dict(),
+                        "plan_artifact_id": run.plan_artifact_id,
+                        "plan_digest": run.plan_digest,
+                        "plan_source": "sealed_plan_artifact",
+                    },
+                )
+                self._emit(
+                    "mission.sealed_plan_execution_started",
+                    run,
+                    {
+                        "plan_artifact_id": run.plan_artifact_id,
+                        "plan_digest": run.plan_digest,
+                        "plan_source": "sealed_plan_artifact",
+                    },
+                )
+                result = self.mission_agent.execute_sealed_plan(
+                    run.sealed_plan,
+                    session_id=run.mission_id,
+                    operator=run.operator,
+                    artifact_id=str(run.plan_artifact_id),
+                    plan_digest=str(run.plan_digest),
+                    run_control=run.control,
+                )
+            else:
+                self._set_status(run, "planning")
+                result = self.mission_agent.plan_and_submit(
+                    run.command,
+                    session_id=run.mission_id,
+                    operator=run.operator,
+                    use_scheduler=run.use_scheduler,
+                    run_control=run.control,
+                )
             run.result = dict(result)
-            if result.get("plan") is not None or result.get("intent") is not None:
+            if run.sealed_plan is None and (
+                result.get("plan") is not None
+                or result.get("intent") is not None
+            ):
                 self._emit(
                     "mission.planned",
                     run,
                     {
                         "intent": result.get("intent"),
                         "plan": result.get("plan"),
-                    },
-                )
-            for subtask in result.get("subtask_results", []):
-                if not isinstance(subtask, dict) or subtask.get("status") != "accepted":
-                    continue
-                self._emit(
-                    "mission.subtask_dispatched",
-                    run,
-                    {
-                        "robot_id": subtask.get("robot_id"),
-                        "task_id": subtask.get("task_id"),
-                        "status": subtask.get("status"),
+                        "plan_source": "planner",
                     },
                 )
             if run.control.is_cancel_requested() and str(result.get("status")) in {
@@ -379,65 +527,176 @@ class MissionRunManager:
             if final_status == "running":
                 self._set_status(run, "running")
                 return
-            self._set_status(run, "reporting")
-            trace = self.mission_agent.mission_trace(run.mission_id)
-            report = generate_mission_final_report(
-                mission_agent=self.mission_agent,
-                mission_id=run.mission_id,
-                command=run.command,
+            trace = self._mission_trace_snapshot(run)
+            self._complete_and_schedule_report(
+                run,
                 status=final_status,
                 trace=trace,
-                corrections=run.control.corrections(),
-            )
-            run.final_report = report
-            recorder = getattr(self.mission_agent, "record_final_report", None)
-            if callable(recorder):
-                recorder(run.mission_id, report)
-            self._set_status(run, final_status)
-            self._emit("mission.report_ready", run, report)
-            self._emit(
-                MISSION_TERMINAL_EVENT_BY_STATUS[final_status],
-                run,
-                {"status": final_status, "final_report": report},
             )
         except Exception as exc:  # pragma: no cover - defensive worker boundary
             logger.exception("Mission Run failed: %s", run.mission_id)
             run.error = f"{type(exc).__name__}: {exc}"
             run.result = {"status": "failed", "message": run.error}
-            self._set_status(run, "reporting")
-            trace = self.mission_agent.mission_trace(run.mission_id)
-            run.final_report = generate_mission_final_report(
-                mission_agent=self.mission_agent,
-                mission_id=run.mission_id,
-                command=run.command,
+            trace = self._mission_trace_snapshot(run)
+            self._complete_and_schedule_report(
+                run,
                 status="failed",
                 trace=trace,
-                corrections=run.control.corrections(),
+                error=run.error,
             )
-            recorder = getattr(self.mission_agent, "record_final_report", None)
-            if callable(recorder):
-                recorder(run.mission_id, run.final_report)
-            self._set_status(run, "failed")
-            self._emit("mission.failed", run, {"error": run.error, "final_report": run.final_report})
+        finally:
+            run.control.set_event_sink(None)
 
     def _finish_cancelled(self, run: MissionRun, result: dict[str, Any] | None) -> None:
         if result is not None:
             run.result = dict(result)
-        self._set_status(run, "reporting")
-        trace = self.mission_agent.mission_trace(run.mission_id)
-        run.final_report = generate_mission_final_report(
-            mission_agent=self.mission_agent,
-            mission_id=run.mission_id,
-            command=run.command,
+        trace = self._mission_trace_snapshot(run)
+        self._complete_and_schedule_report(
+            run,
             status="cancelled",
             trace=trace,
-            corrections=run.control.corrections(),
         )
+
+    def _mission_trace_snapshot(self, run: MissionRun) -> dict[str, Any]:
+        """Capture trace evidence without turning report lookup into a failure."""
+
+        try:
+            value = self.mission_agent.mission_trace(run.mission_id)
+        except Exception as exc:  # pragma: no cover - adapter-specific
+            logger.warning(
+                "Mission trace snapshot failed for %s: %s",
+                run.mission_id,
+                exc,
+                exc_info=True,
+            )
+            return {
+                "mission_id": run.mission_id,
+                "status": "unknown",
+                "subtasks": [],
+                "trace_error": f"{type(exc).__name__}: {exc}",
+            }
+        return dict(value) if isinstance(value, dict) else {
+            "mission_id": run.mission_id,
+            "status": "unknown",
+            "subtasks": [],
+        }
+
+    def _complete_and_schedule_report(
+        self,
+        run: MissionRun,
+        *,
+        status: str,
+        trace: dict[str, Any],
+        error: str | None = None,
+    ) -> None:
+        """Publish physical completion first, then generate the report off-path."""
+
+        report_start_gate = Event()
+        report_thread = Thread(
+            target=self._generate_report,
+            args=(run, status, dict(trace), report_start_gate),
+            name=f"fireclaw-report-{run.mission_id}",
+            daemon=True,
+        )
+        with self._lock:
+            run.report_thread = report_thread
+            run.report_started_at = datetime.now(timezone.utc).isoformat()
+            if error is not None:
+                run.error = error
+        self._set_status(run, status)
+        pending_payload: dict[str, Any] = {
+            "status": status,
+            "report_status": "pending",
+            "report_pending": True,
+            "report_started_at": run.report_started_at,
+        }
+        if error is not None:
+            pending_payload["error"] = error
+        # Start a gated daemon before emitting lifecycle events so shutdown()
+        # can always join a live thread; the gate preserves event ordering.
+        report_thread.start()
+        self._emit(
+            "mission.report_generation_started",
+            run,
+            pending_payload,
+        )
+        self._emit(
+            MISSION_TERMINAL_EVENT_BY_STATUS[status],
+            run,
+            pending_payload,
+        )
+        report_start_gate.set()
+
+    def _generate_report(
+        self,
+        run: MissionRun,
+        status: str,
+        trace: dict[str, Any],
+        start_gate: Event,
+    ) -> None:
+        """Generate and persist the advisory report without delaying terminal state."""
+
+        start_gate.wait()
+        report_started_monotonic = time.monotonic()
+        report_error: str | None = None
+        try:
+            report = generate_mission_final_report(
+                mission_agent=self.mission_agent,
+                mission_id=run.mission_id,
+                command=run.command,
+                status=status,
+                trace=trace,
+                corrections=run.control.corrections(),
+            )
+        except Exception as exc:  # pragma: no cover - defensive worker boundary
+            report_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "Mission final report generation failed for %s: %s",
+                run.mission_id,
+                exc,
+                exc_info=True,
+            )
+            report = _deterministic_report_after_error(
+                mission_id=run.mission_id,
+                command=run.command,
+                status=status,
+                trace=trace,
+                corrections=run.control.corrections(),
+                error=report_error,
+            )
+
         recorder = getattr(self.mission_agent, "record_final_report", None)
         if callable(recorder):
-            recorder(run.mission_id, run.final_report)
-        self._set_status(run, "cancelled")
-        self._emit("mission.cancelled", run, {"final_report": run.final_report})
+            try:
+                recorder(run.mission_id, report)
+            except Exception as exc:  # pragma: no cover - persistence-specific
+                report["persistence_error"] = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "Failed to persist final Mission report for %s",
+                    run.mission_id,
+                    exc_info=True,
+                )
+        with self._lock:
+            run.final_report = dict(report)
+            run.report_error = report_error
+            run.report_finished_at = datetime.now(timezone.utc).isoformat()
+            run.report_duration_ms = round(
+                max(0.0, time.monotonic() - report_started_monotonic) * 1000,
+                3,
+            )
+            run.updated_at = datetime.now(timezone.utc).isoformat()
+            report_duration_ms = run.report_duration_ms
+            report_finished_at = run.report_finished_at
+        self._emit(
+            "mission.report_ready",
+            run,
+            {
+                **report,
+                "report_status": "ready",
+                "report_duration_ms": report_duration_ms,
+                "report_finished_at": report_finished_at,
+            },
+        )
 
     def _create_mission_placeholder(self, run: MissionRun) -> None:
         registry = getattr(self.mission_agent, "mission_registry", None)
@@ -464,8 +723,14 @@ class MissionRunManager:
     def _emit(self, event_type: str, run: MissionRun, payload: dict[str, Any]) -> None:
         if self.event_sink is None:
             return
+        event_payload = dict(payload)
+        if run.plan_artifact_id is not None:
+            event_payload.setdefault("plan_artifact_id", run.plan_artifact_id)
+        if run.plan_digest is not None:
+            event_payload.setdefault("plan_digest", run.plan_digest)
+            event_payload.setdefault("plan_source", "sealed_plan_artifact")
         try:
-            self.event_sink(event_type, run.mission_id, dict(payload))
+            self.event_sink(event_type, run.mission_id, event_payload)
         except Exception:
             logger.warning("Mission Run event sink failed", exc_info=True)
 
@@ -483,3 +748,35 @@ def _run_status_from_result(result: dict[str, Any]) -> str:
     if status in {"no_planner", "no_robots", "unauthorized", "denied", "error"}:
         return "blocked"
     return "failed"
+
+
+def _deterministic_report_after_error(
+    *,
+    mission_id: str,
+    command: str,
+    status: str,
+    trace: dict[str, Any],
+    corrections: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    error: str,
+) -> dict[str, Any]:
+    """Keep report retrieval useful even when the asynchronous generator fails."""
+
+    robot_results = [
+        dict(item)
+        for item in trace.get("subtasks", [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "mission_id": mission_id,
+        "status": status,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_by": "deterministic_fallback",
+        "summary": (
+            f"Mission {mission_id} 已完成物理执行，最终报告生成失败；"
+            "请查看任务轨迹。"
+        ),
+        "command": command,
+        "robot_results": robot_results,
+        "corrections": [dict(item) for item in corrections],
+        "report_error": error,
+    }

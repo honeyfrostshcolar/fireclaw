@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -68,20 +69,45 @@ class SqliteMemoryIndex:
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
-        self._conn: sqlite3.Connection | None = None
+        # sqlite3 connections are thread-affine by default. Mission HTTP,
+        # execution, and consolidation workers therefore each own a connection
+        # while sharing the WAL-backed derived index safely.
+        self._local = threading.local()
+        self._schema_lock = threading.Lock()
+        self._schema_initialized = False
+        self._rtree_available = False
 
     # -- connection helpers ---------------------------------------------------
 
     def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is not None:
-            return self._conn
+        existing = getattr(self._local, "connection", None)
+        if existing is not None:
+            return existing
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        self._rtree_available = self._init_schema(conn)
-        self._conn = conn
+        conn = sqlite3.connect(str(self._path), timeout=5.0)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            with self._schema_lock:
+                if not self._schema_initialized:
+                    self._rtree_available = self._init_schema(conn)
+                    conn.commit()
+                    self._schema_initialized = True
+        except Exception:
+            conn.close()
+            raise
+        self._local.connection = conn
         return conn
+
+    def close(self) -> None:
+        """Close the calling thread's connection, if it opened one."""
+
+        conn = getattr(self._local, "connection", None)
+        if conn is None:
+            return
+        conn.close()
+        del self._local.connection
 
     @staticmethod
     def _init_schema(conn: sqlite3.Connection) -> bool:
@@ -947,9 +973,9 @@ class SqliteMemoryIndex:
     @property
     def rtree_available(self) -> bool:
         """Return whether R*Tree spatial queries are available."""
-        if not hasattr(self, "_rtree_available"):
+        if not self._schema_initialized:
             self._get_conn()
-        return getattr(self, "_rtree_available", False)
+        return self._rtree_available
 
     def sync_spatial_authority_token(self, authority_token: str) -> None:
         """Mark existing spatial projections as matching the authority token."""

@@ -24,12 +24,15 @@ export class WebConsoleApp {
         activeRobotId: 'UNKNOWN',
         phase: 'UNKNOWN',
         safeState: 'unknown',
+        chassisStatus: 'unknown',
+        profileRevision: null,
+        identityEvidenceId: null,
         summary: '等待 Gateway readiness 证据',
       },
       taskDraft: {
         rawInput: '',
         isParsing: false,
-        parsedIntent: null, // { intent, targetRobot, estimatedSteps, riskLevel, rawPlan }
+        parsedIntent: null, // Server-owned sealed PlanArtifact and display projection.
         isConfirmed: false,
       },
       activeExecution: {
@@ -165,27 +168,8 @@ export class WebConsoleApp {
       this.readiness = data;
       this.state.robot.readiness = data;
 
-      // Extract details
-      const activeRobot = data.active_robot_id || 'UNKNOWN';
-      const runtimeMode = data.runtime_mode || data.deployment_mode || 'unknown';
-      const phase = (data.phase || 'unknown').toUpperCase();
-      const safeState = data.safe_state || 'unknown';
-      const summary = data.summary || 'Gateway 未提供 readiness 结论';
-      const normalizedSafeState = safeState.toLowerCase();
-      const isBlocked =
-        data.status !== 'ok' ||
-        phase !== 'READY' ||
-        normalizedSafeState === 'unknown' ||
-        normalizedSafeState === 'motion_blocked' ||
-        normalizedSafeState === 'blocked';
-
-      this.state.robot.activeRobotId = activeRobot;
-      this.state.robot.mode = String(runtimeMode).toLowerCase();
-      this.state.robot.phase = phase;
-      this.state.robot.safeState = safeState;
-      this.state.robot.summary = summary;
-      this.state.recovery.isFrozen = isBlocked;
-      this.state.recovery.freezeReason = isBlocked ? summary : '';
+      const authoritative = this.authoritativeReadiness(data);
+      this.applyAuthoritativeReadiness(authoritative);
 
       this.renderOverview(data);
       this.renderRecovery(data);
@@ -193,6 +177,9 @@ export class WebConsoleApp {
       if (!silent) {
         console.error('Failed to fetch readiness:', err);
       }
+      this.applyAuthoritativeReadiness(this.authoritativeReadiness({}));
+      this.renderOverview({});
+      this.renderRecovery({});
       const summaryEl = document.getElementById('overview-summary');
       if (summaryEl) {
         summaryEl.textContent = '无法连接 Gateway 就绪检测服务。';
@@ -205,18 +192,125 @@ export class WebConsoleApp {
     }
   }
 
-  renderOverview(data) {
-    const phase = (data.phase || 'UNKNOWN').toUpperCase();
-    const safeState = data.safe_state || 'unknown';
-    const activeRobot = data.active_robot_id || 'UNKNOWN';
-    const summary = data.summary || 'Gateway 未提供 readiness 结论；不要推断机器人物理状态。';
+  readEvidence(envelope) {
+    if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+      return { valid: false, fresh: false, value: null };
+    }
+    const valid =
+      envelope.schema_version === 1 &&
+      typeof envelope.source === 'string' && envelope.source.length > 0 &&
+      typeof envelope.observed_at === 'string' && envelope.observed_at.length > 0 &&
+      ['fresh', 'stale', 'unknown'].includes(envelope.freshness) &&
+      typeof envelope.evidence_id === 'string' &&
+      /^sha256:[0-9a-f]{64}$/.test(envelope.evidence_id) &&
+      Object.prototype.hasOwnProperty.call(envelope, 'value');
+    return {
+      valid,
+      fresh: valid && envelope.freshness === 'fresh',
+      value: valid ? envelope.value : null,
+      freshness: valid ? envelope.freshness : 'unknown',
+      source: valid ? envelope.source : 'missing',
+      observedAt: valid ? envelope.observed_at : null,
+      evidenceId: valid ? envelope.evidence_id : null,
+    };
+  }
+
+  authoritativeReadiness(data) {
+    const identityEvidence = this.readEvidence(data.runtime_identity);
+    const identity = identityEvidence.fresh && identityEvidence.value &&
+      typeof identityEvidence.value === 'object' ? identityEvidence.value : {};
+    const runtimeMode = ['simulation', 'real'].includes(identity.runtime_mode)
+      ? identity.runtime_mode : 'unknown';
+    const activeRobot = typeof identity.robot_id === 'string' && identity.robot_id
+      ? identity.robot_id : 'UNKNOWN';
+    const profilePath = typeof identity.active_profile_path === 'string' &&
+      identity.active_profile_path ? identity.active_profile_path : null;
+    const profileRevision = typeof identity.profile_revision === 'string' &&
+      identity.profile_revision ? identity.profile_revision : null;
+
+    const observations = data.observations && typeof data.observations === 'object'
+      ? data.observations : {};
+    const phaseEvidence = this.readEvidence(observations.admission_phase);
+    const safeStateEvidence = this.readEvidence(observations.admission_safe_state);
+    const summaryEvidence = this.readEvidence(observations.summary);
+    const phase = phaseEvidence.fresh && typeof phaseEvidence.value === 'string'
+      ? phaseEvidence.value.toUpperCase() : 'UNKNOWN';
+    const safeState = safeStateEvidence.fresh && typeof safeStateEvidence.value === 'string'
+      ? safeStateEvidence.value : 'unknown';
+    const summary = summaryEvidence.fresh && typeof summaryEvidence.value === 'string'
+      ? summaryEvidence.value
+      : 'Gateway 未提供带来源、时间、时效和 evidence_id 的 readiness 结论。';
+
+    const robotReadiness = Array.isArray(data.robot_readiness)
+      ? data.robot_readiness.map((entry) => {
+        const evidence = this.readEvidence(entry && entry.readiness);
+        const value = evidence.valid && evidence.value && typeof evidence.value === 'object'
+          ? evidence.value : {};
+        let status = typeof value.status === 'string' ? value.status.toLowerCase() : 'unknown';
+        if (!evidence.valid || evidence.freshness === 'unknown') status = 'unknown';
+        if (evidence.freshness === 'stale') status = 'stale';
+        if (!['online', 'offline', 'stale', 'disabled', 'unknown'].includes(status)) {
+          status = 'unknown';
+        }
+        return {
+          robotId: entry && typeof entry.robot_id === 'string' && entry.robot_id
+            ? entry.robot_id : 'UNKNOWN',
+          status,
+          capabilities: Array.isArray(value.declared_capabilities)
+            ? value.declared_capabilities.filter((item) => typeof item === 'string') : [],
+          evidence,
+        };
+      }) : [];
+    const activeReadiness = robotReadiness.find((entry) => entry.robotId === activeRobot);
+    const chassisStatus = activeReadiness ? activeReadiness.status : 'unknown';
     const normalizedSafeState = safeState.toLowerCase();
-    const isOk =
+    const admissionReady =
       data.status === 'ok' &&
+      identityEvidence.fresh &&
+      runtimeMode !== 'unknown' &&
+      activeRobot !== 'UNKNOWN' &&
+      Boolean(profilePath) &&
       phase === 'READY' &&
-      normalizedSafeState !== 'unknown' &&
-      normalizedSafeState !== 'motion_blocked' &&
-      normalizedSafeState !== 'blocked';
+      !['unknown', 'motion_blocked', 'blocked'].includes(normalizedSafeState) &&
+      chassisStatus === 'online';
+
+    return {
+      identityEvidence,
+      runtimeMode,
+      activeRobot,
+      profilePath,
+      profileRevision,
+      phase,
+      safeState,
+      summary,
+      robotReadiness,
+      chassisStatus,
+      admissionReady,
+    };
+  }
+
+  applyAuthoritativeReadiness(authoritative) {
+    this.state.robot.activeRobotId = authoritative.activeRobot;
+    this.state.robot.mode = authoritative.runtimeMode;
+    this.state.robot.phase = authoritative.phase;
+    this.state.robot.safeState = authoritative.safeState;
+    this.state.robot.chassisStatus = authoritative.chassisStatus;
+    this.state.robot.profileRevision = authoritative.profileRevision;
+    this.state.robot.identityEvidenceId = authoritative.identityEvidence.evidenceId || null;
+    this.state.robot.summary = authoritative.summary;
+    this.state.profilePath = authoritative.profilePath;
+    this.state.recovery.isFrozen = !authoritative.admissionReady;
+    this.state.recovery.freezeReason = authoritative.admissionReady
+      ? '' : authoritative.summary;
+  }
+
+  renderOverview(data) {
+    const authoritative = this.authoritativeReadiness(data);
+    const phase = authoritative.phase;
+    const safeState = authoritative.safeState;
+    const activeRobot = authoritative.activeRobot;
+    const summary = authoritative.summary;
+    const isOk = authoritative.admissionReady;
 
     // Header elements
     const robotIdDisplay = document.getElementById('robot-id-display');
@@ -227,9 +321,7 @@ export class WebConsoleApp {
     const modeBadge = document.getElementById('mode-badge');
     const modeText = document.getElementById('system-mode-text');
     const overviewMode = document.getElementById('overview-mode');
-    const runtimeMode = String(
-      data.runtime_mode || data.deployment_mode || this.state.robot.mode || 'unknown',
-    ).toLowerCase();
+    const runtimeMode = authoritative.runtimeMode;
     if (modeBadge) modeBadge.dataset.mode = runtimeMode;
     if (modeText) modeText.textContent = runtimeMode.toUpperCase();
     if (overviewMode) overviewMode.textContent = runtimeMode.toUpperCase();
@@ -239,10 +331,10 @@ export class WebConsoleApp {
     if (globalSafetyPill && globalSafetyText) {
       if (isOk) {
         globalSafetyPill.className = 'safety-pill ready';
-        globalSafetyText.textContent = 'READY';
+        globalSafetyText.textContent = 'ADMISSION READY';
       } else {
         globalSafetyPill.className = 'safety-pill blocked';
-        globalSafetyText.textContent = 'BLOCKED';
+        globalSafetyText.textContent = 'BLOCKED / UNKNOWN';
       }
     }
 
@@ -257,25 +349,47 @@ export class WebConsoleApp {
     if (phaseEl) phaseEl.textContent = phase;
     if (safeStateEl) safeStateEl.textContent = safeState.toUpperCase();
     if (summaryEl) summaryEl.textContent = summary;
+    const chassisEl = document.getElementById('overview-chassis-comm');
+    if (chassisEl) chassisEl.textContent = authoritative.chassisStatus.toUpperCase();
     if (badgeEl) {
-      badgeEl.textContent = isOk ? '就绪正常' : '准入阻断';
+      badgeEl.textContent = isOk ? '准入证据就绪' : '阻断或证据未知';
       badgeEl.className = isOk ? 'badge badge-success' : 'badge badge-danger';
     }
 
     // Safety card
     const estopBadge = document.getElementById('estop-indicator-badge');
     if (estopBadge) {
-      const physicalSafety = data.physical_safety || {};
-      if (physicalSafety.e_stop_engaged === true) {
+      const observations = data.observations && typeof data.observations === 'object'
+        ? data.observations : {};
+      const estopEvidence = this.readEvidence(observations.emergency_stop_state);
+      if (estopEvidence.fresh && estopEvidence.value === 'engaged') {
         estopBadge.textContent = 'Gateway 报告 E-STOP 已触发';
         estopBadge.className = 'badge badge-danger';
-      } else if (physicalSafety.e_stop_released === true) {
-        estopBadge.textContent = 'Gateway 报告 E-STOP 已释放（时效未验证）';
+      } else if (estopEvidence.fresh && estopEvidence.value === 'released') {
+        estopBadge.textContent = 'Gateway 证据：E-STOP 已释放';
         estopBadge.className = 'badge badge-warning';
       } else {
         estopBadge.textContent = 'E-STOP 未知';
         estopBadge.className = 'badge badge-warning';
       }
+    }
+    const safetyDetail = document.getElementById('safety-detail-text');
+    if (safetyDetail) {
+      safetyDetail.textContent =
+        `Gateway 准入投影：${safeState.toUpperCase()}；机器人物理停止与急停状态必须由独立证据确认。`;
+    }
+
+    const profilePathDisplay = document.getElementById('profile-path-display');
+    const profileModeDisplay = document.getElementById('profile-mode-display');
+    const profileRevisionDisplay = document.getElementById('profile-revision-display');
+    const identityEvidenceDisplay = document.getElementById('identity-evidence-display');
+    if (profilePathDisplay) profilePathDisplay.textContent = authoritative.profilePath || 'UNKNOWN';
+    if (profileModeDisplay) profileModeDisplay.textContent = runtimeMode.toUpperCase();
+    if (profileRevisionDisplay) {
+      profileRevisionDisplay.textContent = authoritative.profileRevision || 'UNKNOWN';
+    }
+    if (identityEvidenceDisplay) {
+      identityEvidenceDisplay.textContent = authoritative.identityEvidence.evidenceId || 'UNKNOWN';
     }
 
     // Recommended Action Card
@@ -309,19 +423,30 @@ export class WebConsoleApp {
     // Fleet List
     const fleetListEl = document.getElementById('overview-fleet-list');
     const fleetCountBadge = document.getElementById('fleet-count-badge');
-    if (data.fleet_state && data.fleet_state.entries && fleetListEl) {
-      const entries = data.fleet_state.entries;
-      if (fleetCountBadge) fleetCountBadge.textContent = `${entries.length} 条 Gateway 记录`;
+    if (fleetListEl) {
+      const entries = authoritative.robotReadiness;
+      if (fleetCountBadge) fleetCountBadge.textContent = `${entries.length} 条证据记录`;
+      if (entries.length === 0) {
+        fleetListEl.innerHTML = `
+          <li class="fleet-item">
+            <div class="fleet-item-info">
+              <span class="fleet-item-id">UNKNOWN</span>
+              <span class="fleet-item-caps">Gateway 未提供 robot_readiness 证据</span>
+            </div>
+            <span class="badge badge-warning">UNKNOWN</span>
+          </li>`;
+        return;
+      }
       fleetListEl.innerHTML = entries
         .map(
           (entry) => `
         <li class="fleet-item">
           <div class="fleet-item-info">
-            <span class="fleet-item-id">${this.escapeHtml(entry.robot_id)}</span>
-            <span class="fleet-item-caps">${this.escapeHtml(entry.capabilities ? entry.capabilities.join(', ') : '能力未报告')}</span>
+            <span class="fleet-item-id">${this.escapeHtml(entry.robotId)}</span>
+            <span class="fleet-item-caps">${this.escapeHtml(entry.capabilities.length ? `声明能力: ${entry.capabilities.join(', ')}` : '声明能力未报告')}</span>
           </div>
-          <span class="badge ${entry.is_online ? 'badge-success' : 'badge-danger'}">
-            ${entry.is_online ? 'ONLINE' : 'OFFLINE'}
+          <span class="badge ${entry.status === 'online' ? 'badge-success' : entry.status === 'offline' ? 'badge-danger' : 'badge-warning'}">
+            ${entry.status.toUpperCase()}
           </span>
         </li>
       `
@@ -396,7 +521,11 @@ export class WebConsoleApp {
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: JSON.stringify({
           task_description: rawText,
-          profile: this.state.profilePath,
+          ...(
+            this.state.robot.activeRobotId && this.state.robot.activeRobotId !== 'UNKNOWN'
+              ? { target_robot: this.state.robot.activeRobotId }
+              : {}
+          ),
         }),
       });
 
@@ -406,12 +535,34 @@ export class WebConsoleApp {
       }
 
       const data = await response.json();
+      if (
+        data.status !== 'preview_ready' ||
+        !data.artifact_id ||
+        !data.plan_token ||
+        !data.plan_digest ||
+        !Number.isInteger(data.status_version) ||
+        !data.session_id ||
+        !Array.isArray(data.robot_ids)
+      ) {
+        throw new Error('Gateway returned an incomplete sealed PlanArtifact.');
+      }
       this.state.taskDraft.parsedIntent = {
         intent: data.intent || rawText,
-        targetRobot: data.target_robot || this.state.robot.activeRobotId || 'UNKNOWN',
+        targetRobot: data.target_robot || data.robot_ids.join(', ') || 'UNKNOWN',
+        robotIds: data.robot_ids,
         estimatedSteps: data.steps || [],
-        riskLevel: data.risk_level || 'medium',
-        rawPlan: data.raw_plan || data,
+        riskLevel: data.risk_level || 'unknown',
+        sealedPlan: data.plan,
+        artifactId: data.artifact_id,
+        planToken: data.plan_token,
+        planDigest: data.plan_digest,
+        bindingDigest: data.binding_digest,
+        statusVersion: data.status_version,
+        sessionId: data.session_id,
+        profileRevision: data.profile_revision,
+        readinessRevision: data.readiness_revision,
+        expiresAt: data.expires_at,
+        requiredApprovals: data.required_approvals || [],
       };
 
       this.renderIntentPreview();
@@ -447,20 +598,33 @@ export class WebConsoleApp {
     if (goalTextEl) goalTextEl.textContent = parsedIntent.intent;
     if (robotEl) robotEl.textContent = parsedIntent.targetRobot;
 
+    const stepText = (step) => {
+      if (typeof step === 'string') return step;
+      if (!step || typeof step !== 'object') return 'UNKNOWN';
+      const index = step.index !== undefined ? `${step.index}. ` : '';
+      const robot = step.robot_id ? `[${step.robot_id}] ` : '';
+      return `${index}${robot}${step.command || 'UNKNOWN'}`;
+    };
     const formattedSteps = Array.isArray(parsedIntent.estimatedSteps)
-      ? parsedIntent.estimatedSteps.join(' → ')
-      : parsedIntent.estimatedSteps;
+      ? parsedIntent.estimatedSteps.map(stepText).join(' → ')
+      : stepText(parsedIntent.estimatedSteps);
     if (stepsEl) stepsEl.textContent = formattedSteps;
 
     if (subtasksListEl && Array.isArray(parsedIntent.estimatedSteps)) {
       subtasksListEl.innerHTML = parsedIntent.estimatedSteps
-        .map((step) => `<li>${this.escapeHtml(step)}</li>`)
+        .map((step) => `<li>${this.escapeHtml(stepText(step))}</li>`)
         .join('');
     }
 
-    const riskText = parsedIntent.riskLevel === 'high' ? '高风险' : parsedIntent.riskLevel === 'medium' ? '中等风险' : '低风险';
+    const riskText = parsedIntent.riskLevel === 'high'
+      ? '高风险'
+      : parsedIntent.riskLevel === 'medium'
+        ? '中等风险'
+        : parsedIntent.riskLevel === 'low'
+          ? '低风险'
+          : 'UNKNOWN';
     if (riskEl) {
-      riskEl.textContent = `${riskText}（涉及未知区域探测）`;
+      riskEl.textContent = riskText;
       riskEl.className = `intent-val risk-${parsedIntent.riskLevel}`;
     }
     if (riskLevelEl) riskLevelEl.textContent = riskText;
@@ -472,6 +636,7 @@ export class WebConsoleApp {
     const card = document.getElementById('intent-preview-card');
     if (card) card.style.display = 'none';
     this.state.taskDraft.parsedIntent = null;
+    this.state.taskDraft.isConfirmed = false;
     const inputEl = document.getElementById('task-input-text');
     if (inputEl) {
       inputEl.disabled = false;
@@ -486,22 +651,25 @@ export class WebConsoleApp {
       return;
     }
     draft.isConfirmed = true;
-    const intent = draft.parsedIntent ? draft.parsedIntent.intent : draft.rawInput;
-    const robotId = draft.parsedIntent ? draft.parsedIntent.targetRobot : this.state.robot.activeRobotId;
+    const artifact = draft.parsedIntent;
+    const intent = artifact.intent;
+    const robotId = artifact.targetRobot;
 
     const confirmBtn = document.getElementById('btn-confirm-start');
     if (confirmBtn) confirmBtn.disabled = true;
 
     try {
-      const response = await fetch('/tasks', {
+      const response = await fetch('/plan-mission/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: JSON.stringify({
-          command: draft.rawInput || intent,
-          task: draft.rawInput || intent,
-          goal: intent,
-          target_robot: robotId,
-          plan: draft.parsedIntent ? draft.parsedIntent.rawPlan : null,
+          artifact_id: artifact.artifactId,
+          plan_token: artifact.planToken,
+          plan_digest: artifact.planDigest,
+          status_version: artifact.statusVersion,
+          session_id: artifact.sessionId,
+          robot_ids: artifact.robotIds,
+          operator_confirmed: true,
         }),
       });
 
@@ -537,23 +705,8 @@ export class WebConsoleApp {
       // Reset Stepper
       this.resetCancelStepperUI();
 
-      // Record only the local submission acknowledgement. Execution state must
-      // come from Gateway/Robot runtime events.
-      this.addTimelineEvent({
-        id: `evt-${Date.now()}`,
-        time: new Date().toLocaleTimeString(),
-        type: 'ui.submission.accepted',
-        title: 'Gateway 已接受任务请求',
-        detail: `指令: "${intent}" | 请求机器人: ${robotId} | 等待权威执行事件`,
-      });
-
-      // Do not invent planner/runtime progress while waiting for evidence.
-      this.updateCurrentStepUI({
-        name: '等待 Gateway / Robot runtime 执行事件',
-        percent: 0,
-        feedback: '请求已接受；尚未收到机器人开始运动或 Tool 执行证据。',
-        tool: 'UNKNOWN',
-      });
+      // Timeline and progress stay empty until Gateway/Robot events arrive.
+      this.state.activeExecution.currentStep = null;
 
       // Clear draft preview
       this.cancelTaskPreview();
@@ -644,14 +797,6 @@ export class WebConsoleApp {
         return;
       }
 
-      this.addTimelineEvent({
-        id: `cancel-${Date.now()}`,
-        time: new Date().toLocaleTimeString(),
-        type: 'task.cancel_requested',
-        title: '取消请求已送达网关',
-        detail: '任务层已接受取消请求；尚未收到机器人正在制动或已经停止的物理证据。',
-      });
-
       // Strict physical safety: Do not fake stopped_confirmed via timer.
       // If no stop confirmation is received within 15s, alert the operator.
       setTimeout(() => {
@@ -670,7 +815,7 @@ export class WebConsoleApp {
     }
   }
 
-  updateCancelState(newState) {
+  updateCancelState(newState, sourceEvent = null) {
     this.state.activeExecution.cancelState = newState;
 
     const step1 = document.getElementById('cancel-step-1');
@@ -689,26 +834,30 @@ export class WebConsoleApp {
       const cancelBtn = document.getElementById('btn-cancel-task');
       if (cancelBtn) cancelBtn.disabled = true;
 
-      this.addTimelineEvent({
-        id: `evt-${Date.now()}`,
-        time: new Date().toLocaleTimeString(),
-        type: 'cancel_requested',
-        title: '取消三态 #1: cancel_requested',
-        detail: '取消请求已发出；此状态不代表制动已经开始，也不代表机器人已经停止。',
-      });
+      if (sourceEvent) {
+        this.addTimelineEvent({
+          id: sourceEvent.sequence || sourceEvent.event_id,
+          time: sourceEvent.timestamp || 'UNKNOWN',
+          type: sourceEvent.event_type || sourceEvent.type,
+          title: '取消三态 #1: cancel_requested',
+          detail: 'Gateway 已报告取消请求；这不代表制动开始或机器人已经停止。',
+        });
+      }
     } else if (newState === 'stopping') {
       if (step1) step1.className = 'cancel-step-item completed';
       if (step2) step2.className = 'cancel-step-item active current';
       if (step3) step3.className = 'cancel-step-item';
       if (cancelText) cancelText.textContent = '机器人正在减速制动中...';
 
-      this.addTimelineEvent({
-        id: `evt-${Date.now()}`,
-        time: new Date().toLocaleTimeString(),
-        type: 'stopping',
-        title: '取消三态 #2: stopping',
-        detail: '已收到机器人运行时的制动中反馈；继续等待带停止证据的最终确认。',
-      });
+      if (sourceEvent) {
+        this.addTimelineEvent({
+          id: sourceEvent.sequence || sourceEvent.event_id,
+          time: sourceEvent.timestamp || 'UNKNOWN',
+          type: sourceEvent.event_type || sourceEvent.type,
+          title: '取消三态 #2: stopping',
+          detail: '已收到机器人运行时的制动中反馈；继续等待带停止证据的最终确认。',
+        });
+      }
     } else if (newState === 'stopped_confirmed') {
       if (step1) step1.className = 'cancel-step-item completed';
       if (step2) step2.className = 'cancel-step-item completed';
@@ -724,13 +873,15 @@ export class WebConsoleApp {
         statusBadge.className = 'badge badge-warning';
       }
 
-      this.addTimelineEvent({
-        id: `evt-${Date.now()}`,
-        time: new Date().toLocaleTimeString(),
-        type: 'stopped_confirmed',
-        title: '取消三态 #3: stopped_confirmed',
-        detail: '已收到运行时明确标记的物理停止确认和停止证据。',
-      });
+      if (sourceEvent) {
+        this.addTimelineEvent({
+          id: sourceEvent.sequence || sourceEvent.event_id,
+          time: sourceEvent.timestamp || 'UNKNOWN',
+          type: sourceEvent.event_type || sourceEvent.type,
+          title: '取消三态 #3: stopped_confirmed',
+          detail: '已收到运行时明确标记的物理停止确认和停止证据。',
+        });
+      }
 
       this.showToast('任务已取消，并收到物理停止证据', 'warning');
     }
@@ -844,6 +995,10 @@ export class WebConsoleApp {
       };
 
       const eventTypes = [
+        'mission.plan_confirmed',
+        'mission.run_accepted',
+        'mission.sealed_plan_execution_started',
+        'mission.sealed_plan_loaded',
         'task.progress',
         'task.step',
         'mission.subtask_dispatched',
@@ -891,7 +1046,26 @@ export class WebConsoleApp {
     const type = event.event_type || event.type || '';
     const payload = event.payload || {};
 
-    if (type === 'task.progress' || type === 'task.step' || type === 'mission.subtask_dispatched') {
+    if (
+      type === 'mission.plan_confirmed' ||
+      type === 'mission.run_accepted' ||
+      type === 'mission.sealed_plan_execution_started' ||
+      type === 'mission.sealed_plan_loaded'
+    ) {
+      if (event.mission_id) this.state.activeExecution.taskId = event.mission_id;
+      if (type === 'mission.sealed_plan_execution_started') {
+        this.state.activeExecution.status = 'running';
+      }
+      this.addTimelineEvent({
+        id: event.sequence || event.event_id,
+        time: event.timestamp || 'UNKNOWN',
+        type,
+        title: type,
+        detail: payload.plan_digest
+          ? `plan_digest=${payload.plan_digest}`
+          : (payload.status || 'Gateway event'),
+      });
+    } else if (type === 'task.progress' || type === 'task.step' || type === 'mission.subtask_dispatched') {
       const stepName = payload.step_name || payload.command || payload.subtask_id || '未命名执行事件';
       const percent = payload.percent !== undefined ? payload.percent : 0;
       const feedback = payload.feedback || payload.status || 'Gateway 事件未提供执行反馈';
@@ -900,7 +1074,7 @@ export class WebConsoleApp {
       this.updateCurrentStepUI({ name: stepName, percent, feedback, tool });
       this.addTimelineEvent({
         id: `evt-${Date.now()}`,
-        time: new Date().toLocaleTimeString(),
+        time: event.timestamp || 'UNKNOWN',
         type,
         title: `步骤推进: ${stepName}`,
         detail: feedback,
@@ -911,14 +1085,14 @@ export class WebConsoleApp {
       type === 'task.cancelling'
     ) {
       if (this.state.activeExecution.cancelState === 'none') {
-        this.updateCancelState('cancel_requested');
+        this.updateCancelState('cancel_requested', event);
       }
     } else if (type === 'robot.stopping') {
       if (
         this.state.activeExecution.cancelState === 'cancel_requested' ||
         this.state.activeExecution.cancelState === 'none'
       ) {
-        this.updateCancelState('stopping');
+        this.updateCancelState('stopping', event);
       }
     } else if (type === 'task.stopped' || type === 'robot.stopped_confirmed') {
       const hasPhysicalStopEvidence =
@@ -926,11 +1100,11 @@ export class WebConsoleApp {
         payload.stop_evidence &&
         typeof payload.stop_evidence === 'object';
       if (hasPhysicalStopEvidence && this.state.activeExecution.cancelState !== 'stopped_confirmed') {
-        this.updateCancelState('stopped_confirmed');
+        this.updateCancelState('stopped_confirmed', event);
       } else if (!hasPhysicalStopEvidence) {
         this.addTimelineEvent({
           id: `evt-${Date.now()}`,
-          time: new Date().toLocaleTimeString(),
+          time: event.timestamp || 'UNKNOWN',
           type: 'stop_confirmation_rejected',
           title: '停止事件缺少物理证据',
           detail: '界面未进入“已确认停止”；请检查机器人适配器或现场急停状态。',
@@ -940,7 +1114,7 @@ export class WebConsoleApp {
     } else if (type === 'task.cancelled' || type === 'mission.cancelled') {
       this.addTimelineEvent({
         id: `evt-${Date.now()}`,
-        time: new Date().toLocaleTimeString(),
+        time: event.timestamp || 'UNKNOWN',
         type,
         title: '任务层取消已完成',
         detail: '任务状态已取消，但机器人是否已物理停止仍待运行时证据确认。',
@@ -978,14 +1152,8 @@ export class WebConsoleApp {
   }
 
   renderRecovery(data) {
-    const phase = (data.phase || 'UNKNOWN').toUpperCase();
-    const safeState = (data.safe_state || 'unknown').toLowerCase();
-    const isBlocked =
-      data.status !== 'ok' ||
-      phase !== 'READY' ||
-      safeState === 'unknown' ||
-      safeState === 'motion_blocked' ||
-      safeState === 'blocked';
+    const authoritative = this.authoritativeReadiness(data);
+    const isBlocked = !authoritative.admissionReady;
     const badge = document.getElementById('recovery-state-badge');
     const reasonDisplay = document.getElementById('freeze-reason-display');
     const evidenceDisplay = document.getElementById('freeze-evidence-display');
@@ -1001,7 +1169,7 @@ export class WebConsoleApp {
         reasonDisplay.innerHTML = `
           <div class="freeze-status-text text-danger">
             <span class="freeze-icon">🚨</span>
-            <span class="freeze-message"><strong>准入阻断或未知：</strong>${this.escapeHtml(data.summary || 'Gateway 未提供可用准入结论；未收到物理停止证据。')}</span>
+            <span class="freeze-message"><strong>准入阻断或未知：</strong>${this.escapeHtml(authoritative.summary)}</span>
           </div>
         `;
       } else {
@@ -1015,10 +1183,10 @@ export class WebConsoleApp {
     }
 
     if (evidenceDisplay) {
-      if (isBlocked && data.doctor_snapshot) {
+      if (data.observations && typeof data.observations === 'object') {
         evidenceDisplay.innerHTML = `
           <div class="evidence-box">
-            <pre class="evidence-pre">${this.escapeHtml(JSON.stringify(data.doctor_snapshot, null, 2))}</pre>
+            <pre class="evidence-pre">${this.escapeHtml(JSON.stringify(data.observations, null, 2))}</pre>
           </div>
         `;
       } else {
@@ -1033,7 +1201,7 @@ export class WebConsoleApp {
         blockersList.innerHTML = `
           <li class="blocker-item blocked">
             <span class="blocker-icon">⚠️</span>
-            <span class="blocker-text">${this.escapeHtml(data.summary || '硬件或逻辑安全门限未满足')}</span>
+            <span class="blocker-text">${this.escapeHtml(authoritative.summary)}</span>
           </li>
         `;
       } else {

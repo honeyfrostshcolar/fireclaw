@@ -1,10 +1,78 @@
-# Copy this file outside the source tree and replace every /opt/firebot path.
-# Runtime deployment and the existing Robot capability profile intentionally
-# share one TOML document.
+# REAL HARDWARE ONLY — fail-closed deployment template
+# Copy to a private fireclaw.real.toml on the deployment host, then replace
+# every /opt/firebot, /opt/fireclaw, robot identity, network, TLS and hardware
+# interface placeholder. Never derive a real config from fireclaw.sim.toml.
+# This template is intentionally not ready to actuate hardware:
+# robot_gateway.dry_run remains true, Robot Agent is disabled, the profile is
+# unreviewed, and installation paths must be replaced and verified.
+
+[runtime]
+root_dir = "/var/lib/fireclaw"
+
+[server]
+host = "127.0.0.1"
+port = 8766
+data_dir = "/var/lib/fireclaw/mission"
+# Before a non-loopback bind, configure TLS and set FIRECLAW_GATEWAY_TOKEN.
+
+[server.tls]
+enabled = false
+# cert_file = "/etc/fireclaw/tls/mission-gateway.crt"
+# key_file = "/etc/fireclaw/tls/mission-gateway.key"
+# ca_file = "/etc/fireclaw/tls/fireclaw-ca.crt"
+# require_client_cert = true
+
+[planner]
+type = "deterministic"
+
+[provider]
+name = ""
+base_url = ""
+api_key_env = "FIRECLAW_PROVIDER_API_KEY"
+model = ""
+thinking = false                 # MiMo 深度思考：false 关闭，true 开启
+timeout_seconds = 60
+
+[mission]
+robot_profiles = ["/etc/fireclaw/fireclaw.real.toml"]
+group_timeout_seconds = 720
+planning_timeout_seconds = 180
+embodied_runtime_mode = "real"
+
+[mission.robot_gateway_tls]
+# ca_file = "/etc/fireclaw/tls/fireclaw-ca.crt"
+# cert_file = "/etc/fireclaw/tls/mission-client.crt"
+# key_file = "/etc/fireclaw/tls/mission-client.key"
+
+[robot_gateway]
+host = "0.0.0.0"
+port = 8765
+profile_path = "/etc/fireclaw/fireclaw.real.toml"
+dry_run = true
+default_session_id = "default"
+max_active_execution_tasks = 1
+embodied_runtime_mode = "real"
+embodied_memory_path = "/var/lib/fireclaw/robots/firebot-01/embodied-memory.jsonl"
+embodied_memory_index = "/var/lib/fireclaw/robots/firebot-01/embodied-memory-index.sqlite3"
+# Before a non-loopback bind, configure TLS and set
+# FIRECLAW_ROBOT_GATEWAY_TOKEN. Changing dry_run=false alone is not approval to
+# operate hardware; complete the hardware-safety acceptance workflow first.
+
+[robot_gateway.tls]
+enabled = false
+# cert_file = "/etc/fireclaw/tls/robot-gateway.crt"
+# key_file = "/etc/fireclaw/tls/robot-gateway.key"
+# ca_file = "/etc/fireclaw/tls/fireclaw-ca.crt"
+# require_client_cert = true
+
+[robot_agent]
+enabled = false
+planner = "deterministic"
+loop_timeout_seconds = 600
 
 [robot]
 id = "firebot-01"
-base_url = "http://127.0.0.1:8765"
+base_url = "https://robot-host.example.internal:8765"
 adapter = "ros1"
 ros1_config = "/opt/firebot/config/fireclaw_ros1.yaml"
 data_dir = "/var/lib/fireclaw/robots/firebot-01"
@@ -64,7 +132,7 @@ inflation_radius = 0.65
 cost_scaling_factor = 3.0
 
 [plugins]
-paths = ["../../extensions"]
+paths = ["/opt/fireclaw/extensions"]
 selected = [
   "fireclaw.navigation.move-base",
   "fireclaw.safety.ros1-hardware",

@@ -68,15 +68,15 @@ service、action、电机、水炮、机械臂或其他硬件接口。
 
 当前实现：
 
-- `fireclaw_core.mission_cli` 提供 `submit-subtask`、`trace`、`cancel`、`plan-mission`。
-- `operator_console` 能把机器人本地事件投影成中文状态文本。
+- MissionGateway 与 Web Console 已提供封存预览、一次性显式确认、权威事件流、trace 与 cancel。
+- `fireclaw mission` 使用同一 preview/confirm 合同；旧 `plan-mission` 直接下发命令现在 fail closed。
+- `submit-subtask` 仅保留为显式 atomic Tool 的高级诊断入口，不是自然语言 mission 提交路径。
 
 缺失：
 
-- mission HTTP API；
-- mission live progress stream；
-- approval workflow UI；
-- 多机器人 mission operator console。
+- 基于物理停止证据的确认与正式两阶段恢复 UI；
+- 当前操作员显式确认之外的多操作员审批策略；
+- 已完成的多机器人 operator 可用性验证。
 
 ### 2. Mission Coordinator Layer
 

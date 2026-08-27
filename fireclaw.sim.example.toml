@@ -1,6 +1,6 @@
-# FireClaw 配置文件示例
-# 复制为 fireclaw.toml 并填入你的实际值
-# CLI 参数会覆盖配置文件中的值
+# SIMULATION ONLY — FireClaw Gazebo 配置模板
+# 复制为私有的 fireclaw.sim.toml 后再填写 Provider；不要改成 real 模式，
+# 也不要把这份配置复制到真实机器人。CLI 参数会覆盖配置文件中的值。
 
 # FireClaw changes into this canonical directory before either long-running
 # Gateway is assembled. Relative config paths are resolved from here.
@@ -8,7 +8,7 @@
 [runtime]
 root_dir = "."
 
-# The same root fireclaw.toml is also the Robot capability and Plugin Runtime
+# The same root fireclaw.sim.toml is also the Robot capability and Plugin Runtime
 # deployment Profile. Robot-specific ROS launch files stay with the robot;
 # navigation composition and default algorithm parameters stay in the Plugin.
 [robot]
@@ -19,7 +19,7 @@ adapter = "ros1"
 # independently of the directory from which the Gateway is launched.
 ros1_config = "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
 data_dir = "data/robots/gazebo_turtlebot3"
-capabilities = ["navigation", "patrol"]
+capabilities = ["navigation", "patrol", "emergency_stop"]
 enabled_skills = ["navigate_to_point"]
 llm_exposed_skills = ["navigate_to_point"]
 primitive_skills = ["navigate_to_point"]
@@ -88,13 +88,15 @@ base_url = ""
 api_key = ""
 api_key_env = "FIRECLAW_PROVIDER_API_KEY"
 model = ""
+thinking = false                 # MiMo 深度思考：false 关闭，true 开启
+timeout_seconds = 60
 # catalog = "models.json"  # context_window, max_tokens, optional tokenizer_id
 
-# LLM Tool 权限由可信宿主执行。本样板对应 TurtleBot3 仿真；切换实机时必须把
-# mode 改为 "real" 并重新核对两个角色的 Tool policy，不能静默沿用仿真权限。
+# LLM Tool 权限由可信宿主执行。本样板只对应 TurtleBot3 仿真。
+# 实机必须从 fireclaw.real.example.toml 重新创建配置，禁止修改本字段切换模式。
 [deployment]
 id = "gazebo-turtlebot3-burger"
-mode = "simulation"              # real | simulation
+mode = "simulation"
 
 [deployment.ros1]
 distro = "noetic"
@@ -207,11 +209,13 @@ max_workspace_files = 4096
 max_concurrent_processes = 1
 
 [mission]
-robot_profiles = ["fireclaw.toml"]
+robot_profiles = ["fireclaw.sim.toml"]
+group_timeout_seconds = 720
+planning_timeout_seconds = 180
+embodied_runtime_mode = "simulation"
 # Token presented by Mission Agent when connecting to Robot Gateways.
 # Prefer FIRECLAW_ROBOT_GATEWAY_TOKEN when all robots share one operator secret.
 # robot_gateway_api_token = "replace-with-the-robot-gateway-secret"
-# embodied_runtime_mode = "simulation"  # real | simulation | replay
 
 # Trust and optional mTLS identity used by Mission Agent when calling Robot
 # Gateways. HTTPS always verifies the certificate hostname.
@@ -229,6 +233,7 @@ selected = ["fireclaw.navigation.move-base"]
 
 [plugins.config."fireclaw.navigation.move-base"]
 enabled = true
+navigate_timeout_seconds = 360
 # real_mutation_enabled = false
 # real_mutable_parameters = ["dwa/max_vel_x"]
 
@@ -251,10 +256,13 @@ host = "127.0.0.1"
 port = 8765
 # Required before binding the Robot Gateway outside loopback.
 # api_token = "replace-with-a-random-secret"
-profile_path = "fireclaw.toml"
-dry_run = true
+profile_path = "fireclaw.sim.toml"
+dry_run = false
 default_session_id = "default"
 max_active_execution_tasks = 1
+embodied_runtime_mode = "simulation"
+embodied_memory_path = "data/robots/gazebo_turtlebot3/embodied-memory.jsonl"
+embodied_memory_index = "data/robots/gazebo_turtlebot3/embodied-memory-index.sqlite3"
 # Navigation Plugin: simulation exposes the finite move_base tuning catalog.
 # Real mode hides bounded tuning by default; enabling it still requires exact
 # operator approval and the listed parameter names.
@@ -271,6 +279,7 @@ enabled = false
 [robot_agent]
 enabled = true
 planner = "llm"                # deterministic | llm
+loop_timeout_seconds = 600
 
 # Robot Agent 的 LLM 配置（不填则复用 [provider]）
 [robot_agent.provider]

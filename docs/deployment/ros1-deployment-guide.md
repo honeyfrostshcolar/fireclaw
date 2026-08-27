@@ -60,8 +60,8 @@ Gateway 和 `RobotAdapter` 都不包含导航名称分支或同名方法回退�
 bringup 和 readiness：
 
 ```bash
-fireclaw deploy plan --profile /opt/firebot/firebot.toml
-fireclaw deploy apply --profile /opt/firebot/firebot.toml
+fireclaw deploy plan --profile /opt/firebot/fireclaw.real.toml
+fireclaw deploy apply --profile /opt/firebot/fireclaw.real.toml
 
 /var/lib/fireclaw/deployments/firebot-01/current/bin/fireclaw-bringup
 /var/lib/fireclaw/deployments/firebot-01/current/bin/fireclaw-gateway
@@ -83,7 +83,7 @@ rosservice type /move_base/clear_costmaps
 
 先在 FireClaw 外验证机器人 bringup、TF、定位、传感器、导航和急停。随后使用
 profile-backed Robot Gateway 和 Mission Gateway；配置示例见
-`fireclaw.example.toml` 与
+`fireclaw.sim.example.toml` 与
 `examples/robot_profiles/gazebo_turtlebot3.toml`。
 
 ## 测试层级
@@ -125,7 +125,7 @@ timeout 或 cancel 进入 `physical_runtime_stop_unconfirmed` 后，资源冻结
 中的两阶段流程；ROS bringup 必须保持在线，可信 witness 才能重新触发 stop 并采集 action、
 速度和里程计证据。当前 move_base witness 仅适用于仿真，实机必须由硬件集成提供覆盖整机执行器
 的停止证明。生产实机应启用 `fireclaw.safety.ros1-hardware`，并按
-`examples/deployment_profiles/navigation_robot.toml.example` 绑定硬件 watchdog、急停、driver、
+`fireclaw.real.example.toml` 绑定硬件 watchdog、急停、driver、
 制动、完整 `JointState` 执行器清单和独立 `Odometry`。Gateway 只接受 `hardware_stop_v1` 的
 结构化正证据；普通 ROS 节点存活、零 `cmd_vel` 或导航 action idle 都不足以解冻。
 拿到真机前先运行 `fireclaw hardware-safety preflight --offline`；现场的

@@ -151,6 +151,19 @@ class EntityExtractionPipeline:
         if observation.runtime_mode != self._runtime_mode:
             raise ValueError("observation runtime_mode does not match entity extraction pipeline")
         batch = self.extractor.extract(observation)
+        # Most runtime observations (including sensor-discovery diagnostics)
+        # intentionally carry no structured entities.  There is nothing to
+        # deduplicate in that case, so avoid touching the historical evidence
+        # log at all.  Malformed ``entities`` payloads still return their
+        # extractor issues to the caller.
+        if not batch.mentions:
+            return EntityExtractionReport(
+                observation_event_id=observation.event_id,
+                mention_event_ids=(),
+                entity_ids=(),
+                skipped_extraction_keys=(),
+                issues=batch.issues,
+            )
         existing_keys = self._existing_extraction_keys(observation.mission_id)
         ingested: list[EntityIngestResult] = []
         skipped: list[str] = []

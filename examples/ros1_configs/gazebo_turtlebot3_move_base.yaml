@@ -4,7 +4,7 @@ namespace: ""
 transport:
   enabled: true
   wait_for_server_seconds: 10.0
-  wait_for_result_seconds: 120.0
+  wait_for_result_seconds: 360.0
 emergency_stop:
   interface: service
   name: "/fireclaw/emergency_stop"

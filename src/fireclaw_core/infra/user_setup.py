@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any, Callable, Mapping, TextIO
 from uuid import uuid4
@@ -20,14 +21,16 @@ from fireclaw_core.deployment import (
     build_deployment_plan,
     load_runtime_deployment_profile,
 )
+from fireclaw_core.evaluation.artifacts import canonical_json_sha256, sha256_file
 from fireclaw_core.infra.path_security import discover_fireclaw_project_root
 from fireclaw_core.infra.runtime_paths import resolve_fireclaw_runtime_root
+from fireclaw_core.infra.simulation_runtime import prepare_simulation_runtime
 
 
 SETUP_SCHEMA_VERSION = 1
 SIMULATION_TEMPLATE_ID = "gazebo-turtlebot3-burger-v1"
 _ACTIVE_PROFILE_NAME = "active-profile.json"
-_SIMULATION_PROFILE_NAME = "gazebo-turtlebot3-burger.toml"
+_SIMULATION_PROFILE_PREFIX = "gazebo-turtlebot3-burger"
 
 
 class FireClawSetupError(ValueError):
@@ -63,9 +66,13 @@ def setup_fireclaw(
     profile_path: str | Path | None = None,
     runtime_root: str | Path | None = None,
     source_root: str | Path | None = None,
+    simulation_bundle_path: str | Path | None = None,
     deploy: bool = True,
     plan_builder: Callable[..., Any] = build_deployment_plan,
     deployment_applier: Callable[..., Mapping[str, Any]] = apply_deployment,
+    simulation_preparer: Callable[..., Mapping[str, Any]] = prepare_simulation_runtime,
+    real_discoverer: Any | None = None,
+    real_preflight_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Prepare one Profile without starting a Gateway or robot action."""
 
@@ -97,28 +104,38 @@ def setup_fireclaw(
     workspace_root = _private_child_directory(root, "workspaces")
     state_dir = _private_child_directory(root, "state")
 
+    if mode == "real":
+        assert profile_path is not None
+        return _setup_real_profile(
+            profile_path,
+            runtime_root=root,
+            state_dir=state_dir,
+            real_discoverer=real_discoverer,
+            real_preflight_runner=real_preflight_runner,
+        )
+
     generated = profile_path is None
     if generated:
-        project_root = _resolve_simulation_source_root(source_root)
-        resolved_profile = profiles_dir / _SIMULATION_PROFILE_NAME
+        project_root = _find_simulation_source_root(source_root)
+        simulation_runtime = dict(
+            simulation_preparer(
+                runtime_root=root,
+                bundle_path=simulation_bundle_path,
+                source_root=project_root,
+            )
+        )
+        _validate_simulation_runtime_result(simulation_runtime, runtime_root=root)
+        resolved_profile = profiles_dir / _simulation_profile_name(simulation_runtime)
         profile_created = _ensure_generated_simulation_profile(
             resolved_profile,
             runtime_root=root,
             workspace_root=workspace_root / "gazebo-turtlebot3-burger",
-            source_root=project_root,
+            simulation_runtime=simulation_runtime,
         )
     else:
         resolved_profile = _regular_profile_path(profile_path)
         profile_created = False
-
-    if mode == "real" and _is_generated_simulation_profile(resolved_profile):
-        raise FireClawSetupError(
-            "The built-in simulation Profile cannot be converted into a real Profile.",
-            code="simulation_profile_for_real_forbidden",
-            operator_action=(
-                "使用厂商资料创建独立 real Profile，并完成 hardware-safety 人工审查。"
-            ),
-        )
+        simulation_runtime = None
 
     robot_profile = load_robot_capability_profile(resolved_profile)
     deployment_profile = load_runtime_deployment_profile(resolved_profile)
@@ -172,6 +189,7 @@ def setup_fireclaw(
         "profile_path": str(resolved_profile),
         "profile_created": profile_created,
         "active_profile_state": str(active.state_path),
+        "simulation_runtime": simulation_runtime,
         "deployment": deployment_result,
         "robot_id": robot_profile.robot_id,
         "robot_action_started": False,
@@ -182,13 +200,243 @@ def setup_fireclaw(
             else "配置已验证并设为当前 Profile。"
         ),
         "next_command": (
-            "fireclaw deploy run"
+            "fireclaw start"
             if status == "ready_to_start"
             else "fireclaw deploy apply"
             if mode == "simulation"
             else "fireclaw status"
         ),
     }
+
+
+def _setup_real_profile(
+    profile_path: str | Path,
+    *,
+    runtime_root: Path,
+    state_dir: Path,
+    real_discoverer: Any | None,
+    real_preflight_runner: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    """Create passive review artifacts for a real Profile without lifecycle effects."""
+
+    resolved_profile = _regular_profile_path(profile_path)
+    if _is_generated_simulation_profile(resolved_profile):
+        raise FireClawSetupError(
+            "The built-in simulation Profile cannot be converted into a real Profile.",
+            code="simulation_profile_for_real_forbidden",
+            operator_action=(
+                "使用厂商资料创建独立 real Profile，并完成 hardware-safety 人工审查。"
+            ),
+        )
+    robot_profile = load_robot_capability_profile(resolved_profile)
+    deployment_profile = load_runtime_deployment_profile(resolved_profile)
+    if deployment_profile.mode != "real":
+        raise FireClawSetupError(
+            "Profile mode does not match the selected setup mode.",
+            code="setup_profile_mode_mismatch",
+            operator_action="使用 deployment.mode=real 的独立、已审查 Profile。",
+        )
+
+    if real_discoverer is None:
+        from fireclaw_core.config.discovery import RosGraphDiscoverer
+
+        real_discoverer = RosGraphDiscoverer()
+    discovery_report = real_discoverer.probe_ros_master()
+    discovery = dict(discovery_report.to_dict())
+    discovery["master_uri"] = _redact_uri_userinfo(
+        str(discovery.get("master_uri") or "")
+    )
+    diff = _real_discovery_diff(
+        deployment_profile.bindings,
+        discovery.get("matched_topics"),
+    )
+    profile_sha256 = sha256_file(resolved_profile)
+    draft_payload = {
+        "schema_version": 1,
+        "kind": "real_profile_discovery_draft",
+        "status": "review_required",
+        "passive": True,
+        "profile_path": str(resolved_profile),
+        "profile_sha256": profile_sha256,
+        "robot_id": robot_profile.robot_id,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "discovery": discovery,
+        "diff": diff,
+        "applied": False,
+        "robot_action_started": False,
+        "real_robot_motion_authorized": False,
+    }
+    discovery_fingerprint = canonical_json_sha256(
+        {
+            "profile_sha256": profile_sha256,
+            "discovery": discovery,
+            "diff": diff,
+        }
+    )
+    drafts_dir = _private_nested_directory(runtime_root, "drafts/real")
+    draft_path = _safe_child(
+        drafts_dir,
+        f"{resolved_profile.stem}-{profile_sha256[:12]}-{discovery_fingerprint[:12]}.json",
+    )
+    _atomic_replace_json(draft_path, draft_payload)
+
+    if real_preflight_runner is None:
+        from fireclaw_core.infra.hardware_safety_acceptance import (
+            run_hardware_safety_preflight,
+        )
+
+        real_preflight_runner = run_hardware_safety_preflight
+    preflight_value = real_preflight_runner(resolved_profile, live=False)
+    preflight = (
+        dict(preflight_value[0])
+        if isinstance(preflight_value, tuple)
+        else dict(preflight_value)
+    )
+    preflight_passed = preflight.get("status") == "prepared"
+    active: ActiveProfile | None = None
+    if preflight_passed:
+        active = write_active_profile(
+            resolved_profile,
+            mode="real",
+            template_id="external-profile",
+            runtime_root=runtime_root,
+            state_dir=state_dir,
+        )
+
+    return {
+        "schema_version": SETUP_SCHEMA_VERSION,
+        "kind": "fireclaw_setup",
+        "status": "review_required" if preflight_passed else "blocked",
+        "mode": "real",
+        "profile_path": str(resolved_profile),
+        "profile_created": False,
+        "active_profile_state": str(active.state_path) if active is not None else None,
+        "robot_id": robot_profile.robot_id,
+        "discovery": discovery,
+        "draft_path": str(draft_path),
+        "diff": diff,
+        "preflight": preflight,
+        "robot_action_started": False,
+        "real_robot_action_started": False,
+        "real_robot_motion_authorized": False,
+        "safe_state": "real_not_started",
+        "message": (
+            "实机 Profile 已完成被动发现与非致动静态预检；发现结果仍需人工审查。"
+            if preflight_passed
+            else "实机 Profile 的非致动静态预检存在阻断项；未启动任何实机动作。"
+        ),
+        "next_command": "人工审查 draft/diff 与 preflight",
+    }
+
+
+def complete_simulation_first_use(
+    setup_result: Mapping[str, Any],
+    *,
+    runtime_root: str | Path | None,
+    manager: Any,
+    timeout: float,
+    browser: bool,
+) -> dict[str, Any]:
+    """CLI-owned simulation setup -> start -> open orchestration."""
+
+    if setup_result.get("mode") != "simulation":
+        raise FireClawSetupError(
+            "Automatic lifecycle orchestration is simulation-only.",
+            code="real_quickstart_forbidden",
+            operator_action="实机模式只能执行被动发现、draft/diff 与非致动预检。",
+        )
+    if setup_result.get("status") != "ready_to_start":
+        raise FireClawSetupError(
+            "Simulation setup is not ready to start the Gateway.",
+            code="simulation_quickstart_not_ready",
+            operator_action="修复 setup 阻断项后重新运行同一命令。",
+        )
+    if manager is None:
+        from fireclaw_core.infra.daemon_manager import DaemonRuntimeManager
+
+        manager = DaemonRuntimeManager(runtime_root=runtime_root)
+    profile_path = str(setup_result["profile_path"])
+    start_result = dict(
+        manager.start_daemon(
+            profile_path=profile_path,
+            foreground=False,
+            timeout=timeout,
+        )
+    )
+    if start_result.get("status") not in {"running", "already_running"}:
+        raise FireClawSetupError(
+            "Simulation daemon did not reach a running state.",
+            code="simulation_quickstart_start_failed",
+            operator_action="检查 daemon 日志后重新运行同一 setup 命令。",
+        )
+    if start_result.get("health_verified") is not True:
+        raise FireClawSetupError(
+            "Simulation Gateway process started but readiness could not be verified.",
+            code="simulation_quickstart_health_unverified",
+            operator_action="检查 daemon 日志与 /health 后重试；控制台尚未打开。",
+        )
+    open_result = dict(
+        manager.open_console(
+            profile_path=profile_path,
+            browser=browser,
+        )
+    )
+    result = dict(setup_result)
+    result.update(
+        status="ready",
+        lifecycle={"start": start_result, "open": open_result},
+        simulation_runtime_started=True,
+        real_robot_action_started=False,
+        next_command=None,
+        message="仿真环境、Gateway 与 Web Console 已通过一条 setup 命令完成。",
+    )
+    return result
+
+
+def _real_discovery_diff(
+    bindings: Mapping[str, Any],
+    matched_topics: Any,
+) -> list[dict[str, Any]]:
+    proposals = matched_topics if isinstance(matched_topics, Mapping) else {}
+    field_map = {
+        "laser_scan_topic": "navigation.scan_topic",
+        "odometry_topic": "navigation.odom_topic",
+        "cmd_vel_topic": "navigation.cmd_vel_topic",
+        "navigation_action": "navigation.action",
+    }
+    result: list[dict[str, Any]] = []
+    for discovery_key, profile_field in field_map.items():
+        proposed = proposals.get(discovery_key)
+        if not isinstance(proposed, str) or not proposed:
+            continue
+        current = bindings.get(profile_field)
+        result.append(
+            {
+                "field": profile_field,
+                "current": current,
+                "proposed": proposed,
+                "status": "unchanged" if current == proposed else "change",
+                "applied": False,
+            }
+        )
+    return result
+
+
+def _redact_uri_userinfo(value: str) -> str:
+    if not value:
+        return value
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parsed = urlsplit(value)
+        if parsed.username is None and parsed.password is None:
+            return value
+        host = parsed.hostname or ""
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+    except ValueError:
+        return "REDACTED_INVALID_URI"
+    return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
 
 
 def write_active_profile(
@@ -329,6 +577,7 @@ def handle_setup(
     out: TextIO = sys.stdout,
     input_fn: Callable[[str], str] = input,
     stdin_is_tty: bool | None = None,
+    manager: Any = None,
 ) -> int:
     try:
         mode = _resolve_setup_mode(
@@ -350,8 +599,22 @@ def handle_setup(
             profile_path=profile_path,
             runtime_root=args.runtime_root,
             source_root=args.source_root,
+            simulation_bundle_path=getattr(args, "simulation_bundle", None),
             deploy=(not args.no_deploy and mode == "simulation"),
         )
+        should_start = (
+            mode == "simulation"
+            and not args.no_deploy
+            and not getattr(args, "no_start", False)
+        )
+        if should_start:
+            result = complete_simulation_first_use(
+                result,
+                runtime_root=args.runtime_root,
+                manager=manager,
+                timeout=float(getattr(args, "startup_timeout", 15.0)),
+                browser=not getattr(args, "no_browser", False),
+            )
     except (OSError, ValueError) as exc:
         result = {
             "schema_version": SETUP_SCHEMA_VERSION,
@@ -365,6 +628,7 @@ def handle_setup(
                 "根据错误修复依赖或 Profile 后重新运行 fireclaw setup。",
             ),
             "robot_action_started": False,
+            "real_robot_action_started": False,
             "safe_state": "no_robot_action_started",
         }
         _write_setup_result(result, json_output=args.json, out=out)
@@ -424,11 +688,19 @@ def _write_setup_result(
     print("FireClaw 设置完成", file=out)
     print(f"\n✓ 当前模式：{result.get('mode')}", file=out)
     print(f"✓ 当前 Profile：{result.get('profile_path')}", file=out)
-    print("✓ 没有启动任何机器人动作", file=out)
-    print(f"\n下一步：{result.get('next_command')}", file=out)
+    print("✓ 未启动任何真实机器人动作", file=out)
+    if result.get("mode") == "simulation" and result.get("status") == "ready":
+        opened = result.get("lifecycle", {}).get("open", {})
+        print(f"✓ 仿真 Gateway：{opened.get('url', 'UNKNOWN')}", file=out)
+        print("\n首次使用闭环已完成；重复运行同一命令会复用已验证 release。", file=out)
+    elif result.get("mode") == "real":
+        print(f"✓ 被动发现草稿：{result.get('draft_path')}", file=out)
+        print("\n下一步：人工审查 discovery diff 与 preflight；setup 不会启动或运动实机。", file=out)
+    else:
+        print(f"\n下一步：{result.get('next_command')}", file=out)
 
 
-def _resolve_simulation_source_root(value: str | Path | None) -> Path:
+def _find_simulation_source_root(value: str | Path | None) -> Path | None:
     candidates: list[Path] = []
     if value is not None:
         candidates.append(Path(value).expanduser().resolve(strict=False))
@@ -453,6 +725,10 @@ def _resolve_simulation_source_root(value: str | Path | None) -> Path:
     for candidate in candidates:
         if candidate.is_dir() and all((candidate / marker).is_file() for marker in markers):
             return candidate
+    if value is None:
+        # Installed wheels intentionally have no source checkout. The companion
+        # bundle resolver will use its explicit/env/current-dir/cache candidates.
+        return None
     raise FireClawSetupError(
         "FireClaw simulation assets were not found in the source installation.",
         code="simulation_assets_missing",
@@ -467,7 +743,7 @@ def _ensure_generated_simulation_profile(
     *,
     runtime_root: Path,
     workspace_root: Path,
-    source_root: Path,
+    simulation_runtime: Mapping[str, Any],
 ) -> bool:
     if profile_path.is_symlink():
         raise FireClawSetupError(
@@ -497,42 +773,44 @@ def _ensure_generated_simulation_profile(
 
     try:
         template = load_setup_template("gazebo_turtlebot3")
-    except FileNotFoundError:
-        # Fallback to source template if package resources are not built in editable dev
-        template_path = source_root / "examples/setup_templates/gazebo_turtlebot3.toml"
-        if template_path.is_symlink() or not template_path.is_file():
-            raise FireClawSetupError(
-                "Simulation Profile template is missing or unsafe.",
-                code="simulation_template_invalid",
-                operator_action="恢复 FireClaw 官方仿真模板后重试。",
-            )
-        template = template_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FireClawSetupError(
+            "Simulation Profile template is missing from the installed package.",
+            code="simulation_template_invalid",
+            operator_action="重新安装通过 distribution gate 的 FireClaw wheel。",
+        ) from exc
+    bundle_root = Path(str(simulation_runtime["bundle_root"]))
+    robot_workspace_setup = Path(str(simulation_runtime["workspace_setup"]))
     replacements = {
         "{{RUNTIME_ROOT}}": runtime_root,
         "{{PROFILE_PATH}}": profile_path,
-        "{{SOURCE_ROOT}}": source_root,
         "{{WORKSPACE_ROOT}}": workspace_root,
-        "{{ROS_SETUP}}": Path("/opt/ros/noetic/setup.bash"),
-        "{{ROBOT_WS_SETUP}}": (
-            source_root / "robots/turtlebot3_burger/ros_ws/devel/setup.bash"
+        "{{BUNDLE_ID}}": str(simulation_runtime["bundle_id"]),
+        "{{BUNDLE_VERSION}}": str(simulation_runtime["bundle_version"]),
+        "{{BUNDLE_SHA256}}": str(simulation_runtime["bundle_sha256"]),
+        "{{BUNDLE_ROOT}}": bundle_root,
+        "{{WORKSPACE_FINGERPRINT}}": str(
+            simulation_runtime["workspace_fingerprint"]
         ),
+        "{{ROS_SETUP}}": Path("/opt/ros/noetic/setup.bash"),
+        "{{ROBOT_WS_SETUP}}": robot_workspace_setup,
         "{{ROS1_CONFIG}}": (
-            source_root / "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
+            bundle_root / "examples/ros1_configs/gazebo_turtlebot3_move_base.yaml"
         ),
         "{{ROBOT_DATA_DIR}}": workspace_root / "data/robots/gazebo_turtlebot3",
         "{{MISSION_DATA_DIR}}": workspace_root / "data/mission",
         "{{DEPLOYMENT_OUTPUT_ROOT}}": runtime_root / "deployments",
         "{{ROBOT_LAUNCH}}": (
-            source_root
+            bundle_root
             / "robots/turtlebot3_burger/ros_ws/src/"
             "fireclaw_turtlebot3_burger/launch/robot_base.launch"
         ),
         "{{MAP_FILE}}": (
-            source_root
+            bundle_root
             / "robots/turtlebot3_burger/ros_ws/src/turtlebot3/"
             "turtlebot3_navigation/maps/map.yaml"
         ),
-        "{{PLUGIN_ROOT}}": source_root / "extensions",
+        "{{PLUGIN_ROOT}}": bundle_root / "extensions",
         "{{MISSION_WORKSPACE}}": workspace_root / "agent-workspaces/mission",
         "{{ROBOT_WORKSPACE}}": workspace_root / "agent-workspaces/robot",
     }
@@ -546,6 +824,78 @@ def _ensure_generated_simulation_profile(
             operator_action="恢复 FireClaw 官方仿真模板后重试。",
         )
     return _atomic_create_text(profile_path, rendered)
+
+
+def _simulation_profile_name(simulation_runtime: Mapping[str, Any]) -> str:
+    version = str(simulation_runtime.get("bundle_version") or "")
+    digest = str(simulation_runtime.get("bundle_sha256") or "")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", version):
+        raise FireClawSetupError(
+            "Prepared simulation runtime returned an invalid bundle version.",
+            code="simulation_runtime_receipt_invalid",
+            operator_action="重新校验 companion simulation bundle。",
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise FireClawSetupError(
+            "Prepared simulation runtime returned an invalid bundle SHA-256.",
+            code="simulation_runtime_receipt_invalid",
+            operator_action="重新校验 companion simulation bundle。",
+        )
+    return f"{_SIMULATION_PROFILE_PREFIX}-{version}-{digest[:12]}.toml"
+
+
+def _validate_simulation_runtime_result(
+    result: Mapping[str, Any],
+    *,
+    runtime_root: Path,
+) -> None:
+    required_text = (
+        "bundle_root",
+        "bundle_id",
+        "bundle_version",
+        "bundle_sha256",
+        "workspace_fingerprint",
+        "workspace_setup",
+    )
+    if result.get("status") != "ready" or any(
+        not isinstance(result.get(key), str) or not str(result[key])
+        for key in required_text
+    ):
+        raise FireClawSetupError(
+            "Simulation runtime preparation returned an incomplete receipt.",
+            code="simulation_runtime_receipt_invalid",
+            operator_action="重新校验并物化 companion simulation bundle。",
+        )
+    canonical_root = runtime_root.resolve(strict=False)
+    bundle_root = Path(str(result["bundle_root"]))
+    workspace_setup = Path(str(result["workspace_setup"]))
+    for path, label, expect_file in (
+        (bundle_root, "bundle release", False),
+        (workspace_setup, "workspace setup", True),
+    ):
+        if path.is_symlink():
+            raise FireClawSetupError(
+                f"Prepared simulation {label} must not be a symbolic link.",
+                code="simulation_runtime_receipt_invalid",
+                operator_action="移走不受信任的 runtime release 后重试。",
+            )
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(canonical_root)
+        except (OSError, ValueError) as exc:
+            raise FireClawSetupError(
+                f"Prepared simulation {label} is outside FIRECLAW_HOME or missing.",
+                code="simulation_runtime_receipt_invalid",
+                operator_action="重新校验并物化 companion simulation bundle。",
+            ) from exc
+        if (expect_file and not resolved.is_file()) or (
+            not expect_file and not resolved.is_dir()
+        ):
+            raise FireClawSetupError(
+                f"Prepared simulation {label} has the wrong file type.",
+                code="simulation_runtime_receipt_invalid",
+                operator_action="重新校验并物化 companion simulation bundle。",
+            )
 
 
 def _regular_profile_path(value: str | Path | None) -> Path:

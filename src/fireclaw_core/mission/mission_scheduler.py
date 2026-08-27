@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,7 @@ from fireclaw_core.mission.task_graph import (
 )
 from fireclaw_core.agent.robot_registry import RobotRegistry
 from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_TERMINAL_EVENT_TYPES,
     normalize_robot_task_terminal_status,
     robot_task_status_from_trace,
 )
@@ -54,6 +57,163 @@ _BAD_STATUSES = {
     "block",
     "denied",
 }
+
+
+# These lifecycle records already exist in the Robot Gateway ledger.  The
+# scheduler used to discard them while reducing the trace to progress text,
+# which made an operator unable to tell whether a task was waiting for an
+# authorization, being resumed, or actually executing.
+_DIRECT_TRACE_RELAY_EVENTS = frozenset({
+    "authorization.requested",
+    "authorization.approved",
+    "authorization.denied",
+    "authorization.expired",
+    "authorization.cancelled",
+    "confirmation.pending",
+    "confirmation.confirmed",
+    "task.awaiting_confirmation",
+    "task.resume_scheduled",
+    "task.resume_started",
+    "task.authorized_plan_resumed",
+    "task.resume_rejected",
+    "task.resume_failed",
+    "robot_agent.deliberation_started",
+    "robot_agent.deliberation_finished",
+    "robot_agent.pending_operation_reconciled",
+    "robot_agent.pending_operation_unresolved",
+})
+
+_TRACE_OBSERVABILITY_FIELDS = (
+    "duration_ms",
+    "context_duration_ms",
+    "decision_duration_ms",
+    "llm_duration_ms",
+    "backend_duration_ms",
+    "operation",
+    "operation_id",
+    "pending_operation_id",
+    "authorization_id",
+    "request_id",
+    "snapshot_reused",
+    "robot_agent_reinvoked",
+    "llm_reinvoked",
+)
+
+
+def _trace_observability_fields(
+    event: dict[str, Any],
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Carry bounded source/timing metadata through the mission event stream."""
+
+    result: dict[str, Any] = {
+        "source_event_type": event_type,
+    }
+    event_id = event.get("event_id")
+    if isinstance(event_id, str) and event_id:
+        result["source_event_id"] = event_id
+    source_timestamp = event.get("timestamp")
+    if isinstance(source_timestamp, (str, int, float)) and not isinstance(
+        source_timestamp,
+        bool,
+    ):
+        result["source_timestamp"] = source_timestamp
+    for key in _TRACE_OBSERVABILITY_FIELDS:
+        if key in payload and payload[key] is not None:
+            result[key] = payload[key]
+    return result
+
+
+def _bounded_pose(value: Any) -> dict[str, Any] | None:
+    """Return only operator-relevant pose fields from an untrusted result."""
+
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    frame_id = value.get("frame_id")
+    if isinstance(frame_id, str) and frame_id.strip():
+        result["frame_id"] = frame_id.strip()
+    for key in ("x", "y", "z", "yaw"):
+        coordinate = value.get(key)
+        if (
+            isinstance(coordinate, (int, float))
+            and not isinstance(coordinate, bool)
+            and isfinite(float(coordinate))
+        ):
+            result[key] = float(coordinate)
+    return result or None
+
+
+def _skill_success_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project a bounded successful Tool result into the Mission stream.
+
+    Physical Tool outputs can contain large runtime snapshots.  The operator
+    surface only needs the deterministic success evidence: Tool identity,
+    target, final pose, action state, and elapsed time.  The complete payload
+    remains in the Robot Gateway event ledger for audit/replay.
+    """
+
+    result: dict[str, Any] = {}
+    for key in ("skill_name", "status", "attempt_count"):
+        value = payload.get(key)
+        if value is not None:
+            result[key] = value
+
+    target_pose = _bounded_pose(payload.get("inputs"))
+    output = payload.get("output")
+    output = output if isinstance(output, dict) else {}
+    final_pose = _bounded_pose(output.get("pose"))
+    if target_pose is not None:
+        result["target_pose"] = target_pose
+    if final_pose is not None:
+        result["final_pose"] = final_pose
+
+    for key in (
+        "elapsed_seconds",
+        "goal_reached",
+        "goal_state",
+        "goal_state_name",
+        "goal_status_text",
+    ):
+        value = output.get(key)
+        if value is not None:
+            result[key] = value
+    if "tool_name" not in result and isinstance(result.get("skill_name"), str):
+        result["tool_name"] = result["skill_name"]
+    return result
+
+
+def _task_terminal_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project a bounded Robot task terminal outcome into the Mission stream."""
+
+    result: dict[str, Any] = {}
+    for key in ("status", "raw_status", "message", "terminal_outcome"):
+        value = payload.get(key)
+        if value is not None:
+            result[key] = value
+
+    task_result = payload.get("result")
+    task_result = task_result if isinstance(task_result, dict) else {}
+    execution = task_result.get("execution")
+    execution = execution if isinstance(execution, dict) else {}
+    steps = execution.get("steps")
+    if isinstance(steps, list):
+        for step in reversed(steps):
+            if not isinstance(step, dict):
+                continue
+            step_summary = _skill_success_trace_payload(step)
+            if step_summary:
+                for key, value in step_summary.items():
+                    result.setdefault(key, value)
+                break
+
+    validation = payload.get("completion_evidence_validation")
+    if not isinstance(validation, dict):
+        validation = task_result.get("completion_evidence_validation")
+    if isinstance(validation, dict):
+        result["completion_evidence_validation"] = dict(validation)
+    return result
 
 
 @dataclass(frozen=True)
@@ -89,9 +249,27 @@ class MissionFailurePolicy:
 class MissionSchedulerConfig:
     failure_policy: MissionFailurePolicy = field(default_factory=MissionFailurePolicy)
     poll_interval_seconds: float = 0.1
-    group_timeout_seconds: float = 300.0
+    # Must exceed the complete Robot Agent budget so a still-running physical
+    # action is not projected as a Mission timeout first.
+    group_timeout_seconds: float = 720.0
     revision_cancel_timeout_seconds: float = 5.0
     operator_cancel_settle_timeout_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        for name in (
+            "poll_interval_seconds",
+            "group_timeout_seconds",
+            "revision_cancel_timeout_seconds",
+            "operator_cancel_settle_timeout_seconds",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(float(value))
+                or float(value) <= 0
+            ):
+                raise ValueError(f"{name} must be a positive finite number")
 
 
 @dataclass(frozen=True)
@@ -101,6 +279,8 @@ class _SubmittedAttempt:
     task_id: str
     node_id: str
     plan_id: str
+    plan_step_index: int | None = None
+    plan_step_total: int | None = None
 
 
 @dataclass
@@ -146,6 +326,9 @@ class MissionScheduler:
         memory_command_event_id: str | None = None,
         memory_plan_event_id: str | None = None,
         run_control: Any | None = None,
+        allow_plan_revisions: bool = True,
+        allow_recovery_dispatch: bool = True,
+        relay_confirmed_plan_authorizations: bool = False,
     ) -> dict[str, Any]:
         """Execute a mission plan by scheduling execution groups in order."""
         current_graph = self.mission_agent.active_task_graph(mission_id)
@@ -184,10 +367,12 @@ class MissionScheduler:
                 "failure_decisions": [],
             }
         groups: dict[int, list[tuple[str, MissionSubtask]]] = {}
+        plan_step_index_by_node: dict[str, int] = {}
+        plan_step_total = len(plan.subtasks)
         for node_index, subtask in enumerate(plan.subtasks, start=1):
-            groups.setdefault(subtask.execution_group, []).append(
-                (subtask.node_id or f"task-{node_index}", subtask)
-            )
+            node_id = subtask.node_id or f"task-{node_index}"
+            groups.setdefault(subtask.execution_group, []).append((node_id, subtask))
+            plan_step_index_by_node[node_id] = node_index
 
         sorted_group_indices = sorted(groups.keys())
         group_results: list[dict[str, Any]] = []
@@ -263,6 +448,8 @@ class MissionScheduler:
                         subtask=subtask,
                         node_id=node_id,
                         plan_id=current_graph.plan_id,
+                        plan_step_index=plan_step_index_by_node.get(node_id),
+                        plan_step_total=plan_step_total,
                     )
                     if attempt is not None:
                         current_attempts.append(attempt)
@@ -295,6 +482,9 @@ class MissionScheduler:
                 mission_id,
                 current_attempts,
                 run_control=run_control,
+                relay_confirmed_plan_authorizations=(
+                    relay_confirmed_plan_authorizations
+                ),
             )
             group_terminal.extend(polled_terminal)
             terminal_states.extend(polled_terminal)
@@ -372,6 +562,7 @@ class MissionScheduler:
             revision_results = self._coordinate_plan_invalidations(
                 mission_id,
                 group_terminal,
+                allow_plan_revisions=allow_plan_revisions,
             )
             revision_terminal = next(
                 (
@@ -429,6 +620,7 @@ class MissionScheduler:
             actions = self._evaluate_group_failures(
                 group_terminal, current_attempts, plan,
                 retry_counts, reassign_counts, failure_decisions,
+                allow_recovery_dispatch=allow_recovery_dispatch,
             )
 
             # Execute retry/reassign actions
@@ -489,6 +681,7 @@ class MissionScheduler:
                     revision_results = self._coordinate_plan_invalidations(
                         mission_id,
                         recovery_belief_blocks,
+                        allow_plan_revisions=allow_plan_revisions,
                     )
                     revision_terminal = next(
                         (
@@ -570,6 +763,8 @@ class MissionScheduler:
                             subtask=subtask,
                             node_id=previous_attempt.node_id,
                             plan_id=previous_attempt.plan_id,
+                            plan_step_index=previous_attempt.plan_step_index,
+                            plan_step_total=previous_attempt.plan_step_total,
                         )
                         if attempt is not None:
                             next_attempts.append(attempt)
@@ -631,6 +826,8 @@ class MissionScheduler:
                             subtask=reassigned_subtask,
                             node_id=previous_attempt.node_id,
                             plan_id=previous_attempt.plan_id,
+                            plan_step_index=previous_attempt.plan_step_index,
+                            plan_step_total=previous_attempt.plan_step_total,
                         )
                         if attempt is not None:
                             next_attempts.append(attempt)
@@ -748,6 +945,7 @@ class MissionScheduler:
                 actions = self._evaluate_group_failures(
                     group_terminal, current_attempts, plan,
                     retry_counts, reassign_counts, failure_decisions,
+                    allow_recovery_dispatch=allow_recovery_dispatch,
                 )
 
             group_result: dict[str, Any] = {
@@ -2525,6 +2723,8 @@ class MissionScheduler:
         self,
         mission_id: str,
         terminal_states: list[dict[str, Any]],
+        *,
+        allow_plan_revisions: bool = True,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for terminal in terminal_states:
@@ -2549,6 +2749,17 @@ class MissionScheduler:
                     "event": event.to_dict(),
                 })
                 break
+            if not allow_plan_revisions:
+                results.append({
+                    "status": "blocked",
+                    "reason_code": "sealed_plan_invalidated",
+                    "message": (
+                        "Execution evidence invalidated the sealed plan; "
+                        "a new operator preview and confirmation are required."
+                    ),
+                    "event": event.to_dict(),
+                })
+                break
             result = self.mission_agent.handle_execution_event(event)
             results.append(result)
             if result.get("status") not in {"retained", "retry_allowed"}:
@@ -2563,6 +2774,8 @@ class MissionScheduler:
         retry_counts: dict[str, int],
         reassign_counts: dict[str, int],
         failure_decisions: list[dict[str, Any]],
+        *,
+        allow_recovery_dispatch: bool = True,
     ) -> list[dict[str, Any]]:
         """Evaluate failed subtasks and return actions to take."""
         actions: list[dict[str, Any]] = []
@@ -2582,6 +2795,15 @@ class MissionScheduler:
             attempt = attempts_by_execution.get((robot_id, task_id))
             if attempt is None:
                 continue
+            if not allow_recovery_dispatch:
+                failure_decisions.append({
+                    "robot_id": robot_id,
+                    "task_id": task_id,
+                    "status": status,
+                    "decision": "abort",
+                    "reason": "sealed_plan_requires_new_confirmation",
+                })
+                return []
             logical_subtask_key = attempt.logical_subtask_key
             decision = policy.decision_for(status)
             recovery = terminal.get("recovery_decision")
@@ -2727,6 +2949,7 @@ class MissionScheduler:
         attempts: list[_SubmittedAttempt],
         *,
         run_control: Any | None = None,
+        relay_confirmed_plan_authorizations: bool = False,
     ) -> list[dict[str, Any]]:
         """Poll until the concrete executions from this dispatch round terminate."""
         if not attempts:
@@ -2737,6 +2960,9 @@ class MissionScheduler:
             (attempt.subtask.robot_id, attempt.task_id)
             for attempt in attempts
         }
+        relay_terminal: set[tuple[str, str]] = set()
+        relay_last_attempt: dict[tuple[str, str], float] = {}
+        seen_robot_event_ids: set[str] = set()
 
         while time.monotonic() < deadline:
             cancellation_requested = _run_control_cancelled(run_control)
@@ -2754,6 +2980,21 @@ class MissionScheduler:
                 s for s in trace.get("subtasks", [])
                 if (s.get("robot_id"), s.get("task_id")) in execution_keys
             ]
+            self._relay_robot_progress_events(
+                mission_id=mission_id,
+                observed=observed,
+                seen_event_ids=seen_robot_event_ids,
+                run_control=run_control,
+                attempts=attempts,
+            )
+            if relay_confirmed_plan_authorizations:
+                self._relay_confirmed_plan_authorizations(
+                    mission_id=mission_id,
+                    observed=observed,
+                    execution_keys=execution_keys,
+                    terminal_relays=relay_terminal,
+                    last_attempts=relay_last_attempt,
+                )
             terminal = [
                 s for s in observed
                 if s.get("status") in TERMINAL_SUBTASK_STATUSES
@@ -2813,6 +3054,297 @@ class MissionScheduler:
             return lost_states
         return observed
 
+    def _relay_robot_progress_events(
+        self,
+        *,
+        mission_id: str,
+        observed: list[dict[str, Any]],
+        seen_event_ids: set[str],
+        run_control: Any | None,
+        attempts: list[_SubmittedAttempt] | None = None,
+    ) -> None:
+        """Relay Robot Agent/ROS activity with sealed-plan step context."""
+        if run_control is None or not hasattr(run_control, "emit_event"):
+            return
+
+        attempts_by_execution = {
+            (attempt.subtask.robot_id, attempt.task_id): attempt
+            for attempt in (attempts or [])
+        }
+
+        for item in observed:
+            robot_id = str(item.get("robot_id") or "robot")
+            task_id = str(item.get("task_id") or "task")
+            attempt = attempts_by_execution.get((robot_id, task_id))
+            event_context: dict[str, Any] = {
+                "mission_id": mission_id,
+                "robot_id": robot_id,
+                "task_id": task_id,
+            }
+            if attempt is not None:
+                event_context.update({
+                    "node_id": attempt.node_id,
+                    "plan_id": attempt.plan_id,
+                    "plan_step_index": attempt.plan_step_index,
+                    "plan_step_total": attempt.plan_step_total,
+                    "plan_step_command": attempt.subtask.command,
+                })
+            robot_trace = item.get("robot_trace")
+            if not isinstance(robot_trace, dict):
+                continue
+            events = robot_trace.get("events")
+            if not isinstance(events, list):
+                continue
+
+            for event_index, event in enumerate(events):
+                if not isinstance(event, dict):
+                    continue
+                event_id = event.get("event_id")
+                if isinstance(event_id, str) and event_id:
+                    dedupe_key = event_id
+                else:
+                    serialized_event = json.dumps(
+                        event,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                        separators=(",", ":"),
+                    )
+                    dedupe_key = (
+                        f"anonymous:{mission_id}:{robot_id}:{task_id}:"
+                        f"{event_index}:{serialized_event}"
+                    )
+                if dedupe_key in seen_event_ids:
+                    continue
+                seen_event_ids.add(dedupe_key)
+
+                event_type = str(event.get("type") or event.get("event_type") or "")
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+
+                feedback_payload: dict[str, Any] | None = None
+                relay_event_type = "action.feedback"
+
+                if event_type == "robot_agent.decision":
+                    iteration = payload.get("iteration")
+                    tool_name = payload.get("tool_name")
+                    msg = payload.get("message")
+                    if tool_name == "move_base_clear_costmaps":
+                        desc = "自主决策调用 move_base_clear_costmaps 清理代价地图"
+                    elif tool_name == "navigation_diagnostics":
+                        desc = "自主决策调用 navigation_diagnostics 进行系统自检"
+                    elif tool_name == "navigate_to_point":
+                        desc = "规划并尝试前往目标点"
+                    elif isinstance(tool_name, str) and tool_name:
+                        desc = f"自主决策执行技能 {tool_name}"
+                    elif isinstance(msg, str) and msg.strip():
+                        desc = msg.strip()
+                    else:
+                        desc = "自主决策下一步动作"
+
+                    feedback_payload = {
+                        "robot_id": robot_id,
+                        "message": desc,
+                        "iteration": iteration,
+                        "robot_agent_iteration": iteration,
+                        "tool_name": tool_name,
+                    }
+                    feedback_payload.update(
+                        _trace_observability_fields(
+                            event,
+                            event_type,
+                            payload,
+                        )
+                    )
+
+                elif event_type == "skill.started":
+                    operator_message = payload.get("operator_message")
+                    skill_name = payload.get("skill_name")
+                    if isinstance(operator_message, str) and operator_message.strip():
+                        desc = operator_message.strip()
+                    elif isinstance(skill_name, str) and skill_name:
+                        desc = f"开始执行技能 {skill_name}"
+                    else:
+                        desc = "开始执行技能"
+                    feedback_payload = {
+                        "robot_id": robot_id,
+                        "message": desc,
+                        "skill_name": skill_name,
+                    }
+                    feedback_payload.update(
+                        _trace_observability_fields(
+                            event,
+                            event_type,
+                            payload,
+                        )
+                    )
+
+                elif event_type == "robot_agent.observation":
+                    iteration = payload.get("iteration")
+                    status = payload.get("status")
+                    tool_name = payload.get("tool_name")
+                    reason_code = payload.get("reason_code")
+                    if status in {"failed", "aborted"}:
+                        if reason_code == "move_base_aborted":
+                            desc = "导航尝试未成功（move_base 找不到可行路径），等待任务策略判定"
+                        elif isinstance(reason_code, str) and reason_code:
+                            desc = f"{tool_name or '技能'} 执行未完成（{reason_code}）"
+                        else:
+                            desc = f"{tool_name or '技能'} 执行未完成"
+                        feedback_payload = {
+                            "robot_id": robot_id,
+                            "message": desc,
+                            "iteration": iteration,
+                            "robot_agent_iteration": iteration,
+                            "tool_name": tool_name,
+                        }
+                        feedback_payload.update(
+                            _trace_observability_fields(
+                                event,
+                                event_type,
+                                payload,
+                            )
+                        )
+
+                elif event_type == "skill.succeeded":
+                    relay_event_type = event_type
+                    feedback_payload = _skill_success_trace_payload(payload)
+                    feedback_payload.update(
+                        _trace_observability_fields(
+                            event,
+                            event_type,
+                            payload,
+                        )
+                    )
+
+                elif event_type in ROBOT_TASK_TERMINAL_EVENT_TYPES:
+                    relay_event_type = event_type
+                    feedback_payload = _task_terminal_trace_payload(payload)
+                    feedback_payload.update(
+                        _trace_observability_fields(
+                            event,
+                            event_type,
+                            payload,
+                        )
+                    )
+
+                elif event_type in {"skill.failed", "action.failed"}:
+                    error_code = (
+                        payload.get("output", {}).get("error_code")
+                        if isinstance(payload.get("output"), dict)
+                        else None
+                    ) or payload.get("reason_code") or payload.get("error")
+                    failure_category = payload.get("failure_category")
+                    if failure_category == "recoverable_exhausted" or error_code == "move_base_aborted":
+                        feedback_payload = {
+                            "robot_id": robot_id,
+                            "message": "底层导航受阻，等待任务策略判定。",
+                        }
+
+                elif event_type == "action.feedback":
+                    msg = payload.get("message")
+                    if isinstance(msg, str) and msg.strip() and msg.strip() != "move_base feedback":
+                        feedback_payload = {
+                            "robot_id": robot_id,
+                            "message": msg.strip(),
+                            "progress": payload.get("progress"),
+                        }
+                        feedback_payload.update(
+                            _trace_observability_fields(
+                                event,
+                                event_type,
+                                payload,
+                            )
+                        )
+
+                elif event_type == "ros.log":
+                    relay_event_type = "ros.log"
+                    feedback_payload = dict(payload)
+                    feedback_payload.update(
+                        _trace_observability_fields(
+                            event,
+                            event_type,
+                            payload,
+                        )
+                    )
+
+                elif event_type in _DIRECT_TRACE_RELAY_EVENTS:
+                    # Preserve the structured lifecycle event type.  The TUI
+                    # can now distinguish authorization/recovery from generic
+                    # progress without exposing the full Robot trace.
+                    relay_event_type = event_type
+                    feedback_payload = dict(payload)
+                    feedback_payload.update(
+                        _trace_observability_fields(
+                            event,
+                            event_type,
+                            payload,
+                        )
+                    )
+
+                if feedback_payload is not None:
+                    feedback_payload.update(event_context)
+                    try:
+                        run_control.emit_event(relay_event_type, feedback_payload)
+                    except Exception:
+                        logger.warning("Failed to emit progress feedback event", exc_info=True)
+
+    def _relay_confirmed_plan_authorizations(
+        self,
+        *,
+        mission_id: str,
+        observed: list[dict[str, Any]],
+        execution_keys: set[tuple[str, str]],
+        terminal_relays: set[tuple[str, str]],
+        last_attempts: dict[tuple[str, str], float],
+    ) -> None:
+        """Resume exact Robot actions covered by an operator-confirmed plan.
+
+        This path is enabled only by ``MissionAgent.execute_sealed_plan``.
+        Robot Gateway still validates the pending request, operator scope,
+        task/session binding, protected inputs, and signed one-shot action
+        authorization before any physical side effect.
+        """
+
+        confirm = getattr(
+            self.mission_agent.subagent_client,
+            "confirm_task",
+            None,
+        )
+        if not callable(confirm):
+            return
+        now = time.monotonic()
+        for item in observed:
+            key = (
+                str(item.get("robot_id") or ""),
+                str(item.get("task_id") or ""),
+            )
+            if (
+                key not in execution_keys
+                or key in terminal_relays
+                or item.get("status") != "awaiting_confirmation"
+            ):
+                continue
+            # A transient busy/network response may be retried, but never at
+            # the scheduler's 100 ms poll rate.
+            if now - last_attempts.get(key, float("-inf")) < 1.0:
+                continue
+            last_attempts[key] = now
+            entry = self.registry.get(key[0]) if self.registry is not None else None
+            if entry is None:
+                terminal_relays.add(key)
+                continue
+            try:
+                result = confirm(
+                    entry,
+                    key[1],
+                    session_id=mission_id,
+                )
+            except (KeyError, OSError, ValueError):
+                continue
+            status = str(result.get("status") or "error")
+            if status not in {"busy", "error"}:
+                terminal_relays.add(key)
+
     @staticmethod
     def _submitted_attempt(
         *,
@@ -2821,6 +3353,8 @@ class MissionScheduler:
         subtask: MissionSubtask,
         node_id: str,
         plan_id: str,
+        plan_step_index: int | None = None,
+        plan_step_total: int | None = None,
     ) -> _SubmittedAttempt | None:
         task_id = result.get("task_id")
         if not isinstance(task_id, str) or not task_id:
@@ -2831,6 +3365,8 @@ class MissionScheduler:
             task_id=task_id,
             node_id=node_id,
             plan_id=plan_id,
+            plan_step_index=plan_step_index,
+            plan_step_total=plan_step_total,
         )
 
 

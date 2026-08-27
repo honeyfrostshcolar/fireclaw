@@ -61,7 +61,7 @@ class RuleBasedPlanner:
         if point is not None:
             return PlanningResult(
                 status="planned",
-                message="已生成单楼层目标点导航计划。",
+                message="已生成二维 map 目标点导航计划。",
                 intent="point_navigation",
                 target_pose=point,
                 plan=Plan(
@@ -73,7 +73,7 @@ class RuleBasedPlanner:
         return PlanningResult(
             status="clarify",
             message=(
-                "请明确当前单楼层 map 坐标系中的目标点，"
+                "请明确当前二维 map 坐标系中的目标点，"
                 "例如：去坐标 (2.0, 1.5)。"
             ),
         )

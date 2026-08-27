@@ -57,12 +57,15 @@ Navigation Plugin 的实际描述位于
 
 该 JSON 只含数据。Plugin discovery 不会因为读取它而导入 Plugin 代码或执行构建。
 
-## 根目录单一配置
+## 按运行模式隔离配置
 
-Runtime 部署配置、Robot capability profile 与 Gateway 配置共用 FireClaw 根目录的
-`fireclaw.toml`。先复制 `fireclaw.example.toml`，换机器人或地图时修改这一份文件即可。
-面向 `/opt/firebot` 安装布局的补充模板见
-`examples/deployment_profiles/navigation_robot.toml.example`。核心部分如下：
+同一种运行模式内，Runtime deployment、Robot capability profile 与 Gateway 可以共用一份
+TOML；仿真和实机之间禁止共用。Gazebo 从 `fireclaw.sim.example.toml` 创建私有
+`fireclaw.sim.toml`，实机从 fail-closed 的 `fireclaw.real.example.toml` 创建私有
+`fireclaw.real.toml`。不要通过修改同一文件的 `deployment.mode` 在两种环境间切换。
+完整规则见
+[`simulation-real-config-separation.zh-CN.md`](simulation-real-config-separation.zh-CN.md)。
+实机模板的核心部分如下：
 
 ```toml
 [deployment]
@@ -119,7 +122,7 @@ footprint、速度/加速度、传感器范围等差异通过上述 typed bindin
 先只读解析方案：
 
 ```bash
-fireclaw deploy plan --profile /opt/firebot/firebot.toml
+fireclaw deploy plan --profile /opt/firebot/fireclaw.real.toml
 ```
 
 `plan` 会验证 manifest/descriptor、ROS distro/CPU、binding、重复 package 和 provider 选择，
@@ -133,7 +136,7 @@ fireclaw deploy plan --profile /opt/firebot/firebot.toml
 显式应用：
 
 ```bash
-fireclaw deploy apply --profile /opt/firebot/firebot.toml
+fireclaw deploy apply --profile /opt/firebot/fireclaw.real.toml
 ```
 
 若 system overlay 已提供全部要求 package，`apply` 不重复构建 Navigation Stack。否则它在
@@ -144,7 +147,7 @@ fireclaw deploy apply --profile /opt/firebot/firebot.toml
 
 ```bash
 fireclaw deploy status \
-  --profile /opt/firebot/firebot.toml \
+  --profile /opt/firebot/fireclaw.real.toml \
   --no-runtime-check
 ```
 
@@ -184,7 +187,7 @@ fireclaw deploy status \
 也可以不使用生成 wrapper，直接运行同一 supervisor：
 
 ```bash
-fireclaw deploy run --profile /opt/firebot/firebot.toml
+fireclaw deploy run --profile /opt/firebot/fireclaw.real.toml
 ```
 
 超时、仿真重启次数和停止 grace period 都有显式 CLI 参数；`--simulation-restarts` 在 real mode
@@ -195,9 +198,9 @@ fireclaw deploy run --profile /opt/firebot/firebot.toml
 release 生成不等于修改宿主服务。操作员可先渲染/检查，再显式安装：
 
 ```bash
-fireclaw deploy service render --profile /opt/firebot/firebot.toml
+fireclaw deploy service render --profile /opt/firebot/fireclaw.real.toml
 fireclaw deploy service install \
-  --profile /opt/firebot/firebot.toml \
+  --profile /opt/firebot/fireclaw.real.toml \
   --no-enable \
   --no-start
 ```
@@ -205,11 +208,11 @@ fireclaw deploy service install \
 不带 `--no-enable/--no-start` 的 `install` 会 enable 并立即 restart。日常控制与核对使用：
 
 ```bash
-fireclaw deploy service start   --profile /opt/firebot/firebot.toml
-fireclaw deploy service status  --profile /opt/firebot/firebot.toml
-fireclaw deploy service stop    --profile /opt/firebot/firebot.toml
-fireclaw deploy service restart --profile /opt/firebot/firebot.toml
-fireclaw deploy service uninstall --profile /opt/firebot/firebot.toml
+fireclaw deploy service start   --profile /opt/firebot/fireclaw.real.toml
+fireclaw deploy service status  --profile /opt/firebot/fireclaw.real.toml
+fireclaw deploy service stop    --profile /opt/firebot/fireclaw.real.toml
+fireclaw deploy service restart --profile /opt/firebot/fireclaw.real.toml
+fireclaw deploy service uninstall --profile /opt/firebot/fireclaw.real.toml
 ```
 
 安装器只接受 active、完整性校验通过且与当前 Profile 精确一致的 unit；原子写入 0600 文件，拒绝
@@ -224,14 +227,14 @@ fireclaw deploy service uninstall --profile /opt/firebot/firebot.toml
 也可独立检查 live ROS graph：
 
 ```bash
-fireclaw deploy status --profile /opt/firebot/firebot.toml
+fireclaw deploy status --profile /opt/firebot/fireclaw.real.toml
 ```
 
 面向日常操作员，优先使用聚合部署、ROS readiness、Robot Gateway、资源准入、托管服务、能力
 readiness 与 Fleet Doctor 的单一入口：
 
 ```bash
-fireclaw status --profile /opt/firebot/firebot.toml
+fireclaw status --profile /opt/firebot/fireclaw.real.toml
 ```
 
 该命令默认输出人类可读的 `READY/DEGRADED/BLOCKED/OFFLINE` 判断；自动化使用 `--json`。Fleet
@@ -309,7 +312,7 @@ resource admission 并写入审计事件。
 操作员首选引导式入口：
 
 ```bash
-fireclaw recover --profile /opt/firebot/firebot.toml
+fireclaw recover --profile /opt/firebot/fireclaw.real.toml
 ```
 
 它会显示冻结来源、可信证据、阻塞项、有效期和完整确认短语；没有 `--yes` 快捷方式，确认后还会

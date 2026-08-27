@@ -217,6 +217,10 @@ class MissionPlanningContextAssembler:
         authoritative = {
             "mission_id": mission_id,
             "operator_command": command,
+            "operator_clarifications": [
+                dict(item)
+                for item in planner_context.operator_clarifications
+            ],
             "iteration": iteration,
             "plan_revision": plan_revision,
             "snapshot_contract": self._snapshot_contract(state_snapshot),
@@ -276,6 +280,14 @@ class MissionPlanningContextAssembler:
                 "mission_runtime",
                 authoritative,
                 included_count=1,
+            ),
+            self._critical_manifest(
+                "operator_clarifications",
+                "mission_gateway_authenticated_dialogue",
+                authoritative["operator_clarifications"],
+                included_count=len(
+                    authoritative["operator_clarifications"]
+                ),
             ),
             self._critical_manifest(
                 "observations",

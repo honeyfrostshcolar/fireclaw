@@ -74,7 +74,7 @@ def register(api: PluginApi) -> None:
             backend,
             timeout_seconds=api.config.get(
                 "navigate_timeout_seconds",
-                120.0,
+                360.0,
             ),
             cancellation_ack_timeout_seconds=api.config.get(
                 "cancellation_ack_timeout_seconds",

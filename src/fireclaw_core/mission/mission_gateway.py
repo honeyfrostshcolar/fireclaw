@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import logging
 from pathlib import Path
 import re
@@ -8,10 +10,12 @@ from queue import Empty as QueueEmpty, Full as QueueFull, Queue
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
+from uuid import uuid4
 from fireclaw_core.approval.approval_relay import ApprovalRelay
 from fireclaw_core.approval.approval_runtime import ApprovalRuntime
 from fireclaw_core.gateway.auth import (
@@ -38,6 +42,32 @@ from fireclaw_core.monitoring.stream_events import EventBus, StreamEvent, Teleme
 from fireclaw_core.gateway.control import OperatorContext
 from fireclaw_core.devtools.fleet_doctor import FleetDoctor
 from fireclaw_core.mission.mission_agent import MissionAgent
+from fireclaw_core.mission.mission_plan_validator import MissionPlanValidator
+from fireclaw_core.mission.planning_dialogue import (
+    DEFAULT_MAX_CLARIFICATION_ROUNDS,
+    DEFAULT_PLANNING_DIALOGUE_TTL_SECONDS,
+    PlanningDialogue,
+    PlanningDialogueError,
+    PlanningDialogueStore,
+)
+from fireclaw_core.mission.plan_artifact import (
+    DEFAULT_PLAN_TTL_SECONDS,
+    PlanArtifactError,
+    PlanArtifactRecord,
+    PlanArtifactStore,
+    assess_plan_risk,
+    bind_relative_target_yaws,
+    build_readiness_binding,
+    require_dispatchable_readiness,
+    required_plan_approvals,
+    validate_plan_2d,
+    validate_plan_target_binding,
+)
+from fireclaw_core.mission.runtime_identity import (
+    GatewayRuntimeIdentity,
+    evidence_envelope,
+    utc_now_iso,
+)
 from fireclaw_core.agent.robot_registry import RobotRegistry
 from fireclaw_core.infra.operator_readiness import build_operator_doctor_snapshot
 from fireclaw_core.infra.session_lineage import JsonlSessionLineageStore, validate_resume_ownership
@@ -45,6 +75,7 @@ from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 from fireclaw_core.subagent.subagent_registry import JsonlSubagentRegistry
 from fireclaw_core.task.task_registry import JsonlTaskRegistryStore
 from fireclaw_core.mission.mission_run import MissionRunManager
+from fireclaw_core.mission.task_graph import task_graph_from_mission_plan
 from fireclaw_core.memory.reconciliation import (
     EmbodiedMemoryReconciler,
     ReplicationBatch,
@@ -80,6 +111,21 @@ MISSION_EVENTS_STREAM_RE = re.compile(r"^/missions/([^/]+)/events/stream$")
 TASK_TRACE_RE = re.compile(r"^/tasks/([^/]+)/trace$")
 TASK_EVENTS_RE = re.compile(r"^/tasks/([^/]+)/events$")
 TASK_RUN_RE = re.compile(r"^/tasks/([^/]+)/run$")
+
+_MISSION_STREAM_TERMINAL_EVENTS = frozenset({
+    "mission.completed",
+    "mission.blocked",
+    "mission.escalated",
+    "mission.failed",
+    "mission.timed_out",
+    "mission.cancelled",
+    "mission.lost",
+})
+_MISSION_STREAM_REPORT_EVENTS = frozenset({
+    "mission.report_ready",
+    "mission.final_report_ready",
+    *_MISSION_STREAM_TERMINAL_EVENTS,
+})
 TASK_REPORT_RE = re.compile(r"^/tasks/([^/]+)/report$")
 TASK_CANCEL_RE = re.compile(r"^/tasks/([^/]+)/cancel$")
 TASK_PAUSE_RE = re.compile(r"^/tasks/([^/]+)/pause$")
@@ -101,6 +147,8 @@ class MissionGatewayConfig:
     api_token: str | None = None
     tls: GatewayTlsServerConfig = field(default_factory=GatewayTlsServerConfig)
     network: GatewayNetworkPolicy = field(default_factory=GatewayNetworkPolicy)
+    planning_dialogue_max_rounds: int = DEFAULT_MAX_CLARIFICATION_ROUNDS
+    planning_dialogue_ttl_seconds: float = DEFAULT_PLANNING_DIALOGUE_TTL_SECONDS
 
 
 class MissionGateway:
@@ -120,6 +168,12 @@ class MissionGateway:
         memory_reconciler: EmbodiedMemoryReconciler | None = None,
         replication_security: Any | None = None,
         mission_run_manager: MissionRunManager | None = None,
+        runtime_identity: GatewayRuntimeIdentity | None = None,
+        plan_artifact_store: PlanArtifactStore | None = None,
+        planning_dialogue_store: PlanningDialogueStore | None = None,
+        plan_readiness_provider: Callable[[], Mapping[str, Any]] | None = None,
+        plan_artifact_ttl_seconds: float = DEFAULT_PLAN_TTL_SECONDS,
+        runtime_epoch: str | None = None,
     ) -> None:
         self.process_working_directory = Path.cwd().resolve(strict=False)
         self.config = config
@@ -139,6 +193,18 @@ class MissionGateway:
         self._session_lineage_store = session_lineage_store
         self.memory_reconciler = memory_reconciler
         self.replication_security = replication_security
+        self.runtime_identity = runtime_identity or GatewayRuntimeIdentity.unknown()
+        self.plan_artifact_store = plan_artifact_store or PlanArtifactStore()
+        self.planning_dialogue_store = (
+            planning_dialogue_store
+            or PlanningDialogueStore(
+                ttl_seconds=config.planning_dialogue_ttl_seconds,
+                max_rounds=config.planning_dialogue_max_rounds,
+            )
+        )
+        self._plan_readiness_provider = plan_readiness_provider
+        self.plan_artifact_ttl_seconds = float(plan_artifact_ttl_seconds)
+        self.runtime_epoch = runtime_epoch or uuid4().hex
         self._approval_relays: dict[str, dict[str, Any]] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -234,113 +300,828 @@ class MissionGateway:
         }
 
     def readiness(self) -> dict[str, Any]:
-        """Report structured readiness snapshot for the active robot/fleet."""
+        """Report evidence-backed readiness plus compatibility projections."""
+        observed_at = utc_now_iso()
         fleet_doctor = self.fleet_doctor()
         doctor_snapshot = build_operator_doctor_snapshot(report=fleet_doctor)
         fleet_state = self.fleet_state()
-        active_robot_id = None
-        enabled = self.registry.enabled_entries(include_stale=True)
-        if enabled:
-            active_robot_id = enabled[0].robot_id
+        identity_value = self.runtime_identity.value_dict()
+        phase = doctor_snapshot.get("phase", "unknown")
+        safe_state = doctor_snapshot.get("safe_state", "unknown")
+        reason_code = doctor_snapshot.get("reason_code", "unknown")
+        summary = doctor_snapshot.get(
+            "summary",
+            "Gateway did not provide an admission projection.",
+        )
+        observations = {
+            "admission_phase": evidence_envelope(
+                phase,
+                source="fleet_doctor_operator_projection",
+                observed_at=observed_at,
+                freshness="fresh",
+            ),
+            "admission_safe_state": evidence_envelope(
+                safe_state,
+                source="fleet_doctor_operator_projection",
+                observed_at=observed_at,
+                freshness="fresh",
+            ),
+            "reason_code": evidence_envelope(
+                reason_code,
+                source="fleet_doctor_operator_projection",
+                observed_at=observed_at,
+                freshness="fresh",
+            ),
+            "summary": evidence_envelope(
+                summary,
+                source="fleet_doctor_operator_projection",
+                observed_at=observed_at,
+                freshness="fresh",
+            ),
+            "physical_stop_confirmed": evidence_envelope(
+                None,
+                source="physical_stop_evidence_unavailable",
+                observed_at=observed_at,
+                freshness="unknown",
+            ),
+            "emergency_stop_state": evidence_envelope(
+                None,
+                source="emergency_stop_evidence_unavailable",
+                observed_at=observed_at,
+                freshness="unknown",
+            ),
+        }
         return {
             "status": "ok",
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "readiness_snapshot",
-            "active_robot_id": active_robot_id,
-            "phase": doctor_snapshot.get("phase", "ready"),
-            "safe_state": doctor_snapshot.get("safe_state", "unknown"),
-            "reason_code": doctor_snapshot.get("reason_code", "ready"),
-            "summary": doctor_snapshot.get("summary", "System ready."),
+            "runtime_identity": self.runtime_identity.to_evidence(),
+            "observations": observations,
+            "robot_readiness": self._robot_readiness_evidence(
+                fleet_doctor,
+                observed_at=observed_at,
+            ),
+            # Compatibility projections remain derived from the same evidence.
+            # New operator surfaces must consume the envelopes above.
+            "active_robot_id": identity_value["robot_id"],
+            "runtime_mode": identity_value["runtime_mode"],
+            "active_profile_path": identity_value["active_profile_path"],
+            "profile_sha256": identity_value["profile_sha256"],
+            "profile_revision": identity_value["profile_revision"],
+            "deployment_fingerprint": identity_value["deployment_fingerprint"],
+            "phase": phase,
+            "safe_state": safe_state,
+            "reason_code": reason_code,
+            "summary": summary,
             "fleet_state": fleet_state,
             "fleet_doctor": fleet_doctor,
             "doctor_snapshot": doctor_snapshot,
         }
 
+    def _robot_readiness_evidence(
+        self,
+        fleet_doctor: dict[str, Any],
+        *,
+        observed_at: str,
+    ) -> list[dict[str, Any]]:
+        reachability: dict[str, dict[str, Any]] = {}
+        findings = fleet_doctor.get("findings")
+        if isinstance(findings, list):
+            for finding in findings:
+                if not isinstance(finding, dict) or finding.get("category") != "reachability":
+                    continue
+                robot_id = finding.get("robot_id")
+                details = finding.get("details")
+                if isinstance(robot_id, str) and isinstance(details, dict):
+                    reachability[robot_id] = details
+
+        result: list[dict[str, Any]] = []
+        for entry in self.registry.list_entries():
+            details = reachability.get(entry.robot_id)
+            if not entry.enabled:
+                value = {
+                    "status": "disabled",
+                    "last_seen_at": self.registry.get_last_seen_at(entry.robot_id),
+                    "declared_capabilities": list(entry.capabilities),
+                }
+                source = "robot_registry"
+                freshness = "fresh"
+                evidence_observed_at = observed_at
+            elif details is not None:
+                value = {
+                    "status": "online" if details.get("online") is True else "offline",
+                    "last_seen_at": details.get("last_seen_at"),
+                    "declared_capabilities": list(entry.capabilities),
+                    "state": details.get("state") or {},
+                }
+                source = "robot_gateway_state_probe"
+                freshness = "fresh"
+                evidence_observed_at = str(details.get("checked_at") or observed_at)
+            elif self.registry.is_stale(entry.robot_id):
+                value = {
+                    "status": "stale",
+                    "last_seen_at": self.registry.get_last_seen_at(entry.robot_id),
+                    "declared_capabilities": list(entry.capabilities),
+                }
+                source = "robot_registry_heartbeat"
+                freshness = "stale"
+                evidence_observed_at = str(
+                    self.registry.get_last_seen_at(entry.robot_id) or observed_at
+                )
+            else:
+                value = {
+                    "status": "unknown",
+                    "last_seen_at": self.registry.get_last_seen_at(entry.robot_id),
+                    "declared_capabilities": list(entry.capabilities),
+                }
+                source = "robot_readiness_unavailable"
+                freshness = "unknown"
+                evidence_observed_at = observed_at
+            result.append(
+                {
+                    "robot_id": entry.robot_id,
+                    "readiness": evidence_envelope(
+                        value,
+                        source=source,
+                        observed_at=evidence_observed_at,
+                        freshness=freshness,
+                    ),
+                }
+            )
+        return result
+
     def plan_mission(
         self,
         task_description: str,
         *,
-        profile: str | None = None,
+        target_robot: str | None = None,
+        operator: OperatorContext | None = None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Start bounded Mission Agent planning without dispatching a robot."""
+
+        if not isinstance(task_description, str) or not task_description.strip():
+            raise PlanArtifactError(
+                "plan_command_invalid",
+                "Field 'task_description' or 'command' is required.",
+            )
+        requested_robot = (
+            target_robot.strip()
+            if isinstance(target_robot, str) and target_robot.strip()
+            else None
+        )
+        try:
+            dialogue = self.planning_dialogue_store.begin(
+                operator_id=_operator_id(operator),
+                command=task_description,
+                target_robot=requested_robot,
+            )
+        except PlanningDialogueError as exc:
+            raise _planning_dialogue_plan_error(exc) from exc
+        return self._deliberate_planning_dialogue(
+            dialogue,
+            operator=operator,
+            event_sink=event_sink,
+        )
+
+    def continue_plan_mission(
+        self,
+        planning_session_id: str,
+        clarification_answer: str,
+        *,
+        operator: OperatorContext | None = None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Bind one operator answer and resume bounded Mission Agent planning."""
+
+        try:
+            dialogue = self.planning_dialogue_store.answer(
+                planning_session_id,
+                operator_id=_operator_id(operator),
+                answer=clarification_answer,
+            )
+        except PlanningDialogueError as exc:
+            raise _planning_dialogue_plan_error(exc) from exc
+        return self._deliberate_planning_dialogue(
+            dialogue,
+            operator=operator,
+            event_sink=event_sink,
+        )
+
+    def _deliberate_planning_dialogue(
+        self,
+        dialogue: PlanningDialogue,
+        *,
+        operator: OperatorContext | None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Run one planning phase and retain state only while awaiting input."""
+
+        operator_id = _operator_id(operator)
+        retain_dialogue = False
+        stage_timings: list[dict[str, Any]] = []
+
+        def forward_event(event_type: str, payload: dict[str, Any]) -> None:
+            if event_type == "mission_agent.stage.completed":
+                stage_timings.append(dict(payload))
+            if event_sink is not None:
+                try:
+                    event_sink(event_type, payload)
+                except Exception:
+                    logger.warning(
+                        "Mission planning progress sink failed",
+                        exc_info=True,
+                    )
+
+        def emit_stage(
+            stage: str,
+            started: float,
+            *,
+            status: str = "completed",
+            details: Mapping[str, Any] | None = None,
+        ) -> None:
+            payload: dict[str, Any] = {
+                "stage": stage,
+                "status": status,
+                "duration_ms": round(
+                    max(0.0, (time.monotonic() - started) * 1000),
+                    2,
+                ),
+            }
+            if details:
+                payload.update(dict(details))
+            forward_event("mission_agent.stage.completed", payload)
+
+        def with_timing(response: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                **dict(response),
+                "planning_timing": _planning_timing_payload(stage_timings),
+            }
+
+        try:
+            identity = self._require_authoritative_runtime_identity()
+            self._require_current_profile_revision(identity.profile_revision)
+            readiness_started = time.monotonic()
+            snapshot = self._current_plan_readiness()
+            emit_stage(
+                "readiness",
+                readiness_started,
+                details={
+                    "ready_robot_count": len(
+                        _fresh_online_robot_ids(snapshot)
+                    ),
+                },
+            )
+            ready_robot_ids = _fresh_online_robot_ids(snapshot)
+            requested_robot = dialogue.target_robot
+            if (
+                requested_robot is not None
+                and requested_robot not in ready_robot_ids
+            ):
+                raise PlanArtifactError(
+                    "robot_not_ready",
+                    f"Requested robot {requested_robot} lacks fresh online readiness evidence.",
+                )
+            available = [
+                entry
+                for entry in self.registry.enabled_entries()
+                if entry.robot_id in ready_robot_ids
+                and (
+                    requested_robot is None
+                    or entry.robot_id == requested_robot
+                )
+            ]
+            if not available:
+                raise PlanArtifactError(
+                    "robot_not_ready",
+                    "No enabled robot has fresh online readiness evidence.",
+                )
+            if self.mission_agent.mission_deliberation_runtime is None:
+                raise PlanArtifactError(
+                    "canonical_planner_unavailable",
+                    "No canonical Mission deliberation runtime is configured.",
+                )
+
+            command = dialogue.canonical_operator_command()
+            try:
+                deliberation = self.mission_agent.deliberate_preview(
+                    command,
+                    mission_id=dialogue.mission_id,
+                    presence=_presence_from_readiness_snapshot(
+                        snapshot,
+                        registry=self.registry,
+                    ),
+                    available_robot_ids={
+                        entry.robot_id for entry in available
+                    },
+                    operator_clarifications=(
+                        dialogue.clarification_context()
+                    ),
+                    operator_id=operator_id,
+                    event_sink=forward_event,
+                )
+            except Exception as exc:
+                logger.exception("Canonical mission preview planning failed")
+                raise PlanArtifactError(
+                    "canonical_planner_failed",
+                    "Canonical Mission Agent failed; no plan artifact was created.",
+                ) from exc
+
+            planning_result = deliberation.planning_result
+            if deliberation.status == "clarification_required":
+                try:
+                    pending = self.planning_dialogue_store.record_question(
+                        dialogue.session_id,
+                        operator_id=operator_id,
+                        question=deliberation.message,
+                        reason_code=deliberation.reason_code,
+                    )
+                except PlanningDialogueError as exc:
+                    if exc.code == "clarification_round_limit":
+                        return with_timing({
+                            "status": "escalated",
+                            "message": (
+                                "已达到最多 "
+                                f"{dialogue.max_rounds} 轮安全澄清，"
+                                "仍无法形成可验证计划；任务没有下发。"
+                            ),
+                            "reason_code": exc.code,
+                            "preview_created": False,
+                        })
+                    raise _planning_dialogue_plan_error(exc) from exc
+                retain_dialogue = True
+                response = pending.clarification_response()
+                response["deliberation_attempts"] = [
+                    attempt.to_dict() for attempt in deliberation.attempts
+                ]
+                response["deliberation_observations"] = [
+                    obs.to_dict() for obs in deliberation.observations
+                ]
+                return with_timing(response)
+
+            if deliberation.status != "proposed" or planning_result is None:
+                message = deliberation.message
+                validation_errors = tuple(
+                    deliberation.validation_errors or ()
+                )
+                if validation_errors:
+                    # Surface deterministic validator output so the operator can
+                    # fix the command (e.g. restate coordinates as "(x, y)")
+                    # instead of retrying blindly into the same failure.
+                    shown = "；".join(str(e) for e in validation_errors[:3])
+                    suffix = (
+                        f"（确定性校验反馈：{shown}"
+                        + (
+                            f" 等共 {len(validation_errors)} 条"
+                            if len(validation_errors) > 3
+                            else ""
+                        )
+                        + "）"
+                    )
+                    message = f"{message}{suffix}"
+                response: dict[str, Any] = {
+                    "status": deliberation.status,
+                    "message": message,
+                    "reason_code": deliberation.reason_code,
+                    "preview_created": False,
+                }
+                if validation_errors:
+                    response["validation_errors"] = list(validation_errors)
+                if planning_result is not None:
+                    response["intent"] = planning_result.intent
+                if deliberation.observation_request is not None:
+                    response["message"] = (
+                        "Mission Agent 需要额外现场观测；预览阶段没有自动"
+                        "调度机器人执行观测。请先完成独立的观测授权流程。"
+                    )
+                    response["observation_request"] = (
+                        deliberation.observation_request.to_dict()
+                    )
+                return with_timing(response)
+
+            plan = planning_result.plan
+            if plan is None:
+                raise PlanArtifactError(
+                    "canonical_plan_invalid",
+                    "Mission deliberation proposed no executable plan.",
+                )
+            if plan.command != command:
+                raise PlanArtifactError(
+                    "canonical_plan_command_mismatch",
+                    "Canonical Planner changed the authenticated dialogue binding.",
+                )
+            target_binding_state = _target_binding_state_from_readiness_snapshot(
+                snapshot,
+                registry=self.registry,
+            )
+            relative_binding_started = time.monotonic()
+            bound_plan = bind_relative_target_yaws(
+                plan,
+                state_snapshot=target_binding_state,
+            )
+            bound_target_count = sum(
+                old.target != new.target
+                for old, new in zip(plan.subtasks, bound_plan.subtasks)
+            )
+            emit_stage(
+                "relative_target_binding",
+                relative_binding_started,
+                details={"bound_target_count": bound_target_count},
+            )
+            plan = bound_plan
+            robot_ids = sorted({
+                subtask.robot_id for subtask in plan.subtasks
+            })
+            if requested_robot is not None and robot_ids != [requested_robot]:
+                raise PlanArtifactError(
+                    "canonical_plan_robot_mismatch",
+                    "Canonical Planner changed the requested robot binding.",
+                )
+            preview_graph = task_graph_from_mission_plan(
+                plan,
+                mission_id=dialogue.mission_id,
+                plan_id=f"sealed-preview:{dialogue.session_id}",
+            )
+            target_binding_errors = validate_plan_target_binding(
+                plan,
+                state_snapshot=target_binding_state,
+            )
+            if target_binding_errors:
+                raise PlanArtifactError(
+                    "canonical_plan_target_unbound",
+                    "导航目标没有绑定到操作员明确给出的坐标或朝向；"
+                    "请提供 map 坐标 (x, y)，系统不会猜测目标点。",
+                )
+            errors = [
+                *validate_plan_2d(plan),
+                *MissionPlanValidator().validate(
+                    plan,
+                    self.registry,
+                    task_graph=preview_graph,
+                ),
+            ]
+            if errors:
+                raise PlanArtifactError(
+                    "canonical_plan_invalid",
+                    "Canonical Mission Plan failed deterministic validation: "
+                    + "; ".join(errors),
+                )
+            sealing_started = time.monotonic()
+            readiness_binding = build_readiness_binding(
+                snapshot,
+                robot_ids=robot_ids,
+            )
+            # Preview has no physical side effect. Bind the full admission
+            # revision, but defer the fleet-wide dispatch gate until the
+            # operator confirms the sealed artifact.
+            require_dispatchable_readiness(
+                readiness_binding,
+                require_admission=False,
+            )
+            risk_level = assess_plan_risk(
+                plan,
+                runtime_mode=str(identity.runtime_mode),
+            )
+            approvals = required_plan_approvals(
+                risk_level,
+                runtime_mode=str(identity.runtime_mode),
+            )
+            issued = self.plan_artifact_store.issue(
+                plan,
+                operator_id=operator_id,
+                session_id=dialogue.session_id,
+                robot_ids=robot_ids,
+                runtime_epoch=self.runtime_epoch,
+                runtime_mode=str(identity.runtime_mode),
+                profile_revision=str(identity.profile_revision),
+                readiness_revision=readiness_binding.revision,
+                risk_level=risk_level,
+                required_approvals=approvals,
+                ttl_seconds=self.plan_artifact_ttl_seconds,
+            )
+            artifact = issued.to_public_dict()
+            steps = [
+                {
+                    "index": index,
+                    "node_id": subtask.node_id or f"task-{index}",
+                    "robot_id": subtask.robot_id,
+                    "command": subtask.command,
+                    "capability_required": subtask.capability_required,
+                    "execution_group": subtask.execution_group,
+                    "target": (
+                        dict(subtask.target)
+                        if isinstance(subtask.target, dict)
+                        else None
+                    ),
+                    "risk_level": (
+                        subtask.completion_contract.get("risk_level")
+                        if isinstance(subtask.completion_contract, dict)
+                        else None
+                    ) or risk_level,
+                }
+                for index, subtask in enumerate(plan.subtasks, start=1)
+            ]
+            emit_stage(
+                "plan_artifact_seal",
+                sealing_started,
+                details={
+                    "subtask_count": len(plan.subtasks),
+                    "risk_level": risk_level,
+                },
+            )
+            return with_timing({
+                "status": "preview_ready",
+                "message": planning_result.message,
+                "preview_created": True,
+                "task_description": dialogue.original_command,
+                "planning_session_id": dialogue.session_id,
+                "clarification_rounds": len(dialogue.turns),
+                "intent": plan.intent,
+                "target_robot": (
+                    robot_ids[0] if len(robot_ids) == 1 else None
+                ),
+                "robot_ids": robot_ids,
+                "steps": steps,
+                "risk_level": risk_level,
+                "plan": plan.to_dict(),
+                "plan_artifact": artifact,
+                "artifact_id": issued.record.artifact_id,
+                "plan_token": issued.token,
+                "plan_digest": issued.record.plan_digest,
+                "binding_digest": issued.record.binding_digest,
+                "status_version": issued.record.status_version,
+                "session_id": issued.record.session_id,
+                "profile_revision": issued.record.profile_revision,
+                "readiness_revision": issued.record.readiness_revision,
+                "required_approvals": approvals,
+                "expires_at": issued.record.expires_at,
+                "deliberation_attempts": [
+                    attempt.to_dict() for attempt in deliberation.attempts
+                ],
+                "deliberation_observations": [
+                    obs.to_dict() for obs in deliberation.observations
+                ],
+            })
+        finally:
+            if not retain_dialogue:
+                try:
+                    self.planning_dialogue_store.finish(
+                        dialogue.session_id,
+                        operator_id=operator_id,
+                    )
+                except PlanningDialogueError:
+                    logger.debug(
+                        "Planning dialogue was already superseded or removed",
+                        exc_info=True,
+                    )
+
+    def confirm_plan(
+        self,
+        payload: Mapping[str, Any],
+        *,
         operator: OperatorContext | None = None,
     ) -> dict[str, Any]:
-        if not task_description or not task_description.strip():
-            from fireclaw_core.errors.friendly_errors import resolve_friendly_error
-            resp = resolve_friendly_error(
-                "planner_failed",
-                {"goal": "", "reason": "Field 'task_description' or 'command' is required."},
+        """Consume one artifact and queue exactly its stored MissionPlan."""
+
+        allowed_fields = {
+            "artifact_id",
+            "plan_token",
+            "plan_digest",
+            "status_version",
+            "session_id",
+            "robot_ids",
+            "operator_confirmed",
+        }
+        unknown_fields = sorted(set(payload) - allowed_fields)
+        if unknown_fields:
+            raise PlanArtifactError(
+                "plan_confirmation_payload_invalid",
+                "Confirmation payload contains forbidden fields: "
+                + ", ".join(unknown_fields),
             )
-            return {
-                "status": "error",
-                "message": resp.what_happened,
-                "error": resp.to_dict(),
-            }
-        task_desc = task_description.strip()
-        target_robot = None
-        enabled = self.registry.enabled_entries(include_stale=True)
-        if enabled:
-            target_robot = enabled[0].robot_id
-        if not target_robot:
-            target_robot = "turtlebot3_burger"
-
-        if "搜" in task_desc or "救" in task_desc:
-            intent = "前往二楼搜索人员" if "二楼" in task_desc else "搜索与救援被困人员"
-            steps = [
-                "1. move_base 导航至目标搜索区域",
-                "2. 启动视觉与红外热成像传感器搜索被困人员",
-                "3. 标记坐标并向指挥网关上报",
-            ]
-            risk_level = "medium"
-        elif "火" in task_desc or "温" in task_desc or "侦" in task_desc:
-            intent = "火情与温度态势侦察"
-            steps = [
-                "1. 导航至火场边缘安全侦察位姿",
-                "2. 多传感器多波段探测火源分布与温度梯度",
-                "3. 生成热点态势图并实时同步网关",
-            ]
-            risk_level = "high"
-        elif "返" in task_desc or "回" in task_desc or "停" in task_desc:
-            intent = "返回安全待命点"
-            steps = [
-                "1. 中止或收尾当前非关键动作",
-                "2. 计算全局无碰撞返航路径",
-                "3. 导航返回初始安全待命点并锁定底盘",
-            ]
-            risk_level = "low"
-        elif "图" in task_desc or "巡" in task_desc:
-            intent = "全区域巡航与建图"
-            steps = [
-                "1. 启动激光雷达 SLAM 全区拓扑巡航",
-                "2. 实时融合激光点云构建环境态势地图",
-                "3. 保存地图快照并同步至本地控制台",
-            ]
-            risk_level = "low"
-        else:
-            intent = task_desc
-            steps = [
-                f"1. 导航至任务指定目标区域",
-                f"2. 执行动作: {task_desc[:25]}",
-                f"3. 状态校验与网关汇报",
-            ]
-            risk_level = "medium"
-
-        raw_plan = {
-            "intent": intent,
-            "target_robot": target_robot,
-            "steps": steps,
-            "risk_level": risk_level,
-            "profile": profile,
-            "task_description": task_desc,
-        }
-
+        if payload.get("operator_confirmed") is not True:
+            raise PlanArtifactError(
+                "plan_confirmation_required",
+                "Explicit operator confirmation is required.",
+            )
+        artifact_id = _required_payload_string(payload, "artifact_id")
+        token = _required_payload_string(payload, "plan_token")
+        plan_digest = _required_payload_string(payload, "plan_digest")
+        session_id = _required_payload_string(payload, "session_id")
+        status_version = _required_payload_int(payload, "status_version")
+        robot_ids = _required_payload_string_list(payload, "robot_ids")
+        operator_id = _operator_id(operator)
+        record = self.plan_artifact_store.validate_pending(
+            token,
+            artifact_id=artifact_id,
+            plan_digest=plan_digest,
+            status_version=status_version,
+            operator_id=operator_id,
+            session_id=session_id,
+            robot_ids=robot_ids,
+            runtime_epoch=self.runtime_epoch,
+        )
+        if record.runtime_mode == "real":
+            self._invalidate_plan(record, reason="real_dispatch_not_authorized")
+            raise PlanArtifactError(
+                "real_dispatch_not_authorized",
+                "Real-mode confirmation is disabled until the physical stop and recovery contract is complete.",
+            )
+        identity = self._require_authoritative_runtime_identity()
+        if (
+            identity.runtime_mode != record.runtime_mode
+            or identity.profile_revision != record.profile_revision
+        ):
+            self._invalidate_plan(record, reason="runtime_identity_drift")
+            raise PlanArtifactError(
+                "plan_runtime_drift",
+                "Runtime identity changed after preview; create a new preview.",
+            )
+        try:
+            self._require_current_profile_revision(record.profile_revision)
+        except PlanArtifactError as exc:
+            self._invalidate_plan(record, reason="profile_revision_drift")
+            raise PlanArtifactError(
+                "plan_profile_drift",
+                "Active Profile changed after preview; create a new preview.",
+            ) from exc
+        snapshot = self._current_plan_readiness()
+        current_readiness = build_readiness_binding(
+            snapshot,
+            robot_ids=record.robot_ids,
+        )
+        try:
+            require_dispatchable_readiness(current_readiness)
+        except PlanArtifactError:
+            self._invalidate_plan(record, reason="robot_readiness_lost")
+            raise
+        if current_readiness.revision != record.readiness_revision:
+            self._invalidate_plan(record, reason="readiness_revision_drift")
+            raise PlanArtifactError(
+                "plan_readiness_drift",
+                "Robot or admission readiness changed after preview; create a new preview.",
+            )
+        plan = record.plan()
+        # Operator grounding is a preview-time invariant. Relative references
+        # such as “返回现在的位置” are resolved from authoritative live pose,
+        # validated, and then included in the server-signed plan digest before
+        # the operator sees the preview. Rebinding that immutable target during
+        # confirmation changes the operator-approved meaning and makes ordinary
+        # localization jitter look like registry drift. Dynamic safety remains
+        # fail-closed here through runtime/profile/readiness revalidation and
+        # the current registry/capability contract below.
+        graph = task_graph_from_mission_plan(
+            plan,
+            mission_id="confirm-validation",
+            plan_id=f"sealed:{record.artifact_id}:{record.plan_digest}",
+        )
+        errors = [
+            *validate_plan_2d(plan),
+            *MissionPlanValidator().validate(
+                plan,
+                self.registry,
+                task_graph=graph,
+            ),
+        ]
+        if errors:
+            logger.warning(
+                "Sealed plan confirmation failed registry/capability validation: "
+                "artifact_id=%s errors=%s",
+                record.artifact_id,
+                errors,
+            )
+            self._invalidate_plan(record, reason="registry_or_capability_drift")
+            raise PlanArtifactError(
+                "plan_registry_drift",
+                "封存计划已不再符合当前机器人注册表或能力契约；"
+                "请重新生成任务预览。校验详情："
+                + "; ".join(errors[:3]),
+            )
+        mission_id = f"mission-{uuid4().hex}"
+        consumed = self.plan_artifact_store.consume(
+            token,
+            artifact_id=artifact_id,
+            plan_digest=plan_digest,
+            status_version=status_version,
+            operator_id=operator_id,
+            session_id=session_id,
+            robot_ids=robot_ids,
+            runtime_epoch=self.runtime_epoch,
+            mission_id=mission_id,
+        )
+        result = self.mission_run_manager.submit_preplanned(
+            plan,
+            mission_id=mission_id,
+            operator=operator.to_dict() if operator is not None else None,
+            artifact_id=consumed.artifact_id,
+            plan_digest=consumed.plan_digest,
+        )
+        accepted = result.get("status") == "accepted"
+        execution_record = self.plan_artifact_store.record_execution(
+            consumed.artifact_id,
+            execution_status=str(result.get("status") or "unknown"),
+            failed=not accepted,
+            reason=(
+                None
+                if accepted
+                else str(result.get("message") or "mission_queue_rejected")
+            ),
+        )
+        if not accepted:
+            raise PlanArtifactError(
+                "sealed_plan_queue_failed",
+                str(result.get("message") or "Sealed plan could not be queued."),
+            )
+        self.publish_event(
+            "mission.plan_confirmed",
+            "mission-gateway",
+            mission_id=mission_id,
+            payload={
+                "plan_artifact_id": consumed.artifact_id,
+                "plan_digest": consumed.plan_digest,
+                "binding_digest": consumed.binding_digest,
+                "robot_ids": list(consumed.robot_ids),
+                "risk_level": consumed.risk_level,
+                "status_version": execution_record.status_version,
+                "plan_source": "sealed_plan_artifact",
+            },
+        )
         return {
-            "status": "ok",
-            "task_description": task_desc,
-            "intent": intent,
-            "target_robot": target_robot,
-            "steps": steps,
-            "risk_level": risk_level,
-            "raw_plan": raw_plan,
+            **result,
+            "task_id": mission_id,
+            "artifact_status": execution_record.status,
+            "artifact_status_version": execution_record.status_version,
+            "binding_digest": consumed.binding_digest,
+            "robot_ids": list(consumed.robot_ids),
+            "risk_level": consumed.risk_level,
         }
+
+    def _require_authoritative_runtime_identity(self) -> GatewayRuntimeIdentity:
+        identity = self.runtime_identity
+        if (
+            identity.freshness != "fresh"
+            or identity.runtime_mode not in {"simulation", "real"}
+            or not identity.profile_revision
+            or not identity.active_profile_path
+            or not identity.robot_id
+        ):
+            raise PlanArtifactError(
+                "runtime_identity_unknown",
+                "Gateway runtime identity is UNKNOWN; no executable preview can be sealed.",
+            )
+        return identity
+
+    def _require_current_profile_revision(self, expected_revision: str | None) -> None:
+        path_value = self.runtime_identity.active_profile_path
+        if not path_value or not expected_revision:
+            raise PlanArtifactError(
+                "profile_revision_unknown",
+                "Active Profile revision is not authoritative.",
+            )
+        path = Path(path_value)
+        if path.is_symlink() or not path.is_file():
+            raise PlanArtifactError(
+                "profile_revision_unavailable",
+                "Active Profile is unavailable or unsafe.",
+            )
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise PlanArtifactError(
+                "profile_revision_unavailable",
+                "Active Profile could not be read.",
+            ) from exc
+        if not hmac.compare_digest(expected_revision, f"sha256:{digest}"):
+            raise PlanArtifactError(
+                "profile_revision_drift",
+                "Active Profile content no longer matches the startup revision.",
+            )
+
+    def _current_plan_readiness(self) -> Mapping[str, Any]:
+        value = (
+            self._plan_readiness_provider()
+            if self._plan_readiness_provider is not None
+            else self.readiness()
+        )
+        if not isinstance(value, Mapping):
+            raise PlanArtifactError(
+                "readiness_unavailable",
+                "Gateway readiness provider returned an invalid snapshot.",
+            )
+        return value
+
+    def _invalidate_plan(self, record: PlanArtifactRecord, *, reason: str) -> None:
+        try:
+            self.plan_artifact_store.invalidate_pending(
+                record.artifact_id,
+                reason=reason,
+            )
+        except PlanArtifactError:
+            logger.warning(
+                "Failed to invalidate pending plan artifact %s",
+                record.artifact_id,
+                exc_info=True,
+            )
 
     def recover(
         self,
@@ -1083,18 +1864,19 @@ class MissionGateway:
         payload: dict[str, Any],
     ) -> None:
         """Bridge MissionRunManager lifecycle events onto the Gateway EventBus."""
+        stream_payload = _mission_run_stream_payload(event_type, payload)
         self.publish_event(
             event_type,
             "mission-run",
             mission_id=mission_id,
-            payload=payload,
+            payload=stream_payload,
         )
         if event_type == "mission.report_ready":
             self.publish_event(
                 "mission.final_report_ready",
                 "mission-run",
                 mission_id=mission_id,
-                payload=payload,
+                payload=stream_payload,
             )
 
     # ------------------------------------------------------------------
@@ -1299,18 +2081,43 @@ class MissionGateway:
                     )
                     handler.wfile.flush()
                     sent_sequences.add(event.sequence)
+                    if event.event_type in _MISSION_STREAM_TERMINAL_EVENTS:
+                        return
             elif mission_id is not None:
                 history = self.get_mission_events(mission_id, limit=200)
                 for value in history.get("events", []):
+                    history_payload = value.get("payload", value)
+                    history_timestamp = value.get("timestamp")
                     event = StreamEvent(
                         event_type=value.get("type", "unknown"),
                         source="mission-history",
+                        event_id=value.get("event_id", f"history-{uuid4().hex}"),
+                        timestamp=(
+                            history_timestamp
+                            if isinstance(history_timestamp, str)
+                            else datetime.now(timezone.utc).isoformat()
+                        ),
                         mission_id=mission_id,
-                        payload=value.get("payload", value),
+                        robot_id=value.get("robot_id")
+                        or (
+                            history_payload.get("robot_id")
+                            if isinstance(history_payload, dict)
+                            else None
+                        ),
+                        task_id=value.get("task_id")
+                        or (
+                            history_payload.get("task_id")
+                            if isinstance(history_payload, dict)
+                            else None
+                        ),
+                        payload=history_payload,
                     )
                     handler.wfile.write(
                         event.to_sse_format().encode("utf-8")
                     )
+                    if event.event_type in _MISSION_STREAM_TERMINAL_EVENTS:
+                        handler.wfile.flush()
+                        return
                 handler.wfile.flush()
 
             last_write = time.monotonic()
@@ -1329,10 +2136,246 @@ class MissionGateway:
                 handler.wfile.flush()
                 sent_sequences.add(event.sequence)
                 last_write = time.monotonic()
+                if event.event_type in _MISSION_STREAM_TERMINAL_EVENTS:
+                    return
         except Exception:
             return
         finally:
             self._event_bus.unsubscribe(token)
+            self._network_guard.release_sse(client_host)
+            if connection is not None and hasattr(connection, "settimeout"):
+                try:
+                    connection.settimeout(previous_timeout)
+                except OSError:
+                    pass
+
+    def _stream_planning_events(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        run_planning: Callable[
+            [Callable[[str, dict[str, Any]], None]],
+            dict[str, Any],
+        ],
+    ) -> None:
+        """Run preview planning off the HTTP writer and stream bounded events.
+
+        This mirrors OpenClaw's run/event/final lifecycle while preserving the
+        existing synchronous preview endpoints.  The Mission Agent only calls
+        a bounded ``put_nowait`` sink; socket writes and heartbeats happen on
+        the request thread, so a slow terminal cannot delay model decisions.
+        """
+
+        client_host = str(handler.client_address[0])
+        if not self._network_guard.acquire_sse(client_host):
+            handler.close_connection = True
+            self._write_error(
+                handler,
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "SSE connection limit exceeded.",
+            )
+            return
+
+        connection = getattr(handler, "connection", None)
+        previous_timeout: float | None = None
+        if connection is not None and hasattr(connection, "settimeout"):
+            try:
+                previous_timeout = connection.gettimeout()
+            except (AttributeError, OSError):
+                previous_timeout = None
+            connection.settimeout(
+                self.config.network.sse_write_timeout_seconds
+            )
+
+        started = time.monotonic()
+        event_queue: Queue[dict[str, Any]] = Queue(
+            maxsize=self.config.network.sse_queue_size
+        )
+        done = threading.Event()
+        state_lock = threading.Lock()
+        result_box: dict[str, Any] = {}
+        latest_activity: dict[str, Any] = {
+            "iteration": None,
+            "max_iterations": None,
+            "operation": None,
+            "message": "Mission Agent planning started.",
+        }
+        sequence = 0
+        dropped_events = 0
+
+        def make_event_locked(
+            event_type: str,
+            payload: Mapping[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            nonlocal sequence
+            sequence += 1
+            return {
+                "schema_version": 1,
+                "event_type": event_type,
+                "sequence": sequence,
+                "elapsed_seconds": round(
+                    max(0.0, time.monotonic() - started),
+                    3,
+                ),
+                "payload": dict(payload or {}),
+            }
+
+        def make_event(
+            event_type: str,
+            payload: Mapping[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            with state_lock:
+                return make_event_locked(event_type, payload)
+
+        def progress_sink(
+            event_type: str,
+            payload: dict[str, Any],
+        ) -> None:
+            nonlocal dropped_events
+            with state_lock:
+                if event_type == "mission_agent.turn.started":
+                    latest_activity["operation"] = None
+                for key in (
+                    "run_id",
+                    "mission_id",
+                    "iteration",
+                    "max_iterations",
+                    "operation",
+                    "message",
+                ):
+                    if payload.get(key) is not None:
+                        latest_activity[key] = payload[key]
+                event = make_event_locked(event_type, payload)
+                try:
+                    event_queue.put_nowait(event)
+                except QueueFull:
+                    dropped_events += 1
+
+        def planning_worker() -> None:
+            try:
+                result_box["result"] = run_planning(progress_sink)
+            except PlanArtifactError as exc:
+                result_box["error"] = {
+                    "status": "error",
+                    "error_code": exc.code,
+                    "message": str(exc),
+                    "http_status": int(_plan_artifact_http_status(exc.code)),
+                }
+            except Exception:
+                logger.exception("Unhandled error in streamed Mission planning")
+                result_box["error"] = {
+                    "status": "error",
+                    "error_code": "internal_server_error",
+                    "message": "Internal server error.",
+                    "http_status": int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                }
+            finally:
+                result_box["worker_finished_at"] = time.monotonic()
+                done.set()
+
+        def write_event(event: dict[str, Any]) -> None:
+            event_type = str(event.get("event_type") or "planning.progress")
+            event_sequence = int(event.get("sequence") or 0)
+            data = json.dumps(
+                event,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            block = (
+                f"event: {event_type}\n"
+                f"id: {event_sequence}\n"
+                f"data: {data}\n\n"
+            )
+            handler.wfile.write(block.encode("utf-8"))
+            handler.wfile.flush()
+
+        try:
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header(
+                "Content-Type",
+                "text/event-stream; charset=utf-8",
+            )
+            handler.send_header("Cache-Control", "no-cache")
+            handler.send_header("X-Accel-Buffering", "no")
+            handler.send_header("Connection", "close")
+            handler.end_headers()
+            write_event(make_event(
+                "planning.started",
+                {"message": "Mission Agent planning started."},
+            ))
+
+            worker = threading.Thread(
+                target=planning_worker,
+                name="fireclaw-mission-planning-stream",
+                daemon=True,
+            )
+            worker.start()
+
+            heartbeat_interval = 1.0
+            while True:
+                try:
+                    event = event_queue.get(timeout=heartbeat_interval)
+                except QueueEmpty:
+                    if done.is_set() and event_queue.empty():
+                        break
+                    with state_lock:
+                        heartbeat_payload = dict(latest_activity)
+                        heartbeat_payload["dropped_events"] = dropped_events
+                    write_event(make_event(
+                        "planning.heartbeat",
+                        heartbeat_payload,
+                    ))
+                    continue
+                write_event(event)
+                if done.is_set() and event_queue.empty():
+                    break
+
+            with state_lock:
+                dropped = dropped_events
+            if "error" in result_box:
+                final_type = "planning.error"
+                final_payload = dict(result_box["error"])
+            else:
+                final_type = "planning.result"
+                final_payload = dict(result_box.get("result") or {})
+            final_payload["dropped_progress_events"] = dropped
+            worker_finished_at = result_box.get("worker_finished_at")
+            sse_finalize_ms = (
+                max(0.0, (time.monotonic() - float(worker_finished_at)) * 1000)
+                if isinstance(worker_finished_at, (int, float))
+                else 0.0
+            )
+            sse_stage = {
+                "stage": "sse_finalize",
+                "status": "completed",
+                "duration_ms": round(sse_finalize_ms, 2),
+            }
+            timing_payload = final_payload.get("planning_timing")
+            if not isinstance(timing_payload, dict):
+                timing_payload = _planning_timing_payload(())
+            timing_stages = timing_payload.get("stages")
+            if not isinstance(timing_stages, list):
+                timing_stages = []
+            timing_stages.append(sse_stage)
+            by_stage_ms = timing_payload.get("by_stage_ms")
+            if not isinstance(by_stage_ms, dict):
+                by_stage_ms = {}
+            by_stage_ms["sse_finalize"] = round(sse_finalize_ms, 2)
+            final_payload["planning_timing"] = {
+                "stages": timing_stages,
+                "by_stage_ms": by_stage_ms,
+            }
+            write_event(make_event(
+                "mission_agent.stage.completed",
+                sse_stage,
+            ))
+            write_event(make_event(final_type, final_payload))
+        except (BrokenPipeError, ConnectionError, OSError):
+            # Preview planning is read-only.  If the client disconnects, the
+            # bounded worker may finish, but no robot action can be dispatched.
+            return
+        finally:
+            handler.close_connection = True
             self._network_guard.release_sse(client_host)
             if connection is not None and hasattr(connection, "settimeout"):
                 try:
@@ -1477,6 +2520,8 @@ class MissionGateway:
         if run_match:
             mission_id = run_match.group(1)
             result = self.get_mission_run(mission_id)
+            if _first(query, "view") == "status":
+                result = _mission_run_status_projection(result)
             status = HTTPStatus.NOT_FOUND if result.get("status") == "not_found" else HTTPStatus.OK
             self._write_json(handler, status, result)
             return
@@ -1562,7 +2607,67 @@ class MissionGateway:
         try:
             payload = self._read_json(handler)
 
+            if path == "/plan-mission/stream":
+                allowed = {
+                    "task_description",
+                    "command",
+                    "task",
+                    "target_robot",
+                }
+                unknown = sorted(set(payload) - allowed)
+                if unknown:
+                    raise PlanArtifactError(
+                        "plan_preview_payload_invalid",
+                        "Preview payload contains unsupported fields: "
+                        + ", ".join(unknown),
+                    )
+                task_desc = (
+                    payload.get("task_description")
+                    or payload.get("command")
+                    or payload.get("task")
+                )
+                if not isinstance(task_desc, str) or not task_desc.strip():
+                    self._write_friendly_error(
+                        handler,
+                        HTTPStatus.BAD_REQUEST,
+                        "planner_failed",
+                        context={
+                            "goal": "",
+                            "reason": (
+                                "Field 'task_description' or 'command' "
+                                "is required."
+                            ),
+                        },
+                        technical_details=(
+                            "Field 'task_description' or 'command' is "
+                            "missing or empty."
+                        ),
+                    )
+                    return
+                target_robot = _optional_string(
+                    payload,
+                    "target_robot",
+                )
+                self._stream_planning_events(
+                    handler,
+                    run_planning=lambda event_sink: self.plan_mission(
+                        task_desc,
+                        target_robot=target_robot,
+                        operator=operator,
+                        event_sink=event_sink,
+                    ),
+                )
+                return
+
             if path == "/plan-mission":
+                allowed = {"task_description", "command", "task", "target_robot"}
+                unknown = sorted(set(payload) - allowed)
+                if unknown:
+                    raise PlanArtifactError(
+                        "plan_preview_payload_invalid",
+                        "Preview payload contains unsupported fields: "
+                        + ", ".join(unknown),
+                    )
                 task_desc = payload.get("task_description") or payload.get("command") or payload.get("task")
                 if not isinstance(task_desc, str) or not task_desc.strip():
                     self._write_friendly_error(
@@ -1575,32 +2680,114 @@ class MissionGateway:
                     return
                 result = self.plan_mission(
                     task_desc,
-                    profile=_optional_string(payload, "profile"),
+                    target_robot=_optional_string(payload, "target_robot"),
                     operator=operator,
                 )
-                self._write_json(handler, HTTPStatus.OK, result)
+                self._write_json(
+                    handler,
+                    (
+                        HTTPStatus.OK
+                        if result.get("status") in {
+                            "preview_ready",
+                            "clarification_required",
+                        }
+                        else HTTPStatus.UNPROCESSABLE_ENTITY
+                    ),
+                    result,
+                )
+                return
+
+            if path == "/plan-mission/clarification/stream":
+                allowed = {"planning_session_id", "answer"}
+                unknown = sorted(set(payload) - allowed)
+                if unknown:
+                    raise PlanArtifactError(
+                        "plan_clarification_payload_invalid",
+                        "Clarification payload contains unsupported fields: "
+                        + ", ".join(unknown),
+                    )
+                planning_session_id = _optional_string(
+                    payload,
+                    "planning_session_id",
+                )
+                answer = _optional_string(payload, "answer")
+                if planning_session_id is None or answer is None:
+                    raise PlanArtifactError(
+                        "plan_clarification_payload_invalid",
+                        "Fields 'planning_session_id' and 'answer' are required.",
+                    )
+                self._stream_planning_events(
+                    handler,
+                    run_planning=lambda event_sink: (
+                        self.continue_plan_mission(
+                            planning_session_id,
+                            answer,
+                            operator=operator,
+                            event_sink=event_sink,
+                        )
+                    ),
+                )
+                return
+
+            if path == "/plan-mission/clarification":
+                allowed = {"planning_session_id", "answer"}
+                unknown = sorted(set(payload) - allowed)
+                if unknown:
+                    raise PlanArtifactError(
+                        "plan_clarification_payload_invalid",
+                        "Clarification payload contains unsupported fields: "
+                        + ", ".join(unknown),
+                    )
+                planning_session_id = _optional_string(
+                    payload,
+                    "planning_session_id",
+                )
+                answer = _optional_string(payload, "answer")
+                if planning_session_id is None or answer is None:
+                    raise PlanArtifactError(
+                        "plan_clarification_payload_invalid",
+                        "Fields 'planning_session_id' and 'answer' are required.",
+                    )
+                result = self.continue_plan_mission(
+                    planning_session_id,
+                    answer,
+                    operator=operator,
+                )
+                self._write_json(
+                    handler,
+                    (
+                        HTTPStatus.OK
+                        if result.get("status") in {
+                            "preview_ready",
+                            "clarification_required",
+                        }
+                        else HTTPStatus.UNPROCESSABLE_ENTITY
+                    ),
+                    result,
+                )
+                return
+
+            if path == "/plan-mission/confirm":
+                result = self.confirm_plan(payload, operator=operator)
+                self._write_json(handler, HTTPStatus.ACCEPTED, result)
                 return
 
             if path in ("/missions", "/tasks"):
-                command = payload.get("command") or payload.get("task") or payload.get("goal") or payload.get("task_description")
-                if not isinstance(command, str) or not command.strip():
-                    self._write_error(handler, HTTPStatus.BAD_REQUEST, "Field 'command' or 'task' is required.")
-                    return
-                result = self.submit_mission(
-                    command,
-                    session_id=_optional_string(payload, "session_id") or _optional_string(payload, "task_id"),
-                    operator=operator,
-                    use_scheduler=payload.get("use_scheduler", True),
-                    background=(
-                        payload.get("background")
-                        if isinstance(payload.get("background"), bool)
-                        else None
-                    ),
+                self._write_json(
+                    handler,
+                    HTTPStatus.PRECONDITION_REQUIRED,
+                    {
+                        "status": "error",
+                        "error_code": "plan_confirmation_required",
+                        "message": (
+                            "Direct mission submission is disabled. Create a "
+                            "sealed preview at POST /plan-mission, then consume "
+                            "it once at POST /plan-mission/confirm."
+                        ),
+                        "preview_endpoint": "/plan-mission",
+                        "confirm_endpoint": "/plan-mission/confirm",
+                    },
                 )
-                if "mission_id" in result and "task_id" not in result:
-                    result["task_id"] = result["mission_id"]
-                status = _mission_submit_status(result)
-                self._write_json(handler, status, result)
                 return
 
             if path == "/recover":
@@ -2008,6 +3195,16 @@ class MissionGateway:
             self._write_error(handler, HTTPStatus.NOT_FOUND, f"Unknown endpoint: {path}")
         except GatewayRequestBodyError as exc:
             self._write_error(handler, exc.status, str(exc))
+        except PlanArtifactError as exc:
+            self._write_json(
+                handler,
+                _plan_artifact_http_status(exc.code),
+                {
+                    "status": "error",
+                    "error_code": exc.code,
+                    "message": str(exc),
+                },
+            )
         except Exception:
             logger.exception("Unhandled error in POST %s", path)
             self._write_error(handler, HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error.")
@@ -2076,6 +3273,169 @@ def _int_query(query: dict[str, list[str]], key: str, default: int) -> int:
         return default
 
 
+def _mission_run_stream_payload(
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep replayable SSE lifecycle events bounded; reports remain queryable."""
+
+    if event_type not in _MISSION_STREAM_REPORT_EVENTS:
+        return dict(payload)
+
+    projected: dict[str, Any] = {}
+    for key in (
+        "status",
+        "report_status",
+        "report_pending",
+        "report_available",
+        "report_duration_ms",
+        "plan_artifact_id",
+        "plan_digest",
+        "plan_source",
+    ):
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value is None or isinstance(value, (str, int, float, bool)):
+            projected[key] = value
+
+    report: Mapping[str, Any] | None = None
+    final_report = payload.get("final_report")
+    if isinstance(final_report, Mapping):
+        report = final_report
+    elif event_type == "mission.report_ready":
+        report = payload
+    if report is not None:
+        projected["report_available"] = True
+        report_status = payload.get("report_status")
+        if report_status != "ready":
+            report_status = report.get("status")
+        if isinstance(report_status, str):
+            projected["report_status"] = report_status
+            projected.setdefault("status", report_status)
+        summary = report.get("summary")
+        if isinstance(summary, str):
+            projected["report_summary"] = _bounded_stream_text(summary)
+    return projected
+
+
+def _planning_timing_payload(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return bounded, JSON-safe stage timings for preview responses."""
+
+    stages: list[dict[str, Any]] = []
+    by_stage_ms: dict[str, float] = {}
+    allowed_keys = {
+        "stage",
+        "status",
+        "duration_ms",
+        "iteration",
+        "record_kind",
+        "critical_chars",
+        "advisory_chars",
+        "memory_count",
+        "correction_count",
+        "external_knowledge_count",
+        "input_tokens",
+        "output_reserve_tokens",
+        "model",
+        "outcome",
+        "subtask_count",
+        "bound_target_count",
+        "ready_robot_count",
+        "error_code",
+        "error_type",
+    }
+    for raw in records:
+        if not isinstance(raw, Mapping):
+            continue
+        stage = raw.get("stage")
+        duration = raw.get("duration_ms")
+        if not isinstance(stage, str) or not stage.strip():
+            continue
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            continue
+        item = {
+            str(key): value
+            for key, value in raw.items()
+            if key in allowed_keys
+        }
+        item["duration_ms"] = round(max(0.0, float(duration)), 2)
+        stages.append(item)
+        key = str(stage)
+        iteration = raw.get("iteration")
+        if isinstance(iteration, int) and iteration > 0:
+            key += f"[{iteration}]"
+        record_kind = raw.get("record_kind")
+        if isinstance(record_kind, str) and record_kind:
+            key += f":{record_kind}"
+        by_stage_ms[key] = round(
+            by_stage_ms.get(key, 0.0) + max(0.0, float(duration)),
+            2,
+        )
+    return {"stages": stages, "by_stage_ms": by_stage_ms}
+
+
+def _mission_run_status_projection(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Return only bounded control-plane fields needed by operator followers."""
+
+    keys = (
+        "run_id",
+        "mission_id",
+        "status",
+        "run_status",
+        "terminal",
+        "created_at",
+        "updated_at",
+        "plan_artifact_id",
+        "plan_digest",
+        "plan_source",
+        "correction_count",
+        "report_status",
+        "report_pending",
+        "report_started_at",
+        "report_finished_at",
+        "report_duration_ms",
+        "report_error",
+    )
+    projected = {key: result[key] for key in keys if key in result}
+    nested_result = result.get("result")
+    if isinstance(nested_result, Mapping):
+        nested_status = nested_result.get("status")
+        if isinstance(nested_status, str):
+            projected["result_status"] = nested_status
+        # Operator-facing failure causes stay bounded but must survive the
+        # projection, otherwise a failed mission reports no reason at all.
+        reasons = nested_result.get("failure_reasons")
+        if isinstance(reasons, list) and reasons:
+            projected["failure_reasons"] = [
+                str(reason) for reason in reasons[:5]
+            ]
+        message = nested_result.get("message")
+        if isinstance(message, str) and message.strip():
+            projected["message"] = message.strip()[:500]
+    final_report = result.get("final_report")
+    if isinstance(final_report, Mapping):
+        projected["report_available"] = True
+        report_status = final_report.get("status")
+        if isinstance(report_status, str):
+            projected["report_status"] = report_status
+    report_error = result.get("report_error")
+    if isinstance(report_error, str):
+        projected["report_error"] = _bounded_stream_text(report_error)
+    error = result.get("error")
+    if isinstance(error, str):
+        projected["error"] = _bounded_stream_text(error)
+    return projected
+
+
+def _bounded_stream_text(value: str, *, limit: int = 2048) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
+
+
 def _optional_string(payload: dict[str, Any], key: str) -> str | None:
     value = payload.get(key)
     if isinstance(value, str) and value.strip():
@@ -2088,6 +3448,191 @@ def _optional_positive_int(payload: dict[str, Any], key: str, default: int) -> i
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"Field '{key}' must be a positive integer.")
     return value
+
+
+def _required_payload_string(payload: Mapping[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise PlanArtifactError(
+            "plan_confirmation_payload_invalid",
+            f"Field '{key}' must be a non-empty string.",
+        )
+    return value.strip()
+
+
+def _required_payload_int(payload: Mapping[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise PlanArtifactError(
+            "plan_confirmation_payload_invalid",
+            f"Field '{key}' must be a positive integer.",
+        )
+    return value
+
+
+def _required_payload_string_list(
+    payload: Mapping[str, Any],
+    key: str,
+) -> list[str]:
+    value = payload.get(key)
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise PlanArtifactError(
+            "plan_confirmation_payload_invalid",
+            f"Field '{key}' must be a non-empty string list.",
+        )
+    return [item.strip() for item in value]
+
+
+def _operator_id(operator: OperatorContext | None) -> str:
+    if operator is not None and operator.operator_id.strip():
+        return operator.operator_id.strip()
+    return "unknown-operator"
+
+
+def _planning_dialogue_plan_error(
+    error: PlanningDialogueError,
+) -> PlanArtifactError:
+    return PlanArtifactError(error.code, str(error))
+
+
+def _presence_from_readiness_snapshot(
+    snapshot: Mapping[str, Any],
+    *,
+    registry: RobotRegistry,
+) -> dict[str, dict[str, Any]]:
+    """Project the same readiness evidence used by the preview admission gate."""
+
+    by_robot: dict[str, Mapping[str, Any]] = {}
+    values = snapshot.get("robot_readiness")
+    if isinstance(values, list):
+        for item in values:
+            if not isinstance(item, Mapping):
+                continue
+            robot_id = item.get("robot_id")
+            readiness = item.get("readiness")
+            if isinstance(robot_id, str) and isinstance(readiness, Mapping):
+                by_robot[robot_id] = readiness
+
+    presence: dict[str, dict[str, Any]] = {}
+    for entry in registry.enabled_entries(include_stale=True):
+        evidence = by_robot.get(entry.robot_id, {})
+        value = evidence.get("value")
+        value = value if isinstance(value, Mapping) else {}
+        status = value.get("status")
+        freshness = evidence.get("freshness")
+        presence[entry.robot_id] = {
+            "robot_id": entry.robot_id,
+            "online": status == "online" and freshness == "fresh",
+            "stale": status == "stale" or freshness == "stale",
+            "last_seen_at": value.get("last_seen_at"),
+            "state": (
+                dict(value["state"])
+                if isinstance(value.get("state"), Mapping)
+                else {}
+            ),
+        }
+    return presence
+
+
+def _target_binding_state_from_readiness_snapshot(
+    snapshot: Mapping[str, Any],
+    *,
+    registry: RobotRegistry,
+) -> dict[str, list[dict[str, Any]]]:
+    """Expose only live map poses in the shape used by target binding.
+
+    The readiness snapshot is the gateway's authoritative live projection,
+    while ``validate_plan_target_binding`` consumes the planner's
+    ``MissionStateSnapshot``-compatible ``robots`` view.  Keep this adapter
+    read-only and deliberately omit robots without a valid map pose so the
+    validator fails closed when TF evidence is unavailable.
+    """
+
+    presence = _presence_from_readiness_snapshot(snapshot, registry=registry)
+    robots: list[dict[str, Any]] = []
+    for robot_id, value in presence.items():
+        gateway_state = value.get("state")
+        if not isinstance(gateway_state, Mapping):
+            continue
+        robot_state = gateway_state.get("robot_state")
+        if not isinstance(robot_state, Mapping):
+            continue
+        pose = robot_state.get("pose")
+        if isinstance(pose, Mapping):
+            robots.append({"robot_id": robot_id, "pose": dict(pose)})
+    return {"robots": robots}
+
+
+def _fresh_online_robot_ids(snapshot: Mapping[str, Any]) -> set[str]:
+    values = snapshot.get("robot_readiness")
+    if not isinstance(values, list):
+        raise PlanArtifactError(
+            "readiness_unavailable",
+            "Gateway readiness contains no robot evidence.",
+        )
+    result: set[str] = set()
+    for item in values:
+        if not isinstance(item, Mapping):
+            continue
+        robot_id = item.get("robot_id")
+        evidence = item.get("readiness")
+        if not isinstance(robot_id, str) or not isinstance(evidence, Mapping):
+            continue
+        readiness_value = evidence.get("value")
+        if (
+            evidence.get("freshness") == "fresh"
+            and isinstance(readiness_value, Mapping)
+            and readiness_value.get("status") == "online"
+        ):
+            result.add(robot_id)
+    return result
+
+
+def _plan_artifact_http_status(code: str) -> HTTPStatus:
+    if code == "plan_token_invalid":
+        return HTTPStatus.NOT_FOUND
+    if code == "planning_session_not_found":
+        return HTTPStatus.NOT_FOUND
+    if code == "planning_session_expired":
+        return HTTPStatus.GONE
+    if code == "planning_session_operator_mismatch":
+        return HTTPStatus.FORBIDDEN
+    if code == "real_dispatch_not_authorized":
+        return HTTPStatus.LOCKED
+    if code in {
+        "canonical_planner_unavailable",
+        "canonical_planner_failed",
+        "plan_artifact_capacity_exhausted",
+        "plan_artifact_store_unavailable",
+        "readiness_unavailable",
+    }:
+        return HTTPStatus.SERVICE_UNAVAILABLE
+    if code in {
+        "canonical_plan_invalid",
+        "canonical_plan_command_mismatch",
+        "canonical_plan_robot_mismatch",
+        "canonical_plan_target_unbound",
+    }:
+        return HTTPStatus.UNPROCESSABLE_ENTITY
+    if code in {
+        "plan_command_invalid",
+        "plan_preview_payload_invalid",
+        "plan_clarification_payload_invalid",
+        "planning_dialogue_payload_invalid",
+        "plan_confirmation_payload_invalid",
+        "plan_confirmation_required",
+        "plan_binding_invalid",
+        "plan_robot_mismatch",
+        "plan_ttl_invalid",
+    }:
+        return HTTPStatus.BAD_REQUEST
+    if code == "sealed_plan_queue_failed":
+        return HTTPStatus.SERVICE_UNAVAILABLE
+    return HTTPStatus.CONFLICT
 
 
 def _derive_action_from_command(command: str) -> str:

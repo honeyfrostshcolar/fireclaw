@@ -6,6 +6,7 @@ from fireclaw_core.agent.agent import (
     DeliberatedStepExecution,
     FireClawAgent,
 )
+from fireclaw_core.agent.robot import DryRunRobotAdapter
 from fireclaw_core.agent.bounded_loop import AgentLoopResult
 from fireclaw_core.agent.robot_deliberation import (
     RobotAgentExecutionObservation,
@@ -15,6 +16,7 @@ from fireclaw_core.execution.executor import (
     StepExecutionResult,
 )
 from fireclaw_core.memory.memory import JsonlMemoryStore
+from fireclaw_core.memory.robot_memory import RobotMemorySnapshot
 from fireclaw_core.planner.planner import Plan, PlanningResult, PlanStep
 from fireclaw_core.task.task_contract import StructuredRobotTask
 
@@ -114,6 +116,62 @@ def test_fireclaw_agent_run_planning_result_without_structured_task(tmp_path):
     assert result["structured_task"] is None
 
 
+def test_authorized_pending_step_reuses_original_snapshot(tmp_path):
+    class CountingSnapshotRecorder:
+        def __init__(self):
+            self.calls = 0
+
+        def record_snapshot(self, **kwargs):
+            self.calls += 1
+            return RobotMemorySnapshot(
+                body_state_event_id=f"snapshot-{self.calls}"
+            )
+
+    recorder = CountingSnapshotRecorder()
+    agent = FireClawAgent(
+        robot=DryRunRobotAdapter(robot_id="robot-1"),
+        memory=JsonlMemoryStore(tmp_path / "memory.jsonl"),
+        dry_run=True,
+        session_id="mission-1",
+        task_id="task-1",
+        robot_memory_recorder=recorder,
+        extension_paths=(EXTENSIONS,),
+        plugin_services={"adapter": "dry-run"},
+    )
+    task = StructuredRobotTask(
+        task_id="task-1",
+        mission_id="mission-1",
+        robot_id="robot-1",
+        task_type="navigate",
+        target=POINT_TARGET,
+        required_skills=["navigate_to_point"],
+        command="导航到 map 坐标 (2.0, 1.5)",
+    )
+
+    first = agent.run_structured_task(task)
+    assert recorder.calls == 1
+    pending_execution = {
+        "planning": first["planning"],
+        "memory_snapshot": first["memory_snapshot"],
+    }
+
+    resumed = agent.execute_authorized_pending_step(
+        command=task.command or "navigate",
+        structured_task=task,
+        pending_execution=pending_execution,
+    )
+
+    assert resumed["status"] == "succeeded"
+    assert recorder.calls == 1
+    assert resumed["memory_snapshot"] == {
+        "evidence_event_ids": ["snapshot-1"],
+        "reused": True,
+        "recorded": False,
+    }
+    assert resumed["authorization_resume"]["robot_agent_reinvoked"] is False
+    assert resumed["authorization_resume"]["llm_reinvoked"] is False
+
+
 def test_recovered_local_failure_does_not_invalidate_mission_plan(tmp_path):
     events = []
     agent = _navigation_agent(
@@ -186,6 +244,9 @@ def test_recovered_local_failure_does_not_invalidate_mission_plan(tmp_path):
     )
 
     assert result["status"] == "completed"
+    assert result["message"] == "任务已完成。"
+    assert result["message_locale"] == "zh-CN"
+    assert result["robot_agent_deliberation"]["message"] == "任务已完成。"
     assert "invalidation_event" not in result
     assert not any(
         event_type == "mission.plan_invalidated"

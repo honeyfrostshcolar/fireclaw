@@ -162,7 +162,7 @@ def test_mission_cli_trace_aggregates_robot_subagent_trace(tmp_path):
     assert trace["subtasks"][0]["robot_trace"]["result"]["status"] == "completed"
 
 
-def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
+def test_mission_cli_plan_mission_requires_sealed_confirmation(tmp_path):
     gateway1 = FireClawGateway(
         GatewayConfig(
             host="127.0.0.1",
@@ -209,14 +209,14 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
                 "fireclaw_core.mission.mission_cli",
                 "plan-mission",
                 "--command",
-                "去二楼和三楼搜索受困人员",
+                "搜索坐标 (2.0, 1.5) 和坐标 (3.0, 2.5) 的受困人员",
                 "--robot-registry",
                 str(robot_registry_path),
                 "--mission-registry",
                 str(mission_registry_path),
                 "--no-use-scheduler",
             ],
-            check=True,
+            check=False,
             cwd=".",
             text=True,
             capture_output=True,
@@ -226,11 +226,12 @@ def test_mission_cli_plan_mission_submits_subtasks(tmp_path):
         gateway1.stop()
         gateway2.stop()
 
-    assert result["status"] == "planned"
-    assert result["intent"] == "search"
-    assert len(result["subtask_results"]) == 2
-    robot_ids = {r["robot_id"] for r in result["subtask_results"]}
-    assert robot_ids == {"robot-1", "robot-2"}
+    assert completed.returncode == 2
+    assert result["status"] == "confirmation_required"
+    assert result["error_code"] == "plan_confirmation_required"
+    assert result["robot_action_started"] is False
+    assert gateway1.task_queue.list_records() == []
+    assert gateway2.task_queue.list_records() == []
 
 
 def test_mission_cli_rejects_submit_without_mission_scope(tmp_path):
@@ -880,8 +881,8 @@ def test_mission_cli_plan_mission_with_llm_flag():
     assert planner_trace._trace_store is not None
 
 
-def test_mission_cli_plan_mission_llm_missing_required_flags(tmp_path):
-    """Verify --planner llm without required provider flags exits with error."""
+def test_mission_cli_plan_mission_llm_flags_cannot_bypass_confirmation(tmp_path):
+    """Legacy LLM flags cannot restore the removed direct-dispatch path."""
     robot_registry_path = tmp_path / "robots.json"
     mission_registry_path = tmp_path / "missions.jsonl"
     robot_registry_path.write_text(
@@ -896,7 +897,7 @@ def test_mission_cli_plan_mission_llm_missing_required_flags(tmp_path):
             "fireclaw_core.mission.mission_cli",
             "plan-mission",
             "--command",
-            "去二楼搜索",
+            "前往坐标 (2.0, 1.5) 搜索",
             "--planner",
             "llm",
             "--robot-registry",
@@ -909,12 +910,13 @@ def test_mission_cli_plan_mission_llm_missing_required_flags(tmp_path):
         text=True,
         capture_output=True,
     )
-    assert completed.returncode != 0
-    assert "provider_base_url is required" in completed.stderr
+    assert completed.returncode == 2
+    result = json.loads(completed.stdout)
+    assert result["error_code"] == "plan_confirmation_required"
+    assert result["robot_action_started"] is False
 
 
-def test_mission_cli_plan_mission_deterministic_default(tmp_path):
-    """Verify --planner defaults to deterministic (existing behavior)."""
+def test_mission_cli_plan_mission_deterministic_is_also_fail_closed(tmp_path):
     robot_registry_path = tmp_path / "robots.json"
     mission_registry_path = tmp_path / "missions.jsonl"
     robot_registry_path.write_text(
@@ -930,7 +932,7 @@ def test_mission_cli_plan_mission_deterministic_default(tmp_path):
             "fireclaw_core.mission.mission_cli",
             "plan-mission",
             "--command",
-            "去二楼搜索",
+            "前往坐标 (2.0, 1.5) 搜索",
             "--robot-registry",
             str(robot_registry_path),
             "--mission-registry",
@@ -941,9 +943,10 @@ def test_mission_cli_plan_mission_deterministic_default(tmp_path):
         text=True,
         capture_output=True,
     )
-    # Will fail at runtime since robot-1 isn't reachable, but should not fail at CLI parsing
-    # The key is it doesn't error about --planner flags
-    assert "required when --planner=llm" not in completed.stderr
+    assert completed.returncode == 2
+    result = json.loads(completed.stdout)
+    assert result["error_code"] == "plan_confirmation_required"
+    assert result["robot_action_started"] is False
 
 
 def test_serve_subcommand_help():
@@ -966,6 +969,45 @@ def test_serve_subcommand_help():
     assert "--host" in completed.stdout
     assert "--port" in completed.stdout
     assert "--adapter" in completed.stdout
+    assert "--mission-planning-timeout-seconds" in completed.stdout
+
+
+def test_serve_subcommand_forwards_runtime_identity_inputs(tmp_path, monkeypatch):
+    from fireclaw_core.gateway import serve
+    from fireclaw_core.mission import mission_cli
+
+    profile_path = tmp_path / "profile.toml"
+    profile_path.write_text("", encoding="utf-8")
+    receipt_path = tmp_path / "deployment-receipt.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    captured = {}
+
+    monkeypatch.setenv("FIRECLAW_DEPLOYMENT_RECEIPT", str(receipt_path))
+    monkeypatch.setattr(
+        serve,
+        "run_server_blocking",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = mission_cli.main(
+        [
+            "serve",
+            "--config",
+            str(profile_path),
+            "--runtime-root",
+            str(tmp_path / "runtime"),
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8766",
+        ]
+    )
+
+    assert result == 0
+    assert captured["active_profile_path"] == profile_path
+    assert captured["deployment_receipt_path"] == str(receipt_path)
 
 
 def test_mission_subcommand_help():
@@ -985,6 +1027,7 @@ def test_mission_subcommand_help():
     assert completed.returncode == 0, f"stderr: {completed.stderr}"
     assert "--server" in completed.stdout
     assert "--timeout" in completed.stdout
+    assert "--verbose" in completed.stdout
 
 
 def test_main_module_routes_to_mission_cli():

@@ -7,6 +7,10 @@ Agent、Session、Plugin、Skill、Tool、Gateway 和本地持久化边界，并
 当前代码不是认证过的消防控制系统。任何真实机器人、传感器、急停链路和物理
 Tool 都必须经过具体平台与现场验证。
 
+仿真和实机配置不得共用文件。当前演示使用 `fireclaw.sim.toml`，实机只能从
+`fireclaw.real.example.toml` 建立私有 `fireclaw.real.toml`。完整启动命令与防误用规则见
+[`docs/deployment/simulation-real-config-separation.zh-CN.md`](docs/deployment/simulation-real-config-separation.zh-CN.md)。
+
 ## 当前架构
 
 ```text
@@ -112,14 +116,14 @@ python3 -m venv .venv
 
 ## 快速入门与核心命令
 
-当前基线提供 5 个独立的生命周期入口。它们便于在完整源码仓库中验证安装与运维边界，但尚未组成
-wheel 安装后的“一条命令首次任务”闭环，也不代表已经实现零手写配置：
+仿真首次使用由 CLI 编排为 `setup → start → open`；实机设置仍严格停留在被动发现、草稿与非致动预检，
+也不代表已经实现阶段 6 的零手写实机配置：
 
 ```bash
-# 1. 首次准备（生成 TurtleBot3 Gazebo 仿真 Profile 并准备 Runtime release）
+# 1. 一条命令校验/物化 companion bundle、构建可续接 workspace、部署并启动仿真，随后打开 Web
 fireclaw setup
 
-# 2. 启动后台守护进程（Supervisor 与 Gateway）
+# 以下命令用于后续独立运维；setup --no-start 时也可手动调用 start/open
 fireclaw start
 
 # 3. 查看运行健康度、服务状态与 readiness 快照
@@ -132,12 +136,14 @@ fireclaw open
 fireclaw stop
 ```
 
-`setup` 会生成无凭据的 TurtleBot3 Gazebo Profile、验证 ROS/Navigation Plugin、准备内容寻址 Runtime release，
-并记住当前 Profile；不会启动 Gazebo、Gateway 或任何机器人动作。当前实现仍要求完整 FireClaw 源码仓库和
-仓库内 ROS workspace，不能据此声称普通 wheel 安装后即可完成首次仿真任务。后续命令可省略
-`--profile`；重复运行会复用 fingerprint 相同的 release，不覆盖已有 Profile。实机模式不会自动生成
-配置、部署或运动，只接受显式提供且已经人工审查的 real Profile。`stop` 只证明守护进程退出；机器人
-物理状态在没有 Adapter/硬件证据时仍为 `UNKNOWN`。详细边界见
+`setup` 会验证与 wheel catalog 绑定的 versioned companion bundle，将其物化到内容寻址目录，续接构建
+Catkin install workspace，生成只引用稳定 release 路径的无凭据 Profile，再启动仿真受管运行时并打开
+控制台。bundle 可通过 `--simulation-bundle`、`FIRECLAW_SIMULATION_BUNDLE`、当前目录或 runtime cache 提供；
+源码 checkout 仅作为构建同一固定 SHA artifact 的开发回退。使用 `--no-start` 或 `--no-browser` 可停在相应
+边界。重复运行会校验 receipt 后复用 bundle、workspace、Profile 与已运行 Gateway。实机模式不会自动生成、
+部署、启动或运动，只接受显式提供且已经人工审查的 real Profile，并输出未应用的 discovery draft/diff 与
+`live=false` 静态预检。`stop` 只证明守护进程退出；机器人物理状态在没有 Adapter/硬件证据时仍为
+`UNKNOWN`。详细边界见
 [`docs/getting-started/first-run-setup.md`](docs/getting-started/first-run-setup.md)。
 
 ## Web Console 运维控制台
@@ -146,9 +152,10 @@ FireClaw 提供了专为应急救援场景打造的轻量化本地运维控制�
 
 控制台是 Gateway 状态的投影，不是独立的硬件事实来源。页面在收到 readiness、急停或停止证据前显示 `UNKNOWN`；`ready` 只表示当前任务准入条件满足，不等同于机器人处于物理静止。
 
-1. **首页概览 (Overview)**：投影 Mission Gateway 当前提供的 readiness 与 fleet 字段。Gateway 尚未提供
-   active Profile、权威 deployment mode 与完整物理证据合同，因此缺失字段显示 `UNKNOWN`，不能把页面
-   当作机器人本体事实来源。
+1. **首页概览 (Overview)**：只消费 Gateway 在进程启动时冻结的 active Profile、Profile SHA/revision、
+   deployment mode、robot ID，以及实时 robot readiness evidence。每个 Web 消费的 observation 都携带
+   `source`、`observed_at`、`freshness` 与 `evidence_id`；缺失、过期或只有 legacy scalar 时显示 `UNKNOWN`。
+   急停与物理停止没有硬件证据时仍保持 `UNKNOWN`，不能把“无 blocker”解释成传感器正常。
 2. **任务预览 (Task Preview Prototype)**：可显示自然语言解析结果并要求 Web 操作员显式点击确认；当前
    preview 不是不可变 plan artifact，`/tasks` 也尚未保证消费同一计划，因此不能声称“预览即执行合同”。
 3. **执行事件与取消投影**：通过 Gateway SSE 显示事件，并区分 `cancel_requested`、权威
@@ -257,15 +264,16 @@ fireclaw errors list --json
   --event-path /tmp/fireclaw-doctor-events.jsonl
 ```
 
-部署后的操作员 readiness、Fleet Doctor 与安全冻结恢复使用统一入口：
+部署后的操作员 readiness、Fleet Doctor 与安全冻结恢复使用统一入口。以下命令只适用于
+已按实机验收流程创建的私有 `fireclaw.real.toml`：
 
 ```bash
-fireclaw deploy apply --profile fireclaw.toml
-fireclaw deploy service install --profile fireclaw.toml --no-enable --no-start
-fireclaw deploy service start --profile fireclaw.toml
-fireclaw status --profile fireclaw.toml
-fireclaw recover --profile fireclaw.toml
-fireclaw deploy service stop --profile fireclaw.toml
+fireclaw deploy apply --profile fireclaw.real.toml
+fireclaw deploy service install --profile fireclaw.real.toml --no-enable --no-start
+fireclaw deploy service start --profile fireclaw.real.toml
+fireclaw status --profile fireclaw.real.toml
+fireclaw recover --profile fireclaw.real.toml
+fireclaw deploy service stop --profile fireclaw.real.toml
 ```
 
 默认输出面向人类；自动化可增加 `--json`。`status` 在一个快照中聚合部署/ROS、Robot Gateway、
@@ -280,15 +288,15 @@ fireclaw deploy service stop --profile fireclaw.toml
 实机冻结恢复由默认关闭的 `fireclaw.safety.ros1-hardware` Plugin 提供。它不暴露 LLM Tool；只有
 厂商硬件 stop 获得确认，并同时取得 watchdog、物理急停、driver disable、制动策略、完整执行器
 清单和独立 odometry 的连续静止证据时，Gateway 才接受 `hardware_stop_v1` 报告。配置模板见
-`examples/deployment_profiles/navigation_robot.toml.example`；逻辑解冻不会清除物理急停或续跑
+`fireclaw.real.example.toml`；逻辑解冻不会清除物理急停或续跑
 旧任务。无真机时可先完成离线准备；现场使用以下闭环命令：
 
 ```bash
-fireclaw hardware-safety preflight --profile fireclaw.toml --offline
-fireclaw hardware-safety preflight --profile fireclaw.toml
-fireclaw hardware-safety accept --profile fireclaw.toml --scenario stop_proof \
+fireclaw hardware-safety preflight --profile fireclaw.real.toml --offline
+fireclaw hardware-safety preflight --profile fireclaw.real.toml
+fireclaw hardware-safety accept --profile fireclaw.real.toml --scenario stop_proof \
   --operator-id operator-01 --firmware-version vendor-fw-1.2.3
-fireclaw hardware-safety report --profile fireclaw.toml \
+fireclaw hardware-safety report --profile fireclaw.real.toml \
   --firmware-version vendor-fw-1.2.3 --artifact-dir results/hardware-safety
 ```
 
@@ -399,16 +407,16 @@ planning protocol v2 对缺省 point `yaw` 按可执行 schema 规范化为 `0.0
 ```
 
 ```bash
-cp fireclaw.example.toml fireclaw.toml  # fill the shared [provider] table
+cp fireclaw.sim.example.toml fireclaw.sim.toml  # fill the private [provider] table
 /home/lpp/miniconda3/envs/py310/bin/python \
   -m fireclaw_core.devtools.llm_planning_eval \
-  --config fireclaw.toml \
+  --config fireclaw.sim.toml \
   --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
   --output-dir results/embodied-eval/<unique-llm-run-id> \
   --temperature 0
 ```
 
-`llm_planning_eval` 与 Gateway 共用 `fireclaw.toml` 的 `[provider]` 配置；显式 CLI
+`llm_planning_eval` 与仿真 Gateway 共用 `fireclaw.sim.toml` 的 `[provider]` 配置；显式 CLI
 参数仍可覆盖 TOML。API key 可以放在 `[provider].api_key`，或放在
 `[provider].api_key_env` 指定的环境变量中，均不会进入 artifact。seed 会转发给兼容
 provider，但不能保证后端确定性；正式论文数据仍应记录实际 response model 并执行多

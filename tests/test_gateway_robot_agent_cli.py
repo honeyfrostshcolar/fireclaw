@@ -18,6 +18,8 @@ def test_gateway_cli_exposes_robot_agent_flags():
     assert "--robot-agent-planner" in completed.stdout
     assert "--robot-agent-provider-base-url" in completed.stdout
     assert "--robot-agent-provider-api-key" in completed.stdout
+    assert "--provider-timeout-seconds" in completed.stdout
+    assert "--mission-group-timeout-seconds" in completed.stdout
     assert "--robot-agent-model" in completed.stdout
     assert "--catalog" in completed.stdout
     assert "--robot-agent-catalog" in completed.stdout
@@ -35,6 +37,8 @@ def test_robot_gateway_cli_exposes_config_flag():
     )
 
     assert "--config" in completed.stdout
+    assert "--robot-agent-provider-timeout-seconds" in completed.stdout
+    assert "--robot-agent-loop-timeout-seconds" in completed.stdout
     assert "--robot-agent" in completed.stdout
     assert "--robot-agent-planner" in completed.stdout
     assert "--robot-agent-catalog" in completed.stdout
@@ -72,7 +76,71 @@ def test_robot_gateway_runtime_uses_defaults_for_omitted_config(
     assert config.dry_run is True
     assert config.robot_agent_enabled is False
     assert config.robot_agent_planner == "deterministic"
+    assert config.robot_agent_provider_timeout_seconds == 60.0
+    assert config.robot_agent_provider_thinking is None
+    assert config.robot_agent_loop_timeout_seconds == 600.0
     assert captured["served"] is True
+
+
+def test_robot_gateway_cli_handles_keyboard_interrupt_cleanly(
+    monkeypatch,
+    capsys,
+) -> None:
+    from fireclaw_core.gateway import gateway as gateway_module
+
+    class FakeGateway:
+        def __init__(self, config):
+            self.config = config
+            self.base_url = f"http://{config.host}:{config.port}"
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(gateway_module, "FireClawGateway", FakeGateway)
+
+    assert gateway_module._run_robot_gateway({}, object()) == 0
+    assert "Robot Gateway stopped." in capsys.readouterr().out
+
+
+def test_robot_gateway_wires_provider_and_outer_loop_timeouts(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fireclaw_core.gateway import gateway as gateway_module
+
+    captured = {}
+    provider_runtime = object()
+
+    def fake_build_provider_runtime(**kwargs):
+        captured.update(kwargs)
+        return provider_runtime
+
+    monkeypatch.setattr(
+        gateway_module,
+        "build_provider_runtime",
+        fake_build_provider_runtime,
+    )
+    gateway = gateway_module.FireClawGateway(
+        gateway_module.GatewayConfig(
+            robot_agent_enabled=True,
+            robot_agent_planner="llm",
+            robot_agent_provider_base_url="https://example.invalid/v1",
+            robot_agent_provider_api_key="test-key",
+            robot_agent_provider_timeout_seconds=60.0,
+            robot_agent_provider_thinking=False,
+            robot_agent_model="test-model",
+            robot_agent_loop_timeout_seconds=600.0,
+            memory_path=str(tmp_path / "memory.jsonl"),
+            event_path=str(tmp_path / "events.jsonl"),
+            task_queue_path=str(tmp_path / "tasks.jsonl"),
+            runtime_state_path=str(tmp_path / "runtime.sqlite3"),
+        )
+    )
+
+    assert captured["provider_timeout_seconds"] == 60.0
+    assert captured["provider_thinking"] is False
+    assert gateway.robot_agent_runtime is not None
+    assert gateway.robot_agent_runtime.limits.timeout_seconds == 600.0
 
 
 def test_gateway_package_module_cli_exposes_config_flag():
@@ -96,6 +164,8 @@ base_url = "https://example.invalid/v1"
 api_key = "secret"
 model = "mimo-v2.5"
 catalog = "models.json"
+timeout_seconds = 60
+thinking = false
 
 [robot_gateway]
 host = "127.0.0.1"
@@ -112,6 +182,11 @@ available_sensors = ["thermal_camera"]
 [robot_agent]
 enabled = true
 planner = "llm"
+loop_timeout_seconds = 600
+
+[mission]
+group_timeout_seconds = 720
+planning_timeout_seconds = 180
 """.strip(),
         encoding="utf-8",
     )
@@ -133,9 +208,16 @@ planner = "llm"
     assert cfg["robot_gateway_available_sensors"] == ["thermal_camera"]
     assert cfg["robot_agent_provider_base_url"] == "https://example.invalid/v1"
     assert cfg["robot_agent_provider_api_key"] == "secret"
+    assert cfg["provider_timeout_seconds"] == 60
+    assert cfg["provider_thinking"] is False
+    assert cfg["robot_agent_provider_timeout_seconds"] == 60
+    assert cfg["robot_agent_provider_thinking"] is False
     assert cfg["robot_agent_model"] == "mimo-v2.5"
     assert cfg["model_catalog_path"] == "models.json"
     assert cfg["robot_agent_model_catalog_path"] == "models.json"
+    assert cfg["robot_agent_loop_timeout_seconds"] == 600
+    assert cfg["mission_group_timeout_seconds"] == 720
+    assert cfg["mission_planning_timeout_seconds"] == 180
 
 
 def test_config_allows_robot_agent_catalog_override(tmp_path):
@@ -155,6 +237,25 @@ catalog = "robot-models.json"
 
     assert cfg["model_catalog_path"] == "central-models.json"
     assert cfg["robot_agent_model_catalog_path"] == "robot-models.json"
+
+
+def test_config_allows_robot_agent_thinking_override(tmp_path):
+    config_path = tmp_path / "fireclaw.toml"
+    config_path.write_text(
+        """
+[provider]
+thinking = false
+
+[robot_agent.provider]
+thinking = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg["provider_thinking"] is False
+    assert cfg["robot_agent_provider_thinking"] is True
 
 
 def test_config_loads_gateway_server_and_outbound_robot_tokens(tmp_path):

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from urllib import request
 
 from fireclaw_core.gateway.serve import start_server
+from fireclaw_core.mission.mission_gateway_client import MissionGatewayClient
 from fireclaw_core.mission.mission_planning_audit import JsonlMissionPlanningAuditSink
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
@@ -39,6 +41,41 @@ def _fake_get_task_trace(self, entry, task_id):
     }
 
 
+def _write_active_profile(tmp_path: Path) -> Path:
+    profile = tmp_path / "active-profile.toml"
+    profile.write_text(
+        f"""
+[robot]
+id = "robot-1"
+base_url = "http://127.0.0.1:8765"
+adapter = "ros1"
+data_dir = "robot-data"
+capabilities = ["navigation", "patrol"]
+enabled_skills = ["navigate_to_point"]
+llm_exposed_skills = ["navigate_to_point"]
+
+[capability_skill_chains]
+navigation = ["navigate_to_point"]
+patrol = ["navigate_to_point"]
+
+[deployment]
+id = "robot-1-deployment"
+mode = "simulation"
+output_root = "{tmp_path / 'deployments'}"
+
+[deployment.ros1]
+distro = "noetic"
+setup_files = ["/opt/ros/noetic/setup.bash"]
+
+[plugins]
+paths = ["{tmp_path / 'extensions'}"]
+selected = ["fireclaw.navigation.move-base"]
+""",
+        encoding="utf-8",
+    )
+    return profile
+
+
 def test_start_server_creates_data_dir_and_robots_json(tmp_path: Path):
     data_dir = tmp_path / "data"
     gw = start_server(data_dir=data_dir, port=0, planner_type="deterministic")
@@ -47,6 +84,27 @@ def test_start_server_creates_data_dir_and_robots_json(tmp_path: Path):
         assert (data_dir / "robots.json").exists()
         robots = json.loads((data_dir / "robots.json").read_text())
         assert "robots" in robots
+        assert (
+            gw.mission_agent.mission_deliberation_runtime.limits.timeout_seconds
+            == 180.0
+        )
+    finally:
+        gw.stop()
+
+
+def test_start_server_separates_provider_and_mission_planning_timeouts(tmp_path: Path):
+    gw = start_server(
+        data_dir=tmp_path / "data",
+        port=0,
+        planner_type="deterministic",
+        provider_timeout_seconds=12.0,
+        mission_planning_timeout_seconds=37.5,
+    )
+    try:
+        assert (
+            gw.mission_agent.mission_deliberation_runtime.limits.timeout_seconds
+            == 37.5
+        )
     finally:
         gw.stop()
 
@@ -85,29 +143,35 @@ def test_start_server_submit_and_trace(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(RobotSubagentClient, "submit_task", _fake_submit_task)
     monkeypatch.setattr(RobotSubagentClient, "get_task_trace", _fake_get_task_trace)
     data_dir = tmp_path / "data"
-    gw = start_server(data_dir=data_dir, port=0, planner_type="deterministic")
+    active_profile = _write_active_profile(tmp_path)
+    gw = start_server(
+        data_dir=data_dir,
+        port=0,
+        planner_type="deterministic",
+        embodied_runtime_mode="simulation",
+        active_profile_path=active_profile,
+    )
     try:
-        url = gw.base_url
-        # use_scheduler=False avoids the scheduler's poll loop which would
-        # time out because no real robot is running to complete subtasks.
-        body = json.dumps({
-            "command": "去二楼搜救受困人员",
-            "use_scheduler": False,
-        }).encode()
-        req = request.Request(
-            f"{url}/missions",
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json"},
+        client = MissionGatewayClient(gw.base_url)
+        preview = client.preview_mission(
+            "前往坐标 (2.0, 1.5) 巡逻",
+            target_robot="robot-1",
         )
-        resp = request.urlopen(req, timeout=5)
-        result = json.loads(resp.read())
+        result = client.confirm_plan(preview, operator_confirmed=True)
+        assert preview["status"] == "preview_ready"
+        assert result["status"] == "accepted"
         assert "mission_id" in result
 
         mission_id = result["mission_id"]
-        resp = request.urlopen(f"{url}/missions/{mission_id}/trace", timeout=5)
-        trace = json.loads(resp.read())
+        deadline = time.monotonic() + 5.0
+        trace = {}
+        while time.monotonic() < deadline:
+            trace = client.get_mission_trace(mission_id)
+            if trace.get("status") in {"succeeded", "completed", "failed"}:
+                break
+            time.sleep(0.05)
         assert trace["mission_id"] == mission_id
+        assert trace["status"] in {"succeeded", "completed"}
     finally:
         gw.stop()
 

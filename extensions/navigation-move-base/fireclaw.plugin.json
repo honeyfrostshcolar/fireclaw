@@ -38,8 +38,8 @@
       "navigate_timeout_seconds": {
         "type": "number",
         "minimum": 0.1,
-        "maximum": 300.0,
-        "default": 120.0
+        "maximum": 1800.0,
+        "default": 360.0
       },
       "cancellation_ack_timeout_seconds": {
         "type": "number",

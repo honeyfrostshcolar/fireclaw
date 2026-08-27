@@ -18,7 +18,7 @@ INTEGRATION_PACKAGE = (
 PLUGIN_ROOT = REPO_ROOT / "extensions" / "navigation-move-base"
 PLUGIN_LAUNCH = PLUGIN_ROOT / "launch" / "fireclaw_navigation.launch"
 PLUGIN_CONFIG = PLUGIN_ROOT / "config" / "defaults"
-PROFILE = REPO_ROOT / "fireclaw.example.toml"
+PROFILE = REPO_ROOT / "fireclaw.sim.example.toml"
 RUNTIME_DESCRIPTOR = PLUGIN_ROOT / "runtime" / "fireclaw.runtime.json"
 
 

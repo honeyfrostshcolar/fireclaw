@@ -156,11 +156,11 @@ warnings/failures, and `1` for configuration or runner errors.
 ## LLM planning command
 
 ```bash
-cp fireclaw.example.toml fireclaw.toml
+cp fireclaw.sim.example.toml fireclaw.sim.toml
 # Fill [provider].name, base_url, api_key/api_key_env, model, and optional catalog.
 /home/lpp/miniconda3/envs/py310/bin/python \
   -m fireclaw_core.devtools.llm_planning_eval \
-  --config fireclaw.toml \
+  --config fireclaw.sim.toml \
   --scenarios tests/fixtures/embodied_eval/planning_scenarios.json \
   --output-dir results/embodied-eval/<unique-llm-run-id> \
   --temperature 0 \

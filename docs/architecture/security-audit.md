@@ -4,7 +4,7 @@ FireClaw provides a read-only deployment security audit:
 
 ```bash
 fireclaw security-audit \
-  --config /etc/fireclaw/fireclaw.toml \
+  --config /etc/fireclaw/fireclaw.real.toml \
   --plugin-dir /etc/fireclaw/plugins
 ```
 
@@ -54,7 +54,7 @@ collecting a report without gating a deployment.
 
 ```bash
 python -m fireclaw_core.devtools.doctor \
-  --security-config /etc/fireclaw/fireclaw.toml
+  --security-config /etc/fireclaw/fireclaw.real.toml
 ```
 
 Its `security_audit` check embeds the full audit report, but `doctor --fix`

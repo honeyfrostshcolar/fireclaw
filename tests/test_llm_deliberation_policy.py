@@ -7,9 +7,14 @@ from unittest.mock import MagicMock
 from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_deliberation import (
+    MissionDeliberationLimits,
     MissionDeliberationRuntime,
 )
 from fireclaw_core.mission.mission_planner import MissionPlannerContext
+from fireclaw_core.mission.plan_artifact import (
+    validate_plan_2d,
+    validate_plan_target_binding,
+)
 from fireclaw_core.mission.mission_state import (
     MissionEnvironmentFact,
     MissionStateSnapshotBuilder,
@@ -50,7 +55,6 @@ def _snapshot(registry: RobotRegistry):
                 "state": {
                     "robot_state": {
                         "battery_percent": 20,
-                        "current_floor": 1,
                     }
                 },
             },
@@ -60,7 +64,6 @@ def _snapshot(registry: RobotRegistry):
                 "state": {
                     "robot_state": {
                         "battery_percent": 85,
-                        "current_floor": 1,
                     }
                 },
             },
@@ -89,14 +92,21 @@ def _response(name: str, arguments: dict, *, call_id: str) -> ChatCompletion:
     )
 
 
-def _plan_arguments(*, robot_id: str = "robot-b", floor: int = 2) -> dict:
+def _plan_arguments(
+    *,
+    robot_id: str = "robot-b",
+    frame_id: str = "map",
+) -> dict:
     return {
         "intent": "search",
         "subtasks": [
             {
                 "robot_id": robot_id,
-                "command": "去二楼搜索受困人员",
-                "floor": floor,
+                "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                "target": {
+                    "frame_id": frame_id,
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                },
                 "capability_required": "victim_search",
                 "execution_group": 0,
             }
@@ -110,16 +120,15 @@ def _graph_arguments() -> dict:
         "intent": "search",
         "nodes": [
             {
-                "node_id": "search_second_floor",
+                "node_id": "search_point_alpha",
                 "task_type": "victim_search",
-                "command": "搜索二楼受困人员",
+                "command": "搜索地图坐标 (2.0, 1.5) 周边受困人员",
                 "target": {
-                    "frame_id": "building",
-                    "floor": 2,
-                    "area_id": "second_floor",
+                    "frame_id": "map",
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
                 },
                 "capability_required": "victim_search",
-                "completion_goal": "二楼搜索完成并上报受困人员位置",
+                "completion_goal": "目标点周边搜索完成并上报受困人员位置",
                 "depends_on": [],
                 "execution_mode": "parallel",
             }
@@ -128,11 +137,19 @@ def _graph_arguments() -> dict:
     }
 
 
-def _runtime(provider: MagicMock):
+def _runtime(
+    provider: MagicMock,
+    *,
+    limits: MissionDeliberationLimits | None = None,
+):
     registry = _registry()
     snapshot = _snapshot(registry)
     planner = LLMMissionPlanner(provider=provider, model_id="test-model")
-    runtime = MissionDeliberationRuntime(registry=registry, policy=planner)
+    runtime = MissionDeliberationRuntime(
+        registry=registry,
+        policy=planner,
+        limits=limits or MissionDeliberationLimits(),
+    )
     context = MissionPlannerContext(
         available_robots=registry.enabled_entries(),
         state_snapshot=snapshot.to_dict(),
@@ -163,7 +180,7 @@ def test_llm_policy_reads_distinct_snapshot_views_then_proposes() -> None:
 
     result = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="前往坐标 (2.0, 1.5) 搜索受困人员",
         state_snapshot=snapshot,
         planner_context=context,
     )
@@ -249,7 +266,7 @@ def test_llm_policy_compiles_semantic_graph_and_allocates_robot() -> None:
 
     result = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="前往坐标 (2.0, 1.5) 搜索受困人员",
         state_snapshot=snapshot,
         planner_context=context,
     )
@@ -259,21 +276,25 @@ def test_llm_policy_compiles_semantic_graph_and_allocates_robot() -> None:
     assert result.planning_result.graph_proposal is not None
     assert result.planning_result.plan is not None
     subtask = result.planning_result.plan.subtasks[0]
-    assert subtask.node_id == "search_second_floor"
+    assert subtask.node_id == "search_point_alpha"
     assert subtask.robot_id == "robot-b"
-    assert subtask.target["area_id"] == "second_floor"
+    assert subtask.target["pose"] == {
+        "x": 2.0,
+        "y": 1.5,
+        "yaw": 0.0,
+    }
     assert result.task_graph is not None
     node = result.task_graph.nodes[0]
-    assert node.node_id == "search_second_floor"
+    assert node.node_id == "search_point_alpha"
     assert node.robot_id == "robot-b"
-    assert node.completion_goal == "二楼搜索完成并上报受困人员位置"
+    assert node.completion_goal == "目标点周边搜索完成并上报受困人员位置"
     assert {condition.kind for condition in node.preconditions} == {
         "robot_enabled",
         "robot_has_capability",
         "emergency_stop_inactive",
     }
     assert result.to_dict()["graph_proposal"]["nodes"][0]["node_id"] == (
-        "search_second_floor"
+        "search_point_alpha"
     )
 
 
@@ -282,12 +303,12 @@ def test_llm_policy_receives_parser_error_and_repairs_plan_next_round() -> None:
     provider.chat_completion.side_effect = [
         _response(
             "propose_plan",
-            _plan_arguments(floor=0),
+            _plan_arguments(frame_id="building"),
             call_id="invalid-plan",
         ),
         _response(
             "propose_plan",
-            _plan_arguments(floor=2),
+            _plan_arguments(),
             call_id="repaired-plan",
         ),
     ]
@@ -295,7 +316,7 @@ def test_llm_policy_receives_parser_error_and_repairs_plan_next_round() -> None:
 
     result = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="前往坐标 (2.0, 1.5) 搜索受困人员",
         state_snapshot=snapshot,
         planner_context=context,
     )
@@ -309,7 +330,7 @@ def test_llm_policy_receives_parser_error_and_repairs_plan_next_round() -> None:
         provider.chat_completion.call_args_list[1].kwargs["messages"][1]["content"]
     )
     planning_context = second_turn["planning_context"]
-    assert "无效楼层" in planning_context["authoritative"][
+    assert "无效的二维 map 目标点" in planning_context["authoritative"][
         "validation_errors"
     ][0]
     assert planning_context["continuity"]["last_plan_proposal"][
@@ -358,7 +379,7 @@ def test_llm_policy_reads_invalidation_evidence_before_plan_revision() -> None:
 
     result = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="前往坐标 (2.0, 1.5) 搜索受困人员",
         state_snapshot=snapshot,
         planner_context=context,
         plan_revision=2,
@@ -404,14 +425,14 @@ def test_llm_policy_can_request_observation_only_after_belief_inspection() -> No
     provider = MagicMock()
     runtime, snapshot, context, _ = _runtime(provider)
     fact = MissionEnvironmentFact(
-        fact_id="west-stairs-camera",
+        fact_id="west-corridor-camera",
         kind="passable",
         value=True,
         source="fixed_camera",
         observed_at="2026-07-28T01:00:00+00:00",
         evidence_ids=("camera-frame-1",),
         confidence=0.6,
-        subject_id="west-stairs",
+        subject_id="west-corridor",
     )
     snapshot = MissionStateSnapshotBuilder(
         registry=_registry()
@@ -432,9 +453,8 @@ def test_llm_policy_can_request_observation_only_after_belief_inspection() -> No
             {
                 "belief_id": belief_id,
                 "target": {
-                    "frame_id": "building",
-                    "floor": 2,
-                    "area_id": "west-stairs",
+                    "frame_id": "map",
+                    "area_id": "west-corridor",
                 },
                 "capability_required": "victim_search",
                 "required_sensor": "thermal_camera",
@@ -446,7 +466,7 @@ def test_llm_policy_can_request_observation_only_after_belief_inspection() -> No
 
     result = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="搜索地图区域 west-corridor 的受困人员",
         state_snapshot=snapshot,
         planner_context=context,
     )
@@ -479,7 +499,7 @@ def test_llm_policy_escalates_unknown_or_multiple_tool_calls() -> None:
 
     unknown = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="前往坐标 (2.0, 1.5) 搜索受困人员",
         state_snapshot=snapshot,
         planner_context=context,
     )
@@ -516,7 +536,7 @@ def test_llm_policy_escalates_unknown_or_multiple_tool_calls() -> None:
 
     multiple = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="前往坐标 (2.0, 1.5) 搜索受困人员",
         state_snapshot=snapshot,
         planner_context=context,
     )
@@ -567,7 +587,7 @@ def test_llm_policy_recovers_one_invalid_tool_count_without_dispatch() -> None:
 
     result = runtime.deliberate(
         mission_id="mission-1",
-        command="去二楼救人",
+        command="前往坐标 (2.0, 1.5) 搜索受困人员",
         state_snapshot=snapshot,
         planner_context=context,
     )
@@ -607,7 +627,6 @@ def test_mission_agent_runs_llm_read_then_plan_flow_before_dispatch() -> None:
                 "state": {
                     "robot_state": {
                         "battery_percent": battery,
-                        "current_floor": 1,
                     }
                 },
             }
@@ -642,7 +661,7 @@ def test_mission_agent_runs_llm_read_then_plan_flow_before_dispatch() -> None:
     )
 
     result = agent.plan_and_submit(
-        "去二楼救人",
+        "前往坐标 (2.0, 1.5) 搜索受困人员",
         session_id="mission-1",
         use_scheduler=False,
     )
@@ -671,7 +690,6 @@ def test_explicit_llm_clarification_cannot_trigger_primitive_fallback() -> None:
                 "state": {
                     "robot_state": {
                         "battery_percent": 85,
-                        "current_floor": 1,
                     }
                 },
             }
@@ -702,7 +720,7 @@ def test_explicit_llm_clarification_cannot_trigger_primitive_fallback() -> None:
     )
 
     result = agent.plan_and_submit(
-        "去二楼救人",
+        "前往坐标 (2.0, 1.5) 搜索受困人员",
         session_id="mission-clarify",
         use_scheduler=False,
     )
@@ -711,3 +729,204 @@ def test_explicit_llm_clarification_cannot_trigger_primitive_fallback() -> None:
     assert result["message"] == "请确认受困人员所在区域。"
     assert result["deliberation"]["reason_code"] == "victim_location_required"
     assert client.submissions == []
+
+
+def test_invented_navigation_target_is_rejected_then_llm_must_clarify() -> None:
+    provider = MagicMock()
+    invented = _plan_arguments(robot_id="robot-a")
+    invented["subtasks"][0]["target"] = {
+        "frame_id": "map",
+        "pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+    }
+    provider.chat_completion.side_effect = [
+        _response("propose_plan", invented, call_id="invented-plan"),
+        _response(
+            "request_clarification",
+            {
+                "message": "请提供明确的 map 坐标；当前没有地图候选点证据。",
+                "reason_code": "navigation_target_required",
+            },
+            call_id="clarify-after-rejection",
+        ),
+    ]
+    runtime, snapshot, context, _ = _runtime(provider)
+
+    result = runtime.deliberate(
+        mission_id="mission-1",
+        command="随便往前走到一个没有障碍物的地方",
+        state_snapshot=snapshot,
+        planner_context=context,
+        proposal_validators=(
+            validate_plan_target_binding,
+            validate_plan_2d,
+        ),
+    )
+
+    assert result.status == "clarification_required"
+    assert result.reason_code == "navigation_target_required"
+    assert [attempt.outcome for attempt in result.attempts] == [
+        "rejected",
+        "terminal",
+    ]
+    assert any(
+        "not bound to an explicit coordinate" in error
+        for error in result.attempts[0].validation_errors
+    )
+    second_turn = json.loads(
+        provider.chat_completion.call_args_list[1].kwargs["messages"][1][
+            "content"
+        ]
+    )
+    assert any(
+        "not bound to an explicit coordinate" in error
+        for error in second_turn["planning_context"]["authoritative"][
+            "validation_errors"
+        ]
+    )
+    system_prompt = provider.chat_completion.call_args_list[0].kwargs[
+        "messages"
+    ][0]["content"]
+    assert "绝不能用 (0,0) 等臆造目标代替" in system_prompt
+
+
+def test_deliberation_iteration_limit_with_unbound_coordinate_falls_back_to_clarification():
+    from fireclaw_core.mission.mission_deliberation import MissionDeliberationLimits
+    provider = MagicMock()
+    # Always try to propose plan with unbound coordinate (99.0, 99.0)
+    args = _plan_arguments(robot_id="robot-a")
+    args["subtasks"][0]["target"] = {
+        "frame_id": "map",
+        "pose": {"x": 99.0, "y": 99.0, "yaw": 0.0},
+    }
+    provider.chat_completion.side_effect = [
+        _response(
+            "propose_plan",
+            args,
+            call_id="call-1",
+        ),
+        _response(
+            "propose_plan",
+            args,
+            call_id="call-2",
+        ),
+    ]
+    runtime, snapshot, context, _ = _runtime(
+        provider,
+        limits=MissionDeliberationLimits(max_iterations=2),
+    )
+
+    result = runtime.deliberate(
+        mission_id="mission-1",
+        command="先导航到A点，然后再返回现在的位置",
+        state_snapshot=snapshot,
+        planner_context=context,
+        proposal_validators=(
+            validate_plan_target_binding,
+            validate_plan_2d,
+        ),
+    )
+
+    assert result.status == "clarification_required"
+    assert result.reason_code == "coordinate_grounding_required"
+    assert "请补充说明" in result.message or "请提供" in result.message
+
+
+def test_repeated_robot_state_read_without_pose_becomes_clarification():
+    provider = MagicMock()
+    provider.chat_completion.side_effect = [
+        _response(
+            "inspect_mission_state",
+            {"kind": "robot_state", "subject_id": "robot-a"},
+            call_id="call-1",
+        ),
+        _response(
+            "inspect_mission_state",
+            {"kind": "robot_state", "subject_id": "robot-a"},
+            call_id="call-2",
+        ),
+    ]
+    runtime, snapshot, context, _ = _runtime(provider)
+
+    result = runtime.deliberate(
+        mission_id="mission-1",
+        command=(
+            "先去坐标 (0.63, 0.54)，再前往 (1.0, 0.0)，"
+            "最后返回现在的位置"
+        ),
+        state_snapshot=snapshot,
+        planner_context=context,
+        proposal_validators=(
+            validate_plan_target_binding,
+            validate_plan_2d,
+        ),
+    )
+
+    assert result.status == "clarification_required"
+    assert result.reason_code == "coordinate_grounding_required"
+    assert "没有 robot-a 可验证的 map 位姿" in result.message
+    assert [attempt.outcome for attempt in result.attempts] == [
+        "observed",
+        "clarification_requested",
+    ]
+
+
+def test_validate_plan_target_binding_allows_relative_keywords_with_pose_evidence():
+    from fireclaw_core.mission.mission_planner import MissionPlan, MissionSubtask
+
+    plan = MissionPlan(
+        intent="search",
+        command="先导航到坐标 (0.63, 0.54)，然后再返回现在的位置",
+        subtasks=[
+            MissionSubtask(
+                robot_id="robot-a",
+                command="前往 (0.63, 0.54)",
+                floor=1,
+                capability_required="victim_search",
+                execution_group=0,
+                target={"pose": {"x": 0.63, "y": 0.54, "yaw": 0.0}},
+            ),
+            MissionSubtask(
+                robot_id="robot-a",
+                command="返回起点",
+                floor=1,
+                capability_required="victim_search",
+                execution_group=1,
+                target={"pose": {"x": -2.0, "y": -0.5, "yaw": 0.0}},
+            ),
+        ],
+    )
+
+    # With state snapshot containing robot pose evidence
+    snapshot = {
+        "robots": [
+            {
+                "robot_id": "robot-a",
+                "pose": {"x": -2.0, "y": -0.5, "yaw": 0.0, "frame_id": "map"},
+            }
+        ]
+    }
+
+    errors = validate_plan_target_binding(plan, state_snapshot=snapshot)
+    assert errors == []
+
+
+def test_validate_plan_target_binding_explicit_axis_format():
+    from fireclaw_core.mission.mission_planner import MissionPlan, MissionSubtask
+
+    plan = MissionPlan(
+        intent="navigation",
+        command="前往 x=0.63, y=0.54 的位置",
+        subtasks=[
+            MissionSubtask(
+                robot_id="robot-a",
+                command="前往目标点",
+                floor=1,
+                capability_required="navigation",
+                execution_group=0,
+                target={"pose": {"x": 0.63, "y": 0.54, "yaw": 0.0}},
+            ),
+        ],
+    )
+
+    errors = validate_plan_target_binding(plan)
+    assert errors == []

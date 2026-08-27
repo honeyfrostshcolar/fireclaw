@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from urllib import request
@@ -10,6 +12,7 @@ from fireclaw_core.agent.robot_registry import RobotRegistry, RobotRegistryEntry
 from fireclaw_core.gateway.network_security import GatewayNetworkPolicy
 from fireclaw_core.mission.mission_agent import MissionAgent
 from fireclaw_core.mission.mission_gateway import MissionGateway, MissionGatewayConfig
+from fireclaw_core.mission.runtime_identity import GatewayRuntimeIdentity
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +94,13 @@ class FakePlanner:
                     MissionSubtask(
                         robot_id=available_ids[0],
                         command=command,
-                        floor=2,
+                        floor=None,
                         capability_required="victim_search",
                         execution_group=0,
+                        target={
+                            "frame_id": "map",
+                            "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                        },
                     )
                 ],
             ),
@@ -115,6 +122,7 @@ def _make_gateway(
     mission_agent: MissionAgent | None = None,
     registry: RobotRegistry | None = None,
     api_token: str | None = None,
+    runtime_identity: GatewayRuntimeIdentity | None = None,
 ) -> MissionGateway:
     reg = registry or _make_registry()
     agent = mission_agent or _make_agent(reg)
@@ -127,6 +135,8 @@ def _make_gateway(
         config,
         mission_agent=agent,
         registry=reg,
+        subagent_client=agent.subagent_client,
+        runtime_identity=runtime_identity,
     )
 
 
@@ -177,28 +187,42 @@ def _json_request(
 
 class TestWebConsoleGatewayContracts(unittest.TestCase):
     def setUp(self):
-        self.gw = _make_gateway()
+        self.tempdir = tempfile.TemporaryDirectory()
+        profile = Path(self.tempdir.name) / "active-profile.toml"
+        profile.write_text("[robot]\nrobot_id = 'turtlebot3_burger'\n", encoding="utf-8")
+        digest = hashlib.sha256(profile.read_bytes()).hexdigest()
+        identity = GatewayRuntimeIdentity.create(
+            runtime_mode="simulation",
+            active_profile_path=profile,
+            profile_sha256=digest,
+            robot_id="turtlebot3_burger",
+        )
+        self.gw = _make_gateway(runtime_identity=identity)
         self.gw.start()
 
     def tearDown(self):
         self.gw.stop()
+        self.tempdir.cleanup()
 
     def test_plan_mission_structured_output(self):
         """POST /plan-mission decomposes natural language task into structured preview."""
         payload = {
-            "task_description": "前往二楼搜索被困人员并汇报位置",
-            "profile": "profiles/turtlebot3_burger.json",
+            "task_description": "前往坐标 (2.0, 1.5) 搜索被困人员并汇报位置",
         }
         status, data = _json_request(self.gw.base_url, "POST", "/plan-mission", data=payload)
         self.assertEqual(status, 200)
-        self.assertEqual(data.get("status"), "ok")
+        self.assertEqual(data.get("status"), "preview_ready")
         self.assertIn("intent", data)
         self.assertIn("target_robot", data)
         self.assertIn("steps", data)
         self.assertIn("risk_level", data)
         self.assertIsInstance(data.get("steps"), list)
         self.assertGreater(len(data.get("steps")), 0)
-        self.assertIn("raw_plan", data)
+        self.assertIn("plan", data)
+        self.assertIn("artifact_id", data)
+        self.assertIn("plan_token", data)
+        self.assertIn("plan_digest", data)
+        self.assertIn("status_version", data)
 
     def test_plan_mission_empty_task_rejected(self):
         """POST /plan-mission with empty description returns 400."""
@@ -207,32 +231,15 @@ class TestWebConsoleGatewayContracts(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(data.get("status"), "error")
 
-    def test_tasks_alias_submission(self):
-        """POST /tasks creates a mission/task and returns accepted status."""
+    def test_tasks_alias_cannot_bypass_sealed_confirmation(self):
+        """POST /tasks rejects bare command dispatch before any robot action."""
         payload = {
-            "command": "前往二楼搜索人员",
+            "command": "前往坐标 (2.0, 1.5) 搜索人员",
             "target_robot": "turtlebot3_burger",
         }
         status, data = _json_request(self.gw.base_url, "POST", "/tasks", data=payload)
-        self.assertEqual(status, 202)
-        self.assertIn("task_id", data)
-        self.assertEqual(data.get("status"), "accepted")
-
-    def test_tasks_cancel_alias(self):
-        """POST /tasks/<id>/cancel requests cancellation of the task."""
-        # First submit a task
-        submit_payload = {"command": "前往二楼搜索人员"}
-        _, submit_data = _json_request(self.gw.base_url, "POST", "/tasks", data=submit_payload)
-        task_id = submit_data.get("task_id")
-        self.assertTrue(task_id)
-
-        # Cancel the task
-        status, cancel_data = _json_request(
-            self.gw.base_url, "POST", f"/tasks/{task_id}/cancel", data={}
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(cancel_data.get("status"), "cancel_requested")
-        self.assertEqual(cancel_data.get("task_id"), task_id)
+        self.assertEqual(status, 428)
+        self.assertEqual(data.get("error_code"), "plan_confirmation_required")
 
     def test_admission_projection_reset_requires_operator_confirmed(self):
         """POST /recover without operator_confirmed=True is rejected with 400."""
@@ -310,6 +317,10 @@ class TestWebConsoleAppJSContract(unittest.TestCase):
         self.assertIn("confirmAndStartTask", self.js_content)
         self.assertIn("cancelTaskPreview", self.js_content)
         self.assertIn("/plan-mission", self.js_content)
+        self.assertIn("/plan-mission/confirm", self.js_content)
+        self.assertIn("artifact_id", self.js_content)
+        self.assertIn("plan_token", self.js_content)
+        self.assertNotIn("fetch('/tasks',", self.js_content)
         self.assertNotIn("parseTaskIntent(true)", self.js_content)
         self.assertNotIn("if (autoConfirm)", self.js_content)
 
@@ -329,7 +340,21 @@ class TestWebConsoleAppJSContract(unittest.TestCase):
         for claim in forbidden_claims:
             self.assertNotIn(claim, self.js_content)
         self.assertIn("机器人物理状态仍为 UNKNOWN", self.js_content)
-        self.assertIn("尚未收到机器人开始运动或 Tool 执行证据", self.js_content)
+        self.assertNotIn("ui.submission.accepted", self.js_content)
+
+    def test_app_js_consumes_only_evidence_backed_readiness_state(self):
+        self.assertIn("data.runtime_identity", self.js_content)
+        self.assertIn("data.robot_readiness", self.js_content)
+        self.assertIn("readEvidence", self.js_content)
+        self.assertIn("evidence_id", self.js_content)
+        for legacy_projection in (
+            "data.active_robot_id",
+            "data.runtime_mode",
+            "data.deployment_mode",
+            "data.fleet_state",
+            "data.physical_safety",
+        ):
+            self.assertNotIn(legacy_projection, self.js_content)
 
     def test_app_js_sse_subscription_and_reconnect(self):
         """app.js must handle EventSource SSE stream with cursor tracking."""

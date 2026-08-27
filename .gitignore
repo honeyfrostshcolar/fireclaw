@@ -31,12 +31,23 @@ robots/**/ros_ws/install/
 robots/**/ros_ws/log/
 robots/**/ros_ws/src/CMakeLists.txt
 
-# FireClaw config (may contain secrets)
-fireclaw.toml
+# Private FireClaw configs (may contain secrets). Mode-specific names are
+# deliberate: never reuse a simulation config for a real robot.
+/fireclaw.sim.toml
+/fireclaw.real.toml
+# Legacy local name; retained only so an old credential-bearing file cannot be
+# committed accidentally. New commands and docs must not use it.
+/fireclaw.toml
 .fireclaw/
 
 # Per-robot runtime state. These files are generated locally and may contain
 # mission/site data; product fixtures must use explicit, non-runtime names.
+data/mission/.cli-history
+data/mission/*.sqlite
+data/mission/*.sqlite-*
+data/mission/*.lock
+data/robots/**/embodied-memory-index.sqlite3
+data/robots/**/embodied-memory-index.sqlite3-*
 data/robots/**/memory-runtime.sqlite3
 data/robots/**/memory-runtime.sqlite3-*
 

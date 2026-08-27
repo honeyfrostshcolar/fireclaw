@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
+import time
 from typing import Any, Literal, Protocol
 
 from fireclaw_core.agent.bounded_loop import (
@@ -42,6 +43,10 @@ from fireclaw_core.context.manager import (
 from fireclaw_core.provider.provider_runtime import ProviderRuntime
 from fireclaw_core.plugin.plugin_host import FireClawPluginHost
 from fireclaw_core.task.task_contract import StructuredRobotTask
+from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_MESSAGE_LOCALE,
+    robot_task_operator_message,
+)
 
 
 ROBOT_TASK_COMPLETE_TOOL: dict[str, Any] = {
@@ -56,12 +61,17 @@ ROBOT_TASK_COMPLETE_TOOL: dict[str, Any] = {
             "type": "object",
             "properties": {
                 "message": {"type": "string"},
+                "message_locale": {
+                    "type": "string",
+                    "enum": [ROBOT_TASK_MESSAGE_LOCALE],
+                    "description": "Operator-facing text must use zh-CN.",
+                },
                 "evidence_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                 },
             },
-            "required": ["message"],
+            "required": ["message", "message_locale"],
         },
     },
 }
@@ -78,13 +88,18 @@ ROBOT_TASK_BLOCKED_TOOL: dict[str, Any] = {
             "type": "object",
             "properties": {
                 "reason": {"type": "string"},
+                "message_locale": {
+                    "type": "string",
+                    "enum": [ROBOT_TASK_MESSAGE_LOCALE],
+                    "description": "Operator-facing text must use zh-CN.",
+                },
                 "reason_code": {"type": "string"},
                 "evidence_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                 },
             },
-            "required": ["reason", "reason_code"],
+            "required": ["reason", "reason_code", "message_locale"],
         },
     },
 }
@@ -101,13 +116,18 @@ ROBOT_TASK_ESCALATE_TOOL: dict[str, Any] = {
             "type": "object",
             "properties": {
                 "reason": {"type": "string"},
+                "message_locale": {
+                    "type": "string",
+                    "enum": [ROBOT_TASK_MESSAGE_LOCALE],
+                    "description": "Operator-facing text must use zh-CN.",
+                },
                 "reason_code": {"type": "string"},
                 "evidence_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                 },
             },
-            "required": ["reason", "reason_code"],
+            "required": ["reason", "reason_code", "message_locale"],
         },
     },
 }
@@ -133,6 +153,7 @@ class RobotAgentDecision:
     reason_code: str | None = None
     evidence_ids: tuple[str, ...] = ()
     context_manifest: dict[str, Any] | None = None
+    message_locale: str = ROBOT_TASK_MESSAGE_LOCALE
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +169,7 @@ class RobotAgentDecision:
                 if self.context_manifest is not None
                 else None
             ),
+            "message_locale": self.message_locale,
         }
 
     @classmethod
@@ -196,6 +218,7 @@ class RobotAgentDecision:
             context_manifest=(
                 dict(manifest) if isinstance(manifest, dict) else None
             ),
+            message_locale=ROBOT_TASK_MESSAGE_LOCALE,
         )
 
 
@@ -272,7 +295,9 @@ class RobotAgentDecisionPolicy(Protocol):
 @dataclass(frozen=True)
 class RobotAgentDeliberationLimits:
     max_iterations: int = 8
-    timeout_seconds: float = 30.0
+    # Includes every LLM turn and blocking physical Tool call. Navigation has
+    # its own shorter deadline; this outer budget must not win that race.
+    timeout_seconds: float = 600.0
     max_skill_executions: int = 6
     max_context_queries: int = 2
     max_agent_tool_executions: int = 4
@@ -411,10 +436,9 @@ class LLMRobotAgentDecisionPolicy:
         if call.name == "complete_robot_task":
             return RobotAgentDecision(
                 operation="complete",
-                message=str(
-                    call.arguments.get("message")
-                    or "Robot Agent reports task completion."
-                ),
+                # The model's prose is advisory only.  The terminal message
+                # is rendered from the status contract below.
+                message=robot_task_operator_message("completed"),
                 evidence_ids=tuple(
                     str(item)
                     for item in call.arguments.get("evidence_ids", [])
@@ -425,10 +449,7 @@ class LLMRobotAgentDecisionPolicy:
         if call.name == "report_robot_task_blocked":
             return RobotAgentDecision(
                 operation="blocked",
-                message=str(
-                    call.arguments.get("reason")
-                    or "Robot Agent reports that the task is blocked."
-                ),
+                message=robot_task_operator_message("blocked"),
                 reason_code=str(
                     call.arguments.get("reason_code") or "robot_task_blocked"
                 ),
@@ -442,10 +463,7 @@ class LLMRobotAgentDecisionPolicy:
         if call.name == "escalate_robot_task":
             return RobotAgentDecision(
                 operation="escalate",
-                message=str(
-                    call.arguments.get("reason")
-                    or "Robot Agent requests intervention."
-                ),
+                message=robot_task_operator_message("escalated"),
                 reason_code=str(
                     call.arguments.get("reason_code")
                     or "robot_task_escalation"
@@ -547,7 +565,18 @@ class LLMRobotAgentDecisionPolicy:
                     "Use current execution observations before advisory memory.",
                     "Complete only after every required skill succeeded.",
                     "Report blocked or escalate when safe progress is impossible.",
+                    (
+                        "For every terminal operation, set message_locale to "
+                        "'zh-CN'; operator-facing message/reason prose must "
+                        "be Simplified Chinese. Do not emit English terminal "
+                        "messages."
+                    ),
                 ],
+                "terminal_message_contract": {
+                    "locale": ROBOT_TASK_MESSAGE_LOCALE,
+                    "message_source": "host-rendered status contract",
+                    "machine_fields": ["reason_code", "evidence_ids"],
+                },
             }
             messages = [
                 {
@@ -559,6 +588,9 @@ class LLMRobotAgentDecisionPolicy:
                         "通用工具调用会经过部署模式、沙箱和调用前策略，"
                         "执行结果会在下一轮返回。"
                         "你不能改变中央下发的目标、风险或权限。"
+                        "所有终态 message 必须使用简体中文，并将 "
+                        "message_locale 设置为 'zh-CN'；reason_code 和 "
+                        "evidence_ids 仅用于机器审计。"
                     ),
                 },
                 {
@@ -690,7 +722,12 @@ class RobotAgentDeliberationRuntime:
             turn: AgentLoopTurn[RobotAgentExecutionObservation],
         ) -> RobotAgentDecision:
             nonlocal latest_context
+            context_started = time.monotonic()
             latest_context = context_provider()
+            context_duration_ms = round(
+                max(0.0, time.monotonic() - context_started) * 1000,
+                3,
+            )
             request = RobotAgentDeliberationRequest(
                 envelope=envelope,
                 iteration=turn.iteration,
@@ -698,7 +735,12 @@ class RobotAgentDeliberationRuntime:
                 context=latest_context,
                 observations=turn.observations,
             )
-            decision = self.policy.decide(request)
+            decision_started = time.monotonic()
+            decision = _normalize_terminal_decision(self.policy.decide(request))
+            decision_duration_ms = round(
+                max(0.0, time.monotonic() - decision_started) * 1000,
+                3,
+            )
             emit(
                 "robot_agent.decision",
                 {
@@ -706,8 +748,11 @@ class RobotAgentDeliberationRuntime:
                     "operation": decision.operation,
                     "tool_name": decision.tool_name,
                     "message": decision.message,
+                    "message_locale": decision.message_locale,
                     "reason_code": decision.reason_code,
                     "context_manifest": decision.context_manifest,
+                    "context_duration_ms": context_duration_ms,
+                    "decision_duration_ms": decision_duration_ms,
                 },
             )
             return decision
@@ -778,7 +823,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="cancelled",
                     operation=decision.operation,
-                    message="Robot Agent skill execution was cancelled.",
+                    message=robot_task_operator_message("cancelled"),
                     observation=observation,
                     result=output,
                     reason_code="cancelled",
@@ -792,10 +837,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status=terminal_status,
                     operation=decision.operation,
-                    message=(
-                        "Robot Agent skill was stopped by the local "
-                        f"SafetyGate with status {safety_status!r}."
-                    ),
+                    message=robot_task_operator_message(terminal_status),
                     observation=observation,
                     result=output,
                     reason_code="safety_gate_terminal",
@@ -924,7 +966,7 @@ class RobotAgentDeliberationRuntime:
                     return AgentLoopTransition(
                         status="blocked",
                         operation=decision.operation,
-                        message="Robot Agent skill execution limit was exceeded.",
+                        message=robot_task_operator_message("blocked"),
                         reason_code="skill_execution_limit",
                     )
                 step = RobotLocalPlanStep(
@@ -938,25 +980,25 @@ class RobotAgentDeliberationRuntime:
                     step,
                 )
                 if policy_decision.status != "allow":
-                    observation = RobotAgentExecutionObservation(
-                        iteration=turn.iteration,
-                        operation=decision.operation,
-                        status=policy_decision.status,
-                        message="; ".join(policy_decision.reasons),
-                        tool_name=step.skill_name,
-                        inputs=step.inputs,
-                        reason_code="action_policy_rejected",
-                    )
-                    emit("robot_agent.observation", observation.to_dict())
                     terminal_status = (
                         "escalated"
                         if policy_decision.status == "approval_required"
                         else "blocked"
                     )
+                    observation = RobotAgentExecutionObservation(
+                        iteration=turn.iteration,
+                        operation=decision.operation,
+                        status=policy_decision.status,
+                        message=robot_task_operator_message(terminal_status),
+                        tool_name=step.skill_name,
+                        inputs=step.inputs,
+                        reason_code="action_policy_rejected",
+                    )
+                    emit("robot_agent.observation", observation.to_dict())
                     return AgentLoopTransition(
                         status=terminal_status,
                         operation=decision.operation,
-                        message=observation.message,
+                        message=robot_task_operator_message(terminal_status),
                         observation=observation,
                         reason_code=observation.reason_code,
                     )
@@ -980,8 +1022,8 @@ class RobotAgentDeliberationRuntime:
                         operation=decision.operation,
                         status="rejected",
                         message=(
-                            "Completion rejected; required skills have not "
-                            f"succeeded: {missing}."
+                            "任务尚未完成，必需技能未成功："
+                            f"{missing}。"
                         ),
                         reason_code="required_skills_incomplete",
                     )
@@ -995,7 +1037,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="completed",
                     operation=decision.operation,
-                    message=decision.message,
+                    message=robot_task_operator_message("completed"),
                     result={
                         "status": "completed",
                         "succeeded_skills": sorted(succeeded_skills),
@@ -1008,7 +1050,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="blocked",
                     operation=decision.operation,
-                    message=decision.message,
+                    message=robot_task_operator_message("blocked"),
                     reason_code=decision.reason_code or "robot_task_blocked",
                     result={
                         "status": "blocked",
@@ -1025,7 +1067,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="escalated",
                     operation=decision.operation,
-                    message=decision.message,
+                    message=robot_task_operator_message("escalated"),
                     reason_code=reason_code,
                     result={
                         "status": "escalated",
@@ -1036,7 +1078,7 @@ class RobotAgentDeliberationRuntime:
             return AgentLoopTransition(
                 status="blocked",
                 operation=str(decision.operation),
-                message="Robot Agent returned an unsupported operation.",
+                message=robot_task_operator_message("blocked"),
                 reason_code="unsupported_operation",
             )
 
@@ -1060,10 +1102,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="escalated",
                     operation=pending.operation,
-                    message=(
-                        "A side-effecting Agent Tool may have run before "
-                        "restart; automatic replay is prohibited."
-                    ),
+                    message=robot_task_operator_message("escalated"),
                     reason_code="agent_tool_effect_outcome_unknown",
                 )
             if (
@@ -1073,10 +1112,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="blocked",
                     operation=pending.operation,
-                    message=(
-                        "Pending Robot Agent operation is not a valid "
-                        "physical skill decision."
-                    ),
+                    message=robot_task_operator_message("blocked"),
                     reason_code="invalid_pending_operation",
                 )
             step = RobotLocalPlanStep(
@@ -1097,10 +1133,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="escalated",
                     operation=pending.operation,
-                    message=(
-                        "Robot Agent cannot prove the outcome of a pending "
-                        "physical skill and will not replay it."
-                    ),
+                    message=robot_task_operator_message("escalated"),
                     reason_code="physical_action_outcome_unknown",
                 )
             output = reconcile_skill(pending.operation_id, step)
@@ -1141,10 +1174,7 @@ class RobotAgentDeliberationRuntime:
                 return AgentLoopTransition(
                     status="escalated",
                     operation=pending.operation,
-                    message=(
-                        "The physical skill may have started, but no finished "
-                        "evidence exists. Automatic replay is prohibited."
-                    ),
+                    message=robot_task_operator_message("escalated"),
                     reason_code="physical_action_outcome_unknown",
                 )
             return skill_transition(
@@ -1208,6 +1238,32 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
         for function in [tool["function"]]
         if isinstance(function.get("name"), str)
     }
+
+
+def _normalize_terminal_decision(
+    decision: RobotAgentDecision,
+) -> RobotAgentDecision:
+    """Apply the host-owned language contract to terminal decisions.
+
+    Policies used in tests, restored checkpoints, and third-party plugins may
+    still return legacy English prose.  Terminal status and evidence remain
+    authoritative, while the operator-facing message is always rendered in
+    the configured locale.
+    """
+
+    status_by_operation = {
+        "complete": "completed",
+        "blocked": "blocked",
+        "escalate": "escalated",
+    }
+    status = status_by_operation.get(decision.operation)
+    if status is None:
+        return decision
+    return replace(
+        decision,
+        message=robot_task_operator_message(status),
+        message_locale=ROBOT_TASK_MESSAGE_LOCALE,
+    )
 
 
 def _agent_tool_effect(context: dict[str, Any], name: str) -> str:

@@ -187,12 +187,7 @@ def test_real_plugin_registers_hardware_owned_evidence_provider():
 
 
 def test_real_deployment_template_selects_and_activates_safety_plugin():
-    template = (
-        EXTENSIONS.parent
-        / "examples"
-        / "deployment_profiles"
-        / "navigation_robot.toml.example"
-    )
+    template = EXTENSIONS.parent / "fireclaw.real.example.toml"
     with template.open("rb") as handle:
         raw = tomllib.load(handle)
     selected = raw["plugins"]["selected"]

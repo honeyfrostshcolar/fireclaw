@@ -26,6 +26,10 @@ def _small_catalog() -> dict[str, object]:
         "bundle_id": "test-bundle-v1",
         "bundle_version": "1.0.0",
         "compatible_fireclaw_versions": ">=0.1.0",
+        "artifact": {
+            "filename": "fireclaw-sim-test-bundle-v1.tar.gz",
+            "sha256": "0" * 64,
+        },
         "description": "test fixture",
         "include_paths": ["payload/"],
         "required_paths": ["payload/required.txt"],

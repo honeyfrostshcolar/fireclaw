@@ -26,6 +26,8 @@ MAX_WHEEL_METADATA_BYTES = 1024 * 1024
 REQUIRED_WHEEL_FILES = [
     "fireclaw_core/__init__.py",
     "fireclaw_core/__main__.py",
+    "fireclaw_core/mission/mission_gateway_client.py",
+    "fireclaw_core/mission/plan_artifact.py",
     "fireclaw_core/web_console/index.html",
     "fireclaw_core/web_console/style.css",
     "fireclaw_core/web_console/app.js",
@@ -279,7 +281,12 @@ def load_simulation_catalog_from_wheel(
     return validate_simulation_bundle_catalog(catalog, expected_bundle_id=bundle_id)
 
 
-def run_installed_smoke(wheel_path: Path, work_root: Path) -> SmokeResult:
+def run_installed_smoke(
+    wheel_path: Path,
+    work_root: Path,
+    *,
+    simulation_bundle_path: Path | None = None,
+) -> SmokeResult:
     """Perform isolated installation of wheel in clean venv and execute smoke verification."""
     errors: list[str] = []
     command_outputs: dict[str, str] = {}
@@ -369,6 +376,179 @@ def run_installed_smoke(wheel_path: Path, work_root: Path) -> SmokeResult:
         except Exception as exc:
             errors.append(f"Command '{' '.join(cmd)}' failed with error: {exc}")
 
+    # 4. Exercise the installed first-use boundary without starting ROS,
+    # Gazebo, a browser, or any real-robot action. The real companion archive
+    # is fully verified/materialized; only Catkin and daemon effects are
+    # replaced with deterministic test doubles at their typed boundaries.
+    if simulation_bundle_path is None:
+        errors.append("Installed first-use E2E requires a companion simulation bundle")
+    else:
+        env["FIRECLAW_SIMULATION_BUNDLE_E2E"] = str(
+            simulation_bundle_path.resolve()
+        )
+        first_use_program = r'''
+import json
+import os
+from pathlib import Path
+
+from fireclaw_core.deployment.command import DeploymentCommandResult
+from fireclaw_core.infra.simulation_runtime import prepare_simulation_runtime
+from fireclaw_core.infra.user_setup import (
+    complete_simulation_first_use,
+    setup_fireclaw,
+)
+
+runtime_root = Path(os.environ["FIRECLAW_HOME"])
+bundle_path = Path(os.environ["FIRECLAW_SIMULATION_BUNDLE_E2E"])
+ros_setup = runtime_root / "test-boundary" / "ros-noetic-setup.bash"
+ros_setup.parent.mkdir(parents=True, exist_ok=True)
+ros_setup.write_text("export ROS_DISTRO=noetic\n", encoding="utf-8")
+
+class Runner:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, argv, *, timeout_seconds, max_output_bytes, env=None, cwd=None):
+        command = tuple(str(value) for value in argv)
+        self.calls.append(command)
+        if command[:2] == ("/bin/bash", "-c"):
+            return DeploymentCommandResult(
+                argv=command,
+                exit_code=0,
+                output="ROS_DISTRO=noetic\x00PATH=/usr/bin\x00",
+                duration_seconds=0.01,
+            )
+        install_setup = Path(cwd) / "install" / "setup.bash"
+        install_setup.parent.mkdir(parents=True, exist_ok=True)
+        install_setup.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        return DeploymentCommandResult(
+            argv=command,
+            exit_code=0,
+            output="installed first-use boundary build\n",
+            duration_seconds=0.01,
+        )
+
+class Plan:
+    fingerprint = "installed-first-use-plan"
+
+    def to_dict(self):
+        return {"status": "ready", "fingerprint": self.fingerprint}
+
+def build_plan(_profile_path):
+    return Plan()
+
+def apply_plan(plan):
+    return {"status": "installed", "fingerprint": plan.fingerprint, "reused": False}
+
+runner = Runner()
+
+def prepare(**kwargs):
+    return prepare_simulation_runtime(
+        **kwargs,
+        workspace_runner=runner,
+        catkin_executable="/test-boundary/catkin_make",
+        ros_setup=ros_setup,
+    )
+
+def configure():
+    return setup_fireclaw(
+        mode="simulation",
+        runtime_root=runtime_root,
+        source_root=None,
+        simulation_bundle_path=bundle_path,
+        deploy=True,
+        plan_builder=build_plan,
+        deployment_applier=apply_plan,
+        simulation_preparer=prepare,
+    )
+
+first = configure()
+second = configure()
+assert first["status"] == "ready_to_start"
+assert second["status"] == "ready_to_start"
+assert first["profile_path"] == second["profile_path"]
+assert first["profile_created"] is True
+assert second["profile_created"] is False
+assert second["simulation_runtime"]["bundle"]["reused"] is True
+assert second["simulation_runtime"]["workspace"]["reused"] is True
+assert len(runner.calls) == 2
+
+profile_text = Path(first["profile_path"]).read_text(encoding="utf-8")
+assert str(runtime_root.resolve()) in profile_text
+assert "/devel/setup.bash" not in profile_text
+assert "/current/" not in profile_text
+
+class Manager:
+    def __init__(self):
+        self.starts = 0
+        self.opens = 0
+
+    def start_daemon(self, **kwargs):
+        self.starts += 1
+        return {
+            "status": "running" if self.starts == 1 else "already_running",
+            "health_verified": True,
+            "daemon": {"pid": 4242},
+        }
+
+    def open_console(self, **kwargs):
+        self.opens += 1
+        return {
+            "status": "ready",
+            "url": "http://127.0.0.1:8766",
+            "browser_opened": False,
+        }
+
+manager = Manager()
+ready = complete_simulation_first_use(
+    first,
+    runtime_root=runtime_root,
+    manager=manager,
+    timeout=1.0,
+    browser=False,
+)
+resumed = complete_simulation_first_use(
+    second,
+    runtime_root=runtime_root,
+    manager=manager,
+    timeout=1.0,
+    browser=False,
+)
+assert ready["status"] == "ready"
+assert resumed["status"] == "ready"
+assert ready["simulation_runtime_started"] is True
+assert resumed["lifecycle"]["start"]["status"] == "already_running"
+assert manager.starts == 2 and manager.opens == 2
+assert ready["real_robot_action_started"] is False
+
+print(json.dumps({
+    "status": "ok",
+    "profile_path": first["profile_path"],
+    "bundle_reused": second["simulation_runtime"]["bundle"]["reused"],
+    "workspace_reused": second["simulation_runtime"]["workspace"]["reused"],
+    "repeat_start_status": resumed["lifecycle"]["start"]["status"],
+}, sort_keys=True))
+'''
+        try:
+            result = subprocess.run(
+                [str(python_bin), "-c", first_use_program],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                cwd=str(work_root),
+                timeout=90,
+                check=True,
+            )
+            command_outputs["installed_first_use_e2e"] = result.stdout
+        except subprocess.CalledProcessError as exc:
+            errors.append(
+                "Installed first-use E2E failed "
+                f"(code {exc.returncode}): {exc.stderr}"
+            )
+        except Exception as exc:
+            errors.append(f"Installed first-use E2E failed with error: {exc}")
+
     return SmokeResult(
         success=len(errors) == 0,
         command_outputs=command_outputs,
@@ -422,7 +602,11 @@ def run_full_distribution_check(
         gate_errors.append("Isolated installed smoke was not run because wheel inspection failed")
     else:
         with tempfile.TemporaryDirectory(prefix="fireclaw-release-smoke-") as tmp_smoke_root:
-            smoke_result = run_installed_smoke(wheel_path, Path(tmp_smoke_root))
+            smoke_result = run_installed_smoke(
+                wheel_path,
+                Path(tmp_smoke_root),
+                simulation_bundle_path=simulation_bundle_path,
+            )
 
     all_passed = (
         not gate_errors

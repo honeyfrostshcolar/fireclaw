@@ -69,15 +69,18 @@ Responsibilities:
 
 Current implementation:
 
-- `fireclaw_core.mission_cli` exposes `submit-subtask`, `trace`, `cancel`, and `plan-mission`.
-- `operator_console` projects robot-local events into Chinese status text.
+- MissionGateway and the Web Console expose sealed preview, one-time explicit
+  confirmation, authoritative event streaming, trace, and cancel operations.
+- `fireclaw mission` uses the same preview/confirm contract; the legacy
+  `plan-mission` direct-dispatch command now fails closed.
+- `submit-subtask` remains an advanced explicit atomic-tool diagnostic, not a
+  natural-language mission submission path.
 
 Missing:
 
-- mission HTTP API;
-- mission live progress stream;
-- approval workflow UI;
-- operator console for multi-robot missions.
+- evidence-backed physical stop confirmation and the formal two-phase recovery UI;
+- multi-operator approval policies beyond the current explicit operator confirmation;
+- completed multi-robot operator usability validation.
 
 ### 2. Mission Coordinator Layer
 

@@ -84,6 +84,12 @@ def test_assembler_preserves_critical_context_and_provenance() -> None:
     )
     context = _context(
         snapshot,
+        operator_clarifications=[{
+            "round": 1,
+            "question": "请提供坐标。",
+            "answer": "map 坐标 (1.8, -0.1)",
+            "answer_source": "authenticated_operator",
+        }],
         operator_corrections=[{"record_id": "correction-1"}],
         retrieved_memories=[{"record_id": "memory-1"}],
         external_knowledge=[{"knowledge_id": "guide-1"}],
@@ -105,6 +111,9 @@ def test_assembler_preserves_critical_context_and_provenance() -> None:
     envelope = assembly.envelope
     authoritative = envelope.authoritative
     assert authoritative["operator_command"] == "经西侧楼梯去二楼"
+    assert authoritative["operator_clarifications"][0][
+        "answer_source"
+    ] == "authenticated_operator"
     assert authoritative["snapshot_contract"]["snapshot_id"] == (
         snapshot.snapshot_id
     )
@@ -125,6 +134,8 @@ def test_assembler_preserves_critical_context_and_provenance() -> None:
     }
     assert sections["observations"].critical is True
     assert sections["observations"].trust == "authoritative"
+    assert sections["operator_clarifications"].critical is True
+    assert sections["operator_clarifications"].trust == "authoritative"
     assert sections["operator_corrections"].trust == (
         "operator_advisory"
     )

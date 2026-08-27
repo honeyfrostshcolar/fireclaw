@@ -171,6 +171,29 @@ class RobotSubagentClient:
                     )
         return result
 
+    def confirm_task(
+        self,
+        entry: RobotRegistryEntry,
+        task_id: str,
+        *,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Relay approval for one exact Robot task in one Mission session."""
+
+        result = self._request_json(
+            "POST",
+            entry.base_url,
+            "/confirm",
+            {
+                "task_id": task_id,
+                "session_id": session_id,
+            },
+        )
+        result.setdefault("task_id", task_id)
+        result.setdefault("session_id", session_id)
+        result.setdefault("robot_id", entry.robot_id)
+        return result
+
     def cancel_task(
         self,
         entry: RobotRegistryEntry,

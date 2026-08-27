@@ -218,9 +218,30 @@ def test_network_disconnect_resumes_actual_sse_session(capsys) -> None:
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             self.rfile.read(length)
+            path = urlparse(self.path).path
+            if path == "/plan-mission":
+                self._json(
+                    200,
+                    {
+                        "status": "preview_ready",
+                        "artifact_id": "artifact-network-1",
+                        "plan_token": "token-network-1",
+                        "plan_digest": "sha256:digest-network-1",
+                        "status_version": 1,
+                        "session_id": "plan-session-network-1",
+                        "robot_ids": ["robot-1"],
+                        "risk_level": "medium",
+                        "steps": [{
+                            "index": 1,
+                            "robot_id": "robot-1",
+                            "command": "前往坐标 (2.0, 1.5) 搜索",
+                        }],
+                    },
+                )
+                return
             self._json(
                 202,
-                {"status": "planned", "mission_id": "mission-network-1"},
+                {"status": "accepted", "mission_id": "mission-network-1"},
             )
 
         def do_GET(self) -> None:
@@ -235,7 +256,9 @@ def test_network_disconnect_resumes_actual_sse_session(capsys) -> None:
             cursors.append(cursor)
             sequence = 1 if cursor == 0 else 2
             event_type = (
-                "mission.planning" if sequence == 1 else "mission.completed"
+                "mission.sealed_plan_loaded"
+                if sequence == 1
+                else "mission.completed"
             )
             payload = json.dumps(
                 {
@@ -277,7 +300,8 @@ def test_network_disconnect_resumes_actual_sse_session(capsys) -> None:
         client = MissionGatewayClient(f"http://{host}:{port}", timeout=2)
         _submit_and_follow(
             client,
-            "去二楼搜索",
+            "前往坐标 (2.0, 1.5) 搜索",
+            confirm_fn=lambda preview: True,
             sleep_fn=lambda _: None,
             reconnect_initial_seconds=0.01,
             reconnect_max_seconds=0.01,
@@ -290,7 +314,7 @@ def test_network_disconnect_resumes_actual_sse_session(capsys) -> None:
 
     output = capsys.readouterr()
     assert cursors == [0, 1]
-    assert output.out.count("正在规划任务") == 1
+    assert output.out.count("已载入封存计划") == 1
     assert "[完成] 已完成（succeeded）" in output.out
     assert "自动重连" in output.err
 

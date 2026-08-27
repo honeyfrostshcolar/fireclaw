@@ -143,7 +143,7 @@ TF 查询和 navigation diagnostics，而不是开放宿主 `rostopic` shell。�
 
 ## 配置
 
-`fireclaw.example.toml` 包含两个角色各自的 allow/deny 与 Docker sandbox。
+`fireclaw.sim.example.toml` 包含仿真中两个角色各自的 allow/deny 与 Docker sandbox。
 启用仿真计算机工具至少需要：
 
 ```toml

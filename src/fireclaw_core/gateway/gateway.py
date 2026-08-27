@@ -77,6 +77,7 @@ from fireclaw_core.agent.robot_agent import (
 )
 from fireclaw_core.agent.robot_deliberation import (
     LLMRobotAgentDecisionPolicy,
+    RobotAgentDeliberationLimits,
     RobotAgentDeliberationRuntime,
 )
 from fireclaw_core.agent.skill_inventory import build_robot_skill_inventory
@@ -85,8 +86,10 @@ from fireclaw_core.execution.runtime_config import ADAPTER_CHOICES, create_robot
 from fireclaw_core.task.task_contract import StructuredRobotTask, validate_structured_robot_task
 from fireclaw_core.task.task_state import project_task_state
 from fireclaw_core.task.terminal_outcome import (
+    ROBOT_TASK_MESSAGE_LOCALE,
     ROBOT_TASK_TERMINAL_EVENT_TYPES,
     build_robot_task_terminal_outcome,
+    robot_task_operator_message,
     robot_task_terminal_status_from_event,
     robot_task_terminal_status_from_trace,
 )
@@ -98,6 +101,7 @@ from fireclaw_core.policy.deployment import (
 )
 from fireclaw_core.ros.ros1_config import Ros1DiagnosticsConfig
 from fireclaw_core.ros.ros1_diagnostics import Ros1DiagnosticsBackend
+from fireclaw_core.ros.ros1_log_stream import Ros1LogStream
 from fireclaw_plugin_sdk import (
     HARDWARE_STOP_EVIDENCE_CLASS,
     STOP_EVIDENCE_SERVICE_PREFIX,
@@ -178,8 +182,11 @@ class GatewayConfig:
     robot_agent_planner: str = "deterministic"
     robot_agent_provider_base_url: str | None = None
     robot_agent_provider_api_key: str | None = None
+    robot_agent_provider_timeout_seconds: float = 60.0
+    robot_agent_provider_thinking: bool | None = None
     robot_agent_model: str | None = None
     robot_agent_model_catalog_path: str | None = None
+    robot_agent_loop_timeout_seconds: float = 600.0
     extension_paths: tuple[str, ...] = ("extensions",)
     plugin_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
     robot_profile_path: str | None = None
@@ -222,6 +229,7 @@ class TaskControl:
     started_at: str
     structured_task: dict[str, Any] | None = None
     execution_authorization: ExecutionAuthorization | None = None
+    pending_execution: dict[str, Any] | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
@@ -290,6 +298,7 @@ class FireClawGateway:
         *,
         replication_security: Any | None = None,
         ros_diagnostics_backend: Ros1DiagnosticsBackend | None = None,
+        ros_log_stream: Ros1LogStream | None = None,
         computer_sandbox: ComputerSandbox | None = None,
         plugin_services: Mapping[str, Any] | None = None,
         runtime_state: SqliteAuthoritativeRuntimeStore | None = None,
@@ -323,6 +332,12 @@ class FireClawGateway:
         self.robot = create_robot_adapter(resolved_config.adapter, resolved_config.robot_id, config_path=resolved_config.ros1_config_path)
         apply_gateway_dry_run_to_robot(self.robot, resolved_config.dry_run)
         attach_profile_sensor_discovery(self.robot, self.robot_profile)
+        self._robot_runtime_state: dict[str, Any] = {
+            "schema_version": 1,
+            "status": "not_required",
+            "reason_code": "adapter_runtime_not_required",
+            "message": "The selected adapter has no process runtime lifecycle.",
+        }
         self.ros_diagnostics_backend = ros_diagnostics_backend
         if (
             self.ros_diagnostics_backend is None
@@ -493,6 +508,12 @@ class FireClawGateway:
         )
         self._event_bus = EventBus()
         self._telemetry = TelemetryTracker()
+        self._ros_log_stream = ros_log_stream
+        if self._ros_log_stream is None and resolved_config.adapter == "ros1":
+            self._ros_log_stream = Ros1LogStream(
+                self._record_ros_log,
+                context_provider=self._ros_log_task_context,
+            )
         self.robot_agent_runtime = self._build_robot_agent_runtime()
         self._reconcile_stale_task_queue_records()
 
@@ -623,38 +644,175 @@ class FireClawGateway:
         if self._server is not None:
             return
         validate_gateway_bind(self.config.host, self.config.api_token)
-        handler_class = self._handler_class()
-        self._server = create_gateway_http_server(
-            (self.config.host, self.config.port),
-            handler_class,
-            tls=self.config.tls,
-            network_policy=self.config.network,
-        )
+        self._start_robot_runtime()
+        self._start_ros_log_stream()
+        try:
+            handler_class = self._handler_class()
+            self._server = create_gateway_http_server(
+                (self.config.host, self.config.port),
+                handler_class,
+                tls=self.config.tls,
+                network_policy=self.config.network,
+            )
+        except Exception:
+            self._stop_ros_log_stream()
+            self._stop_robot_runtime()
+            raise
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
     def serve_forever(self) -> None:
         validate_gateway_bind(self.config.host, self.config.api_token)
-        handler_class = self._handler_class()
-        self._server = create_gateway_http_server(
-            (self.config.host, self.config.port),
-            handler_class,
-            tls=self.config.tls,
-            network_policy=self.config.network,
-        )
-        self._server.serve_forever()
+        self._start_robot_runtime()
+        self._start_ros_log_stream()
+        try:
+            handler_class = self._handler_class()
+            self._server = create_gateway_http_server(
+                (self.config.host, self.config.port),
+                handler_class,
+                tls=self.config.tls,
+                network_policy=self.config.network,
+            )
+            self._server.serve_forever()
+        finally:
+            if self._server is not None:
+                self._server.server_close()
+            self._server = None
+            self._thread = None
+            self._stop_ros_log_stream()
+            self._stop_robot_runtime()
 
     def stop(self) -> None:
-        if self._server is None:
-            return
-        self._server.shutdown()
-        self._server.server_close()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            if self._thread is not None:
+                self._thread.join(timeout=5)
         for thread in list(self._task_threads.values()):
             thread.join(timeout=5)
         self._server = None
         self._thread = None
+        self._stop_ros_log_stream()
+        self._stop_robot_runtime()
+
+    def _start_robot_runtime(self) -> dict[str, Any]:
+        start_runtime = getattr(self.robot, "start_runtime", None)
+        if not callable(start_runtime):
+            return dict(self._robot_runtime_state)
+        try:
+            state = start_runtime()
+            if not isinstance(state, dict):
+                raise TypeError("Robot adapter runtime state must be an object")
+            self._robot_runtime_state = dict(state)
+        except Exception as exc:
+            logger.warning("Failed to start robot adapter runtime", exc_info=True)
+            self._robot_runtime_state = {
+                "schema_version": 1,
+                "status": "degraded",
+                "reason_code": "adapter_runtime_start_failed",
+                "message": f"Robot adapter runtime failed to start: {exc}",
+            }
+        return dict(self._robot_runtime_state)
+
+    def _stop_robot_runtime(self) -> dict[str, Any]:
+        stop_runtime = getattr(self.robot, "stop_runtime", None)
+        if not callable(stop_runtime):
+            return dict(self._robot_runtime_state)
+        try:
+            state = stop_runtime()
+            if isinstance(state, dict):
+                self._robot_runtime_state = dict(state)
+        except Exception as exc:
+            logger.warning("Failed to stop robot adapter runtime", exc_info=True)
+            self._robot_runtime_state = {
+                "schema_version": 1,
+                "status": "degraded",
+                "reason_code": "adapter_runtime_stop_failed",
+                "message": f"Robot adapter runtime failed to stop: {exc}",
+            }
+        return dict(self._robot_runtime_state)
+
+    def _start_ros_log_stream(self) -> dict[str, Any]:
+        if self._ros_log_stream is None:
+            return {
+                "schema_version": 1,
+                "status": "not_required",
+                "reason_code": "ros_log_stream_not_required",
+                "message": "The selected adapter does not use ROS1 log streaming.",
+            }
+        try:
+            return self._ros_log_stream.start().to_dict()
+        except Exception as exc:
+            logger.warning("Failed to start ROS log stream", exc_info=True)
+            return {
+                "schema_version": 1,
+                "status": "degraded",
+                "reason_code": "ros_log_stream_start_failed",
+                "message": f"ROS log stream failed to start: {exc}",
+            }
+
+    def _stop_ros_log_stream(self) -> dict[str, Any]:
+        if self._ros_log_stream is None:
+            return {
+                "schema_version": 1,
+                "status": "not_required",
+                "reason_code": "ros_log_stream_not_required",
+                "message": "The selected adapter does not use ROS1 log streaming.",
+            }
+        try:
+            return self._ros_log_stream.stop().to_dict()
+        except Exception as exc:
+            logger.warning("Failed to stop ROS log stream", exc_info=True)
+            return {
+                "schema_version": 1,
+                "status": "degraded",
+                "reason_code": "ros_log_stream_stop_failed",
+                "message": f"ROS log stream failed to stop: {exc}",
+            }
+
+    def _current_ros_log_stream_state(self) -> dict[str, Any]:
+        if self._ros_log_stream is None:
+            return {
+                "schema_version": 1,
+                "status": "not_required",
+                "reason_code": "ros_log_stream_not_required",
+                "message": "The selected adapter does not use ROS1 log streaming.",
+            }
+        try:
+            return self._ros_log_stream.snapshot().to_dict()
+        except Exception as exc:
+            return {
+                "schema_version": 1,
+                "status": "degraded",
+                "reason_code": "ros_log_stream_state_failed",
+                "message": f"ROS log stream state is unavailable: {exc}",
+            }
+
+    def _flush_ros_log_stream(self) -> bool:
+        if self._ros_log_stream is None:
+            return True
+        flush = getattr(self._ros_log_stream, "flush", None)
+        if not callable(flush):
+            return True
+        try:
+            return bool(flush())
+        except Exception:
+            logger.warning("Failed to flush ROS log stream", exc_info=True)
+            return False
+
+    def _current_robot_runtime_state(self) -> dict[str, Any]:
+        runtime_state = getattr(self.robot, "runtime_state", None)
+        if callable(runtime_state):
+            try:
+                state = runtime_state()
+                if isinstance(state, dict):
+                    self._robot_runtime_state = dict(state)
+            except Exception:
+                logger.warning(
+                    "Failed to read robot adapter runtime state",
+                    exc_info=True,
+                )
+        return dict(self._robot_runtime_state)
 
     def run_agent(self, command: str, session_id: str | None = None) -> dict[str, Any]:
         task_id = f"task-{uuid4().hex}"
@@ -937,13 +1095,16 @@ class FireClawGateway:
                     execution_authorization=(
                         control.execution_authorization
                     ),
+                    pending_execution=control.pending_execution,
                 )
             except Exception as exc:
                 failed_result = {
                     "status": "failed",
                     "task_id": task_id,
                     "session_id": control.session_id,
-                    "message": str(exc),
+                    "message": robot_task_operator_message("failed"),
+                    "message_locale": ROBOT_TASK_MESSAGE_LOCALE,
+                    "error": str(exc),
                 }
                 terminal_outcome = build_robot_task_terminal_outcome("failed")
                 failed_result["terminal_outcome"] = (
@@ -965,7 +1126,9 @@ class FireClawGateway:
                         type="task.failed",
                         payload={
                             "status": "failed",
-                            "message": str(exc),
+                            "message": failed_result["message"],
+                            "message_locale": ROBOT_TASK_MESSAGE_LOCALE,
+                            "error": str(exc),
                             "terminal_outcome": (
                                 terminal_outcome.to_dict()
                             ),
@@ -1930,11 +2093,20 @@ class FireClawGateway:
             runtime = build_provider_runtime(
                 provider_base_url=self.config.robot_agent_provider_base_url,
                 provider_api_key=self.config.robot_agent_provider_api_key,
+                provider_timeout_seconds=(
+                    self.config.robot_agent_provider_timeout_seconds
+                ),
+                provider_thinking=self.config.robot_agent_provider_thinking,
                 model=self.config.robot_agent_model,
                 model_catalog_path=self.config.robot_agent_model_catalog_path,
             )
             return RobotAgentDeliberationRuntime(
                 policy=LLMRobotAgentDecisionPolicy(runtime),
+                limits=RobotAgentDeliberationLimits(
+                    timeout_seconds=(
+                        self.config.robot_agent_loop_timeout_seconds
+                    )
+                ),
                 checkpoint_store=self.agent_loop_checkpoints,
             )
         raise ValueError(f"unsupported robot_agent_planner: {self.config.robot_agent_planner}")
@@ -2265,6 +2437,7 @@ class FireClawGateway:
         operator: OperatorContext | None = None,
         structured_task: dict[str, Any] | None = None,
         execution_authorization: ExecutionAuthorization | None = None,
+        pending_execution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if record_received:
             self._append_event(
@@ -2280,7 +2453,22 @@ class FireClawGateway:
             execution_authorization=execution_authorization,
             operator=operator,
         )
-        if structured_task is not None:
+        if pending_execution is not None:
+            # The authorization request contains the exact physical plan
+            # selected before the approval boundary.  Continue that plan
+            # directly; constructing a fresh Robot Agent here would call
+            # the planner/LLM again and create a second state snapshot.
+            task_object = (
+                StructuredRobotTask.from_dict(structured_task)
+                if structured_task is not None
+                else None
+            )
+            result = agent.execute_authorized_pending_step(
+                command=command,
+                structured_task=task_object,
+                pending_execution=pending_execution,
+            )
+        elif structured_task is not None:
             task_object = StructuredRobotTask.from_dict(structured_task)
             if self.robot_agent_runtime is not None:
                 result = self._run_robot_agent_structured_task(
@@ -2385,6 +2573,11 @@ class FireClawGateway:
             if isinstance(result.get("structured_task"), dict)
             else None
         )
+        pending_execution = (
+            _pending_physical_execution_from_result(result)
+            if authorization_kind == "physical"
+            else None
+        )
         if agent_tool_approval is None:
             scope_hash = execution_scope_hash(
                 command=command,
@@ -2412,6 +2605,7 @@ class FireClawGateway:
             authorized_actions=tuple(actions),
             robot_id=self.config.robot_id,
             authorization_kind=authorization_kind,
+            pending_execution=pending_execution,
         )
         self.runtime_state.create_authorization_request(
             request.to_dict()
@@ -2474,7 +2668,8 @@ class FireClawGateway:
                 "status": status,
                 "task_id": task_id,
                 "session_id": session_id,
-                "message": message,
+                "message": robot_task_operator_message(status),
+                "message_locale": ROBOT_TASK_MESSAGE_LOCALE,
                 "reason_code": reason_code,
                 "terminal_outcome": terminal_outcome.to_dict(),
             }
@@ -2487,7 +2682,9 @@ class FireClawGateway:
                 "status": status,
                 "raw_status": terminal_outcome.raw_status,
                 "terminal_outcome": terminal_outcome.to_dict(),
-                "message": message,
+                "message": result["message"],
+                "message_locale": ROBOT_TASK_MESSAGE_LOCALE,
+                "message_detail": message,
                 "reason_code": reason_code,
                 "result": result,
             },
@@ -2506,9 +2703,12 @@ class FireClawGateway:
         *,
         session_id: str,
         operator: OperatorContext,
+        task_id: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         request_payload = (
-            self.runtime_state.pending_authorization_request(session_id)
+            self.runtime_state.pending_authorization_request_for_task(task_id)
+            if task_id is not None
+            else self.runtime_state.pending_authorization_request(session_id)
         )
         if request_payload is None:
             return False, {
@@ -2517,6 +2717,16 @@ class FireClawGateway:
                 "message": "没有绑定具体动作参数的待审批请求。",
             }
         request = AuthorizationRequest.from_dict(request_payload)
+        if request.session_id != session_id or (
+            task_id is not None and request.task_id != task_id
+        ):
+            return False, {
+                "status": "denied",
+                "session_id": session_id,
+                "task_id": task_id,
+                "message": "待审批请求与指定的 Mission/Robot 任务不匹配。",
+                "reason_code": "authorization_task_binding_mismatch",
+            }
         now = datetime.now(timezone.utc).isoformat()
         task_record = self.task_queue.get(request.task_id)
         task_result = task_record.result if task_record is not None else None
@@ -2672,11 +2882,16 @@ class FireClawGateway:
         *,
         session_id: str,
         operator: OperatorContext,
+        task_id: str | None = None,
     ) -> dict[str, Any]:
         with self._task_lock:
             with self.runtime_state.transaction():
                 request_payload = (
-                    self.runtime_state.pending_authorization_request(
+                    self.runtime_state.pending_authorization_request_for_task(
+                        task_id
+                    )
+                    if task_id is not None
+                    else self.runtime_state.pending_authorization_request(
                         session_id
                     )
                 )
@@ -2687,11 +2902,26 @@ class FireClawGateway:
                         "message": "没有绑定具体动作参数的待审批请求。",
                     }
                 request = AuthorizationRequest.from_dict(request_payload)
+                if request.session_id != session_id or (
+                    task_id is not None and request.task_id != task_id
+                ):
+                    return {
+                        "status": "denied",
+                        "session_id": session_id,
+                        "task_id": task_id,
+                        "message": (
+                            "待审批请求与指定的 Mission/Robot 任务不匹配。"
+                        ),
+                        "reason_code": (
+                            "authorization_task_binding_mismatch"
+                        ),
+                    }
                 now = datetime.now(timezone.utc).isoformat()
                 if request.is_expired(now):
                     _, expired = self._authorize_confirmation(
                         session_id=session_id,
                         operator=operator,
+                        task_id=task_id,
                     )
                     return expired
 
@@ -2740,6 +2970,7 @@ class FireClawGateway:
                     self._authorize_confirmation(
                         session_id=session_id,
                         operator=operator,
+                        task_id=task_id,
                     )
                 )
                 if not authorized:
@@ -2800,6 +3031,7 @@ class FireClawGateway:
                             execution_authorization.to_dict()
                         ),
                         "structured_task": structured_task,
+                        "pending_execution": request.pending_execution,
                         "requested_by": request.requested_by.to_dict(),
                         "approved_by": operator.to_dict(),
                     },
@@ -2814,6 +3046,11 @@ class FireClawGateway:
                     ),
                     structured_task=structured_task,
                     execution_authorization=execution_authorization,
+                    pending_execution=(
+                        dict(request.pending_execution)
+                        if request.pending_execution is not None
+                        else None
+                    ),
                 )
             self._task_controls[request.task_id] = control
 
@@ -2933,6 +3170,8 @@ class FireClawGateway:
     def state(self) -> dict[str, Any]:
         return {
             "robot_state": asdict(self.robot.get_robot_state()),
+            "robot_runtime": self._current_robot_runtime_state(),
+            "ros_log_stream": self._current_ros_log_stream_state(),
             "environment_state": asdict(self.robot.get_environment_state()),
             "task_capacity": self.task_capacity(),
             "active_tasks": self.active_tasks(),
@@ -2970,11 +3209,31 @@ class FireClawGateway:
         }
 
     def health(self) -> dict[str, Any]:
+        runtime_state = self._current_robot_runtime_state()
+        ros_log_stream_state = self._current_ros_log_stream_state()
         return {
             "status": "ok",
             "robot_id": self.config.robot_id,
             "adapter": self.config.adapter,
             "dry_run": self.config.dry_run,
+            "robot_runtime": {
+                "status": runtime_state.get("status", "unknown"),
+                "reason_code": runtime_state.get(
+                    "reason_code",
+                    "unknown",
+                ),
+                "node_initialized": runtime_state.get("node_initialized"),
+            },
+            "ros_log_stream": {
+                "status": ros_log_stream_state.get("status", "unknown"),
+                "reason_code": ros_log_stream_state.get(
+                    "reason_code",
+                    "unknown",
+                ),
+                "topic": ros_log_stream_state.get("topic"),
+                "minimum_level": ros_log_stream_state.get("minimum_level"),
+                "dropped_count": ros_log_stream_state.get("dropped_count", 0),
+            },
         }
 
     def task_capacity(self) -> dict[str, Any]:
@@ -3052,6 +3311,11 @@ class FireClawGateway:
                     },
                 )
 
+        # Preserve ROS recovery/abort evidence that arrives immediately after
+        # the action server's terminal result. This bounded barrier runs only
+        # after Agent/tool execution and never extends planning or ROS callbacks.
+        self._flush_ros_log_stream()
+
         with self._task_lock:
             control = self._task_controls.get(task_id)
             queue_record = self.task_queue.get(task_id)
@@ -3070,6 +3334,10 @@ class FireClawGateway:
                 and pending_authorization is not None
                 and not was_cancel_requested
             ):
+                result["message"] = robot_task_operator_message(
+                    "awaiting_confirmation"
+                )
+                result["message_locale"] = ROBOT_TASK_MESSAGE_LOCALE
                 with self.runtime_state.transaction():
                     self._append_event(
                         task_id=task_id,
@@ -3106,6 +3374,10 @@ class FireClawGateway:
                     raw_status,
                     cancellation_requested=was_cancel_requested,
                 )
+            result["message"] = robot_task_operator_message(
+                terminal_outcome.status
+            )
+            result["message_locale"] = ROBOT_TASK_MESSAGE_LOCALE
             result["terminal_outcome"] = terminal_outcome.to_dict()
             with self.runtime_state.transaction():
                 if (
@@ -3149,6 +3421,7 @@ class FireClawGateway:
                         "raw_status": terminal_outcome.raw_status,
                         "terminal_outcome": terminal_outcome.to_dict(),
                         "message": result.get("message"),
+                        "message_locale": ROBOT_TASK_MESSAGE_LOCALE,
                         "result": result,
                         "cancel_requested": was_cancel_requested,
                     },
@@ -3283,6 +3556,58 @@ class FireClawGateway:
                 }
             )
         return summaries
+
+    def _ros_log_task_context(self) -> dict[str, Any]:
+        """Capture task binding in the ROS callback before a task can exit."""
+
+        with self._task_lock:
+            controls = list(self._task_controls.values())
+        if len(controls) == 1:
+            control = controls[0]
+            return {
+                "task_binding": "active_task",
+                "task_id": control.task_id,
+                "session_id": control.session_id,
+            }
+        if not controls:
+            return {"task_binding": "unbound", "active_task_count": 0}
+        return {
+            "task_binding": "ambiguous",
+            "active_task_count": len(controls),
+            "candidate_task_ids": sorted(control.task_id for control in controls),
+        }
+
+    def _record_ros_log(self, record: dict[str, Any]) -> None:
+        """Persist task-bound ROS evidence or publish it as robot-level telemetry."""
+
+        payload = dict(record)
+        raw_context = payload.pop("context", None)
+        context = raw_context if isinstance(raw_context, dict) else {}
+        payload.update(context)
+        payload["robot_id"] = self.config.robot_id
+        task_id = context.get("task_id")
+        session_id = context.get("session_id")
+        if (
+            context.get("task_binding") == "active_task"
+            and isinstance(task_id, str)
+            and task_id
+            and isinstance(session_id, str)
+            and session_id
+        ):
+            self._append_event(
+                task_id=task_id,
+                session_id=session_id,
+                type="ros.log",
+                payload=payload,
+            )
+            return
+        # Do not falsely attribute robot-wide ROS output when zero or multiple
+        # FireClaw tasks are active. It remains visible on the Robot Gateway
+        # stream with an explicit binding state.
+        self._publish_stream_event(
+            "ros.log",
+            payload=payload,
+        )
 
     def _append_event(
         self,
@@ -3462,6 +3787,11 @@ class FireClawGateway:
                             structured_task["execution_authorization"] = (
                                 execution_authorization.to_dict()
                             )
+                        pending_execution = resume_payload.get(
+                            "pending_execution"
+                        )
+                        if not isinstance(pending_execution, dict):
+                            pending_execution = None
                         control = TaskControl(
                             task_id=record.task_id,
                             session_id=record.session_id,
@@ -3473,6 +3803,7 @@ class FireClawGateway:
                             execution_authorization=(
                                 execution_authorization
                             ),
+                            pending_execution=pending_execution,
                         )
                         with self._task_lock:
                             self._task_controls[record.task_id] = control
@@ -3588,7 +3919,11 @@ class FireClawGateway:
                 payload={
                     "status": "lost",
                     "task_id": lost_record.task_id,
-                    "message": "Gateway restarted before terminal result; task was not replayed.",
+                    "message": robot_task_operator_message("lost"),
+                    "message_locale": ROBOT_TASK_MESSAGE_LOCALE,
+                    "message_detail": (
+                        "Gateway restarted before terminal result; task was not replayed."
+                    ),
                     "terminal_outcome": (
                         build_robot_task_terminal_outcome("lost").to_dict()
                     ),
@@ -4048,6 +4383,7 @@ class FireClawGateway:
                 result = self.confirm_task(
                     session_id=session_id,
                     operator=operator,
+                    task_id=_optional_payload_string(payload, "task_id"),
                 )
                 status = str(result.get("status") or "denied")
                 if status in {"denied", "expired", "blocked"}:
@@ -4231,6 +4567,57 @@ def _agent_tool_approval_from_result(
     return None
 
 
+def _pending_physical_execution_from_result(
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Extract the immutable continuation point for a physical approval.
+
+    Authorization must bind to the exact plan that SafetyGate saw.  The
+    continuation payload is deliberately small: plan + operation identity +
+    the evidence IDs from the already-recorded robot snapshot.  Live state is
+    re-read during resume, so no stale robot/environment object is trusted.
+    """
+
+    planning = result.get("planning")
+    if not isinstance(planning, dict):
+        return None
+    plan = planning.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return None
+    if any(
+        not isinstance(step, dict)
+        or not isinstance(step.get("skill_name"), str)
+        or not isinstance(step.get("inputs"), dict)
+        for step in steps
+    ):
+        return None
+    snapshot = result.get("memory_snapshot")
+    if not isinstance(snapshot, dict):
+        # Older results did not carry evidence IDs and must use the legacy
+        # recovery path rather than pretending a snapshot can be reused.
+        return None
+    evidence_ids = snapshot.get("evidence_event_ids")
+    if not isinstance(evidence_ids, list) or any(
+        not isinstance(event_id, str) or not event_id
+        for event_id in evidence_ids
+    ):
+        return None
+    pending: dict[str, Any] = {
+        "version": 1,
+        "planning": dict(planning),
+        "memory_snapshot": {
+            "evidence_event_ids": list(evidence_ids),
+        },
+    }
+    operation_id = result.get("operation_id")
+    if isinstance(operation_id, str) and operation_id:
+        pending["operation_id"] = operation_id
+    return pending
+
+
 def _task_events_path(path: str) -> str | None:
     parts = [part for part in path.split("/") if part]
     if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "events":
@@ -4255,7 +4642,12 @@ def _task_cancel_path(path: str) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the FireClaw local HTTP gateway.")
-    parser.add_argument("--config", type=Path, default=None, help="Path to fireclaw.toml config file.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to an explicit fireclaw.sim.toml or reviewed fireclaw.real.toml.",
+    )
     parser.add_argument(
         "--runtime-root",
         default=None,
@@ -4308,8 +4700,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--robot-agent-planner", choices=["deterministic", "llm"], default=None)
     parser.add_argument("--robot-agent-provider-base-url", default=None)
     parser.add_argument("--robot-agent-provider-api-key", default=None)
+    parser.add_argument(
+        "--robot-agent-provider-timeout-seconds",
+        type=float,
+        default=None,
+        help="Maximum time for one Robot Agent LLM request.",
+    )
     parser.add_argument("--robot-agent-model", default=None)
     parser.add_argument("--robot-agent-catalog", default=None)
+    parser.add_argument(
+        "--robot-agent-loop-timeout-seconds",
+        type=float,
+        default=None,
+        help="Outer budget for the complete Robot Agent LLM/Tool loop.",
+    )
     parser.add_argument("--robot-profile", default=None, help="Path to robot capability profile TOML.")
     parser.add_argument("--embodied-memory-path", default=None)
     parser.add_argument("--embodied-memory-index", default=None)
@@ -4357,8 +4761,17 @@ def main(argv: list[str] | None = None) -> int:
             "robot_agent_planner": args.robot_agent_planner,
             "robot_agent_provider_base_url": args.robot_agent_provider_base_url,
             "robot_agent_provider_api_key": args.robot_agent_provider_api_key,
+            "robot_agent_provider_timeout_seconds": (
+                args.robot_agent_provider_timeout_seconds
+            ),
+            "robot_agent_provider_thinking": getattr(
+                args, "robot_agent_provider_thinking", None
+            ),
             "robot_agent_model": args.robot_agent_model,
             "robot_agent_model_catalog_path": args.robot_agent_catalog,
+            "robot_agent_loop_timeout_seconds": (
+                args.robot_agent_loop_timeout_seconds
+            ),
             "plugin_paths": None,
             "plugin_configs": None,
             "robot_gateway_profile_path": args.robot_profile,
@@ -4454,8 +4867,17 @@ def _run_robot_gateway(
             robot_agent_planner=str(configured("robot_agent_planner", "deterministic")),
             robot_agent_provider_base_url=merged.get("robot_agent_provider_base_url"),
             robot_agent_provider_api_key=merged.get("robot_agent_provider_api_key"),
+            robot_agent_provider_timeout_seconds=float(
+                configured("robot_agent_provider_timeout_seconds", 60.0)
+            ),
+            robot_agent_provider_thinking=merged.get(
+                "robot_agent_provider_thinking"
+            ),
             robot_agent_model=merged.get("robot_agent_model"),
             robot_agent_model_catalog_path=merged.get("robot_agent_model_catalog_path"),
+            robot_agent_loop_timeout_seconds=float(
+                configured("robot_agent_loop_timeout_seconds", 600.0)
+            ),
             extension_paths=tuple(str(path) for path in extension_paths),
             plugin_configs={
                 str(plugin_id): dict(config)
@@ -4488,7 +4910,10 @@ def _run_robot_gateway(
         ),
         flush=True,
     )
-    gateway.serve_forever()
+    try:
+        gateway.serve_forever()
+    except KeyboardInterrupt:
+        print("Robot Gateway stopped.", flush=True)
     return 0
 
 

@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from concurrent.futures import ThreadPoolExecutor
+
 from fireclaw_core.memory.memory_index import SqliteMemoryIndex
 
 
@@ -65,6 +67,27 @@ class TestUpsert:
         results = idx.search("*")
         assert len(results) == 1
         assert results[0]["content"]["status"] == "updated"
+
+    def test_index_uses_a_connection_owned_by_each_worker_thread(
+        self,
+        tmp_path,
+    ):
+        idx = SqliteMemoryIndex(tmp_path / "mem.db")
+        # Open the first connection on the caller thread. Reusing this exact
+        # connection in the worker reproduced sqlite3.ProgrammingError.
+        idx.upsert(_make_record(record_id="mem-main"))
+
+        def write_from_worker():
+            idx.upsert(_make_record(record_id="mem-worker"))
+            return [item["record_id"] for item in idx.search("*")]
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            worker_ids = pool.submit(write_from_worker).result(timeout=5)
+
+        assert set(worker_ids) == {"mem-main", "mem-worker"}
+        assert {
+            item["record_id"] for item in idx.search("*")
+        } == {"mem-main", "mem-worker"}
 
 
 class TestSearch:

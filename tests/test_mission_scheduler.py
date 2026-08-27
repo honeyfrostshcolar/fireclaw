@@ -86,6 +86,42 @@ class WaitingThenCompletedSubagentClient(FakeSubagentClient):
         }
 
 
+class ConfirmRequiredSubagentClient(FakeSubagentClient):
+    def __init__(self):
+        super().__init__()
+        self.confirmed = False
+        self.confirm_calls = []
+
+    def get_task_trace(self, entry, task_id):
+        if not self.confirmed:
+            return {
+                "task_id": task_id,
+                "robot_id": entry.robot_id,
+                "status": "awaiting_confirmation",
+                "queue_record": {"status": "awaiting_confirmation"},
+                "result": {"status": "awaiting_confirmation"},
+                "events": [{"type": "authorization.requested"}],
+            }
+        return {
+            "task_id": task_id,
+            "robot_id": entry.robot_id,
+            "status": "completed",
+            "queue_record": {"status": "completed"},
+            "result": {"status": "completed", "message": "done"},
+            "events": [{"type": "task.completed"}],
+        }
+
+    def confirm_task(self, entry, task_id, *, session_id):
+        self.confirm_calls.append((entry.robot_id, task_id, session_id))
+        self.confirmed = True
+        return {
+            "status": "accepted",
+            "robot_id": entry.robot_id,
+            "task_id": task_id,
+            "session_id": session_id,
+        }
+
+
 class _CancellationRunControl:
     def __init__(self) -> None:
         self.cancel_requested = False
@@ -434,6 +470,58 @@ def test_scheduler_keeps_waiting_for_same_task_after_confirmation(tmp_path):
         "task-r1"
     ]
     assert mission_record.subtasks[0].status == "completed"
+
+
+def test_confirmed_sealed_plan_relays_exact_robot_task_authorization(
+    tmp_path,
+):
+    registry = RobotRegistry([
+        RobotRegistryEntry(
+            robot_id="r1",
+            base_url="http://r1:8765",
+            capabilities=("navigation",),
+        ),
+    ])
+    client = ConfirmRequiredSubagentClient()
+    mission = MissionAgent(
+        registry=registry,
+        subagent_client=client,
+        mission_registry=JsonlMissionRegistry(tmp_path / "missions.jsonl"),
+    )
+    plan = MissionPlan(
+        intent="navigation",
+        command="导航到坐标 (1.0, 2.0)",
+        subtasks=[
+            MissionSubtask(
+                robot_id="r1",
+                command="导航到坐标 (1.0, 2.0)",
+                floor=None,
+                capability_required="navigation",
+                execution_group=0,
+                target={
+                    "frame_id": "map",
+                    "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0},
+                },
+            ),
+        ],
+    )
+
+    result = MissionScheduler(
+        mission_agent=mission,
+        config=MissionSchedulerConfig(
+            poll_interval_seconds=0.001,
+            group_timeout_seconds=1.0,
+        ),
+    ).schedule(
+        plan,
+        mission_id="mission-sealed",
+        relay_confirmed_plan_authorizations=True,
+    )
+
+    assert result["status"] == "succeeded"
+    assert client.confirm_calls == [
+        ("r1", "task-r1", "mission-sealed")
+    ]
 
 
 def test_scheduler_sequential_groups(tmp_path):
@@ -1138,3 +1226,354 @@ def test_scheduler_retries_failed_subtask(tmp_path):
     assert len(client.calls) == 2  # Original + 1 retry
     assert any(d["decision"] == "skipped" and d["reason"] == "max_retries_exceeded"
                for d in result.get("failure_decisions", []))
+
+
+def test_scheduler_relays_robot_progress_events():
+    from fireclaw_core.mission.mission_run import MissionRunControl
+
+    run_control = MissionRunControl()
+    emitted = []
+    run_control.set_event_sink(lambda et, p: emitted.append((et, p)))
+
+    from unittest.mock import MagicMock
+    mock_agent = MagicMock()
+    mock_agent.registry = RobotRegistry([])
+    mock_agent.mission_registry = None
+
+    scheduler = MissionScheduler(
+        mission_agent=mock_agent,
+        registry=RobotRegistry([]),
+    )
+    seen_ids = set()
+
+    observed = [
+        {
+            "robot_id": "gazebo_turtlebot3",
+            "task_id": "task-1",
+            "robot_trace": {
+                "events": [
+                    {
+                        "event_id": "evt-1",
+                        "type": "skill.started",
+                        "payload": {"operator_message": "正在前往目标点 (0, 0)", "skill_name": "navigate_to_point"},
+                    },
+                    {
+                        "event_id": "evt-2",
+                        "type": "robot_agent.decision",
+                        "payload": {"iteration": 2, "tool_name": "move_base_clear_costmaps", "operation": "execute_tool"},
+                    },
+                    {
+                        "event_id": "evt-3",
+                        "type": "robot_agent.decision",
+                        "payload": {"iteration": 3, "tool_name": "navigation_diagnostics", "operation": "execute_tool"},
+                    },
+                    {
+                        "event_id": "evt-4",
+                        "type": "robot_agent.observation",
+                        "payload": {"iteration": 3, "status": "failed", "tool_name": "navigate_to_point", "reason_code": "move_base_aborted"},
+                    },
+                ]
+            },
+        }
+    ]
+
+    scheduler._relay_robot_progress_events(
+        mission_id="m-test",
+        observed=observed,
+        seen_event_ids=seen_ids,
+        run_control=run_control,
+    )
+
+    assert len(emitted) == 4
+    assert emitted[0][0] == "action.feedback"
+    assert emitted[0][1]["message"] == "正在前往目标点 (0, 0)"
+    assert emitted[1][1]["message"] == "自主决策调用 move_base_clear_costmaps 清理代价地图"
+    assert emitted[1][1]["robot_agent_iteration"] == 2
+    assert emitted[2][1]["message"] == "自主决策调用 navigation_diagnostics 进行系统自检"
+    assert emitted[2][1]["robot_agent_iteration"] == 3
+    assert emitted[3][1]["message"] == "导航尝试未成功（move_base 找不到可行路径），等待任务策略判定"
+    assert emitted[3][1]["robot_agent_iteration"] == 3
+
+    # Subsequent poll with same events should NOT emit duplicates
+    scheduler._relay_robot_progress_events(
+        mission_id="m-test",
+        observed=observed,
+        seen_event_ids=seen_ids,
+        run_control=run_control,
+    )
+    assert len(emitted) == 4  # Still 4
+
+    # Distinct event ids remain distinct even when the operator message repeats.
+    observed[0]["robot_trace"]["events"].append({
+        "event_id": "evt-5",
+        "type": "skill.started",
+        "payload": {
+            "operator_message": "正在前往目标点 (0, 0)",
+            "skill_name": "navigate_to_point",
+        },
+    })
+    scheduler._relay_robot_progress_events(
+        mission_id="m-test",
+        observed=observed,
+        seen_event_ids=seen_ids,
+        run_control=run_control,
+    )
+    assert len(emitted) == 5
+
+
+def test_scheduler_relays_bounded_success_and_task_terminal_evidence():
+    from fireclaw_core.mission.mission_run import MissionRunControl
+    from unittest.mock import MagicMock
+
+    run_control = MissionRunControl()
+    emitted = []
+    run_control.set_event_sink(
+        lambda event_type, payload: emitted.append((event_type, payload))
+    )
+    mock_agent = MagicMock()
+    mock_agent.registry = RobotRegistry([])
+    mock_agent.mission_registry = None
+    scheduler = MissionScheduler(
+        mission_agent=mock_agent,
+        registry=RobotRegistry([]),
+    )
+    subtask = MissionSubtask(
+        robot_id="gazebo_turtlebot3",
+        command="前往第二个巡检点",
+        floor=None,
+        capability_required="patrol",
+        execution_group=1,
+    )
+    attempt = scheduler._submitted_attempt(
+        result={"task_id": "task-success"},
+        logical_subtask_key="1:0",
+        subtask=subtask,
+        node_id="patrol-2",
+        plan_id="mission-success:plan:1",
+        plan_step_index=2,
+        plan_step_total=4,
+    )
+    assert attempt is not None
+
+    output = {
+        "status": "succeeded",
+        "elapsed_seconds": 25.3,
+        "goal_reached": True,
+        "goal_state": 3,
+        "goal_state_name": "succeeded",
+        "pose": {
+            "frame_id": "map",
+            "x": 1.513906,
+            "y": -1.554588,
+            "yaw": -0.068,
+        },
+        "large_runtime_snapshot": {"ignored": ["x"] * 100},
+    }
+    step = {
+        "skill_name": "navigate_to_point",
+        "status": "succeeded",
+        "attempt_count": 1,
+        "inputs": {"frame_id": "map", "x": 1.48, "y": -1.58},
+        "output": output,
+    }
+    scheduler._relay_robot_progress_events(
+        mission_id="mission-success",
+        observed=[{
+            "robot_id": "gazebo_turtlebot3",
+            "task_id": "task-success",
+            "robot_trace": {
+                "events": [
+                    {
+                        "event_id": "skill-success-1",
+                        "timestamp": "2026-08-26T10:00:25+00:00",
+                        "type": "skill.succeeded",
+                        "payload": step,
+                    },
+                    {
+                        "event_id": "task-completed-1",
+                        "timestamp": "2026-08-26T10:00:25.1+00:00",
+                        "type": "task.completed",
+                        "payload": {
+                            "status": "completed",
+                            "raw_status": "succeeded",
+                            "message": "任务已完成。",
+                            "terminal_outcome": {
+                                "status": "completed",
+                                "successful": True,
+                            },
+                            "result": {
+                                "status": "succeeded",
+                                "execution": {
+                                    "status": "succeeded",
+                                    "steps": [step],
+                                },
+                                "memory_snapshot": {"ignored": ["y"] * 100},
+                            },
+                        },
+                    },
+                ],
+            },
+        }],
+        seen_event_ids=set(),
+        run_control=run_control,
+        attempts=[attempt],
+    )
+
+    assert [event_type for event_type, _ in emitted] == [
+        "skill.succeeded",
+        "task.completed",
+    ]
+    skill_payload = emitted[0][1]
+    assert skill_payload["target_pose"] == {
+        "frame_id": "map",
+        "x": 1.48,
+        "y": -1.58,
+    }
+    assert skill_payload["final_pose"]["x"] == 1.513906
+    assert skill_payload["elapsed_seconds"] == 25.3
+    assert skill_payload["source_event_type"] == "skill.succeeded"
+    assert skill_payload["plan_step_index"] == 2
+    assert "output" not in skill_payload
+    assert "large_runtime_snapshot" not in skill_payload
+
+    terminal_payload = emitted[1][1]
+    assert terminal_payload["status"] == "completed"
+    assert terminal_payload["skill_name"] == "navigate_to_point"
+    assert terminal_payload["final_pose"]["y"] == -1.554588
+    assert terminal_payload["source_event_type"] == "task.completed"
+    assert "result" not in terminal_payload
+    assert "memory_snapshot" not in terminal_payload
+
+
+def test_scheduler_relays_ros_logs_with_sealed_plan_step_context():
+    from fireclaw_core.mission.mission_run import MissionRunControl
+    from unittest.mock import MagicMock
+
+    run_control = MissionRunControl()
+    emitted = []
+    run_control.set_event_sink(lambda event_type, payload: emitted.append(
+        (event_type, payload)
+    ))
+    mock_agent = MagicMock()
+    mock_agent.registry = RobotRegistry([])
+    mock_agent.mission_registry = None
+    scheduler = MissionScheduler(
+        mission_agent=mock_agent,
+        registry=RobotRegistry([]),
+    )
+    subtask = MissionSubtask(
+        robot_id="gazebo_turtlebot3",
+        command="前往第二个巡检点 (1.0, 0.0)",
+        floor=None,
+        capability_required="patrol",
+        execution_group=1,
+    )
+    attempt = scheduler._submitted_attempt(
+        result={"task_id": "task-2"},
+        logical_subtask_key="1:0",
+        subtask=subtask,
+        node_id="task-2",
+        plan_id="mission-1:plan:1",
+        plan_step_index=2,
+        plan_step_total=4,
+    )
+    assert attempt is not None
+
+    scheduler._relay_robot_progress_events(
+        mission_id="mission-1",
+        observed=[{
+            "robot_id": "gazebo_turtlebot3",
+            "task_id": "task-2",
+            "robot_trace": {
+                "events": [{
+                    "event_id": "evt-ros-1",
+                    "type": "ros.log",
+                    "payload": {
+                        "severity": "WARN",
+                        "node": "/move_base",
+                        "message": "Rotate recovery behavior started.",
+                    },
+                }],
+            },
+        }],
+        seen_event_ids=set(),
+        run_control=run_control,
+        attempts=[attempt],
+    )
+
+    assert len(emitted) == 1
+    event_type, payload = emitted[0]
+    assert event_type == "ros.log"
+    assert payload["plan_step_index"] == 2
+    assert payload["plan_step_total"] == 4
+    assert payload["plan_step_command"] == "前往第二个巡检点 (1.0, 0.0)"
+    assert payload["task_id"] == "task-2"
+    assert payload["message"] == "Rotate recovery behavior started."
+
+
+def test_scheduler_relays_authorization_and_resume_trace_events_with_source_timing():
+    from fireclaw_core.mission.mission_run import MissionRunControl
+    from unittest.mock import MagicMock
+
+    run_control = MissionRunControl()
+    emitted = []
+    run_control.set_event_sink(lambda event_type, payload: emitted.append(
+        (event_type, payload)
+    ))
+    mock_agent = MagicMock()
+    mock_agent.registry = RobotRegistry([])
+    mock_agent.mission_registry = None
+    scheduler = MissionScheduler(
+        mission_agent=mock_agent,
+        registry=RobotRegistry([]),
+    )
+
+    scheduler._relay_robot_progress_events(
+        mission_id="mission-auth",
+        observed=[{
+            "robot_id": "robot-1",
+            "task_id": "task-auth-1",
+            "robot_trace": {
+                "events": [
+                    {
+                        "event_id": "auth-event-1",
+                        "timestamp": "2026-08-26T10:00:00+00:00",
+                        "type": "authorization.requested",
+                        "payload": {
+                            "authorization": {
+                                "request_id": "auth-request-1",
+                            },
+                        },
+                    },
+                    {
+                        "event_id": "resume-event-1",
+                        "timestamp": "2026-08-26T10:00:11+00:00",
+                        "type": "task.authorized_plan_resumed",
+                        "payload": {
+                            "operation_id": "operation-1",
+                            "snapshot_reused": True,
+                            "robot_agent_reinvoked": False,
+                            "llm_reinvoked": False,
+                        },
+                    },
+                ],
+            },
+        }],
+        seen_event_ids=set(),
+        run_control=run_control,
+    )
+
+    assert [event_type for event_type, _ in emitted] == [
+        "authorization.requested",
+        "task.authorized_plan_resumed",
+    ]
+    auth_payload = emitted[0][1]
+    assert auth_payload["source_event_type"] == "authorization.requested"
+    assert auth_payload["source_timestamp"] == "2026-08-26T10:00:00+00:00"
+    assert auth_payload["mission_id"] == "mission-auth"
+    assert auth_payload["task_id"] == "task-auth-1"
+    resume_payload = emitted[1][1]
+    assert resume_payload["snapshot_reused"] is True
+    assert resume_payload["robot_agent_reinvoked"] is False
+    assert resume_payload["llm_reinvoked"] is False
+    assert resume_payload["source_timestamp"] == "2026-08-26T10:00:11+00:00"

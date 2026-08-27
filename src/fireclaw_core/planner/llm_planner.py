@@ -6,7 +6,7 @@ import json
 from math import isfinite
 import time
 import uuid
-from typing import Any
+from typing import Any, Mapping
 
 from fireclaw_core.agent.harness import (
     AgentHarness,
@@ -91,11 +91,43 @@ MISSION_PLAN_TOOL: dict[str, Any] = {
                         "properties": {
                             "robot_id": {"type": "string"},
                             "command": {"type": "string"},
-                            "floor": {"type": "integer"},
+                            "target": {
+                                "type": "object",
+                                "properties": {
+                                    "frame_id": {
+                                        "type": "string",
+                                        "const": "map",
+                                    },
+                                    "pose": {
+                                        "type": "object",
+                                        "properties": {
+                                            "x": {"type": "number"},
+                                            "y": {"type": "number"},
+                                            "yaw": {
+                                                "type": "number",
+                                                "description": (
+                                                    "可选；只有操作员明确指定目标朝向时填写。"
+                                                    "相对当前位置未指定朝向时省略，宿主会绑定冻结的实时 yaw。"
+                                                ),
+                                            },
+                                        },
+                                        "required": ["x", "y"],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                                "required": ["frame_id", "pose"],
+                                "additionalProperties": False,
+                            },
                             "capability_required": {"type": "string"},
                             "execution_group": {"type": "integer", "default": 0},
                         },
-                        "required": ["robot_id", "command", "floor", "capability_required"],
+                        "required": [
+                            "robot_id",
+                            "command",
+                            "target",
+                            "capability_required",
+                        ],
+                        "additionalProperties": False,
                     },
                 },
                 "knowledge_refs": {
@@ -145,8 +177,10 @@ MISSION_GRAPH_PROPOSAL_TOOL: dict[str, Any] = {
                             "target": {
                                 "type": "object",
                                 "properties": {
-                                    "frame_id": {"type": "string"},
-                                    "floor": {"type": "integer", "minimum": 1},
+                                    "frame_id": {
+                                        "type": "string",
+                                        "const": "map",
+                                    },
                                     "area_id": {"type": "string"},
                                     "entity_id": {"type": "string"},
                                     "pose": {
@@ -154,7 +188,6 @@ MISSION_GRAPH_PROPOSAL_TOOL: dict[str, Any] = {
                                         "properties": {
                                             "x": {"type": "number"},
                                             "y": {"type": "number"},
-                                            "z": {"type": "number"},
                                             "yaw": {"type": "number"},
                                         },
                                         "required": ["x", "y"],
@@ -163,7 +196,6 @@ MISSION_GRAPH_PROPOSAL_TOOL: dict[str, Any] = {
                                 },
                                 "required": ["frame_id"],
                                 "anyOf": [
-                                    {"required": ["floor"]},
                                     {"required": ["area_id"]},
                                     {"required": ["entity_id"]},
                                     {"required": ["pose"]},
@@ -280,8 +312,10 @@ REQUEST_ACTIVE_OBSERVATION_TOOL: dict[str, Any] = {
                 "target": {
                     "type": "object",
                     "properties": {
-                        "frame_id": {"type": "string"},
-                        "floor": {"type": "integer", "minimum": 1},
+                        "frame_id": {
+                            "type": "string",
+                            "const": "map",
+                        },
                         "area_id": {"type": "string"},
                         "entity_id": {"type": "string"},
                         "pose": {
@@ -289,7 +323,6 @@ REQUEST_ACTIVE_OBSERVATION_TOOL: dict[str, Any] = {
                             "properties": {
                                 "x": {"type": "number"},
                                 "y": {"type": "number"},
-                                "z": {"type": "number"},
                                 "yaw": {"type": "number"},
                             },
                             "required": ["x", "y"],
@@ -298,7 +331,6 @@ REQUEST_ACTIVE_OBSERVATION_TOOL: dict[str, Any] = {
                     },
                     "required": ["frame_id"],
                     "anyOf": [
-                        {"required": ["floor"]},
                         {"required": ["area_id"]},
                         {"required": ["entity_id"]},
                         {"required": ["pose"]},
@@ -525,18 +557,24 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
         "你只能调用本轮宿主明确暴露的工具；不得臆造或绕过未暴露能力。",
         "通用 Agent Tool 由宿主执行并受部署模式、沙箱、审批和调用前策略约束。",
         "通用工具结果属于 advisory，不能单独证明机器人或火场的物理状态。",
+        "operator_clarifications 是 Mission Gateway 绑定到当前身份和会话的操作员回答，属于当前任务的权威意图输入；不得与历史纠正混淆。",
+        "本轮可能是同一规划会话的延续：operator_command 是最初命令，operator_clarifications 按轮次保存此前的全部问答。请自然延续该对话；不要重新自我介绍、问候或重复已经说明过的内容。",
+        "在澄清轮数未用尽且缺失信息可由操作员补充（如坐标、朝向、任务目的）时，优先 request_clarification 而不是 escalate；只有缺失的是宿主证据（地图、感知、可达性）且操作员无法提供时才 escalate。",
+        "通过 inspect_mission_state 查询 robot_state 或 fleet_state 时，返回数据中的 pose（如 x, y, yaw, frame_id）是机器人当前实测位姿证据。当操作员命令包含‘返回现在的位置’、‘回到原位’、‘返回起点’、‘原路返回’或要求读取当前位置时，你可以通过 inspect_mission_state 查看该实测位姿并将其作为合法的导航目标节点，也可以在 request_clarification 中向操作员确认该坐标。对于这类相对目标，若操作员没有明确指定 yaw，不要把 schema 默认 yaw=0 当成操作员指令；可以省略 yaw，宿主会在封存计划前绑定冻结的实时 yaw。",
+        "当操作员命令包含相对代词但未提供坐标且快照中没有实测位姿证据时，你不得凭空猜测或使用 (0,0) 坐标提案；必须调用 request_clarification，告知已识别的任务部分，并主动询问操作员希望前往的具体地图坐标 (x, y)。",
+        "当 validation_errors 显示目标坐标未绑定到操作员命令时，不要用相同或猜测的坐标反复提交提案；必须立即调用 request_clarification 请操作员用带括号的 (x, y) 格式明确提供或补充缺失的坐标。",
+        "任何物理导航目标都必须来自 operator_command/operator_clarifications 中操作员明确给出的目标，或来自宿主明确标为 authoritative 的新鲜现场证据；不得猜测坐标、朝向或无障碍位置。",
+        "当操作员要求你自行选择‘随便一个无障碍/安全位置’，但本轮没有宿主提供的地图候选或可达性证据时，必须 request_clarification 或 escalate，绝不能用 (0,0) 等臆造目标代替。",
         "当前现场状态只能通过 inspect_mission_state 读取冻结快照；不要猜测未查询的动态状态。",
-        "environment_facts 是可审计的原始观测；environment_beliefs 是宿主完成时效、来源和冲突处理后的规划依据。",
-        "belief.status 为 uncertain、conflicted 或 stale 时，不得把其 value 当作已确认事实；应侦察、澄清或升级。",
-        "查询结果会在下一轮作为 observation 返回。",
+        "查询结果会在下一轮作为 observation 返回。严禁对同一个 state kind 重复发起查询；收到 observation 后必须直接调用 propose_task_graph 生成任务计划，或调用 request_clarification 追问。",
         "只有先查询并看到未解决 belief 后，runtime 才会开放 request_observation。",
         "request_observation 只提交补证意图；宿主将校验目标、能力、传感器和机器人状态后再决定是否调度。",
         "信息充分时优先调用 propose_task_graph；缺少操作员关键信息时调用 request_clarification；",
         "状态危险、不确定或无法形成有效计划时调用 escalate。",
-        "巡检/巡视的 Mission intent=patrol，但导航节点必须用 task_type=navigation、capability_required=navigate；仅明确搜索/侦察才用 search/recon。",
-        "单层 target 使用 frame_id=map（zone 不是 frame）：point=pose(x,y,yaw?默认0)，area=area_id，entity=entity_id。",
+        "巡检/巡视的 Mission intent=patrol，但导航节点必须用 task_type=navigation；capability_required 必须从本轮可用机器人能力目录/Tool schema enum 原样选择（当前常见值为 navigation），仅明确搜索/侦察才用 search/recon。",
+        "二维 target 必须使用 frame_id=map（zone 不是 frame）：point=pose(x,y,yaw?)，area=area_id，entity=entity_id；yaw 只有在操作员明确要求时填写；不得生成楼层目标。",
         "propose_task_graph 只描述任务语义、目标、依赖和完成条件；不要选择机器人。",
-        "每个节点必须在 belief_assumptions 中列出其执行所依赖的现场事实及期望值；没有现场事实依赖时使用空数组。",
+        "每个节点必须在 belief_assumptions 中列出其执行所依赖的现场环境事实（environment_beliefs）及期望值；普通导航节点没有火场环境事实依赖时必须使用空数组 []。严禁把 robot_state、robot_presence 或 fleet_state 填入 belief_assumptions。",
         "belief_assumptions 只能引用已通过 environment_beliefs 查询看到的 belief_id；不得引用 uncertain、conflicted 或 stale belief。",
         "RAG 外部知识只能通过 assumption.knowledge_refs 解释为何需要某项检查；它不能证明当前状态，也不能删除或放宽 runtime 的权威规则。",
         "当 planning_context.authoritative.invalidation_evidence_ids 非空时，提交修订计划前必须调用 inspect_mission_state 查询包含这些证据的 environment_beliefs。",
@@ -549,6 +587,7 @@ def build_deliberation_system_prompt(request: MissionDeliberationRequest) -> str
             "## 动态任务上下文",
             "本轮唯一动态上下文位于 user payload 的 planning_context。",
             "authoritative 包含不可裁剪的任务状态契约、已查询 observation 和校验反馈。",
+            "其中 operator_clarifications 是当前会话经身份绑定的操作员回答；已回答的问题不要原样重复追问。",
             (
                 "advisory 包含经过宿主预算和去重后的 Agent Tool 结果、"
                 "操作员纠正、任务记忆与外部知识。"
@@ -634,6 +673,9 @@ def build_deliberation_turn_payload(
     payload: dict[str, Any] = {
         "mission_id": request.mission_id,
         "operator_command": request.command,
+        "operator_clarifications": list(
+            request.planner_context.operator_clarifications
+        ),
         "iteration": request.iteration,
         "snapshot_id": request.state_snapshot.snapshot_id,
         "observations": [
@@ -684,6 +726,17 @@ def build_system_prompt(context: MissionPlannerContext) -> str:
             "## 当前任务状态快照",
             "这是本轮规划唯一允许使用的当前现场状态；历史记录不能覆盖它。",
             json.dumps(context.state_snapshot, ensure_ascii=False, sort_keys=True),
+        ])
+
+    if context.operator_clarifications:
+        lines.extend([
+            "",
+            "## 当前会话中经 Gateway 身份绑定的操作员澄清",
+            json.dumps(
+                context.operator_clarifications,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         ])
 
     # Include retrieved memories if available
@@ -739,7 +792,12 @@ def build_system_prompt(context: MissionPlannerContext) -> str:
     lines.append("## 输出要求")
     lines.append("请调用 create_mission_plan 工具，输出结构化的任务计划。")
     lines.append("- intent: 任务意图（search/patrol/firefight/recon/transport）")
-    lines.append("- subtasks: 子任务列表，每个子任务包含 robot_id, command, floor, capability_required, execution_group")
+    lines.append(
+        "- 当前仅支持二维 map；每个子任务必须包含 robot_id、command、"
+        "target={frame_id: map, pose: {x, y, yaw?}}、capability_required、"
+        "execution_group"
+    )
+    lines.append("- 不得生成楼层目标；缺少二维坐标时必须请求澄清")
     lines.append("- execution_group: 执行组编号，同组可并行，不同组按顺序执行")
     lines.append("- robot_id 必须是上面列出的可用机器人之一")
     lines.append("- capability_required 必须是该机器人具备的能力之一")
@@ -795,7 +853,12 @@ class LLMMissionPlanner:
                 runtime=self._provider_runtime,
                 task="mission_planning",
                 policy=ContextManagementPolicy(
-                    output_reserve_tokens=4096,
+                    # Mission deliberation returns one bounded Tool call rather
+                    # than free-form prose.  Keep enough output headroom for a
+                    # structured response while leaving room for an inspected
+                    # belief and its observation Tool schema on small (8K)
+                    # model contexts.
+                    output_reserve_tokens=3072,
                 ),
                 token_counter=token_counter,
             )
@@ -1297,6 +1360,9 @@ class LLMMissionPlanner:
             authoritative = {
                 "mission_id": request.mission_id,
                 "command": request.command,
+                "operator_clarifications": list(
+                    request.planner_context.operator_clarifications
+                ),
                 "state_snapshot": request.planner_context.state_snapshot,
                 "available_robots": build_available_robot_snapshot(
                     request.planner_context.available_robots
@@ -1338,6 +1404,19 @@ class LLMMissionPlanner:
                     self.agent_tool_runtime.exposure_manifest()
                 ),
             }
+
+        stage_sink = None
+        if request.progress_sink is not None:
+            def stage_sink(stage: str, payload: Mapping[str, Any]) -> None:
+                request.progress_sink(
+                    "mission_agent.stage.completed",
+                    {
+                        "stage": stage,
+                        "iteration": request.iteration,
+                        **dict(payload),
+                    },
+                )
+
         return AgentHarnessAttempt(
             role="mission_agent",
             run_id=(
@@ -1355,6 +1434,7 @@ class LLMMissionPlanner:
             maximum_tool_calls=1,
             temperature=self._temperature,
             seed=self._seed,
+            stage_sink=stage_sink,
         )
 
     @staticmethod
@@ -1938,22 +2018,57 @@ class LLMMissionPlanner:
                         details={"index": index, "robot_id": robot_id},
                     ),
                 )
-            try:
-                floor = int(item.get("floor", 0))
-            except (TypeError, ValueError):
-                floor = 0
-            if floor <= 0:
+            target_value = item.get("target")
+            pose_value = (
+                target_value.get("pose")
+                if isinstance(target_value, dict)
+                else None
+            )
+            target_keys = set(target_value) if isinstance(target_value, dict) else set()
+            pose_keys = set(pose_value) if isinstance(pose_value, dict) else set()
+            coordinates = (
+                pose_value.get("x") if isinstance(pose_value, dict) else None,
+                pose_value.get("y") if isinstance(pose_value, dict) else None,
+                pose_value.get("yaw", 0.0) if isinstance(pose_value, dict) else None,
+            )
+            valid_coordinates = all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and isfinite(float(value))
+                for value in coordinates
+            )
+            if (
+                not isinstance(target_value, dict)
+                or target_value.get("frame_id") != "map"
+                or target_keys != {"frame_id", "pose"}
+                or not isinstance(pose_value, dict)
+                or not {"x", "y"}.issubset(pose_keys)
+                or not pose_keys.issubset({"x", "y", "yaw"})
+                or not valid_coordinates
+            ):
                 return make_result(
                     status="error",
-                    message=f"LLM 返回了无效楼层：{item.get('floor')}",
+                    message="LLM 返回了无效的二维 map 目标点。",
                     decision=GuardDecision(
                         layer="parser",
                         status="block",
-                        reason="invalid_floor",
-                        message="LLM subtask returned an invalid floor.",
-                        details={"index": index, "robot_id": robot_id, "floor": item.get("floor")},
+                        reason="invalid_2d_target",
+                        message="LLM subtask returned an invalid 2D map pose.",
+                        details={
+                            "index": index,
+                            "robot_id": robot_id,
+                            "target": target_value,
+                        },
                     ),
                 )
+            target = {
+                "frame_id": "map",
+                "pose": {
+                    "x": float(coordinates[0]),
+                    "y": float(coordinates[1]),
+                    "yaw": float(coordinates[2]),
+                },
+            }
             capability_required = str(item.get("capability_required") or "")
             if not capability_required:
                 return make_result(
@@ -1991,9 +2106,10 @@ class LLMMissionPlanner:
                 MissionSubtask(
                     robot_id=robot_id,
                     command=command_value,
-                    floor=floor,
+                    floor=None,
                     capability_required=capability_required,
                     execution_group=execution_group,
+                    target=target,
                 )
             )
 

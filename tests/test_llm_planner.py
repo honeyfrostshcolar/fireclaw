@@ -52,8 +52,11 @@ def _make_tool_call_response(
         subtasks = [
             {
                 "robot_id": "r1",
-                "command": "去2楼搜索受困人员",
-                "floor": 2,
+                "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                "target": {
+                    "frame_id": "map",
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                },
                 "capability_required": "victim_search",
                 "execution_group": 0,
             }
@@ -110,14 +113,15 @@ def test_mission_plan_tool_schema_has_required_fields():
     subtask_props = params["properties"]["subtasks"]["items"]["properties"]
     assert "robot_id" in subtask_props
     assert "command" in subtask_props
-    assert "floor" in subtask_props
+    assert "target" in subtask_props
+    assert subtask_props["target"]["properties"]["frame_id"]["const"] == "map"
     assert "capability_required" in subtask_props
     assert "execution_group" in subtask_props
 
     subtask_required = params["properties"]["subtasks"]["items"]["required"]
     assert "robot_id" in subtask_required
     assert "command" in subtask_required
-    assert "floor" in subtask_required
+    assert "target" in subtask_required
     assert "capability_required" in subtask_required
 
 
@@ -236,14 +240,18 @@ def test_llm_planner_returns_plan_from_tool_call():
     provider = _make_provider(_make_tool_call_response())
     planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
 
-    result = planner.plan("去二楼搜索受困人员", context=robots)
+    result = planner.plan("前往坐标 (2.0, 1.5) 搜索受困人员", context=robots)
 
     assert result.status == "planned"
     assert result.intent == "search"
     assert result.plan is not None
     assert len(result.plan.subtasks) == 1
     assert result.plan.subtasks[0].robot_id == "r1"
-    assert result.plan.subtasks[0].floor == 2
+    assert result.plan.subtasks[0].floor is None
+    assert result.plan.subtasks[0].target == {
+        "frame_id": "map",
+        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+    }
     assert result.plan.subtasks[0].capability_required == "victim_search"
 
 
@@ -328,8 +336,11 @@ def test_llm_planner_uses_constrained_schema_for_provider_call():
         subtasks=[
             {
                 "robot_id": "gazebo_turtlebot3",
-                "command": "去2楼搜索受困人员",
-                "floor": 2,
+                "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                "target": {
+                    "frame_id": "map",
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                },
                 "capability_required": "victim_search",
                 "execution_group": 0,
             }
@@ -337,7 +348,7 @@ def test_llm_planner_uses_constrained_schema_for_provider_call():
     ))
     planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
 
-    result = planner.plan("去二楼搜索受困人员", context=ctx)
+    result = planner.plan("前往坐标 (2.0, 1.5) 搜索受困人员", context=ctx)
 
     assert result.status == "planned"
     tool = provider.chat_completion.call_args.kwargs["tools"][0]
@@ -357,8 +368,11 @@ def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
         subtasks=[
             {
                 "robot_id": "robot_001",
-                "command": "去2楼搜索受困人员",
-                "floor": 2,
+                "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                "target": {
+                    "frame_id": "map",
+                    "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                },
                 "capability_required": "victim_search",
                 "execution_group": 0,
             }
@@ -366,7 +380,7 @@ def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
     ))
     planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
 
-    result = planner.plan("去二楼搜索受困人员", context=ctx)
+    result = planner.plan("前往坐标 (2.0, 1.5) 搜索受困人员", context=ctx)
 
     assert result.status == "error"
     assert result.plan is None
@@ -380,8 +394,11 @@ def test_llm_planner_blocks_unknown_robot_id_with_audit_record():
             "subtasks": [
                 {
                     "robot_id": "robot_001",
-                    "command": "去2楼搜索受困人员",
-                    "floor": 2,
+                    "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                    "target": {
+                        "frame_id": "map",
+                        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                    },
                     "capability_required": "victim_search",
                     "execution_group": 0,
                 }
@@ -513,8 +530,11 @@ def test_llm_planner_validates_robot_id():
             subtasks=[
                 {
                     "robot_id": "nonexistent_robot",
-                    "command": "去2楼搜索受困人员",
-                    "floor": 2,
+                    "command": "前往坐标 (2.0, 1.5) 搜索受困人员",
+                    "target": {
+                        "frame_id": "map",
+                        "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0},
+                    },
                     "capability_required": "victim_search",
                     "execution_group": 0,
                 }
@@ -523,7 +543,7 @@ def test_llm_planner_validates_robot_id():
     )
     planner = LLMMissionPlanner(provider=provider, model_id="gpt-4")
 
-    result = planner.plan("去二楼搜索受困人员", context=robots)
+    result = planner.plan("前往坐标 (2.0, 1.5) 搜索受困人员", context=robots)
 
     assert result.status == "error"
     assert "nonexistent_robot" in result.message

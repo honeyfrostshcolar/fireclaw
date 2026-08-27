@@ -182,7 +182,7 @@ def test_load_gazebo_turtlebot3_adapter_config_has_no_domain_routing() -> None:
     assert config.robot_id == "gazebo_turtlebot3"
     assert config.transport.enabled is True
     assert config.transport.wait_for_server_seconds == 10.0
-    assert config.transport.wait_for_result_seconds == 120.0
+    assert config.transport.wait_for_result_seconds == 360.0
     assert config.emergency_stop is not None
     assert config.emergency_stop.name == "/fireclaw/emergency_stop"
     assert not hasattr(config, "endpoints")

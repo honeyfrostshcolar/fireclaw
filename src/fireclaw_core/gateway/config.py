@@ -1,7 +1,9 @@
-"""TOML config file loading for FireClaw gateway.
+"""TOML config file loading for FireClaw Gateway.
 
-Supports a ``fireclaw.toml`` config file so users don't have to pass
-every flag on the command line.  CLI flags always override config values.
+Supports an explicitly selected mode-specific TOML config so users do not
+have to pass every flag on the command line. CLI flags always override config
+values. New deployments should use ``fireclaw.sim.toml`` or
+``fireclaw.real.toml``; the generic default name remains legacy compatibility.
 
 Config file structure::
 
@@ -29,15 +31,22 @@ Config file structure::
     api_key = "sk-..."
     api_key_env = "FIRECLAW_PROVIDER_API_KEY"
     model = "deepseek-chat"
+    thinking = false                 # MiMo reasoning; false disables it
+    timeout_seconds = 60
 
     [robot_agent]
     enabled = true
     planner = "llm"                  # or "deterministic"
+    loop_timeout_seconds = 600
 
     [robot_agent.provider]           # optional, falls back to [provider]
     base_url = "https://api.deepseek.com/v1"
     api_key = "sk-..."
     model = "deepseek-chat"
+
+    [mission]
+    # Complete multi-turn planning budget; independent from one provider call.
+    planning_timeout_seconds = 180
 
     [robot_gateway]
     host = "127.0.0.1"
@@ -148,6 +157,11 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg["provider_base_url"] = provider.get("base_url")
     cfg["provider_api_key"] = provider.get("api_key")
     cfg["provider_api_key_env"] = provider.get("api_key_env")
+    cfg["provider_timeout_seconds"] = provider.get("timeout_seconds")
+    provider_thinking = provider.get("thinking")
+    if provider_thinking is not None and not isinstance(provider_thinking, bool):
+        raise ValueError("[provider].thinking must be a TOML boolean")
+    cfg["provider_thinking"] = provider_thinking
     cfg["model"] = provider.get("model")
     cfg["model_catalog_path"] = provider.get("catalog")
 
@@ -155,11 +169,28 @@ def load_config(path: Path) -> dict[str, Any]:
     ra = raw.get("robot_agent", {})
     cfg["robot_agent_enabled"] = ra.get("enabled")
     cfg["robot_agent_planner"] = ra.get("planner")
+    cfg["robot_agent_loop_timeout_seconds"] = ra.get(
+        "loop_timeout_seconds"
+    )
 
     # [robot_agent.provider] — falls back to [provider] if absent
     ra_provider = ra.get("provider", {})
     cfg["robot_agent_provider_base_url"] = ra_provider.get("base_url") or cfg.get("provider_base_url")
     cfg["robot_agent_provider_api_key"] = ra_provider.get("api_key") or cfg.get("provider_api_key")
+    cfg["robot_agent_provider_timeout_seconds"] = (
+        ra_provider.get("timeout_seconds")
+        if ra_provider.get("timeout_seconds") is not None
+        else cfg.get("provider_timeout_seconds")
+    )
+    robot_agent_provider_thinking = ra_provider.get("thinking")
+    if robot_agent_provider_thinking is None:
+        robot_agent_provider_thinking = cfg.get("provider_thinking")
+    if (
+        robot_agent_provider_thinking is not None
+        and not isinstance(robot_agent_provider_thinking, bool)
+    ):
+        raise ValueError("[robot_agent.provider].thinking must be a TOML boolean")
+    cfg["robot_agent_provider_thinking"] = robot_agent_provider_thinking
     cfg["robot_agent_model"] = ra_provider.get("model") or cfg.get("model")
     cfg["robot_agent_model_catalog_path"] = (
         ra_provider.get("catalog") or cfg.get("model_catalog_path")
@@ -199,6 +230,18 @@ def load_config(path: Path) -> dict[str, Any]:
     # [mission]
     mission = raw.get("mission", {})
     cfg["mission_robot_profiles"] = mission.get("robot_profiles")
+    cfg["mission_group_timeout_seconds"] = mission.get(
+        "group_timeout_seconds"
+    )
+    cfg["mission_planning_timeout_seconds"] = mission.get(
+        "planning_timeout_seconds"
+    )
+    cfg["mission_planning_dialogue_max_rounds"] = mission.get(
+        "planning_dialogue_max_rounds"
+    )
+    cfg["mission_planning_dialogue_ttl_seconds"] = mission.get(
+        "planning_dialogue_ttl_seconds"
+    )
     cfg["embodied_runtime_mode"] = mission.get("embodied_runtime_mode")
     cfg["robot_gateway_client_api_token"] = (
         mission.get("robot_gateway_api_token")

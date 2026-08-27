@@ -153,6 +153,38 @@ def test_structured_observation_entities_are_ingested_with_evidence_links(tmp_pa
     assert len(service.list_entities(mission_id="mission-1")) == 1
 
 
+def test_observation_without_entities_skips_historical_entity_scan(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    service = _entity_service(store)
+    pipeline = EntityExtractionPipeline(
+        store=store,
+        entity_memory=service,
+        runtime_mode="simulation",
+    )
+    observation = store.record_event(
+        event_id="plain-observation",
+        mission_id="mission-1",
+        event_type="observation",
+        payload={"observation_kind": "sensor_discovery"},
+        runtime_mode="simulation",
+        source_type="sensor_discovery",
+        robot_id="robot-A",
+        observed_at=T0,
+    )
+
+    def fail_list_events(*args, **kwargs):
+        raise AssertionError("observations without entities must not scan history")
+
+    monkeypatch.setattr(store, "list_events", fail_list_events)
+
+    report = pipeline.process_observation(observation)
+
+    assert report.mention_event_ids == ()
+    assert report.entity_ids == ()
+    assert report.skipped_extraction_keys == ()
+    assert report.issues == ()
+
+
 def test_malformed_sqlite_entity_projection_is_rebuilt_from_jsonl_authority(tmp_path):
     store = _store(tmp_path)
     service = _entity_service(store)

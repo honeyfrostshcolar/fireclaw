@@ -6,6 +6,7 @@ Proves the full MissionGateway -> RobotSubagentClient -> FireClawGateway HTTP
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -20,6 +21,8 @@ from fireclaw_core.mission.mission_planner import (
     MissionSubtask,
 )
 from fireclaw_core.mission.mission_runtime import MissionRuntimePaths, build_mission_agent_from_paths
+from fireclaw_core.mission.plan_artifact import PlanArtifactStore
+from fireclaw_core.mission.runtime_identity import GatewayRuntimeIdentity
 from fireclaw_core.subagent.subagent_client import RobotSubagentClient
 
 
@@ -71,6 +74,18 @@ def _json_request(base_url: str, method: str, path: str, payload: dict | None = 
     )
     with request.urlopen(req, timeout=15) as response:
         return response.status, json.loads(response.read().decode("utf-8"))
+
+
+def _confirmation(preview: dict) -> dict:
+    return {
+        "artifact_id": preview["artifact_id"],
+        "plan_token": preview["plan_token"],
+        "plan_digest": preview["plan_digest"],
+        "status_version": preview["status_version"],
+        "session_id": preview["session_id"],
+        "robot_ids": preview["robot_ids"],
+        "operator_confirmed": True,
+    }
 
 
 def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
@@ -130,6 +145,17 @@ def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
         # Verify the agent is using a real RobotSubagentClient
         assert isinstance(agent.subagent_client, RobotSubagentClient)
 
+        profile_path = tmp_path / "active-profile.json"
+        profile_path.write_text(
+            json.dumps({
+                "runtime_mode": "simulation",
+                "robot_id": "robot-1",
+                "scope": "2d_map_e2e",
+            }, sort_keys=True),
+            encoding="utf-8",
+        )
+        profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+
         # 5. Create MissionGateway with the real client
         mission_config = MissionGatewayConfig(port=0)
         mission_gw = MissionGateway(
@@ -140,19 +166,36 @@ def test_real_gateway_to_gateway_embodied_e2e(tmp_path: Path):
             task_registry=agent.task_registry,
             subagent_registry=agent.subagent_registry,
             session_lineage_store=agent._session_lineage_store,
+            runtime_identity=GatewayRuntimeIdentity.create(
+                runtime_mode="simulation",
+                active_profile_path=profile_path,
+                profile_sha256=profile_sha256,
+                robot_id="robot-1",
+            ),
+            plan_artifact_store=PlanArtifactStore(
+                tmp_path / "plan-artifacts.jsonl"
+            ),
         )
         mission_gw.start()
         try:
             base = mission_gw.base_url
 
-            # 6. Submit a single-floor absolute-map mission through real HTTP
-            status, body = _json_request(base, "POST", "/missions", {
+            # 6. Preview, then explicitly confirm one absolute 2D-map plan.
+            status, preview = _json_request(base, "POST", "/plan-mission", {
                 "command": "去坐标 (2.0, 1.5)",
-                "session_id": "e2e-gateway-test",
-                "use_scheduler": False,
+                "target_robot": "robot-1",
             })
+            assert status == 200
+            assert preview["status"] == "preview_ready"
+            status, body = _json_request(
+                base,
+                "POST",
+                "/plan-mission/confirm",
+                _confirmation(preview),
+            )
             assert status == 202
-            assert body["status"] == "planned"
+            assert body["status"] == "accepted"
+            assert body["plan_digest"] == preview["plan_digest"]
             mission_id = body["mission_id"]
 
             # 7. Poll trace until terminal (real gateway needs time to execute)
