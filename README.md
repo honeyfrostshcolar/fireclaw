@@ -52,7 +52,7 @@
 
 </div>
 
-图中的主链路负责把自然语言目标逐步收敛为受控物理动作；右侧 Evidence Plane 持续记录状态、决策与终态证据，并把执行反馈投影回操作员界面。
+主链路只保留五个关键边界：操作员提出任务，Mission Agent 生成计划，Robot Agent 与 SafetyGate 决定是否执行，Plugin 将 typed Tool 调用交给 Adapter，最后由 ROS、Gazebo 或机器人 SDK 完成动作。底部反馈通道统一承载执行监控、记忆和审计证据。
 
 核心设计原则：
 
