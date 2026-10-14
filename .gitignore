@@ -1,12 +1,20 @@
 .codegraph/
 .codex/
 .claude/
+.agents/
 .vscode/
 .pytest_cache/
 .venv/
 *.egg-info/
 __pycache__/
 *.py[cod]
+
+# Local AI-agent and code-index configuration; keep these in the workspace only.
+/AGENTS.md
+/AGENTS.zh-CN.md
+/CLAUDE.md
+/CLAUDE.zh-CN.md
+/codegraph.json
 
 # Local reference checkout; keep it available for CodeGraph/reference use, not as FireClaw source.
 openclaw/
