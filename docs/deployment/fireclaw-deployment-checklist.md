@@ -82,7 +82,9 @@ FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py -q
 FIRECLAW_RUN_ROS1_SMOKE=1 .venv/bin/python -m pytest tests/test_ros1_smoke.py::test_ros1_action_fibonacci_goal -q
 ```
 
-For the full ROS1 high-fidelity proof gate criteria and required artifacts, see `docs/superpowers/plans/2026-06-11-ros1-high-fidelity-proof-runbook.md`.
+For the full ROS1/Gazebo proof requirements and evidence schema, see
+[`docs/evaluation/embodied-evaluation.md`](../evaluation/embodied-evaluation.md) and
+[`docs/deployment/real-robot-hardware-safety-acceptance.md`](real-robot-hardware-safety-acceptance.md).
 
 Expected: all 6 tests pass (infrastructure, topic, service, action, cancel, timeout).
 

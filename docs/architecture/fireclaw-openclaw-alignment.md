@@ -335,22 +335,13 @@ operator cancel mission
 -> mission registry status update
 ```
 
-## Current Build Status
+## Build and Verification Status
 
-Latest verified state recorded on 2026-06-11:
-
-- branch: `master`, ahead of `origin/master` by ~120 commits;
-- latest commit: experiment-readiness roadmap tasks complete;
-- verification: `.venv/bin/python -m pytest -q` -> `1033 passed, 6 skipped`.
-
-Untracked planning/config artifacts existed at that point:
-
-- `.claude/`
-- `CLAUDE.md`
-- `CLAUDE.zh-CN.md`
-- `docs/superpowers/plans/2026-06-08-fleet-heartbeat-v1.md`
-- `docs/superpowers/plans/2026-06-08-mission-authorization-v1.md`
-- `docs/superpowers/plans/2026-06-08-mission-planner-v1.md`
+This document records architectural alignment and intentionally avoids stale branch,
+commit, or test-count snapshots. Validate the current checkout with
+`.venv/bin/python -m pytest -q` and follow
+[`docs/release/distribution-contract.md`](../release/distribution-contract.md)
+for release-artifact verification.
 
 ## Framework Completion Roadmap
 

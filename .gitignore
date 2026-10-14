@@ -1,5 +1,6 @@
 .codegraph/
 .codex/
+.claude/
 .vscode/
 .pytest_cache/
 .venv/
@@ -11,11 +12,17 @@ __pycache__/
 openclaw/
 emem-main/
 
+# Agent/session working notes are useful locally but are not release sources.
+memory/
+docs/superpowers/
+
 # Runtime logs and generated local traces.
 *.jsonl
 logs/
 results/
 checkpoints/
+data/rag/fire_rescue/eval/runs/
+data/rag/fire_rescue/raw_zh/github_probe/
 
 # Plugin-local ROS build and runtime outputs.
 extensions/**/ros_ws/build/

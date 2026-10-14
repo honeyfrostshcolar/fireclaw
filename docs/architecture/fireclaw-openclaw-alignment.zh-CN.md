@@ -321,22 +321,12 @@ operator cancel mission
 -> mission registry status update
 ```
 
-## 当前构建状态
+## 构建与验证状态
 
-2026-06-08 最近一次记录的验证状态：
-
-- branch: `master`，领先 `origin/master` 8 个提交；
-- latest commit: `4cf1120 feat: add fleet heartbeat v1 with presence-based robot filtering`；
-- verification: `.venv/bin/python -m pytest -q` -> `265 passed in 15.22s`。
-
-当时存在的未跟踪 planning/config artifacts：
-
-- `.claude/`
-- `CLAUDE.md`
-- `CLAUDE.zh-CN.md`
-- `docs/superpowers/plans/2026-06-08-fleet-heartbeat-v1.md`
-- `docs/superpowers/plans/2026-06-08-mission-authorization-v1.md`
-- `docs/superpowers/plans/2026-06-08-mission-planner-v1.md`
+本文只记录架构对齐关系，不固化容易过期的分支、提交和测试数量。请以当前 checkout 执行
+`.venv/bin/python -m pytest -q`，并按
+[`docs/release/distribution-contract.md`](../release/distribution-contract.md)
+完成发布产物验证。
 
 ## 框架完成路线图
 
