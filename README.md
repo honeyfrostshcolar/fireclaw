@@ -46,21 +46,13 @@
 
 ## 系统架构
 
-```mermaid
-flowchart TB
-    O[Human Operator] --> M[Mission Agent]
-    M --> P[Sealed Plan / Task Graph]
-    P --> G[Robot Gateway]
-    G --> A[Robot Agent]
-    A --> S[Capability Policy + SafetyGate]
-    S --> T[Plugin-owned Typed Tool]
-    T --> D[Trusted Adapter]
-    D --> R[ROS / Gazebo / Robot SDK]
-    R --> E[Feedback + Terminal Evidence]
-    E --> G
-    G --> U[CLI / TUI / Web Console]
-    G --> L[Memory + Audit Log]
-```
+<div align="center">
+
+![FireClaw 从自然语言任务到机器人执行证据的分层系统架构](docs/assets/fireclaw-architecture.svg)
+
+</div>
+
+图中的主链路负责把自然语言目标逐步收敛为受控物理动作；右侧 Evidence Plane 持续记录状态、决策与终态证据，并把执行反馈投影回操作员界面。
 
 核心设计原则：
 
